@@ -1,0 +1,8 @@
+numpy>=1.24.2
+tqdm>=4.64.1
+langgraph>=0.5.1
+transformers>=4.53.1
+datasets>=3.6.0
+torch>=2.7.1
+peft>=0.16.0
+tiktoken>=0.9.0
