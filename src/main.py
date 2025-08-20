@@ -1,7 +1,6 @@
-from src.chatbot_state import ChatbotState
+from chatbot_state import ChatbotState
 from workflow import Workflow
 from util.cancellation_token import CancellationToken
-import os
 
 
 def main():
@@ -16,5 +15,4 @@ def main():
 
 
 if __name__ == '__main__':
-   os.chdir('src')
    main()

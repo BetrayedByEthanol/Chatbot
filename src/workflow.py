@@ -14,9 +14,11 @@ class Workflow:
       self._ct = kwargs.get("cancellation_token", CancellationToken())
       graph = StateGraph(ChatbotState)
 
+      graph.add_node("input", InputNode.get_input)
       graph.add_node('generate_output', GenerateOutputNode.generate_output)
 
-      graph.add_edge(START, 'generate_output')
+      graph.add_edge(START, 'input')
+      graph.add_edge('input', 'generate_output')
       graph.add_edge('generate_output', END)
 
       self.graph = graph.compile()
