@@ -1,8 +1,8 @@
 import os
 from langchain_core.language_models import BaseLLM
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.output_parsers import BaseTransformOutputParser
-from langchain_core.prompts import PromptTemplate
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.output_parsers import StrOutputParser
 from langchain_ollama.llms import OllamaLLM
 
@@ -39,9 +39,9 @@ class ModelManager(metaclass=ModelManagerMeta):
                   self.templates[(persona, template_name)] = fp.read()
 
    def invoke(self, model_name: str, persona: str, template_name: str, input_str: str) -> str:
-      prompt = PromptTemplate.from_template(template=self.templates[(persona, template_name)])
+      prompt = ChatPromptTemplate.from_messages([SystemMessage(content=self.templates[(persona, template_name)]),
+                                                 MessagesPlaceholder(variable_name="messages")])
       chain = prompt | self.avaible_models[model_name] | self.parser
       inputs = {"messages": [HumanMessage(content=input_str)]}
       output = chain.invoke(inputs)
       return output
-

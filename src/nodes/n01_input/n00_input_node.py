@@ -1,4 +1,4 @@
-from src.chatbot_state import ChatbotState
+from src.chatbot_state import ChatbotState, RawInput, InputSource
 import select
 import sys
 from src.input_manager import InputManager
@@ -15,10 +15,9 @@ class InputNode:
       print('>', end='')
       ready, _, _ = select.select([sys.stdin], [], [], 5)
       if ready:
-         prompt = sys.stdin.readline().rstrip('\n')
-         print(prompt)
+         state['user_input'] = RawInput(content=sys.stdin.readline().rstrip('\n'), source=InputSource.TEXT)
       elif not im.queue.empty():
-         print(im.queue.get_nowait())
+         state['user_input'] = RawInput(content=im.queue.get_nowait(), source=InputSource.SUBPROCESS)
       else:
-         print('No input provided')
+         state['user_input'] = RawInput(content='No input provided', source=InputSource.SYSTEM)
       return state
