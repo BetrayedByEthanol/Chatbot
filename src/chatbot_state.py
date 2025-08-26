@@ -2,6 +2,8 @@ from enum import Enum
 from typing import TypedDict
 from dataclasses import dataclass
 
+from langchain_core.messages import BaseMessage, AIMessage
+
 
 @dataclass
 class InputSource(Enum):
@@ -18,4 +20,7 @@ class RawInput:
 
 class ChatbotState(TypedDict):
    persona: str
-   user_input: RawInput
+   user_input: RawInput | None
+   output_message: AIMessage | None
+   history: list[BaseMessage]
+

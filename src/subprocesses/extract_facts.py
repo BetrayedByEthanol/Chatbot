@@ -1,0 +1,92 @@
+import datetime
+
+from ollama import chat
+
+
+def main():
+   with open('prompts/extract_facts.md', 'r') as fp:
+      prompt = fp.read()
+   now = datetime.datetime.utcnow().isoformat(timespec="seconds")
+   tools = [{
+      "type": "function",
+      "function": {
+         "name": "update_stm",
+         "description": "Return STM patch.",
+         "parameters": {
+            "type": "object",
+            "properties": {
+               "context": {"type": "object", "properties": {
+                  "mode": {"type": ["string", "null"]}, "task": {"type": ["string", "null"]}, "step": {"type": ["integer", "null"]}}},
+               "prefs": {"type": "object", "properties": {
+                  "style": {"type": "object"}, "likes": {"type": "array", "items": {"type": "string"}}, "dislikes": {"type": "array", "items": {"type": "string"}}}},
+               "facts": {"type": "array", "items": {"type": "object", "properties": {
+                  "k": {"type": "string"}, "v": {"type": "string"}, "confidence": {"type": "number"}, "last_seen": {"type": "string"}}, "required": ["k", "v", "confidence", "last_seen"]}},
+               "scratch": {"type": "object"},
+               "flags": {"type": "object", "properties": {
+                  "needs_clarification": {"type": "boolean"}, "awaiting_user_data": {"type": "boolean"}}}
+            },
+            "required": ["context", "prefs", "facts", "scratch", "flags"],
+            "additionalProperties": False
+         }
+      }}]
+
+   examples = [
+      {
+         "role": "user",
+         "content": "Can you teach me some opening chess moves?"
+      },
+      {
+         "role": "assistant",
+         "tool_calls": [{
+            "id": "call_1",
+            "type": "function",
+            "function": {
+               "name": "update_stm",
+               "arguments": {
+                  "context": {"mode": "chess", "task": "teach openings", "step": 1},
+                  "prefs": {"style": {}, "likes": [], "dislikes": []},
+                  "facts": [
+                     {"k": "topic", "v": "chess openings", "confidence": 0.9, "last_seen": now}
+                  ],
+                  "scratch": {},
+                  "flags": {"needs_clarification": False, "awaiting_user_data": False}
+               }
+            }
+         }]
+      }, {
+         "role": "user",
+         "content": "My favorite pets are parrots. Wish I could own one someday."
+      },
+      {
+         "role": "assistant",
+         "tool_calls": [{
+            "id": "call_2",
+            "type": "function",
+            "function": {
+               "name": "update_stm",
+               "arguments": {
+                  "context": {"mode": None, "task": None, "step": None},
+                  "prefs": {"style": {}, "likes": ["parrots"], "dislikes": []},
+                  "facts": [
+                     {"k": "favorite_pet", "v": "parrots", "confidence": 0.95, "last_seen": now},
+                     {"k": "aspiration_pet", "v": "parrot", "confidence": 0.7, "last_seen": now}
+                  ],
+                  "scratch": {},
+                  "flags": {"needs_clarification": False, "awaiting_user_data": False}
+               }
+            }
+         }]
+      }
+   ]
+   messages = ['Chocolate ice cream is yummy', "It's cold outside", "My favorite pets are parrots.", 'okay', "Do you want to play chess", "I understand"]
+
+   for m in messages:
+      resp = chat(model='llama3.1',
+                  tools=tools,
+                  messages=[{'role': 'system', 'content': prompt}] + examples + [{"role": "user", "content": m}],
+                  options={"tools": "required"})
+      print(resp.message)
+
+
+if __name__ == "__main__":
+   main()

@@ -16,10 +16,12 @@ class Workflow:
 
       graph.add_node("input", InputNode.get_input)
       graph.add_node('generate_output', GenerateOutputNode.generate_output)
+      graph.add_node('update_history', UpdateHistoryNode.update_history)
 
       graph.add_edge(START, 'input')
       graph.add_edge('input', 'generate_output')
-      graph.add_edge('generate_output', END)
+      graph.add_edge('generate_output', 'update_history')
+      graph.add_edge('update_history', END)
 
       self.graph = graph.compile()
 
