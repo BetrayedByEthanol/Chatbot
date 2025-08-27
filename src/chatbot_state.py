@@ -1,7 +1,7 @@
 from enum import Enum
 from typing import TypedDict
 from dataclasses import dataclass
-
+from concurrent.futures import Future
 from langchain_core.messages import BaseMessage, AIMessage
 
 
@@ -18,9 +18,17 @@ class RawInput:
    source: InputSource
 
 
+@dataclass
+class ProcessingTask:
+   name: str
+   result: dict | None
+   task: Future | None
+   historyCheckpoint: int
+
+
 class ChatbotState(TypedDict):
    persona: str
    user_input: RawInput | None
    output_message: AIMessage | None
    history: list[BaseMessage]
-
+   stmMemory: ProcessingTask

@@ -14,3 +14,4 @@ Hard rules (STRICT):
    - Hedges (wish/maybe/kinda) ⇒ ~0.7
 9) `context` present with nulls when unused: {"mode": null, "task": null, "step": null}
 10) Always respond via the `update_stm` tool. No prose, no explanations.
+11) When a preference is present include both fact and preference.

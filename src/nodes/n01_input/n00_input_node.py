@@ -12,8 +12,11 @@ class InputNode:
       im = InputManager()
       if im.process is None:
          im.simulate_external_input()
+      ready, _, _ = select.select([sys.stdin], [], [])
+      if ready:
+         sys.stdin.readline()
       print('>', end='')
-      timeout = 10 if not im.queue.empty() else 60
+      timeout = 15 if not im.queue.empty() else 60
       ready, _, _ = select.select([sys.stdin], [], [], timeout)
       if ready:
          state['user_input'] = RawInput(content=sys.stdin.readline().rstrip('\n'), source=InputSource.TEXT)

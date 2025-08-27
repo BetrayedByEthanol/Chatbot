@@ -171,6 +171,7 @@ class RedisSTMStorage:
 class StmNode:
    @staticmethod
    def retrieve_stm(state: ChatbotState) -> ChatbotState:
+      print(":)")
       return state
 
 
