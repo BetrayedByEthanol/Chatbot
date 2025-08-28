@@ -1,10 +1,11 @@
 import datetime
-
+import pathlib
 from ollama import chat
 
 
-def extract_facts():
-   with open('prompts/extract_facts.md', 'r') as fp:
+def extract_facts(messages: list):
+   pth = pathlib.Path(__file__).parent
+   with open(str(pth) + '/prompts/extract_facts.md', 'r') as fp:
       prompt = fp.read()
    now = datetime.datetime.utcnow().isoformat(timespec="seconds")
    tools = [{
@@ -142,14 +143,33 @@ def extract_facts():
       }
    ]
    messages = ['I think pizza is delicous ', "It's raining outside", "My favorite pets are cats.", 'yes go ahead', "Do you want to play poker", "I understand", "I prefer python", "i just came from outside, and man i do hate snow!"]
-
+   result = {}
    for m in messages:
       resp = chat(model='llama3.1',
                   tools=tools,
                   messages=[{'role': 'system', 'content': prompt}] + examples + [{"role": "user", "content": m}],
                   options={"tools": "required", 'temperatur': 0.0, 'top_p': 0.1, "top_k": 20})
-      print(resp.message)
+      result[m] = resp.message.tool_calls[0].function.arguments if len(resp.message.tool_calls) > 0 else {}
+      print(resp.message.tool_calls[0].function.arguments if len(resp.message.tool_calls) > 0 else {})
+   return result
 
+# {
+#   "context": {"mode": null, "task": null, "step": null},
+#   "facts": [
+#     {
+#       "predicate": "like",            // small closed set
+#       "entity": "food",
+#       "value": "pizza",
+#       "confidence": 0.95,
+#       "stability": 0.85,              // routes to LTM
+#       "last_seen": "2025-08-28T10:32:00Z",
+#       "evidence": "Pizza is my favorite"
+#     }
+#   ],
+#   "prefs": {"likes": ["pizza"], "dislikes": [], "style": {}},
+#   "flags": {"awaiting_user_data": false, "needs_clarification": false},
+#   "scratch": {}
+# }
 
 if __name__ == "__main__":
-   extract_facts()
+   extract_facts([])
