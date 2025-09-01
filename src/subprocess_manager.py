@@ -30,15 +30,15 @@ class SubprocessManager(metaclass=SubprocessManagerMeta):
       self.stop = Event()
       self.pool = ProcessPoolExecutor(max_workers=1)
       self.thread = Thread(target=self._run, daemon=True)
-      self.thread.start()
       self.tasks = Manager().dict()
+      self.thread.start()
 
    def __del__(self):
       self.stop.set()
       if self.thread:
          self.thread.join(2)
       if self.pool:
-         self.pool.shutdown(cancel_futures=True)
+         self.pool.shutdown(wait=True, cancel_futures=True)
 
 
    def _run(self):

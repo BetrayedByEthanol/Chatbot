@@ -1,6 +1,7 @@
 from chatbot_state import ChatbotState, ProcessingTask
 from workflow import Workflow
 from util.cancellation_token import CancellationToken
+from subprocess_manager import SubprocessManager
 
 
 def main():
@@ -14,9 +15,12 @@ def main():
    )
    workflow = Workflow(cancellation_token=ct)
    try:
+      sm = SubprocessManager()
       state = workflow.run(state, itearation_limit=5)
    except KeyboardInterrupt:
       ct.cancel()
+   finally:
+      del sm
    print(f"final state:\n{state}")
    for m in state['history']:
       print(m.content)

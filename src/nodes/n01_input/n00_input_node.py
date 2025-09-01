@@ -12,7 +12,7 @@ class InputNode:
       im = InputManager()
       if im.process is None:
          im.simulate_external_input()
-      ready, _, _ = select.select([sys.stdin], [], [])
+      ready, _, _ = select.select([sys.stdin], [], [], 0)
       if ready:
          sys.stdin.readline()
       print('>', end='')

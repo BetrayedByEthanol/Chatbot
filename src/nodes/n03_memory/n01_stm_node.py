@@ -8,6 +8,8 @@ import hashlib
 import redis
 import re
 
+from src.subprocess_manager import SubprocessManager
+
 
 # ---- Helpers ---------------------------------------------------------------
 
@@ -172,6 +174,8 @@ class StmNode:
    @staticmethod
    def retrieve_stm(state: ChatbotState) -> ChatbotState:
       print(":)")
+      sm = SubprocessManager()
+      sm.queue.put_nowait({"name": "stm", "messages": [message.content for message in state['history'] if message.type == "human"]})
       return state
 
 

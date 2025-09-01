@@ -11,7 +11,7 @@ def extract_facts(messages: list):
    tools = [{
       "type": "function",
       "function": {
-         "name": "update_stm",
+         "name": "update_memory",
          "description": "Return STM patch.",
          "parameters": {
             "type": "object",
@@ -42,15 +42,23 @@ def extract_facts(messages: list):
             "id": "call_1",
             "type": "function",
             "function": {
-               "name": "update_stm",
+               "name": "update_memory",
                "arguments": {
-                  "context": {"mode": "chess", "task": "teach openings", "step": 1},
-                  "prefs": {"style": {}, "likes": [], "dislikes": []},
+                  "context": {"mode": None, "task": "teach", "step": 1},
                   "facts": [
-                     {"k": "topic", "v": "chess openings", "confidence": 0.9, "last_seen": now}
+                     {
+                        "predicate": "goal",
+                        "entity": "skill",
+                        "value": "chess",
+                        "confidence": 0.70,
+                        "stability": 0.30,
+                        "last_seen": "2025-08-28T10:32:00Z",
+                        "evidence": "Can you teach me some opening chess moves?"
+                     }
                   ],
-                  "scratch": {},
-                  "flags": {"needs_clarification": False, "awaiting_user_data": False}
+                  "prefs": {"likes": ["chess"], "dislikes": [], "style": {}},
+                  "flags": {"awaiting_user_data": False, "needs_clarification": False},
+                  "scratch": {}
                }
             }
          }]
@@ -61,17 +69,16 @@ def extract_facts(messages: list):
       {
          "role": "assistant",
          "tool_calls": [{
-            "id": "call_3",
+            "id": "call_2",
             "type": "function",
             "function": {
-               "name": "update_stm",
+               "name": "update_memory",
                "arguments": {
                   "context": {"mode": None, "task": None, "step": None},
-                  "prefs": {"style": {}, "likes": [], "dislikes": []},
-                  "facts": [
-                  ],
-                  "scratch": {},
-                  "flags": {"needs_clarification": False, "awaiting_user_data": False}
+                  "facts": [],
+                  "prefs": {"likes": [], "dislikes": [], "style": {}},
+                  "flags": {"awaiting_user_data": False, "needs_clarification": False},
+                  "scratch": {}
                }
             }
          }]
@@ -82,18 +89,26 @@ def extract_facts(messages: list):
       {
          "role": "assistant",
          "tool_calls": [{
-            "id": "call_4",
+            "id": "call_3",
             "type": "function",
             "function": {
-               "name": "update_stm",
+               "name": "update_memory",
                "arguments": {
                   "context": {"mode": None, "task": None, "step": None},
-                  "prefs": {"style": {}, "likes": [], "dislikes": []},
                   "facts": [
-                     {"k": "weather", "v": "cold", "confidence": 0.95, "last_seen": now},
+                     {
+                        "predicate": "fact",
+                        "entity": "weather",
+                        "value": "cold",
+                        "confidence": 0.95,
+                        "stability": 0.25,
+                        "last_seen": "2025-08-28T10:32:00Z",
+                        "evidence": "cold outside"
+                     }
                   ],
-                  "scratch": {},
-                  "flags": {"needs_clarification": False, "awaiting_user_data": False}
+                  "prefs": {"likes": [], "dislikes": [], "style": {}},
+                  "flags": {"awaiting_user_data": False, "needs_clarification": False},
+                  "scratch": {}
                }
             }
          }]
@@ -104,18 +119,26 @@ def extract_facts(messages: list):
       {
          "role": "assistant",
          "tool_calls": [{
-            "id": "call_5",
+            "id": "call_4",
             "type": "function",
             "function": {
-               "name": "update_stm",
+               "name": "update_memory",
                "arguments": {
                   "context": {"mode": None, "task": None, "step": None},
-                  "prefs": {"style": {}, "likes": ["chocolate ice cream"], "dislikes": []},
                   "facts": [
-                     {"k": "food_like", "v": "chocolate ice cream", "confidence": 0.90, "last_seen": now},
+                     {
+                        "predicate": "like",
+                        "entity": "food",
+                        "value": "chocolate ice cream",
+                        "confidence": 0.75,
+                        "stability": 0.85,
+                        "last_seen": "2025-08-28T10:32:00Z",
+                        "evidence": "Chocolate ice cream is yummy"
+                     }
                   ],
-                  "scratch": {},
-                  "flags": {"needs_clarification": False, "awaiting_user_data": False}
+                  "prefs": {"likes": ["chocolate ice cream"], "dislikes": [], "style": {}},
+                  "flags": {"awaiting_user_data": False, "needs_clarification": False},
+                  "scratch": {}
                }
             }
          }]
@@ -126,17 +149,64 @@ def extract_facts(messages: list):
       {
          "role": "assistant",
          "tool_calls": [{
+            "id": "call_5",
+            "type": "function",
+            "function": {
+               "name": "update_memory",
+               "arguments": {
+                  "context": {"mode": None, "task": 'play chess', "step": 1},
+                  "facts": [
+                     {
+                        "predicate": "goal",
+                        "entity": "skill",
+                        "value": "chess",
+                        "confidence": 0.70,
+                        "stability": 0.30,
+                        "last_seen": "2025-08-28T10:32:00Z",
+                        "evidence": "Can you teach me some opening chess moves?"
+                     }
+                  ],
+                  "prefs": {"likes": ["chess"], "dislikes": [], "style": {}},
+                  "flags": {"awaiting_user_data": False, "needs_clarification": False},
+                  "scratch": {}
+               }
+            }
+         }]
+      }, {
+         "role": "user",
+         "content": "It's raining outside and I do not like the rain"
+      },
+      {
+         "role": "assistant",
+         "tool_calls": [{
             "id": "call_6",
             "type": "function",
             "function": {
-               "name": "update_stm",
+               "name": "update_memory",
                "arguments": {
-                  "context": {"mode": 'chess', "task": 'play', "step": 1},
-                  "prefs": {"style": {}, "likes": ["chess"], "dislikes": []},
+                  "context": {"mode": None, "task": None, "step": None},
                   "facts": [
+                     {
+                        "predicate": "fact",
+                        "entity": "weather",
+                        "value": "rain",
+                        "confidence": 0.70,
+                        "stability": 0.30,
+                        "last_seen": "2025-08-28T10:32:00Z",
+                        "evidence": "It's raining outside"
+                     }, {
+                        "predicate": "dislike",
+                        "entity": "weather",
+                        "value": "rain",
+                        "confidence": 0.70,
+                        "stability": 0.60,
+                        "last_seen": "2025-08-28T10:32:00Z",
+                        "evidence": "I do not like the rain"
+                     }
                   ],
-                  "scratch": {},
-                  "flags": {"needs_clarification": False, "awaiting_user_data": True}
+                  "prefs": {"likes": [], "dislikes": ["rain"], "style": {}},
+                  "flags": {"awaiting_user_data": False, "needs_clarification": False},
+                  "scratch": {}
                }
             }
          }]
@@ -147,29 +217,15 @@ def extract_facts(messages: list):
    for m in messages:
       resp = chat(model='llama3.1',
                   tools=tools,
-                  messages=[{'role': 'system', 'content': prompt}] + examples + [{"role": "user", "content": m}],
+                  messages=[{'role': 'system', 'content': prompt}] + [{"role": "user", "content": m}], #  examples +
                   options={"tools": "required", 'temperatur': 0.0, 'top_p': 0.1, "top_k": 20})
-      result[m] = resp.message.tool_calls[0].function.arguments if len(resp.message.tool_calls) > 0 else {}
-      print(resp.message.tool_calls[0].function.arguments if len(resp.message.tool_calls) > 0 else {})
+      try:
+         result[m] = resp.message.tool_calls[0].function.arguments if len(resp.message.tool_calls) > 0 else {}
+         print(resp.message.tool_calls[0].function.arguments if len(resp.message.tool_calls) > 0 else {})
+      except TypeError:
+         print(resp.message.content)
    return result
 
-# {
-#   "context": {"mode": null, "task": null, "step": null},
-#   "facts": [
-#     {
-#       "predicate": "like",            // small closed set
-#       "entity": "food",
-#       "value": "pizza",
-#       "confidence": 0.95,
-#       "stability": 0.85,              // routes to LTM
-#       "last_seen": "2025-08-28T10:32:00Z",
-#       "evidence": "Pizza is my favorite"
-#     }
-#   ],
-#   "prefs": {"likes": ["pizza"], "dislikes": [], "style": {}},
-#   "flags": {"awaiting_user_data": false, "needs_clarification": false},
-#   "scratch": {}
-# }
 
 if __name__ == "__main__":
    extract_facts([])
