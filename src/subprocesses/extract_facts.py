@@ -1,13 +1,18 @@
 import datetime
 import pathlib
+from collections import defaultdict
+
 from ollama import chat
+from langchain_core.output_parsers import JsonOutputParser
 
 
 def extract_facts(messages: list):
+   print('extraction strart')
+   parser = JsonOutputParser()
    pth = pathlib.Path(__file__).parent
    with open(str(pth) + '/prompts/extract_facts.md', 'r') as fp:
       prompt = fp.read()
-   now = datetime.datetime.utcnow().isoformat(timespec="seconds")
+
    tools = [{
       "type": "function",
       "function": {
@@ -217,15 +222,102 @@ def extract_facts(messages: list):
    for m in messages:
       resp = chat(model='llama3.1',
                   tools=tools,
-                  messages=[{'role': 'system', 'content': prompt}] + [{"role": "user", "content": m}], #  examples +
+                  messages=[{'role': 'system', 'content': prompt}] + [{"role": "user", "content": m}],  # examples +
                   options={"tools": "required", 'temperatur': 0.0, 'top_p': 0.1, "top_k": 20})
       try:
-         result[m] = resp.message.tool_calls[0].function.arguments if len(resp.message.tool_calls) > 0 else {}
-         print(resp.message.tool_calls[0].function.arguments if len(resp.message.tool_calls) > 0 else {})
+         mem = resp.message.tool_calls[0].function.arguments if len(resp.message.tool_calls) > 0 else {}
+         for fact in mem['facts']:
+            fact['last_seen'] = datetime.datetime.utcnow().isoformat(timespec="seconds")
+         result[m] = mem
       except TypeError:
-         print(resp.message.content)
-   return result
+         parsed = parser.parse(resp.message.content)
+
+         mem = parsed['parameters'] if 'parameters' in parsed else parsed
+         for fact in mem['facts']:
+            fact['last_seen'] = datetime.datetime.utcnow().isoformat(timespec="seconds")
+         result[m] = mem
+
+   # [print(x) for x in result.values()]
+   schema = {
+      "context": {
+         "mode": None,
+         "task": None,
+         "step": None
+      },
+      "facts": [
+         {
+            "predicate": "",
+            'entity': "",
+            "value": "",
+            "confidence": 0.5,
+            "stability": 0.5,
+            "last_seen": datetime.datetime.utcnow(),
+            "evidence": "",
+            'context': ""
+         }
+      ],
+      "flags": {
+         'awaiting_user_data': False,
+         'high_confidence_update': False,
+         'memory_conflict': False,
+         'needs_clarification': False
+      },
+      "prefs": {
+         'dislikes': [""],
+         'likes': [""],
+         'style': {}
+      },
+      "scratch": {
+         'reasoning': None,
+         'skipped_items': None}
+   }
+   print('extraction finished')
+   return list(result.values())
+
+
+def normalize_memory(payload):
+   p = payload.copy()
+   # 1) enforce full shapes
+   p.setdefault("context", {"mode": None, "task": None, "step": None})
+   p.setdefault("prefs", {"likes": [], "dislikes": [], "style": {}})
+   p.setdefault("flags", {"awaiting_user_data": False, "needs_clarification": False,
+                          "memory_conflict": False, "high_confidence_update": False})
+   p.setdefault("scratch", {"reasoning": None, "skipped_items": None})
+
+   # 2) drop spurious 'outside' style facts
+   def keep(f):
+      v = f.get("value", "").strip().lower()
+      if f["predicate"] == "fact" and v in {"outside", "here", "now"}:
+         return False
+      return True
+
+   p["facts"] = [f for f in p.get("facts", []) if keep(f)]
+
+   # 3) hedge & stability nudges
+   for f in p["facts"]:
+      if f["predicate"] in {"like", "dislike"} and f["stability"] < 0.75:
+         f["stability"] = 0.8
+      if f["predicate"] in {"like", "dislike", "fact", "identity"} and f["confidence"] < 0.9 and "i think" not in f["evidence"].lower():
+         f["confidence"] = max(f["confidence"], 0.9)
+      # Proper noun casing for Python
+      if f.get("value", "").lower() == "python":
+         f["value"] = "Python"
+      # Weather entity
+      if f["predicate"] in {"fact", "like", "dislike"} and "snow" in f.get("value", "").lower():
+         f["entity"] = "weather"
+
+   # 4) high-confidence flag
+   if any(f["confidence"] >= 0.95 and f["stability"] >= 0.8 for f in p["facts"]):
+      p["flags"]["high_confidence_update"] = True
+
+   # 5) clear unnecessary needs_clarification
+   if p["facts"]:
+      p["flags"]["needs_clarification"] = False
+
+   return p
+
+
 
 
 if __name__ == "__main__":
-   extract_facts([])
+   memories = extract_facts([])

@@ -21,7 +21,7 @@ class RawInput:
 @dataclass
 class ProcessingTask:
    name: str
-   result: dict | None
+   result: str | None
    task: Future | None
    historyCheckpoint: int
 

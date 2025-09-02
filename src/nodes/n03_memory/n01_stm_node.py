@@ -1,6 +1,6 @@
 from __future__ import annotations
 from langchain_core.messages import HumanMessage
-from src.chatbot_state import ChatbotState
+from src.chatbot_state import ChatbotState, ProcessingTask
 from typing import List, Dict, Optional, Callable
 import json
 import time
@@ -8,6 +8,7 @@ import hashlib
 import redis
 import re
 
+from src.memory_manager import MemoryManager
 from src.subprocess_manager import SubprocessManager
 
 
@@ -173,9 +174,12 @@ class RedisSTMStorage:
 class StmNode:
    @staticmethod
    def retrieve_stm(state: ChatbotState) -> ChatbotState:
-      print(":)")
       sm = SubprocessManager()
-      sm.queue.put_nowait({"name": "stm", "messages": [message.content for message in state['history'] if message.type == "human"]})
+      pt = sm.queue_task(state['stmMemory'], state['history'])
+      memories = MemoryManager().summarize_memory()
+      print(memories)
+      pt.result = memories
+      state['stmMemory'] = pt
       return state
 
 
