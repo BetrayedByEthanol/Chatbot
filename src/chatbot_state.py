@@ -22,7 +22,7 @@ class RawInput:
 class ProcessingTask:
    name: str
    result: str | None
-   task: Future | None
+   task: Future | None | str
    historyCheckpoint: int
 
 

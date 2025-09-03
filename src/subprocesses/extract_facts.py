@@ -7,7 +7,6 @@ from langchain_core.output_parsers import JsonOutputParser
 
 
 def extract_facts(messages: list):
-   print('extraction strart')
    parser = JsonOutputParser()
    pth = pathlib.Path(__file__).parent
    with open(str(pth) + '/prompts/extract_facts.md', 'r') as fp:
@@ -218,6 +217,7 @@ def extract_facts(messages: list):
       }
    ]
    messages = ['I think pizza is delicous ', "It's raining outside", "My favorite pets are cats.", 'yes go ahead', "Do you want to play poker", "I understand", "I prefer python", "i just came from outside, and man i do hate snow!"]
+   # messages = ['I think pizza is delicous ', "My favorite pets are cats."]
    result = {}
    for m in messages:
       resp = chat(model='llama3.1',
@@ -237,7 +237,7 @@ def extract_facts(messages: list):
             fact['last_seen'] = datetime.datetime.utcnow().isoformat(timespec="seconds")
          result[m] = mem
 
-   # [print(x) for x in result.values()]
+   [print(x) for x in result.values()]
    schema = {
       "context": {
          "mode": None,
@@ -271,7 +271,6 @@ def extract_facts(messages: list):
          'reasoning': None,
          'skipped_items': None}
    }
-   print('extraction finished')
    return list(result.values())
 
 

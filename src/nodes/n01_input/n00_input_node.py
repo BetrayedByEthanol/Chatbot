@@ -16,12 +16,15 @@ class InputNode:
       if ready:
          sys.stdin.readline()
       print('>', end='')
-      timeout = 15 if not im.queue.empty() else 60
+      timeout = 30 if not im.queue.empty() else 60
       ready, _, _ = select.select([sys.stdin], [], [], timeout)
       if ready:
          state['user_input'] = RawInput(content=sys.stdin.readline().rstrip('\n'), source=InputSource.TEXT)
       elif not im.queue.empty():
-         state['user_input'] = RawInput(content=im.queue.get_nowait(), source=InputSource.SUBPROCESS)
+         auto_prompt = im.queue.get_nowait()
+         print(auto_prompt)
+         state['user_input'] = RawInput(content=auto_prompt, source=InputSource.SUBPROCESS)
       else:
+         print('no input')
          state['user_input'] = RawInput(content='No input provided', source=InputSource.SYSTEM)
       return state

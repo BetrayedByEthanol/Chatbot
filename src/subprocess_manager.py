@@ -31,8 +31,8 @@ class SubprocessManager(metaclass=SubprocessManagerMeta):
       self.queue = Queue()
       self.stop = Event()
       self.pool = ProcessPoolExecutor(max_workers=1)
-      self.thread = Thread(target=self._run, daemon=True)
-      # self.tasks = Manager().dict()
+      self.tasks = Manager().dict()
+      self.thread = Thread(target=self._run, daemon=True, args=(self.tasks,))
       self.thread.start()
 
    def __del__(self):
@@ -43,31 +43,30 @@ class SubprocessManager(metaclass=SubprocessManagerMeta):
          self.pool.shutdown(wait=True, cancel_futures=True)
 
    def queue_task(self, pt: ProcessingTask, history: list):
+      if pt.name in self.tasks and self.tasks[pt.name].task is not None:
+         return pt
       self.queue.put_nowait({"name": pt.name, "messages": [message.content for message in history[pt.historyCheckpoint:] if message.type == "human"]})
-      return ProcessingTask(task=None, result=None, name='stm', historyCheckpoint=len(history))
+      p = ProcessingTask(task='queued', result=None, name='stm', historyCheckpoint=len(history))
+      self.tasks[pt.name] = p
+      return p
 
-   def queue_output(self, out):
-      ...
-
-
-   def _run(self):
-      futures = {}
+   def _run(self, tasks):
       while not self.stop.is_set():
          try:
             task = self.queue.get_nowait()
             if task['name'] == "stm":
                fut = self.pool.submit(extract_facts, task['messages'])
-               fut.add_done_callback(lambda f: self._done(f, task['name']))
-               # future_id = id(fut)
-               # futures[future_id] = fut
-               # self.tasks[task['name']] = future_id
+               fut.add_done_callback(lambda f: self._done(f, task['name'], tasks))
          except QueueEmpty:
             time.sleep(10)
 
    @staticmethod
-   def _done(future: Future, name: str):
+   def _done(future: Future, name: str, tasks: dict):
       result: list = future.result()
       MemoryManager().store_stm(memories=result)
+      pt = tasks[name]
+      pt.task = None
+      tasks[name] = pt
 
 
 if __name__ == '__main__':

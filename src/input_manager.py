@@ -28,5 +28,5 @@ class InputManager(metaclass=InputManagerMeta):
 def external_input(queue: Queue):
    import time
    for i in range(5):
-      time.sleep(12)
+      time.sleep(27)
       queue.put("simulated external input")

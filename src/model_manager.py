@@ -40,7 +40,7 @@ class ModelManager(metaclass=ModelManagerMeta):
 
    @staticmethod
    def format_prompt(prompt: str, stm_memory: str):
-      prompt = prompt.replace("$STM_MEMORY$", stm_memory)
+      prompt = prompt.replace("$STM_MEMORY$", stm_memory if stm_memory else "")
       return prompt
 
    def invoke(self, model_name: str, persona: str, template_name: str, input_str: str, history: list[BaseMessage], stm_memory: str) -> str:
