@@ -1,0 +1,27 @@
+- Multi persona
+- Regenerate response, by resetting state to a previous turn
+- new session initial summary of previous session
+- memory system (userdata (dict/json specifc data), session (extend message history of current session), working (for task tracking), STM (2-4 days), episodic (session summaries), LTM (long term facts), knowledge (db of manuals and instructions), semantic (meanings), attentions (tracks which memories proof to be relavant), meta-epsiode (tracks topics of sessions and patterns), procedures (self learnd steps for tasks based on success) )
+- have goals for user (define short (one week), meduim (one month), long (6 month) goals, derive conversation direct from goals, evaluate progress towards goals and update trackkers)
+- can give instructions to user (preplan session instruction list set to not given)
+- time context (time since user known, time since last session, time since last message, current time)
+- Take in input from various source (terminal, browser, discord, microphone) and convert to text if needed
+- input source handle (different output and thoughts for when input comes from user vs cron system notification / automatic timeout message)
+- Input validation for (user guidelines, followed instruction, claims gainst known facts)
+- Input processing (analyze intend (request, clarification, information, etc.), predict next intend, compare previous prediciton against current result, if request, process to if possible and formulate task or reject, analyze meaning (tries be humorous, tries to mislead, tries to be supportive))
+- emotion tracking (input sentiment (positive, negative, neutral), (classify user emotions), estmate self emotions based on emotion (react angry, friendly, witty, sarcastically, etc.))
+- update user guidelines ?
+- data and fact extractor , compare against exsisting, mark for clarfications or update, router to correct memory location
+- internal thoughts and resoning, (high level taking in multiple messages and plans multiple steps ahead)
+- create internal task, for non-immidiate tool usage 
+- tools avaible as immidiate (needed for repsonse e.g. websearch results), quick (runs fast but not can be executed async, e.g. send webrequest to know api), slow (multiple steps takes a lot of time done out of session, e.g. running agent, create and plan tools)
+- check for immidiate tools
+- generate output
+- validate output against service guidelines and logical consistencies
+- preplan next output
+- send output to correct destination (webresponse, discord, terminal, tts)
+- manage message history
+- if user times out or time limit reached switch to off session mode
+- process still open instructions, goal process, and update memories
+- extract training data from messages and rate value of messages
+- Cleanup Temp files and logs

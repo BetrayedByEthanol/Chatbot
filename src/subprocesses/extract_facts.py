@@ -216,7 +216,7 @@ def extract_facts(messages: list):
          }]
       }
    ]
-   messages = ['I think pizza is delicous ', "It's raining outside", "My favorite pets are cats.", 'yes go ahead', "Do you want to play poker", "I understand", "I prefer python", "i just came from outside, and man i do hate snow!"]
+   # messages = ['I think pizza is delicous ', "It's raining outside", "My favorite pets are cats.", 'yes go ahead', "Do you want to play poker", "I understand", "I prefer python", "i just came from outside, and man i do hate snow!"]
    # messages = ['I think pizza is delicous ', "My favorite pets are cats."]
    result = {}
    for m in messages:

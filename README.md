@@ -1,77 +1,86 @@
-nodes/n00_Setup
-nodes/n00_Setup/n00_Choose_Persona
-nodes/n00_Setup/n00_Clean_Cache
-nodes/n00_Setup/n00_Reset_State
-nodes/n00_Setup/n01_Retrieve_Summary
-nodes/n00_Setup/n02_Retrieve_Userdata
-nodes/n00_Setup/n03_Retrieve_Goals
-nodes/n00_Setup/n04_Generate_Goals
-nodes/n00_Setup/n05_Generate_Instructions
-nodes/n00_Setup/n06_Time_Context
-nodes/n00_Setup/n07_Plan_Conversational_Direction
-nodes/n01_Input
-nodes/n01_Input/n00_Raw_Input
-nodes/n01_Input/n01_Validate_Input_Facts
-nodes/n01_Input/n02_Validate_Input_Rules
-nodes/n01_Input/n03_Validate_Input_Task
-nodes/n01_Input/n04_Evaluate_Goals
-nodes/n01_Input/n05_Analyze_Intend
-nodes/n01_Input/n06_Request_Analyzer
-nodes/n01_Input/n07_Intend_Prediction
-nodes/n01_Input/n08_Compare_Input_To_Prediction_From_Output
-nodes/n01_Input/n09_Handle_Input_Sources
-nodes/n01_Input/n10_Identify_Meaning
-nodes/n02_Emotion_Tracking
-nodes/n02_Emotion_Tracking/n00_Sentiment_Analysis
-nodes/n02_Emotion_Tracking/n01_Emotion_Classification
-nodes/n02_Emotion_Tracking/n02_Self_Evaluation
-nodes/n03_Memory
-nodes/n03_Memory/n00_Memory_Required
-nodes/n03_Memory/n01_STM_Retrival
-nodes/n03_Memory/n02_LTM_Retrival
-nodes/n03_Memory/n03_Summarize_LTM
-nodes/n03_Memory/n04_Rules
-nodes/n03_Memory/n05_Knowledge
-nodes/n03_Memory/n06_working_memory
-nodes/n03_Memory/n07_session_memory
-nodes/n03_Memory/n08_meta_episode_memory
-nodes/n03_Memory/n09_semantic_memory
-nodes/n03_Memory/n10_episodic_memory
-nodes/n03_Memory/n11_attention_memory
-nodes/n03_Memory/n12_procedure_memory
-nodes/n04_User_Data_Extraction
-nodes/n04_User_Data_Extraction/n00_Extract
-nodes/n04_User_Data_Extraction/n01_Compare_Exisiting
-nodes/n04_User_Data_Extraction/n02_Mark_Clarification
-nodes/n04_User_Data_Extraction/n03_Update
-nodes/n05_Thought
-nodes/n05_Thought/n00_Prompt_Assembly
-nodes/n05_Thought/n01_Reason_Thinking
-nodes/n05_Thought/n02_Thought_Validation
-nodes/n06_Internal_Task
-nodes/n06_Internal_Task/n00_Check_if_needed
-nodes/n06_Internal_Task/n01_Create_tool_Task
-nodes/n06_Internal_Task/n02_Use_tool_task
-nodes/n06_Internal_Task/n03_Make_User_Request_Task
-nodes/n06_Internal_Task/n04_Crud_Rule
-nodes/n07_Tools
-nodes/n07_Tools/n00_Check_Tool_Use
-nodes/n08_Output
-nodes/n08_Output/n00_Assemble_Output_Prompt
-nodes/n08_Output/n01_Generate_Output
-nodes/n08_Output/n02_Validate_Output
-nodes/n08_Output/n03_Update_History
-nodes/n08_Output/n04_Print_Output
-nodes/n08_Output/n05_Output_Destination
-nodes/n08_Output/n06_Plan_next_action
-nodes/n08_Output/n07_Evaluate_Output_Goal_Alignment
-nodes/n09_Clean_Up
-nodes/n09_Clean_Up/n00_Evaluate_Instructions_Rest
-nodes/n09_Clean_Up/n00_Evaluate_Update_Goals
-nodes/n09_Clean_Up/n01_Full_Summary
-nodes/n09_Clean_Up/n02_Update_STM
-nodes/n09_Clean_Up/n03_Store_State
-nodes/n09_Clean_Up/n04_Session_End
-nodes/n09_Clean_Up/n05_LTM_Worthy
-nodes/n09_Clean_Up/n06_Update_LTM
-nodes/n09_Clean_Up/n07_Create_Training_Data_From_Session
+Setup
+ - Choose_Persona
+ - Clean_Cache
+ - Reset_State
+ - Retrieve_Summary
+ - Retrieve_Userdata
+ - Retrieve_Goals
+ - Generate_Goals
+ - Generate_Instructions
+ - Time_Context
+ - Plan_Conversational_Direction
+
+Input
+ - Raw_Input
+ - Validate_Input_Facts
+ - Validate_Input_Rules
+ - Validate_Input_Task
+ - Evaluate_Goals
+ - Analyze_Intend
+ - Request_Analyzer
+ - Intend_Prediction
+ - Compare_Input_To_Prediction_From_Output
+ - Handle_Input_Sources
+ - Identify_Meaning
+
+Emotion_Tracking
+ - Sentiment_Analysis
+ - Emotion_Classification
+ - Self_Evaluation
+
+Memory
+ - Memory_Required
+ - STM_Retrival
+ - LTM_Retrival
+ - Summarize_LTM
+ - Rules
+ - Knowledge
+ - working_memory
+ - session_memory
+ - meta_episode_memory
+ - semantic_memory
+ - episodic_memory
+ - attention_memory
+ - procedure_memory
+
+User_Data_Extraction
+ - Extract
+ - Compare_Exisiting
+ - Mark_Clarification
+ - Update
+
+Thought
+ - Prompt_Assembly
+ - Reason_Thinking
+ - Thought_Validation
+
+Internal_Task
+ - Check_if_needed
+ - Create_tool_Task
+ - Use_tool_task
+ - Make_User_Request_Task
+ - Crud_Rule
+
+Tools
+ - Check_Tool_Use
+
+Output
+ - Assemble_Output_Prompt
+ - Generate_Output
+ - Validate_Output
+ - Update_History
+ - Print_Output
+ - Output_Destination
+ - Plan_next_action
+ - Evaluate_Output_Goal_Alignment
+
+Clean_Up
+ - Evaluate_Instructions_Rest
+ - Evaluate_Update_Goals
+ - Full_Summary
+ - Update_STM
+ - Store_State
+ - Session_End
+ - LTM_Worthy
+ - Update_LTM
+ - Create_Training_Data_From_Session
