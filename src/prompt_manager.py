@@ -1,8 +1,10 @@
+import datetime
 import json
 import re
 from collections import defaultdict
 from math import exp
 
+from langchain_core.messages import HumanMessage
 from langchain_core.prompts import ChatPromptTemplate
 
 CRITICAL_PREDICATES = {
@@ -177,6 +179,18 @@ if __name__ == "__main__":
    facts = extract_facts(history)  # your existing function
    salient = select_session_critical_facts(history, facts, k=10)
 
+   mes = HumanMessage(
+        content="text",
+        metadata={
+            "channel": "terminal",
+            "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+            "user_id": "user",
+            "attachments": [],
+            "lang": 'en',
+            "audio_ref": 'path',
+            "turn": 'history len',
+        },
+    )
    open_threads = extract_open_threads(history)
 
    prompt_parts = [
@@ -189,3 +203,4 @@ if __name__ == "__main__":
 
    prompt = ChatPromptTemplate.from_messages(prompt_parts)
    print(prompt)
+   print(mes)
