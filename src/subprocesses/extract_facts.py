@@ -15,25 +15,64 @@ def extract_facts(messages: list):
    tools = [{
       "type": "function",
       "function": {
-         "name": "update_memory",
-         "description": "Return STM patch.",
+         "name": "emit_parcels_draft",
+         "description": "Extract user-stated facts/preferences/goals/etc. from the CURRENT user message only.",
          "parameters": {
             "type": "object",
             "properties": {
-               "context": {"type": "object", "properties": {
-                  "mode": {"type": ["string", "null"]}, "task": {"type": ["string", "null"]}, "step": {"type": ["integer", "null"]}}},
-               "prefs": {"type": "object", "properties": {
-                  "style": {"type": "object"}, "likes": {"type": "array", "items": {"type": "string"}}, "dislikes": {"type": "array", "items": {"type": "string"}}}},
-               "facts": {"type": "array", "items": {"type": "object", "properties": {
-                  "k": {"type": "string"}, "v": {"type": "string"}, "confidence": {"type": "number"}, "last_seen": {"type": "string"}}, "required": ["k", "v", "confidence", "last_seen"]}},
-               "scratch": {"type": "object"},
-               "flags": {"type": "object", "properties": {
-                  "needs_clarification": {"type": "boolean"}, "awaiting_user_data": {"type": "boolean"}}}
+               "context": {
+                  "type": "object",
+                  "properties": {
+                     "mode": {"type": ["string", "null"]},
+                     "task": {"type": ["string", "null"]},
+                     "step": {"type": ["integer", "null"]}
+                  },
+                  "additionalProperties": False
+               },
+               "flags": {
+                  "type": "object",
+                  "properties": {
+                     "awaiting_user_data": {"type": "boolean"},
+                     "needs_clarification": {"type": "boolean"},
+                     "memory_conflict": {"type": "boolean"},
+                     "high_confidence_update": {"type": "boolean"}
+                  },
+                  "required": ["awaiting_user_data", "needs_clarification", "high_confidence_update"],
+                  "additionalProperties": False
+               },
+               "scratch": {
+                  "type": "object",
+                  "properties": {
+                     "reasoning": {"type": ["string", "null"]},
+                     "skipped_items": {"type": ["string", "null"]}
+                  },
+                  "additionalProperties": False
+               },
+               "parcels_draft": {
+                  "type": "array",
+                  "maxItems": 5,
+                  "items": {
+                     "type": "object",
+                     "properties": {
+                        "type": {"type": "string", "enum": ["preference", "fact", "profile", "event", "task", "rule", "summary", "mood", "identity"]},
+                        "predicate": {"type": "string"},
+                        "value": {},
+                        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                        "stability": {"type": "number", "minimum": 0, "maximum": 1},
+                        "evidence": {"type": "string"},
+                        "tags": {"type": "array", "items": {"type": "string"}},
+                        "subject": {"type": "string"}
+                     },
+                     "required": ["type", "predicate", "value", "confidence", "stability", "evidence"],
+                     "additionalProperties": False
+                  }
+               }
             },
-            "required": ["context", "prefs", "facts", "scratch", "flags"],
+            "required": ["context", "flags", "scratch", "parcels_draft"],
             "additionalProperties": False
          }
-      }}]
+      }
+   }]
 
    examples = [
       {
@@ -46,23 +85,23 @@ def extract_facts(messages: list):
             "id": "call_1",
             "type": "function",
             "function": {
-               "name": "update_memory",
+               "name": "emit_parcels_draft",
                "arguments": {
                   "context": {"mode": None, "task": "teach", "step": 1},
-                  "facts": [
+                  "parcels_draft": [
                      {
+                        "type": "task",
                         "predicate": "goal",
-                        "entity": "skill",
                         "value": "chess",
                         "confidence": 0.70,
                         "stability": 0.30,
-                        "last_seen": "2025-08-28T10:32:00Z",
+                        "subject": "user",
+                        "tags": ["boardgame", "beginner", 'education'],
                         "evidence": "Can you teach me some opening chess moves?"
                      }
                   ],
-                  "prefs": {"likes": ["chess"], "dislikes": [], "style": {}},
-                  "flags": {"awaiting_user_data": False, "needs_clarification": False},
-                  "scratch": {}
+                  "flags": {"awaiting_user_data": False, "needs_clarification": False, "high_confidence_update": False},
+                  "scratch": {"reasoning": None, "skipped_items": None}
                }
             }
          }]
@@ -76,13 +115,12 @@ def extract_facts(messages: list):
             "id": "call_2",
             "type": "function",
             "function": {
-               "name": "update_memory",
+               "name": "emit_parcels_draft",
                "arguments": {
                   "context": {"mode": None, "task": None, "step": None},
-                  "facts": [],
-                  "prefs": {"likes": [], "dislikes": [], "style": {}},
-                  "flags": {"awaiting_user_data": False, "needs_clarification": False},
-                  "scratch": {}
+                  "parcels_draft": [],
+                  "flags": {"awaiting_user_data": False, "needs_clarification": False, "high_confidence_update": False},
+                  "scratch": {"reasoning": None, "skipped_items": None}
                }
             }
          }]
@@ -96,23 +134,23 @@ def extract_facts(messages: list):
             "id": "call_3",
             "type": "function",
             "function": {
-               "name": "update_memory",
+               "name": "emit_parcels_draft",
                "arguments": {
                   "context": {"mode": None, "task": None, "step": None},
-                  "facts": [
+                  "parcels_draft": [
                      {
-                        "predicate": "fact",
-                        "entity": "weather",
-                        "value": "cold",
+                        "type": "event",
+                        "predicate": "condition",
+                        "value": "cold outside",
                         "confidence": 0.95,
-                        "stability": 0.25,
-                        "last_seen": "2025-08-28T10:32:00Z",
+                        "stability": 0.30,
+                        "subject": "user",
+                        "tags": ["weather"],
                         "evidence": "cold outside"
                      }
                   ],
-                  "prefs": {"likes": [], "dislikes": [], "style": {}},
-                  "flags": {"awaiting_user_data": False, "needs_clarification": False},
-                  "scratch": {}
+                  "flags": {"awaiting_user_data": False, "needs_clarification": False, "high_confidence_update": False},
+                  "scratch": {"reasoning": None, "skipped_items": None}
                }
             }
          }]
@@ -126,23 +164,23 @@ def extract_facts(messages: list):
             "id": "call_4",
             "type": "function",
             "function": {
-               "name": "update_memory",
+               "name": "emit_parcels_draft",
                "arguments": {
                   "context": {"mode": None, "task": None, "step": None},
-                  "facts": [
+                  "parcels_draft": [
                      {
-                        "predicate": "like",
-                        "entity": "food",
+                        "type": "preference",
+                        "predicate": "likes",
                         "value": "chocolate ice cream",
-                        "confidence": 0.75,
-                        "stability": 0.85,
-                        "last_seen": "2025-08-28T10:32:00Z",
+                        "confidence": 0.95,
+                        "stability": 0.9,
+                        "subject": "user",
+                        "tags": ["food"],
                         "evidence": "Chocolate ice cream is yummy"
                      }
                   ],
-                  "prefs": {"likes": ["chocolate ice cream"], "dislikes": [], "style": {}},
-                  "flags": {"awaiting_user_data": False, "needs_clarification": False},
-                  "scratch": {}
+                  "flags": {"awaiting_user_data": False, "needs_clarification": False, "high_confidence_update": False},
+                  "scratch": {"reasoning": None, "skipped_items": None}
                }
             }
          }]
@@ -156,23 +194,23 @@ def extract_facts(messages: list):
             "id": "call_5",
             "type": "function",
             "function": {
-               "name": "update_memory",
+               "name": "emit_parcels_draft",
                "arguments": {
                   "context": {"mode": None, "task": 'play chess', "step": 1},
-                  "facts": [
+                  "parcels_draft": [
                      {
-                        "predicate": "goal",
-                        "entity": "skill",
-                        "value": "chess",
-                        "confidence": 0.70,
-                        "stability": 0.30,
-                        "last_seen": "2025-08-28T10:32:00Z",
-                        "evidence": "Can you teach me some opening chess moves?"
+                        "type": "task",
+                        "predicate": "play",
+                        "value": "play chess",
+                        "confidence": 0.95,
+                        "stability": 0.9,
+                        "subject": "user",
+                        "tags": ["boardgame", "tool use"],
+                        "evidence": "Do you want to play chess?"
                      }
                   ],
-                  "prefs": {"likes": ["chess"], "dislikes": [], "style": {}},
-                  "flags": {"awaiting_user_data": False, "needs_clarification": False},
-                  "scratch": {}
+                  "flags": {"awaiting_user_data": False, "needs_clarification": False, "high_confidence_update": False},
+                  "scratch": {"reasoning": None, "skipped_items": None}
                }
             }
          }]
@@ -186,58 +224,42 @@ def extract_facts(messages: list):
             "id": "call_6",
             "type": "function",
             "function": {
-               "name": "update_memory",
+               "name": "emit_parcels_draft",
                "arguments": {
                   "context": {"mode": None, "task": None, "step": None},
-                  "facts": [
-                     {
-                        "predicate": "fact",
-                        "entity": "weather",
-                        "value": "rain",
-                        "confidence": 0.70,
-                        "stability": 0.30,
-                        "last_seen": "2025-08-28T10:32:00Z",
-                        "evidence": "It's raining outside"
-                     }, {
-                        "predicate": "dislike",
-                        "entity": "weather",
-                        "value": "rain",
-                        "confidence": 0.70,
-                        "stability": 0.60,
-                        "last_seen": "2025-08-28T10:32:00Z",
-                        "evidence": "I do not like the rain"
-                     }
+                  "parcels_draft": [
+                     {"type": "event", "predicate": "weather", "value": "raining", "confidence": 0.9, "stability": 0.3, "evidence": "It’s raining outside", "tags": ["weather"], "subject": "user"},
+                     {"type": "preference", "predicate": "dislikes", "value": "rain", "confidence": 0.9, "stability": 0.7, "evidence": "I do not like the rain", "tags": ["weather"], "subject": "user"}
                   ],
-                  "prefs": {"likes": [], "dislikes": ["rain"], "style": {}},
-                  "flags": {"awaiting_user_data": False, "needs_clarification": False},
-                  "scratch": {}
+                  "flags": {"awaiting_user_data": False, "needs_clarification": False, "high_confidence_update": False},
+                  "scratch": {"reasoning": None, "skipped_items": None}
                }
             }
          }]
       }
    ]
-   # messages = ['I think pizza is delicous ', "It's raining outside", "My favorite pets are cats.", 'yes go ahead', "Do you want to play poker", "I understand", "I prefer python", "i just came from outside, and man i do hate snow!"]
+   messages = ['I think pizza is delicous ', "It's raining outside", "My favorite pets are cats.", 'yes go ahead', "Do you want to play poker", "I understand", "I prefer python", "i just came from outside, and man i do hate snow!"]
    # messages = ['I think pizza is delicous ', "My favorite pets are cats."]
    result = {}
    for m in messages:
       resp = chat(model='llama3.1',
                   tools=tools,
-                  messages=[{'role': 'system', 'content': prompt}] + [{"role": "user", "content": m}],  # examples +
-                  options={"tools": "required", 'temperatur': 0.0, 'top_p': 0.1, "top_k": 20})
+                  messages=[{'role': 'system', 'content': prompt}] + examples + [{"role": "user", "content": m}],  # examples +
+                  options={'temperatur': 0.0, "tools": "required", 'top_p': 0.1, "top_k": 20})
       try:
          mem = resp.message.tool_calls[0].function.arguments if len(resp.message.tool_calls) > 0 else {}
-         for fact in mem['facts']:
-            fact['last_seen'] = datetime.datetime.utcnow().isoformat(timespec="seconds")
+         for parcels_draft in mem['parcels_draft']:
+            parcels_draft['last_seen'] = datetime.datetime.utcnow().isoformat(timespec="seconds")
          result[m] = mem
       except TypeError:
          parsed = parser.parse(resp.message.content)
 
          mem = parsed['parameters'] if 'parameters' in parsed else parsed
-         for fact in mem['facts']:
-            fact['last_seen'] = datetime.datetime.utcnow().isoformat(timespec="seconds")
-         result[m] = mem
+         for parcels_draft in mem['parcels_draft']:
+            parcels_draft['last_seen'] = datetime.datetime.utcnow().isoformat(timespec="seconds")
+      result[m] = resp.message.tool_calls[0].function.arguments if len(resp.message.tool_calls) > 0 else {}
 
-   [print(x) for x in result.values()]
+   [print(f"Input:\n{k}\n\nOutput:\n{v}\n") for k, v in result.items()]
    schema = {
       "context": {
          "mode": None,
@@ -314,8 +336,6 @@ def normalize_memory(payload):
       p["flags"]["needs_clarification"] = False
 
    return p
-
-
 
 
 if __name__ == "__main__":
