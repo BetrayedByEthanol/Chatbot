@@ -59,6 +59,7 @@ def extract_facts(messages: list):
                         "value": {},
                         "confidence": {"type": "number", "minimum": 0, "maximum": 1},
                         "stability": {"type": "number", "minimum": 0, "maximum": 1},
+                        "salience": {"type": "number", "minimum": 0, "maximum": 1},
                         "evidence": {"type": "string"},
                         "tags": {"type": "array", "items": {"type": "string"}},
                         "subject": {"type": "string"}
@@ -95,6 +96,7 @@ def extract_facts(messages: list):
                         "value": "chess",
                         "confidence": 0.70,
                         "stability": 0.30,
+                        "salience": 0.6,
                         "subject": "user",
                         "tags": ["boardgame", "beginner", 'education'],
                         "evidence": "Can you teach me some opening chess moves?"
@@ -144,6 +146,7 @@ def extract_facts(messages: list):
                         "value": "cold outside",
                         "confidence": 0.95,
                         "stability": 0.30,
+                        "salience": 0.5,
                         "subject": "user",
                         "tags": ["weather"],
                         "evidence": "cold outside"
@@ -174,6 +177,7 @@ def extract_facts(messages: list):
                         "value": "chocolate ice cream",
                         "confidence": 0.95,
                         "stability": 0.9,
+                        "salience": 0.85,
                         "subject": "user",
                         "tags": ["food"],
                         "evidence": "Chocolate ice cream is yummy"
@@ -204,6 +208,7 @@ def extract_facts(messages: list):
                         "value": "play chess",
                         "confidence": 0.95,
                         "stability": 0.9,
+                        "salience": 0.4,
                         "subject": "user",
                         "tags": ["boardgame", "tool use"],
                         "evidence": "Do you want to play chess?"
@@ -228,8 +233,8 @@ def extract_facts(messages: list):
                "arguments": {
                   "context": {"mode": None, "task": None, "step": None},
                   "parcels_draft": [
-                     {"type": "event", "predicate": "weather", "value": "raining", "confidence": 0.9, "stability": 0.3, "evidence": "It’s raining outside", "tags": ["weather"], "subject": "user"},
-                     {"type": "preference", "predicate": "dislikes", "value": "rain", "confidence": 0.9, "stability": 0.7, "evidence": "I do not like the rain", "tags": ["weather"], "subject": "user"}
+                     {"type": "event", "predicate": "weather", "value": "raining", "confidence": 0.9, "stability": 0.3, "salience": 0.4, "evidence": "It’s raining outside", "tags": ["weather"], "subject": "user"},
+                     {"type": "preference", "predicate": "dislikes", "value": "rain", "confidence": 0.9, "stability": 0.7, "salience": 0.8, "evidence": "I do not like the rain", "tags": ["weather"], "subject": "user"}
                   ],
                   "flags": {"awaiting_user_data": False, "needs_clarification": False, "high_confidence_update": False},
                   "scratch": {"reasoning": None, "skipped_items": None}

@@ -1,7 +1,10 @@
+from dataclasses import dataclass
 from typing import Any
+from pydantic import BaseModel
 
 
-class Parcel:
+@dataclass
+class Parcel(BaseModel):
    ID: str
    Type: str
    Subject: str
