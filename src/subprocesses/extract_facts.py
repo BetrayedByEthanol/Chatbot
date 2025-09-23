@@ -233,7 +233,7 @@ def extract_facts(messages: list):
                "arguments": {
                   "context": {"mode": None, "task": None, "step": None},
                   "parcels_draft": [
-                     {"type": "event", "predicate": "weather", "value": "raining", "confidence": 0.9, "stability": 0.3, "salience": 0.4, "evidence": "It’s raining outside", "tags": ["weather"], "subject": "user"},
+                     {"type": "event", "predicate": "weather", "value": "raining", "confidence": 0.9, "stability": 0.3, "salience": 0.4, "evidence": "It’s raining outside", "tags": ["weather"], "subject": "outside"},
                      {"type": "preference", "predicate": "dislikes", "value": "rain", "confidence": 0.9, "stability": 0.7, "salience": 0.8, "evidence": "I do not like the rain", "tags": ["weather"], "subject": "user"}
                   ],
                   "flags": {"awaiting_user_data": False, "needs_clarification": False, "high_confidence_update": False},
