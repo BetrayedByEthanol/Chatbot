@@ -4,8 +4,11 @@ from pydantic import BaseModel, Field
 from uuid import UUID
 
 
-class PersonaConfig(BaseModel):
+class Persona(BaseModel):
    name: str = Field("personaname", json_schema_extra={"mutant": False})
+
+
+class PersonaConfig(BaseModel):
    length: int = Field(15, json_schema_extra={"mutant": True})
 
 
@@ -14,6 +17,14 @@ class User(BaseModel):
    persona: PersonaConfig = PersonaConfig()
    value: str = Field("name", json_schema_extra={"mutant": True})
    vayette: str = Field("nom", json_schema_extra={})
+   instructions_session: str
+   instructions_day: str
+   short_term_goal: str
+   mid_term_goal: str
+   long_term_goal: str
+   session_start: str
+   last_session_end: str
+   time_limit: str
 
 
 def extract(ob):
