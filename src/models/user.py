@@ -10,13 +10,7 @@ class Persona(BaseModel):
 
 class PersonaConfig(BaseModel):
    length: int = Field(15, json_schema_extra={"mutant": True})
-
-
-class User(BaseModel):
-   ID: UUID = uuid.uuid4()
-   persona: PersonaConfig = PersonaConfig()
-   value: str = Field("name", json_schema_extra={"mutant": True})
-   vayette: str = Field("nom", json_schema_extra={})
+   locked: bool
    instructions_session: str
    instructions_day: str
    short_term_goal: str
@@ -24,6 +18,13 @@ class User(BaseModel):
    long_term_goal: str
    session_start: str
    last_session_end: str
+
+
+class User(BaseModel):
+   ID: UUID = uuid.uuid4()
+   persona: PersonaConfig = PersonaConfig()
+   name: str = Field("name", json_schema_extra={"mutant": True})
+   vayette: str = Field("nom", json_schema_extra={})
    time_limit: str
 
 
