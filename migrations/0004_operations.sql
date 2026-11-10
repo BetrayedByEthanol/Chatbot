@@ -88,6 +88,12 @@ CREATE TABLE operation_dependencies (
     CHECK (operation_id <> depends_on_id)
 );
 
+CREATE TABLE operation_capabilities (
+    operation_id uuid NOT NULL REFERENCES operations(operation_id),
+    capability text NOT NULL CHECK (char_length(capability) BETWEEN 1 AND 128),
+    PRIMARY KEY (operation_id, capability)
+);
+
 CREATE TABLE operation_resource_requests (
     operation_id uuid NOT NULL REFERENCES operations(operation_id),
     resource_key text NOT NULL REFERENCES execution_resource_pools(resource_key),

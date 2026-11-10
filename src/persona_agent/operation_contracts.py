@@ -1,7 +1,7 @@
 """P0-04 typed operation contracts and shared PostgreSQL commit primitives."""
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from uuid import UUID, NAMESPACE_URL, uuid4, uuid5
 
@@ -141,7 +141,7 @@ def require_idle(connection: Connection) -> None:
         raise ValueError("operation commands require an idle autocommit connection")
 
 
-def event_for(cursor, row: dict, event_type: str, detail: dict | None = None) -> UUID:
+def event_for(cursor, row: dict, event_type: str, detail: dict | None = None, *, source_id: str = 'operation.scheduler', trust_level: str = 'TRUSTED_PLATFORM') -> UUID:
     """Append operation domain event + matching outbox inside caller's transaction."""
     operation_id = row["operation_id"]
     instance_id = row["instance_id"]
@@ -175,7 +175,7 @@ def event_for(cursor, row: dict, event_type: str, detail: dict | None = None) ->
         """,
         (
             event_id,event_type,user_id,instance_id,stream_id,
-            seq["last_sequence"],row["source_id"],"TRUSTED_PLATFORM",
+            seq["last_sequence"],source_id,trust_level,
             json.dumps({"operation_id":str(operation_id),**(detail or {})}),
         ),
     )
@@ -211,7 +211,7 @@ def require_claim(cursor, lease: OperationLease, *, statuses=("RUNNING",)) -> di
         or row["lease_until"] is None or row["lease_until"] <= now
         or (
             row["claimed_at"] is not None
-            and row["claimed_at"] + __import__("datetime").timedelta(
+            and row["claimed_at"] + timedelta(
                 seconds=row["timeout_seconds"]
             ) <= now
         )
