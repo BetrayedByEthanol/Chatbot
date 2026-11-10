@@ -747,3 +747,28 @@ def test_running_stale_input_version_releases_reservation_on_reconciliation(dsn)
     assert resources(dsn,key)==0
     with pytest.raises(StaleOperation):
         invoke(dsn,complete_operation,lease,result_ref="stale-worker-result")
+
+
+
+def test_elapsed_deadline_replay_remains_idempotent(dsn):
+    user,instance=seed(dsn)
+    key=pool(dsn)
+    c=cmd(
+        instance,key,
+        deadline=datetime.now(timezone.utc)+timedelta(seconds=1),
+    )
+    initial=enqueue(dsn,user,c)
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        conn.execute("SELECT pg_sleep(1.15)")
+    repeated=enqueue(dsn,user,c)
+    assert repeated.replayed and repeated.event_id==initial.event_id
+    assert repeated.operation_id==initial.operation_id
+
+
+def test_new_admission_with_past_deadline_is_rejected(dsn):
+    user,instance=seed(dsn)
+    key=pool(dsn)
+    c=cmd(instance,key,deadline=datetime.now(timezone.utc)-timedelta(seconds=1))
+    with pytest.raises(InvalidOperation,match="deadline"):
+        enqueue(dsn,user,c)
+    assert operation(dsn,c.operation_id) is None

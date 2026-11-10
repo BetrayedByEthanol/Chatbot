@@ -1,6 +1,7 @@
 """P0-04 operation admission: scoped enqueue, capability/dependency checks, fenced claim."""
 
 import json
+from datetime import datetime, timezone
 from uuid import uuid4
 
 from psycopg import Connection
@@ -121,6 +122,10 @@ def enqueue_operation(
             ):
                 raise StaleSelection("enqueue selection generation invalid")
 
+            # A historical retry already returned above, even if its deadline
+            # has now elapsed. New admissions must still have a future deadline.
+            if command.deadline is not None and command.deadline <= datetime.now(timezone.utc):
+                raise InvalidOperation("operation deadline has already passed")
             if command.origin.value != "USER":
                 # The first caller is an authenticated user. Later internal
                 # cognitive/goal producers require their own authorized actor.

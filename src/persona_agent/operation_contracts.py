@@ -1,7 +1,7 @@
 """P0-04 typed operation contracts and shared PostgreSQL commit primitives."""
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from enum import Enum
 from uuid import UUID, NAMESPACE_URL, uuid4, uuid5
 
@@ -100,8 +100,8 @@ class EnqueueOperation(BaseModel):
         for dt in (self.eligible_at, self.deadline):
             if dt is not None and (dt.tzinfo is None or dt.utcoffset() is None):
                 raise ValueError("timestamps must be timezone-aware")
-        if self.deadline is not None and self.deadline <= datetime.now(timezone.utc):
-            raise ValueError("deadline must be in the future")
+        # Deadline validity relative to the current clock is checked only
+        # after scoped idempotency lookup, so historical retries still replay.
         return self
 
 
