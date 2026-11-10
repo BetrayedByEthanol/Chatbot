@@ -72,7 +72,8 @@ def heartbeat_operation(
                 UPDATE operations SET
                     lease_until=LEAST(
                         clock_timestamp()+(%s*interval '1 second'),
-                        claimed_at+(timeout_seconds*interval '1 second')
+                        claimed_at+(timeout_seconds*interval '1 second'),
+                        COALESCE(deadline,'infinity'::timestamptz)
                     ),updated_at=clock_timestamp()
                 WHERE operation_id=%s RETURNING lease_until
                 """,
@@ -373,6 +374,7 @@ def reap_stale_operations(connection: Connection, *, limit: int=100) -> int:
                     OR s.generation IS DISTINCT FROM o.selection_generation
                     OR (o.claimed_at+(o.timeout_seconds*interval '1 second')
                         <= clock_timestamp())
+                    OR (o.deadline IS NOT NULL AND o.deadline <= clock_timestamp())
                     OR (o.execution_policy <> 'FOREGROUND_ASYNC'
                         AND (s.mode IS DISTINCT FROM 'BACKGROUND'
                              OR s.background_epoch IS DISTINCT FROM o.background_epoch))
@@ -417,7 +419,9 @@ def reap_stale_operations(connection: Connection, *, limit: int=100) -> int:
                     and row["claimed_at"]+timedelta(
                         seconds=row["timeout_seconds"])<=now
                 )
-                if not revoked and not epoch_invalid and not expired and row["status"]=="RUNNING":
+                deadline_passed=row["deadline"] is not None and row["deadline"]<=now
+                if (not revoked and not epoch_invalid and not expired
+                    and not deadline_passed and row["status"]=="RUNNING"):
                     continue
                 if row["effect_status"]=="DISPATCHED":
                     _unknown(cursor,row,"worker interrupted after external dispatch")
@@ -429,7 +433,7 @@ def reap_stale_operations(connection: Connection, *, limit: int=100) -> int:
                     elif (revoked or epoch_invalid):
                         status=("CANCELLED" if row["execution_policy"]=="BACKGROUND_EPHEMERAL"
                                 else "SUSPENDED")
-                    elif row["attempt_count"]>=row["max_attempts"]:
+                    elif deadline_passed or row["attempt_count"]>=row["max_attempts"]:
                         status="FAILED"
                     else:
                         status="RETRY_WAIT"

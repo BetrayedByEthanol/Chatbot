@@ -211,6 +211,7 @@ def require_claim(cursor, lease: OperationLease, *, statuses=("RUNNING",)) -> di
         or row["user_id"] != lease.user_id or row["instance_id"] != lease.instance_id
         or row["background_epoch"] != lease.background_epoch
         or row["lease_until"] is None or row["lease_until"] <= now
+        or (row["deadline"] is not None and row["deadline"] <= now)
         or (
             row["claimed_at"] is not None
             and row["claimed_at"] + timedelta(

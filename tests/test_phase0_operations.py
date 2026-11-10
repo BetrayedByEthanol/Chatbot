@@ -621,3 +621,32 @@ def test_cancellation_receipt_references_event_and_outbox(dsn):
               AND r.user_id=%s AND r.idempotency_key='track-cancel'
             """,(user,),
         ).fetchone()[0]==1
+
+
+
+def test_deadline_is_checked_during_execution_and_crash_recovery(dsn):
+    user,instance=seed(dsn)
+    key=pool(dsn)
+    c=cmd(instance,key,deadline=datetime.now(timezone.utc)+timedelta(seconds=20))
+    enqueue(dsn,user,c)
+    lease=claim(dsn)
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        conn.execute(
+            """
+            UPDATE operations SET deadline=created_at+interval '1 millisecond'
+            WHERE operation_id=%s
+            """,(c.operation_id,),
+        )
+        conn.execute("SELECT pg_sleep(0.015)")
+    with pytest.raises(StaleOperation):
+        invoke(dsn,complete_operation,lease,result_ref="after-deadline")
+    assert invoke(dsn,reap_stale_operations)>=1
+    assert operation(dsn,c.operation_id)[0]=="FAILED"
+    assert resources(dsn,key)==0
+
+
+def test_authenticated_user_cannot_forge_cognitive_origin(dsn):
+    user,instance=seed(dsn)
+    key=pool(dsn)
+    with pytest.raises(PermissionDenied,match="agent-originated"):
+        enqueue(dsn,user,cmd(instance,key,origin=Origin.COGNITIVE))

@@ -121,10 +121,10 @@ def enqueue_operation(
             ):
                 raise StaleSelection("enqueue selection generation invalid")
 
-            if command.priority_class == Priority.P2 and command.origin.value != "USER":
-                # Autonomous goal planning/permission must be implemented before
-                # agent-originated work can be authorized.
-                raise PermissionDenied("agent-originated autonomy is not authorized in P0-04")
+            if command.origin.value != "USER":
+                # The first caller is an authenticated user. Later internal
+                # cognitive/goal producers require their own authorized actor.
+                raise PermissionDenied("agent-originated operation admission is not yet authorized")
 
             for dependency_id in command.dependencies:
                 cur.execute(
@@ -407,7 +407,8 @@ def claim_operation(
                         attempt_count=attempt_count+1,
                         lease_until=LEAST(
                             clock_timestamp()+(%s*interval '1 second'),
-                            clock_timestamp()+(timeout_seconds*interval '1 second')
+                            clock_timestamp()+(timeout_seconds*interval '1 second'),
+                            COALESCE(deadline,'infinity'::timestamptz)
                         ),
                         claimed_at=clock_timestamp(),
                         background_epoch=%s,
