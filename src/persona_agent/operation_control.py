@@ -446,4 +446,71 @@ def reap_stale_operations(connection: Connection, *, limit: int=100) -> int:
                     )
                     event_for(cursor,updated,"operation.recovered.v1",{"status":status})
                 processed+=1
+
+            # Already-queued work can also become ineligible when its persona
+            # is switched, its Background epoch becomes stale, or its deadline
+            # passes. Do not leave it forever in an undrainable queue.
+            if processed < limit:
+                cursor.execute(
+                    """
+                    SELECT o.operation_id FROM operations o
+                    LEFT JOIN persona_selection s ON s.user_id=o.user_id
+                    WHERE o.status IN ('QUEUED','RETRY_WAIT')
+                      AND (
+                        (o.deadline IS NOT NULL AND o.deadline <= clock_timestamp())
+                        OR s.instance_id IS DISTINCT FROM o.instance_id
+                        OR s.generation IS DISTINCT FROM o.selection_generation
+                        OR (o.execution_policy <> 'FOREGROUND_ASYNC'
+                            AND o.background_epoch IS NOT NULL
+                            AND (s.mode IS DISTINCT FROM 'BACKGROUND'
+                                 OR s.background_epoch IS DISTINCT FROM o.background_epoch))
+                      )
+                    ORDER BY o.created_at,o.operation_id LIMIT %s
+                    """,(limit-processed,),
+                )
+                pending=[r["operation_id"] for r in cursor.fetchall()]
+                for op_id in pending:
+                    cursor.execute(
+                        """
+                        SELECT * FROM operations
+                        WHERE operation_id=%s AND status IN ('QUEUED','RETRY_WAIT')
+                        FOR UPDATE SKIP LOCKED
+                        """,(op_id,),
+                    )
+                    row=cursor.fetchone()
+                    if row is None:
+                        continue
+                    cursor.execute(
+                        """
+                        SELECT instance_id,generation,mode,background_epoch
+                        FROM persona_selection WHERE user_id=%s FOR SHARE
+                        """,(row["user_id"],),
+                    )
+                    selected=cursor.fetchone()
+                    cursor.execute("SELECT clock_timestamp() AS server_now")
+                    now=cursor.fetchone()["server_now"]
+                    revoked=(
+                        selected is None or selected["instance_id"]!=row["instance_id"]
+                        or selected["generation"]!=row["selection_generation"]
+                    )
+                    epoch_invalid=(
+                        row["execution_policy"]!="FOREGROUND_ASYNC"
+                        and row["background_epoch"] is not None
+                        and (selected is None or selected["mode"]!="BACKGROUND"
+                             or selected["background_epoch"]!=row["background_epoch"])
+                    )
+                    deadline_passed=row["deadline"] is not None and row["deadline"]<=now
+                    if not (revoked or epoch_invalid or deadline_passed):
+                        continue
+                    status=(
+                        "FAILED" if deadline_passed else
+                        "CANCELLED" if row["execution_policy"]=="BACKGROUND_EPHEMERAL"
+                        else "SUSPENDED"
+                    )
+                    release_resources(cursor,row)
+                    updated=_update_state(
+                        cursor,row,status,error="queued work ineligible after authority, epoch or deadline change",
+                    )
+                    event_for(cursor,updated,"operation.recovered.v1",{"status":status})
+                    processed+=1
     return processed

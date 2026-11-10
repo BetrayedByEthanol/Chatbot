@@ -650,3 +650,62 @@ def test_authenticated_user_cannot_forge_cognitive_origin(dsn):
     key=pool(dsn)
     with pytest.raises(PermissionDenied,match="agent-originated"):
         enqueue(dsn,user,cmd(instance,key,origin=Origin.COGNITIVE))
+
+
+
+def test_queued_operation_is_suspended_after_persona_switch(dsn):
+    user,instance,alternative=seed(dsn,two=True)
+    key=pool(dsn)
+    c=cmd(instance,key)
+    enqueue(dsn,user,c)
+    invoke(dsn,switch_persona,actor(user),SwitchPersonaCommand(
+        expected_instance_id=instance,target_instance_id=alternative,
+        expected_generation=1,idempotency_key=str(uuid4()),
+    ))
+    assert invoke(dsn,reap_stale_operations)>=1
+    assert operation(dsn,c.operation_id)[0]=="SUSPENDED"
+    assert resources(dsn,key)==0
+    invoke(dsn,switch_persona,actor(user),SwitchPersonaCommand(
+        expected_instance_id=alternative,target_instance_id=instance,
+        expected_generation=2,idempotency_key=str(uuid4()),
+    ))
+    invoke(dsn,resume_suspended,actor(user),operation_id=c.operation_id)
+    lease=claim(dsn)
+    assert lease.operation_id==c.operation_id and lease.selection_generation==3
+    invoke(dsn,complete_operation,lease,result_ref="recovered-after-switch")
+
+
+def test_background_retry_wait_is_cancelled_when_epoch_invalidated(dsn):
+    user,instance=seed(dsn)
+    key=pool(dsn)
+    c=cmd(instance,key,policy=Policy.BACKGROUND_EPHEMERAL)
+    enqueue(dsn,user,c)
+    invoke(dsn,enter_background,actor(user),EnterBackgroundCommand(
+        instance_id=instance,expected_generation=1,expected_presence_revision=0,
+        reason=BackgroundReason.EXPLICIT_DEPARTURE,idempotency_key=str(uuid4()),
+    ))
+    lease=claim(dsn)
+    assert invoke(dsn,fail_operation,lease,reason="retry",delay_seconds=0)==Status.RETRY_WAIT
+    assert operation(dsn,c.operation_id)[0]=="RETRY_WAIT"
+    invoke(dsn,record_primary_activity,actor(user),PrimaryActivityCommand(
+        instance_id=instance,expected_generation=1,idempotency_key=str(uuid4()),
+    ))
+    assert invoke(dsn,reap_stale_operations)>=1
+    assert operation(dsn,c.operation_id)[0]=="CANCELLED"
+    assert claim(dsn) is None
+
+
+def test_expired_queued_operation_cannot_remain_live(dsn):
+    user,instance=seed(dsn)
+    key=pool(dsn)
+    c=cmd(instance,key,deadline=datetime.now(timezone.utc)+timedelta(seconds=10))
+    enqueue(dsn,user,c)
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        conn.execute(
+            "UPDATE operations SET deadline=created_at+interval '1 millisecond' "
+            "WHERE operation_id=%s",(c.operation_id,),
+        )
+        conn.execute("SELECT pg_sleep(0.015)")
+    assert invoke(dsn,reap_stale_operations)>=1
+    assert operation(dsn,c.operation_id)[0]=="FAILED"
+    assert claim(dsn) is None
