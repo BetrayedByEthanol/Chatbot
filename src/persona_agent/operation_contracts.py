@@ -270,13 +270,18 @@ def release_resources(cursor, row: dict) -> None:
         cursor.execute(
             """
             UPDATE execution_resource_pools
-            SET active_units=active_units-%s WHERE resource_key=%s
+            SET active_units=active_units-%s,
+                active_non_p0_units=active_non_p0_units-%s
+            WHERE resource_key=%s
               AND active_units >= %s
+              AND active_non_p0_units >= %s
             RETURNING resource_key
             """,
             (
-                reservation["units"], reservation["resource_key"],
                 reservation["units"],
+                reservation["units"] if row["priority_class"]!="P0" else 0,
+                reservation["resource_key"],reservation["units"],
+                reservation["units"] if row["priority_class"]!="P0" else 0,
             ),
         )
         if cursor.fetchone() is None:

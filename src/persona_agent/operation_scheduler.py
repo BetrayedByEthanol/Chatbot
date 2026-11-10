@@ -42,12 +42,16 @@ def configure_resource_pool(
             SET capacity_units=excluded.capacity_units,
                 p0_reserved_units=excluded.p0_reserved_units
             WHERE execution_resource_pools.active_units <= excluded.capacity_units
+              AND execution_resource_pools.active_non_p0_units
+                    <= excluded.capacity_units - excluded.p0_reserved_units
             RETURNING resource_key
             """,
             (resource_key,capacity_units,p0_reserved_units),
         )
         if cursor.fetchone() is None:
-            raise ResourceUnavailable("cannot shrink pool below active reservations")
+            raise ResourceUnavailable(
+                "pool reconfiguration would violate active total or non-P0 reservations"
+            )
 
 
 def enqueue_operation(
@@ -408,7 +412,8 @@ def claim_operation(
                     for requested in req:
                         cur.execute(
                             """
-                            SELECT resource_key,capacity_units,p0_reserved_units,active_units
+                            SELECT resource_key,capacity_units,p0_reserved_units,active_units,
+                                   active_non_p0_units
                             FROM execution_resource_pools
                             WHERE resource_key=%s FOR UPDATE SKIP LOCKED
                             """,
@@ -418,9 +423,18 @@ def claim_operation(
                         if pool is None:
                             allowed=False
                             break
-                        limit=(pool["capacity_units"] if op["priority_class"]=="P0"
-                               else pool["capacity_units"]-pool["p0_reserved_units"])
-                        if pool["active_units"]+requested["units"]>limit:
+                        # All priorities share physical capacity. Only P1/P2
+                        # usage counts against the non-reserved quota.
+                        # P0 activity must not consume that quota merely
+                        # because it was claimed before a P1 operation.
+                        if pool["active_units"]+requested["units"]>pool["capacity_units"]:
+                            allowed=False
+                            break
+                        if (
+                            op["priority_class"]!="P0"
+                            and pool["active_non_p0_units"]+requested["units"]
+                                >pool["capacity_units"]-pool["p0_reserved_units"]
+                        ):
                             allowed=False
                             break
                         pools.append((pool,requested["units"]))
@@ -445,10 +459,12 @@ def claim_operation(
                         cur.execute(
                             """
                             UPDATE execution_resource_pools
-                            SET active_units=active_units+%s
+                            SET active_units=active_units+%s,
+                                active_non_p0_units=active_non_p0_units+%s
                             WHERE resource_key=%s
                             """,
-                            (units,pool["resource_key"]),
+                            (units, units if op["priority_class"]!="P0" else 0,
+                             pool["resource_key"]),
                         )
                         cur.execute(
                             """

@@ -7,8 +7,11 @@ CREATE TABLE execution_resource_pools (
     capacity_units integer NOT NULL CHECK (capacity_units > 0),
     p0_reserved_units integer NOT NULL DEFAULT 0 CHECK (p0_reserved_units >= 0),
     active_units integer NOT NULL DEFAULT 0 CHECK (active_units >= 0),
+    active_non_p0_units integer NOT NULL DEFAULT 0 CHECK (active_non_p0_units >= 0),
     CHECK (p0_reserved_units <= capacity_units),
-    CHECK (active_units <= capacity_units)
+    CHECK (active_units <= capacity_units),
+    CHECK (active_non_p0_units <= active_units),
+    CHECK (active_non_p0_units <= capacity_units - p0_reserved_units)
 );
 
 -- The Background barrier owner may insert READY only after the complete

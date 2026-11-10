@@ -1363,3 +1363,145 @@ def test_checkpoint_live_lease_still_records_ref_and_outbox(dsn):
         ).fetchone()[0]==1
     invoke(dsn,complete_operation,lease,result_ref="after-valid-checkpoint")
     assert resources(dsn,resource)==0
+
+
+
+def pool_usage(dsn, key):
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        return conn.execute(
+            """
+            SELECT capacity_units,p0_reserved_units,active_units,active_non_p0_units
+            FROM execution_resource_pools WHERE resource_key=%s
+            """,(key,),
+        ).fetchone()
+
+
+def test_p0_first_preserves_non_p0_quota_regardless_of_claim_order(dsn):
+    user,instance=seed(dsn)
+    resource=pool(dsn,capacity=2,reserve=1)
+    high=cmd(instance,resource,priority=Priority.P0)
+    low=cmd(instance,resource,priority=Priority.P1)
+    enqueue(dsn,user,high)
+    high_lease=claim(dsn,"high-first")
+    assert high_lease.operation_id==high.operation_id
+    assert pool_usage(dsn,resource)==(2,1,1,0)
+
+    enqueue(dsn,user,low)
+    low_lease=claim(dsn,"low-after-high")
+    assert low_lease is not None and low_lease.operation_id==low.operation_id
+    assert pool_usage(dsn,resource)==(2,1,2,1)
+
+    # A second P1 is blocked by physical capacity (and by its own quota).
+    extra=cmd(instance,resource,priority=Priority.P1)
+    enqueue(dsn,user,extra)
+    assert claim(dsn) is None
+    invoke(dsn,complete_operation,high_lease,result_ref="high-result")
+    assert pool_usage(dsn,resource)==(2,1,1,1)
+    assert claim(dsn) is None  # Non-P0 quota remains occupied.
+
+    invoke(dsn,complete_operation,low_lease,result_ref="low-result")
+    assert pool_usage(dsn,resource)==(2,1,0,0)
+    new_lease=claim(dsn,"released-quota")
+    assert new_lease.operation_id==extra.operation_id
+    invoke(dsn,complete_operation,new_lease,result_ref="extra-result")
+    assert pool_usage(dsn,resource)==(2,1,0,0)
+
+
+def test_p1_then_p0_uses_same_capacity_and_quota(dsn):
+    user,instance=seed(dsn)
+    resource=pool(dsn,capacity=2,reserve=1)
+    low=cmd(instance,resource,priority=Priority.P1)
+    high=cmd(instance,resource,priority=Priority.P0)
+    enqueue(dsn,user,low)
+    low_lease=claim(dsn,"low-first")
+    assert low_lease.operation_id==low.operation_id
+    assert pool_usage(dsn,resource)==(2,1,1,1)
+    enqueue(dsn,user,high)
+    high_lease=claim(dsn,"high-after-low")
+    assert high_lease.operation_id==high.operation_id
+    assert pool_usage(dsn,resource)==(2,1,2,1)
+    invoke(dsn,complete_operation,low_lease,result_ref="low")
+    assert pool_usage(dsn,resource)==(2,1,1,0)
+    invoke(dsn,complete_operation,high_lease,result_ref="high")
+    assert pool_usage(dsn,resource)==(2,1,0,0)
+
+
+def test_p0_may_fill_pool_but_non_p0_cannot_use_reserved_quota(dsn):
+    user,instance=seed(dsn)
+    resource=pool(dsn,capacity=2,reserve=1)
+    high_one=cmd(instance,resource,priority=Priority.P0)
+    high_two=cmd(instance,resource,priority=Priority.P0)
+    for command in (high_one,high_two):
+        enqueue(dsn,user,command)
+    leases=(claim(dsn,"p0-a"),claim(dsn,"p0-b"))
+    assert {l.operation_id for l in leases}=={high_one.operation_id,high_two.operation_id}
+    assert pool_usage(dsn,resource)==(2,1,2,0)
+    low=cmd(instance,resource)
+    enqueue(dsn,user,low)
+    assert claim(dsn) is None
+    invoke(dsn,complete_operation,leases[0],result_ref="high-one")
+    assert pool_usage(dsn,resource)==(2,1,1,0)
+    low_lease=claim(dsn,"lower-after-one-high")
+    assert low_lease.operation_id==low.operation_id
+    assert pool_usage(dsn,resource)==(2,1,2,1)
+    invoke(dsn,complete_operation,leases[1],result_ref="high-two")
+    invoke(dsn,complete_operation,low_lease,result_ref="low")
+    assert pool_usage(dsn,resource)==(2,1,0,0)
+
+
+def test_resource_pool_reconfiguration_respects_active_non_p0_quota(dsn):
+    user,instance=seed(dsn)
+    resource=pool(dsn,capacity=3,reserve=1)
+    low=cmd(instance,resource,units=2)
+    enqueue(dsn,user,low)
+    lease=claim(dsn,"two-units-low")
+    assert lease.operation_id==low.operation_id
+    assert pool_usage(dsn,resource)==(3,1,2,2)
+    with pytest.raises(ResourceUnavailable):
+        invoke(
+            dsn,configure_resource_pool,resource,
+            capacity_units=3,p0_reserved_units=2,
+        )
+    assert pool_usage(dsn,resource)==(3,1,2,2)
+    with pytest.raises(ResourceUnavailable):
+        invoke(
+            dsn,configure_resource_pool,resource,
+            capacity_units=1,p0_reserved_units=0,
+        )
+    assert pool_usage(dsn,resource)==(3,1,2,2)
+    invoke(dsn,complete_operation,lease,result_ref="done")
+    assert pool_usage(dsn,resource)==(3,1,0,0)
+    invoke(
+        dsn,configure_resource_pool,resource,
+        capacity_units=3,p0_reserved_units=2,
+    )
+    assert pool_usage(dsn,resource)==(3,2,0,0)
+
+
+def test_resource_accounting_recovery_and_retry_release_correct_tier(dsn):
+    user,instance=seed(dsn)
+    resource=pool(dsn,capacity=2,reserve=1)
+    high=cmd(instance,resource,priority=Priority.P0)
+    low=cmd(instance,resource,priority=Priority.P1)
+    enqueue(dsn,user,high)
+    enqueue(dsn,user,low)
+    high_lease=claim(dsn,"high-attempt")
+    low_lease=claim(dsn,"low-attempt")
+    assert pool_usage(dsn,resource)==(2,1,2,1)
+    assert invoke(dsn,fail_operation,low_lease,reason="retry",delay_seconds=0)==Status.RETRY_WAIT
+    assert pool_usage(dsn,resource)==(2,1,1,0)
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        conn.execute(
+            "UPDATE operations SET lease_until=clock_timestamp()-interval '1 second' "
+            "WHERE operation_id=%s",(high.operation_id,),
+        )
+    assert invoke(dsn,reap_stale_operations)>=1
+    assert pool_usage(dsn,resource)==(2,1,0,0)
+    high_retry=claim(dsn,"high-retry")
+    assert high_retry.operation_id==high.operation_id
+    low_retry=claim(dsn,"low-retry")
+    assert low_retry.operation_id==low.operation_id
+    assert pool_usage(dsn,resource)==(2,1,2,1)
+    invoke(dsn,complete_operation,high_retry,result_ref="high-success")
+    invoke(dsn,complete_operation,low_retry,result_ref="low-success")
+    assert pool_usage(dsn,resource)==(2,1,0,0)

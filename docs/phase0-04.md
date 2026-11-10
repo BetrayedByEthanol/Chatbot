@@ -207,3 +207,24 @@ the same active worker, claim generation, unexpired lease, absolute timeout,
 and deadline. An expired checkpoint attempt raises `StaleOperation`, rolling
 back its checkpoint change, event, and outbox atomically. A previously
 committed checkpoint remains unchanged for safe retry or suspension.
+
+## P0 reservation accounting
+
+A pool maintains both `active_units` (all priorities) and
+`active_non_p0_units` (P1/P2 only). Every claim, release, crash
+recovery, cancellation and reconciliation updates the appropriate
+counters in the same short database transaction as its reservation
+records.
+
+Admission checks two independent constraints:
+
+- Total physical usage + requested units must not exceed `capacity_units`.
+- For P1/P2, non-P0 usage + requested units must not exceed
+  `capacity_units - p0_reserved_units`.
+
+P0 work can use any free total capacity, but its usage does not consume
+the non-P0 quota. Therefore capacity 2 / P0 reserve 1 admits one P0
+and one P1 in either claim order. Pool reconfiguration rejects changes
+that would violate *either* currently occupied quota. This improves
+admission correctness, but does not introduce preemption or guarantee
+fair scheduling under sustained full physical capacity.
