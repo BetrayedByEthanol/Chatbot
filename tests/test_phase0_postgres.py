@@ -181,3 +181,24 @@ def test_independent_user_instances_both_commit(dsn):
         b = pool.submit(invoke, dsn, user_b, command(instance_b, "b"))
         assert a.result().new_version == b.result().new_version == 1
     assert count(dsn, "events", instance_a) == count(dsn, "events", instance_b) == 1
+
+
+def test_database_rejects_event_stream_scope_forgery(dsn):
+    owner, instance, _ = seed(dsn)
+    stranger, stranger_instance, _ = seed(dsn)
+    event = invoke(dsn, owner, command(instance, "scope-guard"))
+    with psycopg.connect(dsn, autocommit=True) as connection:
+        stream_id = connection.execute(
+            "SELECT stream_id FROM events WHERE event_id=%s", (event.event_id,),
+        ).fetchone()[0]
+        with pytest.raises(psycopg.errors.ForeignKeyViolation):
+            connection.execute(
+                """
+                INSERT INTO events (
+                    event_id, event_type, schema_version,
+                    user_id, instance_id, stream_id, stream_sequence,
+                    source_id, trust_level
+                ) VALUES (%s, 'test.invalid', 1, %s, %s, %s, 2, 'test', 'AUTHENTICATED_USER')
+                """,
+                (uuid4(), stranger, stranger_instance, stream_id),
+            )

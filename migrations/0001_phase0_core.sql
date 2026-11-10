@@ -54,6 +54,7 @@ CREATE TABLE event_streams (
     domain text NOT NULL,
     last_sequence bigint NOT NULL DEFAULT 0 CHECK (last_sequence >= 0),
     UNIQUE (instance_id, domain),
+    UNIQUE (stream_id, user_id, instance_id),
     FOREIGN KEY (user_id, instance_id)
         REFERENCES persona_instances(user_id, id)
 );
@@ -64,7 +65,7 @@ CREATE TABLE events (
     schema_version integer NOT NULL CHECK (schema_version > 0),
     user_id uuid NOT NULL,
     instance_id uuid NOT NULL,
-    stream_id uuid NOT NULL REFERENCES event_streams(stream_id),
+    stream_id uuid NOT NULL,
     stream_sequence bigint NOT NULL CHECK (stream_sequence >= 1),
     source_id text NOT NULL,
     source_event_key text,
@@ -77,6 +78,9 @@ CREATE TABLE events (
     payload_ref text,
     idempotency_key text,
     UNIQUE (stream_id, stream_sequence),
+    UNIQUE (event_id, user_id, instance_id),
+    FOREIGN KEY (stream_id, user_id, instance_id)
+        REFERENCES event_streams(stream_id, user_id, instance_id),
     FOREIGN KEY (user_id, instance_id)
         REFERENCES persona_instances(user_id, id)
 );
@@ -90,7 +94,8 @@ CREATE TABLE outbox (
 
 ALTER TABLE command_receipts
     ADD CONSTRAINT command_receipts_event_fk
-    FOREIGN KEY (event_id) REFERENCES events(event_id);
+    FOREIGN KEY (event_id, user_id, instance_id)
+        REFERENCES events(event_id, user_id, instance_id);
 
 CREATE INDEX events_instance_recorded_idx
     ON events(instance_id, recorded_at);
