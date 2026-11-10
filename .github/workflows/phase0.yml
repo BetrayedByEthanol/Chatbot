@@ -1,0 +1,36 @@
+name: Phase 0 contracts
+on:
+  pull_request:
+  push:
+    branches: [migration/phase0-01-command-events]
+
+jobs:
+  postgres-contracts:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: phase0
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d phase0"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/phase0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install minimal runtime and tests
+        run: python -m pip install -e ".[test]"
+      - name: Compile Python
+        run: python -m compileall -q src/persona_agent
+      - name: Run real PostgreSQL tests
+        run: python -m pytest -q
