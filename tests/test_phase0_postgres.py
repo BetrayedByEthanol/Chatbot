@@ -8,6 +8,7 @@ from uuid import uuid4
 import pytest
 
 psycopg = pytest.importorskip("psycopg")
+from psycopg.pq import TransactionStatus
 
 from persona_agent.contracts import RenameInstanceCommand, TrustedActor
 from persona_agent.runtime import (
@@ -202,3 +203,46 @@ def test_database_rejects_event_stream_scope_forgery(dsn):
                 """,
                 (uuid4(), stranger, stranger_instance, stream_id),
             )
+
+
+def test_rejects_active_outer_transaction_even_on_autocommit(dsn):
+    user, instance, _ = seed(dsn)
+    cmd = command(instance, f"nested-{uuid4()}")
+    with psycopg.connect(dsn, autocommit=True) as connection:
+        assert connection.info.transaction_status == TransactionStatus.IDLE
+        with connection.transaction():
+            assert connection.autocommit
+            assert connection.info.transaction_status == TransactionStatus.INTRANS
+            with pytest.raises(ValueError, match="idle autocommit"):
+                rename_instance(
+                    connection,
+                    TrustedActor(user_id=user, source_id="test"),
+                    cmd,
+                )
+            assert connection.info.transaction_status == TransactionStatus.INTRANS
+
+        assert connection.info.transaction_status == TransactionStatus.IDLE
+        assert connection.execute(
+            "SELECT label, version FROM persona_instances WHERE id=%s", (instance,),
+        ).fetchone() == ("Original", 0)
+        assert connection.execute(
+            "SELECT count(*) FROM command_receipts WHERE instance_id=%s", (instance,),
+        ).fetchone()[0] == 0
+    assert count(dsn, "events", instance) == 0
+    assert count(dsn, "outbox", instance) == 0
+
+    # Once the outer transaction ends, this connection is safe to reuse.
+    assert invoke(dsn, user, cmd).new_version == 1
+
+
+def test_rejects_non_autocommit_connection(dsn):
+    user, instance, _ = seed(dsn)
+    with psycopg.connect(dsn) as connection:
+        assert not connection.autocommit
+        with pytest.raises(ValueError, match="idle autocommit"):
+            rename_instance(
+                connection,
+                TrustedActor(user_id=user, source_id="test"),
+                command(instance, f"nonauto-{uuid4()}"),
+            )
+    assert count(dsn, "events", instance) == 0

@@ -5,6 +5,7 @@ import json
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from psycopg import Connection
+from psycopg.pq import TransactionStatus
 from psycopg.rows import dict_row
 
 from .contracts import RenameInstanceCommand, RenameInstanceResult, TrustedActor
@@ -47,13 +48,14 @@ def rename_instance(
 ) -> RenameInstanceResult:
     """Commit label, journal event, outbox and receipt in one transaction.
 
-    The caller provides an autocommit connection so this function owns its
-    transaction boundary; the actor must come from trusted authentication.
+    The caller provides an idle autocommit connection so this function owns
+    its transaction boundary (no nested savepoint or delayed outer commit);
+    the actor must come from trusted authentication.
     A persona switch takes FOR UPDATE on persona_selection; this command
     takes FOR SHARE, so its generation check and commit are switch-safe.
     """
-    if not connection.autocommit:
-        raise ValueError("rename_instance requires an autocommit connection")
+    if not connection.autocommit or connection.info.transaction_status != TransactionStatus.IDLE:
+        raise ValueError("rename_instance requires an idle autocommit connection")
 
     fingerprint = _fingerprint(command)
     stream_id = _stream_id(command.instance_id)

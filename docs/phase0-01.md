@@ -21,7 +21,10 @@ rename_instance(connection, TrustedActor, RenameInstanceCommand)
 
 The command supplies instance_id, expected_generation, expected_version,
 new_label and scoped idempotency_key. The actor supplies authenticated user_id
-and source_id. A dedicated autocommit psycopg connection is required.
+and source_id. A dedicated **idle autocommit** psycopg connection is required.
+An autocommit connection already inside an outer transaction is rejected:
+otherwise psycopg creates a nested savepoint and this function could return
+before its changes are durably committed.
 
 The command changes only persona_instances.label, never the shared persona
 definition. The owning domain validates label length; SQL prevents invalid
