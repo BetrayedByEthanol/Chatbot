@@ -31,6 +31,31 @@ from persona_agent.operation_control import (
 from persona_agent.runtime import IdempotencyConflict, PermissionDenied, StaleSelection
 
 
+@pytest.fixture(autouse=True)
+def isolate_operation_queue(dsn):
+    """Keep independently seeded test operations from prior tests off the queue.
+
+    Each test intentionally uses the same integration PostgreSQL database;
+    production consumers operate globally, so orphaned QUEUED rows would
+    otherwise be legitimately claimed by later worker tests.
+    """
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        with conn.transaction():
+            conn.execute("DELETE FROM operation_concurrency_locks")
+            conn.execute("DELETE FROM operation_resource_reservations")
+            conn.execute("UPDATE execution_resource_pools SET active_units=0")
+            conn.execute(
+                """
+                UPDATE operations SET status='CANCELLED',
+                    worker_id=NULL,lease_until=NULL,claimed_at=NULL
+                WHERE status IN (
+                    'QUEUED','RUNNING','RETRY_WAIT','CANCEL_REQUESTED',
+                    'SUSPEND_REQUESTED','SUSPENDED','BLOCKED'
+                )
+                """,
+            )
+
+
 def seed(dsn, two=False):
     user,persona,instance=uuid4(),uuid4(),uuid4()
     with psycopg.connect(dsn,autocommit=True) as conn:
