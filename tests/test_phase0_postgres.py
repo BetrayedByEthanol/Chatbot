@@ -1,8 +1,6 @@
 """Real PostgreSQL integration tests; TEST_DATABASE_URL enables local execution."""
 
-import os
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -18,17 +16,6 @@ from persona_agent.runtime import (
     VersionConflict,
     rename_instance,
 )
-
-
-@pytest.fixture(scope="session")
-def dsn():
-    value = os.environ.get("TEST_DATABASE_URL")
-    if not value:
-        pytest.skip("Set TEST_DATABASE_URL to run PostgreSQL integration tests")
-    sql = (Path(__file__).resolve().parents[1] / "migrations" / "0001_phase0_core.sql").read_text()
-    with psycopg.connect(value, autocommit=True) as connection:
-        connection.execute(sql)
-    return value
 
 
 def seed(dsn, user_id=None):
