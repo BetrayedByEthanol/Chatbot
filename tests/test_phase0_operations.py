@@ -2,6 +2,8 @@
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+from queue import Queue
+import time
 from uuid import uuid4
 
 import pytest
@@ -865,3 +867,189 @@ def test_committed_enqueue_replays_after_input_version_changes(dsn):
         enqueue(dsn,user,command.model_copy(update={"operation_type":"different"}))
     with pytest.raises(VersionConflict):
         enqueue(dsn,user,cmd(instance,key,input_versions={"persona_instance":0}))
+
+
+
+def test_ephemeral_admitted_during_background_cannot_run_next_epoch(dsn):
+    user,instance=seed(dsn)
+    resource=pool(dsn,capacity=1)
+    invoke(dsn,enter_background,actor(user),EnterBackgroundCommand(
+        instance_id=instance,expected_generation=1,expected_presence_revision=0,
+        reason=BackgroundReason.EXPLICIT_DEPARTURE,idempotency_key=str(uuid4()),
+    ))
+    pending=cmd(instance,resource,policy=Policy.BACKGROUND_EPHEMERAL)
+    enqueue(dsn,user,pending)
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        stored=conn.execute(
+            "SELECT status,background_epoch FROM operations WHERE operation_id=%s",
+            (pending.operation_id,),
+        ).fetchone()
+    assert stored==("QUEUED",1)
+
+    # No worker has claimed the operation. Re-enter Background with a new
+    # epoch, without sweeping in between: even the direct claim must reject.
+    invoke(dsn,record_primary_activity,actor(user),PrimaryActivityCommand(
+        instance_id=instance,expected_generation=1,idempotency_key=str(uuid4()),
+    ))
+    invoke(dsn,enter_background,actor(user),EnterBackgroundCommand(
+        instance_id=instance,expected_generation=1,expected_presence_revision=2,
+        reason=BackgroundReason.EXPLICIT_DEPARTURE,idempotency_key=str(uuid4()),
+    ))
+    assert claim(dsn) is None
+    assert invoke(dsn,reap_stale_operations)>=1
+    assert operation(dsn,pending.operation_id)[0]=="CANCELLED"
+    assert resources(dsn,resource)==0
+
+
+def test_foreground_queued_ephemeral_targets_first_background_only(dsn):
+    user,instance=seed(dsn)
+    resource=pool(dsn)
+    queued=cmd(instance,resource,policy=Policy.BACKGROUND_EPHEMERAL)
+    enqueue(dsn,user,queued)
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        stored=conn.execute(
+            "SELECT status,background_epoch FROM operations WHERE operation_id=%s",
+            (queued.operation_id,),
+        ).fetchone()
+    assert stored==("QUEUED",1)
+    # This is still legitimate in Foreground while waiting for its first
+    # Background epoch, and the reaper must not cancel it prematurely.
+    invoke(dsn,reap_stale_operations)
+    assert operation(dsn,queued.operation_id)[0]=="QUEUED"
+    invoke(dsn,enter_background,actor(user),EnterBackgroundCommand(
+        instance_id=instance,expected_generation=1,expected_presence_revision=0,
+        reason=BackgroundReason.EXPLICIT_DEPARTURE,idempotency_key=str(uuid4()),
+    ))
+    invoke(dsn,record_primary_activity,actor(user),PrimaryActivityCommand(
+        instance_id=instance,expected_generation=1,idempotency_key=str(uuid4()),
+    ))
+    invoke(dsn,enter_background,actor(user),EnterBackgroundCommand(
+        instance_id=instance,expected_generation=1,expected_presence_revision=2,
+        reason=BackgroundReason.EXPLICIT_DEPARTURE,idempotency_key=str(uuid4()),
+    ))
+    assert claim(dsn) is None
+    assert invoke(dsn,reap_stale_operations)>=1
+    assert operation(dsn,queued.operation_id)[0]=="CANCELLED"
+
+
+def test_foreground_queued_ephemeral_can_run_in_its_first_epoch(dsn):
+    user,instance=seed(dsn)
+    resource=pool(dsn)
+    queued=cmd(instance,resource,policy=Policy.BACKGROUND_EPHEMERAL)
+    enqueue(dsn,user,queued)
+    invoke(dsn,enter_background,actor(user),EnterBackgroundCommand(
+        instance_id=instance,expected_generation=1,expected_presence_revision=0,
+        reason=BackgroundReason.EXPLICIT_DEPARTURE,idempotency_key=str(uuid4()),
+    ))
+    lease=claim(dsn)
+    assert lease is not None
+    assert lease.operation_id==queued.operation_id
+    assert lease.background_epoch==1
+    invoke(dsn,complete_operation,lease,result_ref="first-background-only")
+    assert operation(dsn,queued.operation_id)[0]=="COMPLETED"
+
+
+def _submit_blocked_completion(pool_executor, dsn, lease):
+    pid_queue=Queue(maxsize=1)
+    def complete_from_thread():
+        with psycopg.connect(dsn,autocommit=True) as conn:
+            pid_queue.put(conn.execute("SELECT pg_backend_pid()").fetchone()[0])
+            complete_operation(conn,lease,result_ref="must-not-commit")
+    future=pool_executor.submit(complete_from_thread)
+    return future,pid_queue.get(timeout=5)
+
+
+def _assert_waiting_for_db_lock(dsn, pid):
+    deadline=time.monotonic()+4
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        while time.monotonic()<deadline:
+            row=conn.execute(
+                "SELECT wait_event_type FROM pg_stat_activity WHERE pid=%s",
+                (pid,),
+            ).fetchone()
+            if row and row[0]=="Lock":
+                return
+            time.sleep(0.025)
+    raise AssertionError("completion did not reach the intended database lock")
+
+
+def _let_lease_expire(lease):
+    # PostgreSQL clock drives the fence; allow a small guard after the
+    # recorded lease timestamp for stable concurrent CI execution.
+    delay=(lease.lease_until-datetime.now(timezone.utc)).total_seconds()+0.15
+    time.sleep(max(0,delay))
+
+
+def _assert_expired_completion_rolled_back(dsn, lease, resource):
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        state=conn.execute(
+            "SELECT status,result_ref FROM operations WHERE operation_id=%s",
+            (lease.operation_id,),
+        ).fetchone()
+        assert state==("RUNNING",None)
+        assert conn.execute(
+            """
+            SELECT count(*) FROM events
+            WHERE event_type='operation.completed.v1'
+              AND payload->>'operation_id'=%s
+            """,(str(lease.operation_id),),
+        ).fetchone()[0]==0
+    assert resources(dsn,resource)==1
+    assert invoke(dsn,reap_stale_operations)>=1
+    assert resources(dsn,resource)==0
+
+
+def test_completion_cannot_cross_lease_expiry_while_waiting_for_selection(dsn):
+    user,instance=seed(dsn)
+    resource=pool(dsn,capacity=1)
+    queued=cmd(instance,resource)
+    enqueue(dsn,user,queued)
+    lease=invoke(
+        dsn,claim_operation,worker_id="selection-race",
+        capabilities=(),lease_seconds=2,
+    )
+    assert lease.operation_id==queued.operation_id
+
+    with ThreadPoolExecutor(max_workers=1) as workers:
+        with psycopg.connect(dsn,autocommit=True) as blocker:
+            with blocker.transaction():
+                # Simulate a concurrent presence transaction holding the
+                # selection lock without changing generation or mode.
+                blocker.execute(
+                    "SELECT user_id FROM persona_selection WHERE user_id=%s FOR UPDATE",
+                    (user,),
+                ).fetchone()
+                future,pid=_submit_blocked_completion(workers,dsn,lease)
+                _assert_waiting_for_db_lock(dsn,pid)
+                _let_lease_expire(lease)
+        with pytest.raises(StaleOperation):
+            future.result(timeout=10)
+    _assert_expired_completion_rolled_back(dsn,lease,resource)
+
+
+def test_completion_cannot_cross_lease_expiry_while_releasing_pool(dsn):
+    user,instance=seed(dsn)
+    resource=pool(dsn,capacity=1)
+    queued=cmd(instance,resource)
+    enqueue(dsn,user,queued)
+    lease=invoke(
+        dsn,claim_operation,worker_id="pool-race",
+        capabilities=(),lease_seconds=2,
+    )
+    assert lease.operation_id==queued.operation_id
+
+    with ThreadPoolExecutor(max_workers=1) as workers:
+        with psycopg.connect(dsn,autocommit=True) as blocker:
+            with blocker.transaction():
+                blocker.execute(
+                    """
+                    SELECT resource_key FROM execution_resource_pools
+                    WHERE resource_key=%s FOR UPDATE
+                    """,(resource,),
+                ).fetchone()
+                future,pid=_submit_blocked_completion(workers,dsn,lease)
+                _assert_waiting_for_db_lock(dsn,pid)
+                _let_lease_expire(lease)
+        with pytest.raises(StaleOperation):
+            future.result(timeout=10)
+    _assert_expired_completion_rolled_back(dsn,lease,resource)
