@@ -147,17 +147,32 @@ def complete_operation(
                 and row["effect_status"]!="DISPATCHED"):
                 raise InvalidOperation("external effects require a prior dispatch record")
             release_resources(cursor,row)
+            # Selection and pool locks can outlive a lease. Validate after
+            # acquiring them, then enforce time fences again in the UPDATE.
+            # Rejection rolls back released reservations and all other writes.
+            require_claim(cursor,lease)
             cursor.execute(
                 """
                 UPDATE operations SET status='COMPLETED',
                     worker_id=NULL,lease_until=NULL,claimed_at=NULL,
                     effect_status='CONFIRMED',result_ref=%s,
                     version=version+1,updated_at=clock_timestamp()
-                WHERE operation_id=%s RETURNING *
+                WHERE operation_id=%s
+                  AND status='RUNNING'
+                  AND worker_id=%s AND claim_generation=%s
+                  AND selection_generation=%s
+                  AND lease_until > clock_timestamp()
+                  AND claimed_at+(timeout_seconds*interval '1 second') > clock_timestamp()
+                  AND (deadline IS NULL OR deadline > clock_timestamp())
+                RETURNING *
                 """,
-                (result_ref,row["operation_id"]),
+                (result_ref,row["operation_id"],lease.worker_id,
+                 lease.claim_generation,lease.selection_generation),
             )
-            event_for(cursor,cursor.fetchone(),"operation.completed.v1",{
+            updated=cursor.fetchone()
+            if updated is None:
+                raise StaleOperation("completion fence expired before commit")
+            event_for(cursor,updated,"operation.completed.v1",{
                 "result_ref":result_ref,
             })
 
@@ -484,7 +499,15 @@ def reap_stale_operations(connection: Connection, *, limit: int=100) -> int:
                         OR (o.input_versions ? 'persona_instance' AND
                             (o.input_versions->>'persona_instance')::bigint
                                IS DISTINCT FROM i.version)
-                        OR (o.execution_policy <> 'FOREGROUND_ASYNC'
+                        OR (o.execution_policy = 'BACKGROUND_EPHEMERAL'
+                            AND o.background_epoch IS NOT NULL
+                            AND NOT (
+                                (s.mode = 'BACKGROUND'
+                                 AND s.background_epoch = o.background_epoch)
+                                OR (s.mode = 'FOREGROUND'
+                                    AND s.background_epoch + 1 = o.background_epoch)
+                            ))
+                        OR (o.execution_policy = 'BACKGROUND_RESUMABLE'
                             AND o.background_epoch IS NOT NULL
                             AND (s.mode IS DISTINCT FROM 'BACKGROUND'
                                  OR s.background_epoch IS DISTINCT FROM o.background_epoch))
@@ -517,12 +540,23 @@ def reap_stale_operations(connection: Connection, *, limit: int=100) -> int:
                         selected is None or selected["instance_id"]!=row["instance_id"]
                         or selected["generation"]!=row["selection_generation"]
                     )
-                    epoch_invalid=(
-                        row["execution_policy"]!="FOREGROUND_ASYNC"
-                        and row["background_epoch"] is not None
-                        and (selected is None or selected["mode"]!="BACKGROUND"
-                             or selected["background_epoch"]!=row["background_epoch"])
-                    )
+                    if row["execution_policy"]=="BACKGROUND_EPHEMERAL":
+                        epoch_invalid=(
+                            selected is None or not (
+                                (selected["mode"]=="BACKGROUND"
+                                 and selected["background_epoch"]==row["background_epoch"])
+                                or (selected["mode"]=="FOREGROUND"
+                                    and selected["background_epoch"]+1
+                                        ==row["background_epoch"])
+                            )
+                        )
+                    else:
+                        epoch_invalid=(
+                            row["execution_policy"]=="BACKGROUND_RESUMABLE"
+                            and row["background_epoch"] is not None
+                            and (selected is None or selected["mode"]!="BACKGROUND"
+                                 or selected["background_epoch"]!=row["background_epoch"])
+                        )
                     deadline_passed=row["deadline"] is not None and row["deadline"]<=now
                     input_invalid=False
                     if "persona_instance" in row["input_versions"]:

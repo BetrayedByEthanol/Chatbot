@@ -158,3 +158,17 @@ A stale declared persona-instance input version moves pending/running
 undispatched work to BLOCKED during recovery. It cannot keep consuming
 resources or silently retry against an obsolete state snapshot. A domain
 owner must revalidate and issue a new command before proceeding.
+
+## Review hardening — ephemeral epoch and completion expiry
+
+Background ephemeral work binds its target epoch when enqueued. Background
+admission uses the current epoch; Foreground admission targets the immediately
+next Background epoch. A queued operation cannot execute in a subsequent
+Background cycle after its original one finishes. Recovery cancels expired
+pending work; a receipt replay never changes its epoch.
+
+Completion revalidates the full claim after acquiring selection and pool
+locks. Its final UPDATE independently requires a live lease, absolute timeout
+and deadline according to PostgreSQL time. Rejection rolls back the resource
+release, state change, completion event and outbox atomically; recovery then
+handles the expired claim.

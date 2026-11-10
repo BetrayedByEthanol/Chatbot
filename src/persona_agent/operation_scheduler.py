@@ -106,7 +106,7 @@ def enqueue_operation(
 
             cur.execute(
                 """
-                SELECT instance_id,generation,mode
+                SELECT instance_id,generation,mode,background_epoch
                 FROM persona_selection WHERE user_id=%s FOR SHARE
                 """,
                 (actor.user_id,),
@@ -140,6 +140,14 @@ def enqueue_operation(
                 # cognitive/goal producers require their own authorized actor.
                 raise PermissionDenied("agent-originated operation admission is not yet authorized")
 
+            # Bind ephemeral work to one Background epoch from admission.
+            # An operation queued in Foreground targets only the next epoch.
+            admitted_background_epoch = None
+            if command.execution_policy == Policy.BACKGROUND_EPHEMERAL:
+                admitted_background_epoch = selected["background_epoch"] + (
+                    0 if selected["mode"] == "BACKGROUND" else 1
+                )
+
             for dependency_id in command.dependencies:
                 cur.execute(
                     """
@@ -172,11 +180,11 @@ def enqueue_operation(
                     operation_id,user_id,instance_id,operation_type,origin,
                     execution_policy,priority_class,eligible_at,deadline,
                     timeout_seconds,max_attempts,selection_generation,
-                    effect_class,request_fingerprint,source_id,idempotency_key,
-                    input_versions,concurrency_group
+                    background_epoch,effect_class,request_fingerprint,source_id,
+                    idempotency_key,input_versions,concurrency_group
                 ) VALUES (
                     %s,%s,%s,%s,%s,%s,%s,coalesce(%s,clock_timestamp()),%s,
-                    %s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s
+                    %s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s
                 )
                 RETURNING *
                 """,
@@ -186,7 +194,8 @@ def enqueue_operation(
                     command.execution_policy.value,command.priority_class.value,
                     command.eligible_at,command.deadline,command.timeout_seconds,
                     command.max_attempts,command.expected_generation,
-                    command.effect_class.value,fingerprint,actor.source_id,
+                    admitted_background_epoch,command.effect_class.value,
+                    fingerprint,actor.source_id,
                     command.idempotency_key,json.dumps(command.input_versions),
                     command.concurrency_group,
                 ),
@@ -219,7 +228,8 @@ def enqueue_operation(
             event_id=event_for(
                 cur,operation,"operation.queued.v1",
                 {"status":"QUEUED","origin":command.origin.value,
-                 "execution_policy":command.execution_policy.value},
+                 "execution_policy":command.execution_policy.value,
+                 "background_epoch":admitted_background_epoch},
                 source_id=actor.source_id,trust_level="AUTHENTICATED_USER",
             )
             result=EnqueueResult(
@@ -246,11 +256,11 @@ def _eligible_for_policy(cursor, operation: dict, selected: dict | None) -> bool
         return selected["mode"] in ("FOREGROUND","BACKGROUND")
     if selected["mode"] != "BACKGROUND":
         return False
+    if operation["execution_policy"] == Policy.BACKGROUND_EPHEMERAL.value:
+        return operation["background_epoch"] == selected["background_epoch"]
     if (operation["background_epoch"] is not None
         and operation["background_epoch"] != selected["background_epoch"]):
         return False
-    if operation["execution_policy"] == Policy.BACKGROUND_EPHEMERAL.value:
-        return True
     # P2 requires a real epoch-specific Background preparation barrier.
     cursor.execute(
         """
