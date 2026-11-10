@@ -772,3 +772,96 @@ def test_new_admission_with_past_deadline_is_rejected(dsn):
     with pytest.raises(InvalidOperation,match="deadline"):
         enqueue(dsn,user,c)
     assert operation(dsn,c.operation_id) is None
+
+
+
+def test_claim_scans_past_default_40_older_capability_mismatches(dsn):
+    specialist_user, specialist_instance = seed(dsn)
+    general_user, general_instance = seed(dsn)
+    key = pool(dsn,capacity=1)
+    # These higher-priority, globally queued operations cannot run on this
+    # worker. They used to occupy the entire default LIMIT 40 forever.
+    for _ in range(42):
+        enqueue(
+            dsn, specialist_user,
+            cmd(specialist_instance,key,priority=Priority.P0,
+                capabilities=("gpu-specialist",)),
+        )
+    runnable = cmd(general_instance,key,priority=Priority.P1)
+    enqueue(dsn,general_user,runnable)
+    lease = claim(dsn,"general-worker")
+    assert lease is not None and lease.operation_id == runnable.operation_id
+    assert lease.user_id == general_user
+    invoke(dsn,complete_operation,lease,result_ref="general-finished")
+    assert resources(dsn,key)==0
+
+
+def test_claim_paginates_past_resource_blocked_candidates(dsn):
+    user,instance=seed(dsn)
+    saturated = pool(dsn,capacity=1)
+    available = pool(dsn,capacity=1)
+    holder=cmd(instance,saturated)
+    enqueue(dsn,user,holder)
+    running=claim(dsn,"capacity-holder")
+    assert running.operation_id==holder.operation_id
+    for _ in range(8):
+        enqueue(dsn,user,cmd(instance,saturated))
+    last=cmd(instance,available)
+    enqueue(dsn,user,last)
+    lease=invoke(
+        dsn,claim_operation,worker_id="other-resource-worker",
+        capabilities=(),lease_seconds=60,scan_limit=2,
+    )
+    assert lease is not None and lease.operation_id==last.operation_id
+    invoke(dsn,complete_operation,lease,result_ref="unblocked")
+    invoke(dsn,complete_operation,running,result_ref="holder")
+    assert resources(dsn,saturated)==0 and resources(dsn,available)==0
+
+
+def test_claim_paginates_past_background_only_candidates(dsn):
+    user,instance=seed(dsn)
+    key=pool(dsn,capacity=2)
+    for _ in range(7):
+        enqueue(dsn,user,cmd(instance,key,policy=Policy.BACKGROUND_EPHEMERAL))
+    fg=cmd(instance,key,policy=Policy.FOREGROUND_ASYNC)
+    enqueue(dsn,user,fg)
+    lease=invoke(
+        dsn,claim_operation,worker_id="interactive",
+        capabilities=(),lease_seconds=60,scan_limit=2,
+    )
+    assert lease is not None and lease.operation_id==fg.operation_id
+    invoke(dsn,complete_operation,lease,result_ref="foreground")
+
+
+def test_committed_enqueue_replays_after_input_version_changes(dsn):
+    user,instance=seed(dsn)
+    key=pool(dsn)
+    command=cmd(instance,key,input_versions={"persona_instance":0})
+    original=enqueue(dsn,user,command)
+    from persona_agent.contracts import RenameInstanceCommand
+    from persona_agent.runtime import rename_instance, VersionConflict
+    invoke(dsn,rename_instance,actor(user),RenameInstanceCommand(
+        instance_id=instance,expected_generation=1,expected_version=0,
+        new_label="changed",idempotency_key=str(uuid4()),
+    ))
+    replay=enqueue(dsn,user,command)
+    assert replay.replayed
+    assert replay.event_id==original.event_id
+    assert replay.operation_id==original.operation_id
+    assert operation(dsn,command.operation_id)[0]=="QUEUED"
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT count(*) FROM events WHERE event_type='operation.queued.v1' "
+            "AND instance_id=%s",(instance,),
+        ).fetchone()[0]==1
+        assert conn.execute(
+            "SELECT count(*) FROM outbox WHERE event_id=%s",
+            (original.event_id,),
+        ).fetchone()[0]==1
+
+    # An identical key but different fingerprint must still conflict;
+    # a genuinely new key with the stale version must fail admission.
+    with pytest.raises(IdempotencyConflict):
+        enqueue(dsn,user,command.model_copy(update={"operation_type":"different"}))
+    with pytest.raises(VersionConflict):
+        enqueue(dsn,user,cmd(instance,key,input_versions={"persona_instance":0}))

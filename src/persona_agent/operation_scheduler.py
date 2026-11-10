@@ -65,15 +65,11 @@ def enqueue_operation(
     with connection.transaction():
         with connection.cursor(row_factory=dict_row) as cur:
             cur.execute(
-                "SELECT version FROM persona_instances WHERE user_id=%s AND id=%s",
+                "SELECT 1 FROM persona_instances WHERE user_id=%s AND id=%s",
                 (actor.user_id,command.instance_id),
             )
-            instance=cur.fetchone()
-            if instance is None:
+            if cur.fetchone() is None:
                 raise PermissionDenied("operation instance outside authenticated scope")
-            if ("persona_instance" in command.input_versions
-                and instance["version"] != command.input_versions["persona_instance"]):
-                raise VersionConflict("enqueue input state version already changed")
             cur.execute(
                 """
                 INSERT INTO command_receipts (
@@ -121,6 +117,19 @@ def enqueue_operation(
                 or selected["generation"] != command.expected_generation
             ):
                 raise StaleSelection("enqueue selection generation invalid")
+
+            # Check mutable input versions only for a NEW admission, after
+            # idempotency replay and while holding the selection authority gate.
+            if "persona_instance" in command.input_versions:
+                cur.execute(
+                    "SELECT version FROM persona_instances "
+                    "WHERE user_id=%s AND id=%s FOR SHARE",
+                    (actor.user_id, command.instance_id),
+                )
+                current_instance = cur.fetchone()
+                if (current_instance is None or current_instance["version"]
+                    != command.input_versions["persona_instance"]):
+                    raise VersionConflict("enqueue input state version already changed")
 
             # A historical retry already returned above, even if its deadline
             # has now elapsed. New admissions must still have a future deadline.
@@ -273,173 +282,213 @@ def claim_operation(
 
     with connection.transaction():
         with connection.cursor(row_factory=dict_row) as cur:
-            cur.execute(
-                """
-                SELECT operation_id FROM operations
-                WHERE status IN ('QUEUED','RETRY_WAIT')
-                  AND eligible_at <= clock_timestamp()
-                  AND (deadline IS NULL OR deadline > clock_timestamp())
-                ORDER BY CASE priority_class WHEN 'P0' THEN 0
-                                             WHEN 'P1' THEN 1 ELSE 2 END,
-                         eligible_at,created_at,operation_id
-                LIMIT %s
-                """,
-                (scan_limit,),
-            )
-            candidates=[r["operation_id"] for r in cur.fetchall()]
-            for op_id in candidates:
+            # scan_limit is PAGE size, not a global truncation. Older operations
+            # blocked on resources or Background mode must never hide later
+            # runnable work (including work for other users/worker types).
+            # Keyset pagination keeps a stable priority/order cursor and avoids
+            # re-reading the same ineligible prefix on every page.
+            cursor_key = (None, None, None, None)
+            while True:
                 cur.execute(
                     """
-                    SELECT * FROM operations
-                    WHERE operation_id=%s
-                      AND status IN ('QUEUED','RETRY_WAIT')
-                      AND eligible_at <= clock_timestamp()
-                      AND (deadline IS NULL OR deadline > clock_timestamp())
-                    FOR UPDATE SKIP LOCKED
-                    """,
-                    (op_id,),
-                )
-                op=cur.fetchone()
-                if op is None:
-                    continue
-                cur.execute(
-                    "SELECT capability FROM operation_capabilities WHERE operation_id=%s",
-                    (op_id,),
-                )
-                if not {r["capability"] for r in cur.fetchall()}.issubset(capabilities):
-                    continue
-                cur.execute(
-                    """
-                    SELECT 1 FROM operation_dependencies dep
-                    JOIN operations parent ON parent.operation_id=dep.depends_on_id
-                    WHERE dep.operation_id=%s AND parent.status <> 'COMPLETED'
-                    LIMIT 1
-                    """,
-                    (op_id,),
-                )
-                if cur.fetchone() is not None:
-                    continue
-                cur.execute(
-                    """
-                    SELECT instance_id,generation,mode,background_epoch
-                    FROM persona_selection WHERE user_id=%s FOR SHARE
-                    """,
-                    (op["user_id"],),
-                )
-                selected=cur.fetchone()
-                if not _eligible_for_policy(cur,op,selected):
-                    continue
-                if "persona_instance" in op["input_versions"]:
-                    cur.execute(
-                        "SELECT version FROM persona_instances "
-                        "WHERE id=%s AND user_id=%s FOR SHARE",
-                        (op["instance_id"],op["user_id"]),
+                    WITH eligible AS (
+                        SELECT o.operation_id, o.eligible_at, o.created_at,
+                               CASE o.priority_class WHEN 'P0' THEN 0
+                                                     WHEN 'P1' THEN 1 ELSE 2
+                               END AS priority_rank
+                        FROM operations o
+                        WHERE o.status IN ('QUEUED','RETRY_WAIT')
+                          AND o.eligible_at <= clock_timestamp()
+                          AND (o.deadline IS NULL OR o.deadline > clock_timestamp())
+                          AND NOT EXISTS (
+                              SELECT 1 FROM operation_capabilities required
+                              WHERE required.operation_id = o.operation_id
+                                AND NOT (required.capability = ANY(%s::text[]))
+                          )
+                          AND NOT EXISTS (
+                              SELECT 1
+                              FROM operation_dependencies dep
+                              JOIN operations parent
+                                  ON parent.operation_id = dep.depends_on_id
+                              WHERE dep.operation_id = o.operation_id
+                                AND parent.status <> 'COMPLETED'
+                          )
                     )
-                    state_version=cur.fetchone()
-                    if (state_version is None or
-                        state_version["version"]!=op["input_versions"]["persona_instance"]):
-                        continue
-                cur.execute(
-                    """
-                    SELECT resource_key,units FROM operation_resource_requests
-                    WHERE operation_id=%s ORDER BY resource_key
+                    SELECT operation_id, priority_rank, eligible_at, created_at
+                    FROM eligible
+                    WHERE (
+                        %s::integer IS NULL OR
+                        (priority_rank, eligible_at, created_at, operation_id)
+                            > (%s::integer, %s::timestamptz,
+                               %s::timestamptz, %s::uuid)
+                    )
+                    ORDER BY priority_rank, eligible_at, created_at, operation_id
+                    LIMIT %s
                     """,
-                    (op_id,),
+                    (list(capabilities), cursor_key[0], *cursor_key, scan_limit),
                 )
-                req=cur.fetchall()
-                if not req:
-                    raise InvalidOperation("operation missing resource request")
-                pools=[]
-                allowed=True
-                for requested in req:
+                page = cur.fetchall()
+                if not page:
+                    return None
+                for candidate in page:
+                    op_id = candidate["operation_id"]
                     cur.execute(
                         """
-                        SELECT resource_key,capacity_units,p0_reserved_units,active_units
-                        FROM execution_resource_pools
-                        WHERE resource_key=%s FOR UPDATE SKIP LOCKED
+                        SELECT * FROM operations
+                        WHERE operation_id=%s
+                          AND status IN ('QUEUED','RETRY_WAIT')
+                          AND eligible_at <= clock_timestamp()
+                          AND (deadline IS NULL OR deadline > clock_timestamp())
+                        FOR UPDATE SKIP LOCKED
                         """,
-                        (requested["resource_key"],),
+                        (op_id,),
                     )
-                    pool=cur.fetchone()
-                    if pool is None:
-                        allowed=False
-                        break
-                    limit=(pool["capacity_units"] if op["priority_class"]=="P0"
-                           else pool["capacity_units"]-pool["p0_reserved_units"])
-                    if pool["active_units"]+requested["units"]>limit:
-                        allowed=False
-                        break
-                    pools.append((pool,requested["units"]))
-                if not allowed:
-                    continue
-                if op["concurrency_group"] is not None:
+                    op=cur.fetchone()
+                    if op is None:
+                        continue
+                    cur.execute(
+                        "SELECT capability FROM operation_capabilities WHERE operation_id=%s",
+                        (op_id,),
+                    )
+                    if not {r["capability"] for r in cur.fetchall()}.issubset(capabilities):
+                        continue
                     cur.execute(
                         """
-                        INSERT INTO operation_concurrency_locks(
-                            user_id,instance_id,group_key,operation_id,claim_generation
-                        ) VALUES (%s,%s,%s,%s,%s)
-                        ON CONFLICT DO NOTHING RETURNING operation_id
+                        SELECT 1 FROM operation_dependencies dep
+                        JOIN operations parent ON parent.operation_id=dep.depends_on_id
+                        WHERE dep.operation_id=%s AND parent.status <> 'COMPLETED'
+                        LIMIT 1
+                        """,
+                        (op_id,),
+                    )
+                    if cur.fetchone() is not None:
+                        continue
+                    cur.execute(
+                        """
+                        SELECT instance_id,generation,mode,background_epoch
+                        FROM persona_selection WHERE user_id=%s FOR SHARE
+                        """,
+                        (op["user_id"],),
+                    )
+                    selected=cur.fetchone()
+                    if not _eligible_for_policy(cur,op,selected):
+                        continue
+                    if "persona_instance" in op["input_versions"]:
+                        cur.execute(
+                            "SELECT version FROM persona_instances "
+                            "WHERE id=%s AND user_id=%s FOR SHARE",
+                            (op["instance_id"],op["user_id"]),
+                        )
+                        state_version=cur.fetchone()
+                        if (state_version is None or
+                            state_version["version"]!=op["input_versions"]["persona_instance"]):
+                            continue
+                    cur.execute(
+                        """
+                        SELECT resource_key,units FROM operation_resource_requests
+                        WHERE operation_id=%s ORDER BY resource_key
+                        """,
+                        (op_id,),
+                    )
+                    req=cur.fetchall()
+                    if not req:
+                        raise InvalidOperation("operation missing resource request")
+                    pools=[]
+                    allowed=True
+                    for requested in req:
+                        cur.execute(
+                            """
+                            SELECT resource_key,capacity_units,p0_reserved_units,active_units
+                            FROM execution_resource_pools
+                            WHERE resource_key=%s FOR UPDATE SKIP LOCKED
+                            """,
+                            (requested["resource_key"],),
+                        )
+                        pool=cur.fetchone()
+                        if pool is None:
+                            allowed=False
+                            break
+                        limit=(pool["capacity_units"] if op["priority_class"]=="P0"
+                               else pool["capacity_units"]-pool["p0_reserved_units"])
+                        if pool["active_units"]+requested["units"]>limit:
+                            allowed=False
+                            break
+                        pools.append((pool,requested["units"]))
+                    if not allowed:
+                        continue
+                    if op["concurrency_group"] is not None:
+                        cur.execute(
+                            """
+                            INSERT INTO operation_concurrency_locks(
+                                user_id,instance_id,group_key,operation_id,claim_generation
+                            ) VALUES (%s,%s,%s,%s,%s)
+                            ON CONFLICT DO NOTHING RETURNING operation_id
+                            """,
+                            (
+                                op["user_id"],op["instance_id"],op["concurrency_group"],
+                                op_id,op["claim_generation"]+1,
+                            ),
+                        )
+                        if cur.fetchone() is None:
+                            continue
+                    for pool,units in pools:
+                        cur.execute(
+                            """
+                            UPDATE execution_resource_pools
+                            SET active_units=active_units+%s
+                            WHERE resource_key=%s
+                            """,
+                            (units,pool["resource_key"]),
+                        )
+                        cur.execute(
+                            """
+                            INSERT INTO operation_resource_reservations(
+                                operation_id,resource_key,claim_generation,units
+                            ) VALUES (%s,%s,%s,%s)
+                            """,
+                            (op_id,pool["resource_key"],op["claim_generation"]+1,units),
+                        )
+                    cur.execute(
+                        """
+                        UPDATE operations SET
+                            status='RUNNING',worker_id=%s,
+                            claim_generation=claim_generation+1,
+                            attempt_count=attempt_count+1,
+                            lease_until=LEAST(
+                                clock_timestamp()+(%s*interval '1 second'),
+                                clock_timestamp()+(timeout_seconds*interval '1 second'),
+                                COALESCE(deadline,'infinity'::timestamptz)
+                            ),
+                            claimed_at=clock_timestamp(),
+                            background_epoch=%s,
+                            version=version+1,updated_at=clock_timestamp()
+                        WHERE operation_id=%s RETURNING *
                         """,
                         (
-                            op["user_id"],op["instance_id"],op["concurrency_group"],
-                            op_id,op["claim_generation"]+1,
+                            worker_id,lease_seconds,
+                            None if op["execution_policy"]==Policy.FOREGROUND_ASYNC.value
+                            else selected["background_epoch"],
+                            op_id,
                         ),
                     )
-                    if cur.fetchone() is None:
-                        continue
-                for pool,units in pools:
-                    cur.execute(
-                        """
-                        UPDATE execution_resource_pools
-                        SET active_units=active_units+%s
-                        WHERE resource_key=%s
-                        """,
-                        (units,pool["resource_key"]),
+                    running=cur.fetchone()
+                    event_for(cur,running,"operation.claimed.v1",{
+                        "worker_id":worker_id,
+                        "claim_generation":running["claim_generation"],
+                        "attempt_count":running["attempt_count"],
+                    })
+                    return OperationLease(
+                        operation_id=op_id,user_id=running["user_id"],
+                        instance_id=running["instance_id"],worker_id=worker_id,
+                        claim_generation=running["claim_generation"],
+                        selection_generation=running["selection_generation"],
+                        background_epoch=running["background_epoch"],
+                        attempt_count=running["attempt_count"],
+                        lease_until=running["lease_until"],
                     )
-                    cur.execute(
-                        """
-                        INSERT INTO operation_resource_reservations(
-                            operation_id,resource_key,claim_generation,units
-                        ) VALUES (%s,%s,%s,%s)
-                        """,
-                        (op_id,pool["resource_key"],op["claim_generation"]+1,units),
-                    )
-                cur.execute(
-                    """
-                    UPDATE operations SET
-                        status='RUNNING',worker_id=%s,
-                        claim_generation=claim_generation+1,
-                        attempt_count=attempt_count+1,
-                        lease_until=LEAST(
-                            clock_timestamp()+(%s*interval '1 second'),
-                            clock_timestamp()+(timeout_seconds*interval '1 second'),
-                            COALESCE(deadline,'infinity'::timestamptz)
-                        ),
-                        claimed_at=clock_timestamp(),
-                        background_epoch=%s,
-                        version=version+1,updated_at=clock_timestamp()
-                    WHERE operation_id=%s RETURNING *
-                    """,
-                    (
-                        worker_id,lease_seconds,
-                        None if op["execution_policy"]==Policy.FOREGROUND_ASYNC.value
-                        else selected["background_epoch"],
-                        op_id,
-                    ),
+                last = page[-1]
+                cursor_key = (
+                    last["priority_rank"], last["eligible_at"],
+                    last["created_at"], last["operation_id"],
                 )
-                running=cur.fetchone()
-                event_for(cur,running,"operation.claimed.v1",{
-                    "worker_id":worker_id,
-                    "claim_generation":running["claim_generation"],
-                    "attempt_count":running["attempt_count"],
-                })
-                return OperationLease(
-                    operation_id=op_id,user_id=running["user_id"],
-                    instance_id=running["instance_id"],worker_id=worker_id,
-                    claim_generation=running["claim_generation"],
-                    selection_generation=running["selection_generation"],
-                    background_epoch=running["background_epoch"],
-                    attempt_count=running["attempt_count"],
-                    lease_until=running["lease_until"],
-                )
-            return None
+

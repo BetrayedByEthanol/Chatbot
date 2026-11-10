@@ -34,12 +34,19 @@ idempotency and a per-operation event stream provide durability.
   generation, deduplicates a full request fingerprint, validates dependency
   scope, resource feasibility, input state version, and allowed origin.
   The command, queued record, domain event, outbox and receipt commit
-  atomically. Replays do not re-authorize work after a persona switch.
+  atomically. Ownership is checked before scoped receipt replay, but mutable
+  input versions are checked only on new admission. Committed retries return
+  their saved result even when the instance version has since changed.
+  Replays do not re-authorize work after a persona switch.
 - `claim_operation`: rechecks policy, selected generation, Background
   epoch, required capabilities, completed dependencies, declared persona
   instance input version, deadline, exclusive concurrency group and
-  available resources. Candidate ranking may be nonexclusive; final
-  admission happens under PostgreSQL locks. Claims use claim_generation,
+  available resources. Candidate ordering is paginated using a priority
+  keyset; scan_limit controls each page size, not the total candidates
+  visited. Capability and dependency mismatches are filtered before the
+  page limit. Resource- or mode-blocked work cannot permanently starve
+  later eligible work. Final admission happens under PostgreSQL locks.
+  Claims use claim_generation,
   worker_id, lease_until and attempt_count, with resource reservations
   made in the same transaction as the RUNNING transition.
 - `heartbeat_operation`, `checkpoint_operation`,
