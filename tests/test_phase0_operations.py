@@ -1500,6 +1500,13 @@ def test_resource_accounting_recovery_and_retry_release_correct_tier(dsn):
         )
     assert invoke(dsn,reap_stale_operations)>=1
     assert pool_usage(dsn,resource)==(2,1,0,0)
+    # Simulate the bounded recovery cooldown expiring; the test exercises
+    # reservation accounting, not wall-clock retry policy.
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        conn.execute(
+            "UPDATE operations SET eligible_at=clock_timestamp() "
+            "WHERE operation_id=%s",(high.operation_id,),
+        )
     high_retry=claim(dsn,"high-retry")
     assert high_retry.operation_id==high.operation_id
     low_retry=claim(dsn,"low-retry")
