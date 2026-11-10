@@ -1154,3 +1154,104 @@ def test_heartbeat_still_extends_live_lease(dsn):
     assert resources(dsn,resource)==1
     invoke(dsn,complete_operation,refreshed,result_ref="live-heartbeat-finished")
     assert resources(dsn,resource)==0
+
+
+
+def test_external_dispatch_cannot_cross_lease_expiry_while_waiting_for_selection(dsn):
+    user,instance=seed(dsn)
+    resource=pool(dsn,capacity=1)
+    queued=cmd(instance,resource,effect=EffectClass.EXTERNAL)
+    enqueue(dsn,user,queued)
+    lease=invoke(
+        dsn,claim_operation,worker_id="dispatch-selection-race",
+        capabilities=(),lease_seconds=2,
+    )
+    assert lease.operation_id==queued.operation_id
+
+    pid_queue=Queue(maxsize=1)
+    def delayed_dispatch():
+        with psycopg.connect(dsn,autocommit=True) as conn:
+            pid_queue.put(conn.execute("SELECT pg_backend_pid()").fetchone()[0])
+            mark_external_dispatched(conn,lease)
+
+    with ThreadPoolExecutor(max_workers=1) as workers:
+        with psycopg.connect(dsn,autocommit=True) as blocker:
+            with blocker.transaction():
+                # Primary activity can hold this lock without changing the
+                # selection generation or Foreground mode.
+                blocker.execute(
+                    """
+                    UPDATE persona_selection
+                    SET presence_revision=presence_revision+1
+                    WHERE user_id=%s
+                    RETURNING generation,mode
+                    """,
+                    (user,),
+                ).fetchone()
+                future=workers.submit(delayed_dispatch)
+                pid=pid_queue.get(timeout=5)
+                _assert_waiting_for_db_lock(dsn,pid)
+                _let_lease_expire(lease)
+        with pytest.raises(StaleOperation):
+            future.result(timeout=10)
+
+    # No dispatch marker or event may survive a rejected transaction.
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        state=conn.execute(
+            """
+            SELECT status,effect_status,claim_generation,lease_until
+            FROM operations WHERE operation_id=%s
+            """,
+            (queued.operation_id,),
+        ).fetchone()
+        assert state==("RUNNING","PREPARED",lease.claim_generation,lease.lease_until)
+        assert conn.execute(
+            """
+            SELECT count(*) FROM events
+            WHERE event_type='operation.effect_dispatched.v1'
+              AND payload->>'operation_id'=%s
+            """,
+            (str(queued.operation_id),),
+        ).fetchone()[0]==0
+        assert conn.execute(
+            """
+            SELECT count(*) FROM outbox o JOIN events e ON e.event_id=o.event_id
+            WHERE e.event_type='operation.effect_dispatched.v1'
+              AND e.payload->>'operation_id'=%s
+            """,
+            (str(queued.operation_id),),
+        ).fetchone()[0]==0
+    assert resources(dsn,resource)==1
+    assert invoke(dsn,reap_stale_operations)>=1
+    assert operation(dsn,queued.operation_id)[0]=="RETRY_WAIT"
+    assert resources(dsn,resource)==0
+
+
+def test_external_dispatch_live_lease_records_marker_and_outbox(dsn):
+    user,instance=seed(dsn)
+    resource=pool(dsn,capacity=1)
+    queued=cmd(instance,resource,effect=EffectClass.EXTERNAL)
+    enqueue(dsn,user,queued)
+    lease=claim(dsn,"dispatch-live")
+    assert lease.operation_id==queued.operation_id
+    invoke(dsn,mark_external_dispatched,lease)
+
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            """
+            SELECT status,effect_status FROM operations WHERE operation_id=%s
+            """,
+            (queued.operation_id,),
+        ).fetchone()==("RUNNING","DISPATCHED")
+        assert conn.execute(
+            """
+            SELECT count(*) FROM events e JOIN outbox o ON o.event_id=e.event_id
+            WHERE e.event_type='operation.effect_dispatched.v1'
+              AND e.payload->>'operation_id'=%s
+            """,
+            (str(queued.operation_id),),
+        ).fetchone()[0]==1
+
+    invoke(dsn,complete_operation,lease,result_ref="provider://confirmed")
+    assert operation(dsn,queued.operation_id)[0]=="COMPLETED"
+    assert resources(dsn,resource)==0

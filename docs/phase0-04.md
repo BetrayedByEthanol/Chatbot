@@ -187,3 +187,13 @@ status, worker ID, claim generation, selection generation, existing lease,
 absolute execution timeout and deadline against PostgreSQL wall-clock time.
 An expired heartbeat raises `StaleOperation` and cannot revive the attempt;
 its reservation remains with the expired attempt until the recovery sweep.
+
+## External dispatch lock-wait fence
+
+`mark_external_dispatched` checks the current claim after obtaining
+selection and input-version locks. Its state-transition SQL also requires a
+live lease, absolute execution timeout, deadline, worker and claim generation,
+and a PREPARED external effect. If a lock wait outlives the lease, the
+transaction rolls back without a DISPATCHED marker, event or outbox entry.
+The recovery sweep can then safely retry undispatched work instead of
+quarantining a falsely dispatched operation as OUTCOME_UNKNOWN.
