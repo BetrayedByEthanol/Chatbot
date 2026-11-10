@@ -45,7 +45,10 @@ def isolate_operation_queue(dsn):
         with conn.transaction():
             conn.execute("DELETE FROM operation_concurrency_locks")
             conn.execute("DELETE FROM operation_resource_reservations")
-            conn.execute("UPDATE execution_resource_pools SET active_units=0")
+            conn.execute(
+                "UPDATE execution_resource_pools "
+                "SET active_units=0,active_non_p0_units=0"
+            )
             conn.execute(
                 """
                 UPDATE operations SET status='CANCELLED',
