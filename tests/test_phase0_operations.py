@@ -709,3 +709,41 @@ def test_expired_queued_operation_cannot_remain_live(dsn):
     assert invoke(dsn,reap_stale_operations)>=1
     assert operation(dsn,c.operation_id)[0]=="FAILED"
     assert claim(dsn) is None
+
+
+
+def test_stale_input_version_is_reconciled_to_blocked_before_claim(dsn):
+    user,instance=seed(dsn)
+    key=pool(dsn)
+    c=cmd(instance,key,input_versions={"persona_instance":0})
+    enqueue(dsn,user,c)
+    from persona_agent.contracts import RenameInstanceCommand
+    from persona_agent.runtime import rename_instance
+    invoke(dsn,rename_instance,actor(user),RenameInstanceCommand(
+        instance_id=instance,expected_generation=1,expected_version=0,
+        new_label="updated",idempotency_key=str(uuid4()),
+    ))
+    assert claim(dsn) is None
+    assert invoke(dsn,reap_stale_operations)>=1
+    assert operation(dsn,c.operation_id)[0]=="BLOCKED"
+    assert resources(dsn,key)==0
+
+
+def test_running_stale_input_version_releases_reservation_on_reconciliation(dsn):
+    user,instance=seed(dsn)
+    key=pool(dsn)
+    c=cmd(instance,key,input_versions={"persona_instance":0})
+    enqueue(dsn,user,c)
+    lease=claim(dsn)
+    assert resources(dsn,key)==1
+    from persona_agent.contracts import RenameInstanceCommand
+    from persona_agent.runtime import rename_instance
+    invoke(dsn,rename_instance,actor(user),RenameInstanceCommand(
+        instance_id=instance,expected_generation=1,expected_version=0,
+        new_label="updated",idempotency_key=str(uuid4()),
+    ))
+    assert invoke(dsn,reap_stale_operations)>=1
+    assert operation(dsn,c.operation_id)[0]=="BLOCKED"
+    assert resources(dsn,key)==0
+    with pytest.raises(StaleOperation):
+        invoke(dsn,complete_operation,lease,result_ref="stale-worker-result")

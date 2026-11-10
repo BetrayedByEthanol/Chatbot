@@ -146,3 +146,8 @@ evidence-based reconciliation, and transactional event/outbox changes.
 Recovery sweep also processes stale queued and retry-wait work after a
 persona switch, Background epoch invalidation or expired deadline. A queued
 operation is not left indefinitely waiting for authority that no longer exists.
+
+A stale declared persona-instance input version moves pending/running
+undispatched work to BLOCKED during recovery. It cannot keep consuming
+resources or silently retry against an obsolete state snapshot. A domain
+owner must revalidate and issue a new command before proceeding.

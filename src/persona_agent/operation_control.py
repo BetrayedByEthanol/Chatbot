@@ -367,6 +367,7 @@ def reap_stale_operations(connection: Connection, *, limit: int=100) -> int:
                 """
                 SELECT o.operation_id FROM operations o
                 LEFT JOIN persona_selection s ON s.user_id=o.user_id
+                LEFT JOIN persona_instances i ON i.user_id=o.user_id AND i.id=o.instance_id
                 WHERE o.status IN ('RUNNING','CANCEL_REQUESTED','SUSPEND_REQUESTED')
                   AND (
                     o.lease_until <= clock_timestamp()
@@ -375,6 +376,9 @@ def reap_stale_operations(connection: Connection, *, limit: int=100) -> int:
                     OR (o.claimed_at+(o.timeout_seconds*interval '1 second')
                         <= clock_timestamp())
                     OR (o.deadline IS NOT NULL AND o.deadline <= clock_timestamp())
+                    OR (o.input_versions ? 'persona_instance' AND
+                        (o.input_versions->>'persona_instance')::bigint
+                           IS DISTINCT FROM i.version)
                     OR (o.execution_policy <> 'FOREGROUND_ASYNC'
                         AND (s.mode IS DISTINCT FROM 'BACKGROUND'
                              OR s.background_epoch IS DISTINCT FROM o.background_epoch))
@@ -420,8 +424,22 @@ def reap_stale_operations(connection: Connection, *, limit: int=100) -> int:
                         seconds=row["timeout_seconds"])<=now
                 )
                 deadline_passed=row["deadline"] is not None and row["deadline"]<=now
+                input_invalid=False
+                if "persona_instance" in row["input_versions"]:
+                    cursor.execute(
+                        """
+                        SELECT version FROM persona_instances
+                        WHERE user_id=%s AND id=%s FOR SHARE
+                        """,(row["user_id"],row["instance_id"]),
+                    )
+                    input_version=cursor.fetchone()
+                    input_invalid=(
+                        input_version is None or
+                        input_version["version"]!=row["input_versions"]["persona_instance"]
+                    )
                 if (not revoked and not epoch_invalid and not expired
-                    and not deadline_passed and row["status"]=="RUNNING"):
+                    and not deadline_passed and not input_invalid
+                    and row["status"]=="RUNNING"):
                     continue
                 if row["effect_status"]=="DISPATCHED":
                     _unknown(cursor,row,"worker interrupted after external dispatch")
@@ -435,6 +453,8 @@ def reap_stale_operations(connection: Connection, *, limit: int=100) -> int:
                                 else "SUSPENDED")
                     elif deadline_passed or row["attempt_count"]>=row["max_attempts"]:
                         status="FAILED"
+                    elif input_invalid:
+                        status="BLOCKED"
                     else:
                         status="RETRY_WAIT"
                     release_resources(cursor,row)
@@ -455,11 +475,15 @@ def reap_stale_operations(connection: Connection, *, limit: int=100) -> int:
                     """
                     SELECT o.operation_id FROM operations o
                     LEFT JOIN persona_selection s ON s.user_id=o.user_id
+                    LEFT JOIN persona_instances i ON i.user_id=o.user_id AND i.id=o.instance_id
                     WHERE o.status IN ('QUEUED','RETRY_WAIT')
                       AND (
                         (o.deadline IS NOT NULL AND o.deadline <= clock_timestamp())
                         OR s.instance_id IS DISTINCT FROM o.instance_id
                         OR s.generation IS DISTINCT FROM o.selection_generation
+                        OR (o.input_versions ? 'persona_instance' AND
+                            (o.input_versions->>'persona_instance')::bigint
+                               IS DISTINCT FROM i.version)
                         OR (o.execution_policy <> 'FOREGROUND_ASYNC'
                             AND o.background_epoch IS NOT NULL
                             AND (s.mode IS DISTINCT FROM 'BACKGROUND'
@@ -500,10 +524,24 @@ def reap_stale_operations(connection: Connection, *, limit: int=100) -> int:
                              or selected["background_epoch"]!=row["background_epoch"])
                     )
                     deadline_passed=row["deadline"] is not None and row["deadline"]<=now
-                    if not (revoked or epoch_invalid or deadline_passed):
+                    input_invalid=False
+                    if "persona_instance" in row["input_versions"]:
+                        cursor.execute(
+                            """
+                            SELECT version FROM persona_instances
+                            WHERE user_id=%s AND id=%s FOR SHARE
+                            """,(row["user_id"],row["instance_id"]),
+                        )
+                        input_version=cursor.fetchone()
+                        input_invalid=(
+                            input_version is None or
+                            input_version["version"]!=row["input_versions"]["persona_instance"]
+                        )
+                    if not (revoked or epoch_invalid or deadline_passed or input_invalid):
                         continue
                     status=(
                         "FAILED" if deadline_passed else
+                        "BLOCKED" if input_invalid else
                         "CANCELLED" if row["execution_policy"]=="BACKGROUND_EPHEMERAL"
                         else "SUSPENDED"
                     )
