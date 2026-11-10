@@ -1053,3 +1053,22 @@ def test_completion_cannot_cross_lease_expiry_while_releasing_pool(dsn):
         with pytest.raises(StaleOperation):
             future.result(timeout=10)
     _assert_expired_completion_rolled_back(dsn,lease,resource)
+
+
+
+def test_legacy_unbound_ephemeral_pending_row_is_cancelled_by_reaper(dsn):
+    user,instance=seed(dsn)
+    resource=pool(dsn)
+    queued=cmd(instance,resource,policy=Policy.BACKGROUND_EPHEMERAL)
+    enqueue(dsn,user,queued)
+    # An earlier P0-04 iteration persisted unbound NULL ephemeral epochs.
+    # The recovery sweep must not leave those rows in QUEUED forever.
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        conn.execute(
+            "UPDATE operations SET background_epoch=NULL WHERE operation_id=%s",
+            (queued.operation_id,),
+        )
+    assert claim(dsn) is None
+    assert invoke(dsn,reap_stale_operations)>=1
+    assert operation(dsn,queued.operation_id)[0]=="CANCELLED"
+    assert resources(dsn,resource)==0

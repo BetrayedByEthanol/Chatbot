@@ -172,3 +172,7 @@ locks. Its final UPDATE independently requires a live lease, absolute timeout
 and deadline according to PostgreSQL time. Rejection rolls back the resource
 release, state change, completion event and outbox atomically; recovery then
 handles the expired claim.
+
+Pending ephemeral rows from earlier P0-04 builds whose epoch is NULL
+are treated as invalid by recovery and cancelled; they cannot remain
+indefinitely queued after the admission contract changes.

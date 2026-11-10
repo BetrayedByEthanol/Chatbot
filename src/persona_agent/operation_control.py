@@ -500,13 +500,12 @@ def reap_stale_operations(connection: Connection, *, limit: int=100) -> int:
                             (o.input_versions->>'persona_instance')::bigint
                                IS DISTINCT FROM i.version)
                         OR (o.execution_policy = 'BACKGROUND_EPHEMERAL'
-                            AND o.background_epoch IS NOT NULL
-                            AND NOT (
+                            AND (o.background_epoch IS NULL OR NOT (
                                 (s.mode = 'BACKGROUND'
                                  AND s.background_epoch = o.background_epoch)
                                 OR (s.mode = 'FOREGROUND'
                                     AND s.background_epoch + 1 = o.background_epoch)
-                            ))
+                            )))
                         OR (o.execution_policy = 'BACKGROUND_RESUMABLE'
                             AND o.background_epoch IS NOT NULL
                             AND (s.mode IS DISTINCT FROM 'BACKGROUND'
@@ -542,7 +541,8 @@ def reap_stale_operations(connection: Connection, *, limit: int=100) -> int:
                     )
                     if row["execution_policy"]=="BACKGROUND_EPHEMERAL":
                         epoch_invalid=(
-                            selected is None or not (
+                            row["background_epoch"] is None
+                            or selected is None or not (
                                 (selected["mode"]=="BACKGROUND"
                                  and selected["background_epoch"]==row["background_epoch"])
                                 or (selected["mode"]=="FOREGROUND"
