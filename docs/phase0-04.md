@@ -176,3 +176,14 @@ handles the expired claim.
 Pending ephemeral rows from earlier P0-04 builds whose epoch is NULL
 are treated as invalid by recovery and cancelled; they cannot remain
 indefinitely queued after the admission contract changes.
+
+## P0-04 heartbeat lock-wait fence
+
+Heartbeat first validates the worker claim, then obtains persona selection
+and input-version locks. Since those locks may block without altering
+selection generation or mode, heartbeat **revalidates the original claim
+after they are acquired**. Its lease-extension UPDATE additionally checks
+status, worker ID, claim generation, selection generation, existing lease,
+absolute execution timeout and deadline against PostgreSQL wall-clock time.
+An expired heartbeat raises `StaleOperation` and cannot revive the attempt;
+its reservation remains with the expired attempt until the recovery sweep.

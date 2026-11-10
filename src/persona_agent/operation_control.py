@@ -67,6 +67,11 @@ def heartbeat_operation(
         with connection.cursor(row_factory=dict_row) as cursor:
             row=require_claim(cursor,lease)
             require_current_authority(cursor,row)
+            # The selection/input-state locks above may block past the
+            # original lease expiry without changing persona authority.
+            # A second post-lock check and a guarded UPDATE prevent a
+            # stale heartbeat from reviving the expired attempt.
+            require_claim(cursor,lease)
             cursor.execute(
                 """
                 UPDATE operations SET
@@ -75,12 +80,22 @@ def heartbeat_operation(
                         claimed_at+(timeout_seconds*interval '1 second'),
                         COALESCE(deadline,'infinity'::timestamptz)
                     ),updated_at=clock_timestamp()
-                WHERE operation_id=%s RETURNING lease_until
+                WHERE operation_id=%s
+                  AND status='RUNNING'
+                  AND worker_id=%s AND claim_generation=%s
+                  AND selection_generation=%s
+                  AND lease_until > clock_timestamp()
+                  AND claimed_at+(timeout_seconds*interval '1 second') > clock_timestamp()
+                  AND (deadline IS NULL OR deadline > clock_timestamp())
+                RETURNING lease_until
                 """,
-                (extend_seconds,row["operation_id"]),
+                (extend_seconds,row["operation_id"],lease.worker_id,
+                 lease.claim_generation,lease.selection_generation),
             )
-            until=cursor.fetchone()["lease_until"]
-            return lease.model_copy(update={"lease_until":until})
+            updated=cursor.fetchone()
+            if updated is None:
+                raise StaleOperation("heartbeat lease expired before extension")
+            return lease.model_copy(update={"lease_until":updated["lease_until"]})
 
 
 def checkpoint_operation(

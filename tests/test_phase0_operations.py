@@ -1072,3 +1072,85 @@ def test_legacy_unbound_ephemeral_pending_row_is_cancelled_by_reaper(dsn):
     assert invoke(dsn,reap_stale_operations)>=1
     assert operation(dsn,queued.operation_id)[0]=="CANCELLED"
     assert resources(dsn,resource)==0
+
+
+
+def test_heartbeat_cannot_revive_expired_lease_after_selection_lock_wait(dsn):
+    user,instance=seed(dsn)
+    resource=pool(dsn,capacity=1)
+    queued=cmd(instance,resource)
+    enqueue(dsn,user,queued)
+    lease=invoke(
+        dsn,claim_operation,worker_id="heartbeat-selection-race",
+        capabilities=(),lease_seconds=2,
+    )
+    assert lease.operation_id==queued.operation_id
+
+    pid_queue=Queue(maxsize=1)
+    def delayed_heartbeat():
+        with psycopg.connect(dsn,autocommit=True) as conn:
+            pid_queue.put(conn.execute("SELECT pg_backend_pid()").fetchone()[0])
+            return heartbeat_operation(conn,lease,extend_seconds=60)
+
+    with ThreadPoolExecutor(max_workers=1) as workers:
+        with psycopg.connect(dsn,autocommit=True) as blocker:
+            with blocker.transaction():
+                # Simulate primary activity: an exclusive selection-row lock
+                # without changing the selected persona, mode or generation.
+                blocker.execute(
+                    """
+                    UPDATE persona_selection
+                    SET presence_revision=presence_revision+1
+                    WHERE user_id=%s
+                    RETURNING generation,mode
+                    """,
+                    (user,),
+                ).fetchone()
+                future=workers.submit(delayed_heartbeat)
+                pid=pid_queue.get(timeout=5)
+                _assert_waiting_for_db_lock(dsn,pid)
+                _let_lease_expire(lease)
+
+        with pytest.raises(StaleOperation):
+            future.result(timeout=10)
+
+    # A rejected heartbeat must leave the old lease and claim untouched.
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        row=conn.execute(
+            """
+            SELECT status,worker_id,claim_generation,lease_until
+            FROM operations WHERE operation_id=%s
+            """,
+            (queued.operation_id,),
+        ).fetchone()
+        assert row==("RUNNING",lease.worker_id,lease.claim_generation,lease.lease_until)
+        assert conn.execute(
+            """
+            SELECT count(*) FROM events
+            WHERE event_type='operation.claimed.v1'
+              AND payload->>'operation_id'=%s
+            """,
+            (str(queued.operation_id),),
+        ).fetchone()[0]==1
+    assert resources(dsn,resource)==1
+    assert invoke(dsn,reap_stale_operations)>=1
+    assert operation(dsn,queued.operation_id)[0]=="RETRY_WAIT"
+    assert resources(dsn,resource)==0
+
+
+def test_heartbeat_still_extends_live_lease(dsn):
+    user,instance=seed(dsn)
+    resource=pool(dsn,capacity=1)
+    queued=cmd(instance,resource)
+    enqueue(dsn,user,queued)
+    lease=invoke(
+        dsn,claim_operation,worker_id="heartbeat-live",
+        capabilities=(),lease_seconds=2,
+    )
+    refreshed=invoke(dsn,heartbeat_operation,lease,extend_seconds=20)
+    assert refreshed.operation_id==lease.operation_id
+    assert refreshed.claim_generation==lease.claim_generation
+    assert refreshed.lease_until > lease.lease_until
+    assert resources(dsn,resource)==1
+    invoke(dsn,complete_operation,refreshed,result_ref="live-heartbeat-finished")
+    assert resources(dsn,resource)==0
