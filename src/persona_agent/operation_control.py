@@ -109,15 +109,30 @@ def checkpoint_operation(
         with connection.cursor(row_factory=dict_row) as cursor:
             row=require_claim(cursor,lease)
             require_current_authority(cursor,row)
+            # The authority lock can block beyond the original lease,
+            # without changing the selected persona or generation.
+            # Recheck after the lock and fence the final database write.
+            require_claim(cursor,lease)
             cursor.execute(
                 """
                 UPDATE operations SET checkpoint_ref=%s,version=version+1,
                     updated_at=clock_timestamp()
-                WHERE operation_id=%s RETURNING *
+                WHERE operation_id=%s
+                  AND status='RUNNING'
+                  AND worker_id=%s AND claim_generation=%s
+                  AND selection_generation=%s
+                  AND lease_until > clock_timestamp()
+                  AND claimed_at+(timeout_seconds*interval '1 second') > clock_timestamp()
+                  AND (deadline IS NULL OR deadline > clock_timestamp())
+                RETURNING *
                 """,
-                (checkpoint_ref,row["operation_id"]),
+                (checkpoint_ref,row["operation_id"],lease.worker_id,
+                 lease.claim_generation,lease.selection_generation),
             )
-            event_for(cursor,cursor.fetchone(),"operation.checkpointed.v1")
+            updated=cursor.fetchone()
+            if updated is None:
+                raise StaleOperation("checkpoint fence expired before commit")
+            event_for(cursor,updated,"operation.checkpointed.v1")
 
 
 def mark_external_dispatched(

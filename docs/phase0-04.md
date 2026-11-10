@@ -197,3 +197,13 @@ and a PREPARED external effect. If a lock wait outlives the lease, the
 transaction rolls back without a DISPATCHED marker, event or outbox entry.
 The recovery sweep can then safely retry undispatched work instead of
 quarantining a falsely dispatched operation as OUTCOME_UNKNOWN.
+
+## Checkpoint lock-wait expiry fence
+
+`checkpoint_operation` validates the original claim both before and after
+acquiring authority and input-version locks, which may block without revoking
+the persona generation. The final PostgreSQL UPDATE independently requires
+the same active worker, claim generation, unexpired lease, absolute timeout,
+and deadline. An expired checkpoint attempt raises `StaleOperation`, rolling
+back its checkpoint change, event, and outbox atomically. A previously
+committed checkpoint remains unchanged for safe retry or suspension.

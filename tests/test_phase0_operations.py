@@ -1255,3 +1255,111 @@ def test_external_dispatch_live_lease_records_marker_and_outbox(dsn):
     invoke(dsn,complete_operation,lease,result_ref="provider://confirmed")
     assert operation(dsn,queued.operation_id)[0]=="COMPLETED"
     assert resources(dsn,resource)==0
+
+
+
+def test_checkpoint_cannot_overwrite_after_lease_expiry_while_waiting_for_selection(dsn):
+    user,instance=seed(dsn)
+    resource=pool(dsn,capacity=1)
+    queued=cmd(instance,resource)
+    enqueue(dsn,user,queued)
+    lease=invoke(
+        dsn,claim_operation,worker_id="checkpoint-selection-race",
+        capabilities=(),lease_seconds=2,
+    )
+    assert lease.operation_id==queued.operation_id
+
+    # A successful checkpoint exists before the old attempt expires.
+    invoke(dsn,checkpoint_operation,lease,checkpoint_ref="checkpoint://committed-v1")
+    pid_queue=Queue(maxsize=1)
+    def delayed_checkpoint():
+        with psycopg.connect(dsn,autocommit=True) as conn:
+            pid_queue.put(conn.execute("SELECT pg_backend_pid()").fetchone()[0])
+            checkpoint_operation(conn,lease,checkpoint_ref="checkpoint://stale-v2")
+
+    with ThreadPoolExecutor(max_workers=1) as workers:
+        with psycopg.connect(dsn,autocommit=True) as blocker:
+            with blocker.transaction():
+                # Emulates primary activity: mode and generation unchanged
+                # while an exclusive selection lock blocks the checkpoint.
+                blocker.execute(
+                    """
+                    UPDATE persona_selection
+                    SET presence_revision=presence_revision+1
+                    WHERE user_id=%s RETURNING generation,mode
+                    """,
+                    (user,),
+                ).fetchone()
+                future=workers.submit(delayed_checkpoint)
+                pid=pid_queue.get(timeout=5)
+                _assert_waiting_for_db_lock(dsn,pid)
+                _let_lease_expire(lease)
+        with pytest.raises(StaleOperation):
+            future.result(timeout=10)
+
+    # The old checkpoint and its event survive, but the expired attempt
+    # must not overwrite the ref or create another checkpoint event/outbox.
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        state=conn.execute(
+            """
+            SELECT status,checkpoint_ref,claim_generation,lease_until
+            FROM operations WHERE operation_id=%s
+            """,
+            (queued.operation_id,),
+        ).fetchone()
+        assert state==(
+            "RUNNING","checkpoint://committed-v1",
+            lease.claim_generation,lease.lease_until,
+        )
+        assert conn.execute(
+            """
+            SELECT count(*) FROM events
+            WHERE event_type='operation.checkpointed.v1'
+              AND payload->>'operation_id'=%s
+            """,
+            (str(queued.operation_id),),
+        ).fetchone()[0]==1
+        assert conn.execute(
+            """
+            SELECT count(*) FROM outbox o
+            JOIN events e ON e.event_id=o.event_id
+            WHERE e.event_type='operation.checkpointed.v1'
+              AND e.payload->>'operation_id'=%s
+            """,
+            (str(queued.operation_id),),
+        ).fetchone()[0]==1
+    assert resources(dsn,resource)==1
+    assert invoke(dsn,reap_stale_operations)>=1
+    assert operation(dsn,queued.operation_id)[0]=="RETRY_WAIT"
+    assert resources(dsn,resource)==0
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT checkpoint_ref FROM operations WHERE operation_id=%s",
+            (queued.operation_id,),
+        ).fetchone()==("checkpoint://committed-v1",)
+
+
+def test_checkpoint_live_lease_still_records_ref_and_outbox(dsn):
+    user,instance=seed(dsn)
+    resource=pool(dsn,capacity=1)
+    queued=cmd(instance,resource)
+    enqueue(dsn,user,queued)
+    lease=claim(dsn,"checkpoint-live")
+    assert lease.operation_id==queued.operation_id
+    invoke(dsn,checkpoint_operation,lease,checkpoint_ref="checkpoint://valid")
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT status,checkpoint_ref FROM operations WHERE operation_id=%s",
+            (queued.operation_id,),
+        ).fetchone()==("RUNNING","checkpoint://valid")
+        assert conn.execute(
+            """
+            SELECT count(*) FROM events e
+            JOIN outbox o ON o.event_id=e.event_id
+            WHERE e.event_type='operation.checkpointed.v1'
+              AND e.payload->>'operation_id'=%s
+            """,
+            (str(queued.operation_id),),
+        ).fetchone()[0]==1
+    invoke(dsn,complete_operation,lease,result_ref="after-valid-checkpoint")
+    assert resources(dsn,resource)==0
