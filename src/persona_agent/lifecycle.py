@@ -150,7 +150,7 @@ def _execute(
                     raise IdempotencyConflict("idempotency key reused with different command")
                 if saved["result_json"] is None:
                     raise RuntimeError("committed lifecycle command missing result")
-                return SelectionResult(**saved["result_json"], replayed=True)
+                return SelectionResult.model_validate(saved["result_json"]).model_copy(update={"replayed": True})
 
             # Lock in same order as P0-01 rename's shared authority gate.
             cursor.execute(

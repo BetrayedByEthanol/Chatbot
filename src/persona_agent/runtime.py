@@ -4,6 +4,7 @@ import hashlib
 import json
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
+from pydantic import BaseModel
 from psycopg import Connection
 from psycopg.pq import TransactionStatus
 from psycopg.rows import dict_row
@@ -31,7 +32,7 @@ class IdempotencyConflict(Exception):
     pass
 
 
-def _fingerprint(command: RenameInstanceCommand) -> str:
+def _fingerprint(command: BaseModel) -> str:
     canonical = json.dumps(command.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
