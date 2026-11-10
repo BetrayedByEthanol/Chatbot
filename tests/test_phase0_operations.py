@@ -118,7 +118,7 @@ def cmd(instance, resource, *,
         generation=1, priority=Priority.P1, policy=Policy.FOREGROUND_ASYNC,
         effect=EffectClass.NONE, origin=Origin.USER, operation_id=None,
         key=None, dependencies=(), capabilities=(), concurrency_group=None,
-        max_attempts=3, deadline=None, units=1):
+        max_attempts=3, deadline=None, units=1, input_versions=None, timeout_seconds=300):
     return EnqueueOperation(
         operation_id=operation_id or uuid4(),instance_id=instance,
         expected_generation=generation,idempotency_key=key or str(uuid4()),
@@ -127,7 +127,8 @@ def cmd(instance, resource, *,
         effect_class=effect,resources={resource:units},
         dependencies=dependencies,capabilities=capabilities,
         concurrency_group=concurrency_group,max_attempts=max_attempts,
-        deadline=deadline,
+        deadline=deadline,input_versions=input_versions or {},
+        timeout_seconds=timeout_seconds,
     )
 
 
@@ -525,3 +526,98 @@ def test_nested_autocommit_rejected_and_no_event_emitted(dsn):
             with pytest.raises(ValueError,match="idle autocommit"):
                 reap_stale_operations(conn)
     assert operation(dsn,c.operation_id) is None
+
+
+
+def test_declared_input_version_is_checked_before_effects(dsn):
+    user,instance=seed(dsn)
+    key=pool(dsn)
+    c=cmd(instance,key,input_versions={"persona_instance":0})
+    enqueue(dsn,user,c)
+    lease=claim(dsn)
+    from persona_agent.contracts import RenameInstanceCommand
+    from persona_agent.runtime import rename_instance
+    invoke(dsn,rename_instance,actor(user),RenameInstanceCommand(
+        instance_id=instance,expected_generation=1,expected_version=0,
+        new_label="changed",idempotency_key=str(uuid4()),
+    ))
+    with pytest.raises(StaleOperation,match="input state version"):
+        invoke(dsn,complete_operation,lease,result_ref="invalid-stale-result")
+    with pytest.raises(StaleOperation,match="input state version"):
+        invoke(dsn,mark_external_dispatched,lease)
+    assert operation(dsn,c.operation_id)[0]=="RUNNING"
+
+
+def test_wrong_initial_input_version_and_unknown_owner_rejected(dsn):
+    user,instance=seed(dsn)
+    key=pool(dsn)
+    from persona_agent.runtime import VersionConflict
+    with pytest.raises(VersionConflict):
+        enqueue(dsn,user,cmd(instance,key,input_versions={"persona_instance":12}))
+    with pytest.raises(ValueError,match="unknown input version owner"):
+        cmd(instance,key,input_versions={"goal":1})
+
+
+def test_timeout_is_capped_at_claim_and_reaped_after_absolute_deadline(dsn):
+    user,instance=seed(dsn)
+    key=pool(dsn)
+    c=cmd(instance,key,timeout_seconds=1)
+    enqueue(dsn,user,c)
+    lease=claim(dsn)
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        recorded=conn.execute(
+            "SELECT claimed_at,lease_until FROM operations WHERE operation_id=%s",
+            (c.operation_id,),
+        ).fetchone()
+        assert recorded[1] <= recorded[0]+timedelta(seconds=1,milliseconds=25)
+        conn.execute(
+            """
+            UPDATE operations SET
+              claimed_at=clock_timestamp()-interval '2 seconds'
+            WHERE operation_id=%s
+            """,(c.operation_id,),
+        )
+    assert invoke(dsn,reap_stale_operations)>=1
+    assert operation(dsn,c.operation_id)[0]=="RETRY_WAIT"
+    assert resources(dsn,key)==0
+
+
+def test_background_ephemeral_is_cancelled_on_persona_switch(dsn):
+    user,instance,alternative=seed(dsn,two=True)
+    key=pool(dsn)
+    c=cmd(instance,key,policy=Policy.BACKGROUND_EPHEMERAL)
+    enqueue(dsn,user,c)
+    invoke(dsn,enter_background,actor(user),EnterBackgroundCommand(
+        instance_id=instance,expected_generation=1,expected_presence_revision=0,
+        reason=BackgroundReason.EXPLICIT_DEPARTURE,idempotency_key=str(uuid4()),
+    ))
+    lease=claim(dsn)
+    invoke(dsn,switch_persona,actor(user),SwitchPersonaCommand(
+        expected_instance_id=instance,target_instance_id=alternative,
+        expected_generation=1,idempotency_key=str(uuid4()),
+    ))
+    with pytest.raises(StaleOperation):
+        invoke(dsn,checkpoint_operation,lease,checkpoint_ref="should-not-commit")
+    assert invoke(dsn,reap_stale_operations)>=1
+    assert operation(dsn,c.operation_id)[0]=="CANCELLED"
+
+
+def test_cancellation_receipt_references_event_and_outbox(dsn):
+    user,instance=seed(dsn)
+    key=pool(dsn)
+    c=cmd(instance,key)
+    enqueue(dsn,user,c)
+    invoke(dsn,cancel_operation,actor(user),CancelOperationCommand(
+        operation_id=c.operation_id,expected_version=0,
+        idempotency_key="track-cancel",
+    ))
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            """
+            SELECT count(*) FROM command_receipts r
+            JOIN events e ON r.event_id=e.event_id
+            JOIN outbox o ON o.event_id=e.event_id
+            WHERE r.command_type='operation.cancel.v1'
+              AND r.user_id=%s AND r.idempotency_key='track-cancel'
+            """,(user,),
+        ).fetchone()[0]==1

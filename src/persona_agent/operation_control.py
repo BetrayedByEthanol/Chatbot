@@ -1,5 +1,6 @@
 """P0-04 fenced operation effects, cancellation, suspension and recovery."""
 
+from datetime import timedelta
 from uuid import UUID, uuid4
 
 from psycopg import Connection
@@ -51,8 +52,8 @@ def _unknown(cursor, row: dict, reason: str) -> dict:
         (reason,row["operation_id"]),
     )
     updated=cursor.fetchone()
-    event_for(cursor,updated,"operation.outcome_unknown.v1",{"reason":reason})
-    return updated
+    event_id=event_for(cursor,updated,"operation.outcome_unknown.v1",{"reason":reason})
+    return updated,event_id
 
 
 def heartbeat_operation(
@@ -241,7 +242,7 @@ def cancel_operation(
             if row["status"] in ("COMPLETED","FAILED","CANCELLED","OUTCOME_UNKNOWN"):
                 raise InvalidOperation("terminal operation cannot be cancelled")
             if row["effect_status"]=="DISPATCHED":
-                _unknown(cursor,row,"cancel requested after external dispatch")
+                _,event_id=_unknown(cursor,row,"cancel requested after external dispatch")
                 updated_status=Status.OUTCOME_UNKNOWN
             elif row["status"] in ("RUNNING","CANCEL_REQUESTED","SUSPEND_REQUESTED"):
                 cursor.execute(
@@ -252,18 +253,18 @@ def cancel_operation(
                     """,(row["operation_id"],),
                 )
                 updated=cursor.fetchone()
-                event_for(cursor,updated,"operation.cancel_requested.v1")
+                event_id=event_for(cursor,updated,"operation.cancel_requested.v1")
                 updated_status=Status.CANCEL_REQUESTED
             else:
                 release_resources(cursor,row)
                 updated=_update_state(cursor,row,"CANCELLED")
-                event_for(cursor,updated,"operation.cancelled.v1")
+                event_id=event_for(cursor,updated,"operation.cancelled.v1")
                 updated_status=Status.CANCELLED
             cursor.execute(
                 """
-                UPDATE command_receipts SET result_json=%s::jsonb
+                UPDATE command_receipts SET result_json=%s::jsonb,event_id=%s
                 WHERE receipt_id=%s
-                """,('{"status":"'+updated_status.value+'"}',receipt_id),
+                """,('{"status":"'+updated_status.value+'"}',event_id,receipt_id),
             )
             return updated_status
 
@@ -370,6 +371,8 @@ def reap_stale_operations(connection: Connection, *, limit: int=100) -> int:
                     o.lease_until <= clock_timestamp()
                     OR s.instance_id IS DISTINCT FROM o.instance_id
                     OR s.generation IS DISTINCT FROM o.selection_generation
+                    OR (o.claimed_at+(o.timeout_seconds*interval '1 second')
+                        <= clock_timestamp())
                     OR (o.execution_policy <> 'FOREGROUND_ASYNC'
                         AND (s.mode IS DISTINCT FROM 'BACKGROUND'
                              OR s.background_epoch IS DISTINCT FROM o.background_epoch))
@@ -411,7 +414,7 @@ def reap_stale_operations(connection: Connection, *, limit: int=100) -> int:
                 expired=(
                     row["lease_until"]<=now
                     or row["claimed_at"] is not None
-                    and row["claimed_at"]+__import__("datetime").timedelta(
+                    and row["claimed_at"]+timedelta(
                         seconds=row["timeout_seconds"])<=now
                 )
                 if not revoked and not epoch_invalid and not expired and row["status"]=="RUNNING":
@@ -423,9 +426,7 @@ def reap_stale_operations(connection: Connection, *, limit: int=100) -> int:
                         status="CANCELLED"
                     elif row["status"]=="SUSPEND_REQUESTED":
                         status="SUSPENDED"
-                    elif revoked:
-                        status="SUSPENDED"
-                    elif epoch_invalid:
+                    elif (revoked or epoch_invalid):
                         status=("CANCELLED" if row["execution_policy"]=="BACKGROUND_EPHEMERAL"
                                 else "SUSPENDED")
                     elif row["attempt_count"]>=row["max_attempts"]:

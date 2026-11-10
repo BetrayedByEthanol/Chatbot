@@ -95,6 +95,8 @@ class EnqueueOperation(BaseModel):
             raise ValueError("duplicate capabilities")
         if any(v < 0 for v in self.input_versions.values()):
             raise ValueError("negative dependency version")
+        if set(self.input_versions) - {"persona_instance"}:
+            raise ValueError("unknown input version owner; only persona_instance is supported")
         for dt in (self.eligible_at, self.deadline):
             if dt is not None and (dt.tzinfo is None or dt.utcoffset() is None):
                 raise ValueError("timestamps must be timezone-aware")
@@ -240,6 +242,17 @@ def require_current_authority(cursor, row: dict) -> None:
         or state["background_epoch"] != row["background_epoch"]
     ):
         raise StaleOperation("background epoch or mode invalidated")
+    if "persona_instance" in row["input_versions"]:
+        cursor.execute(
+            """
+            SELECT version FROM persona_instances
+            WHERE user_id=%s AND id=%s FOR SHARE
+            """,
+            (row["user_id"],row["instance_id"]),
+        )
+        version=cursor.fetchone()
+        if version is None or version["version"] != row["input_versions"]["persona_instance"]:
+            raise StaleOperation("operation input state version changed")
 
 
 def release_resources(cursor, row: dict) -> None:

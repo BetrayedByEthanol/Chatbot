@@ -12,7 +12,10 @@ from .operation_contracts import (
     OperationLease, Policy, Priority, ResourceUnavailable, Status,
     event_for, require_idle,
 )
-from .runtime import IdempotencyConflict, PermissionDenied, StaleSelection, _fingerprint
+from .runtime import (
+    IdempotencyConflict, PermissionDenied, StaleSelection, VersionConflict,
+    _fingerprint,
+)
 
 
 def configure_resource_pool(
@@ -61,11 +64,15 @@ def enqueue_operation(
     with connection.transaction():
         with connection.cursor(row_factory=dict_row) as cur:
             cur.execute(
-                "SELECT 1 FROM persona_instances WHERE user_id=%s AND id=%s",
+                "SELECT version FROM persona_instances WHERE user_id=%s AND id=%s",
                 (actor.user_id,command.instance_id),
             )
-            if cur.fetchone() is None:
+            instance=cur.fetchone()
+            if instance is None:
                 raise PermissionDenied("operation instance outside authenticated scope")
+            if ("persona_instance" in command.input_versions
+                and instance["version"] != command.input_versions["persona_instance"]):
+                raise VersionConflict("enqueue input state version already changed")
             cur.execute(
                 """
                 INSERT INTO command_receipts (
@@ -317,6 +324,16 @@ def claim_operation(
                 selected=cur.fetchone()
                 if not _eligible_for_policy(cur,op,selected):
                     continue
+                if "persona_instance" in op["input_versions"]:
+                    cur.execute(
+                        "SELECT version FROM persona_instances "
+                        "WHERE id=%s AND user_id=%s FOR SHARE",
+                        (op["instance_id"],op["user_id"]),
+                    )
+                    state_version=cur.fetchone()
+                    if (state_version is None or
+                        state_version["version"]!=op["input_versions"]["persona_instance"]):
+                        continue
                 cur.execute(
                     """
                     SELECT resource_key,units FROM operation_resource_requests
@@ -388,7 +405,10 @@ def claim_operation(
                         status='RUNNING',worker_id=%s,
                         claim_generation=claim_generation+1,
                         attempt_count=attempt_count+1,
-                        lease_until=clock_timestamp()+(%s*interval '1 second'),
+                        lease_until=LEAST(
+                            clock_timestamp()+(%s*interval '1 second'),
+                            clock_timestamp()+(timeout_seconds*interval '1 second')
+                        ),
                         claimed_at=clock_timestamp(),
                         background_epoch=%s,
                         version=version+1,updated_at=clock_timestamp()
