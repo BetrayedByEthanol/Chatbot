@@ -133,17 +133,41 @@ def test_fanout_is_independent_idempotent_and_at_least_once(dsn):
 def test_outbox_without_subscribers_is_dispatched_without_spin(dsn):
     drain(dsn)
     u,instance=seed(dsn)
-    first=publish(dsn,u,instance)
-    drain(dsn)
+    # Subscription registry is durable and shared across integration tests.
+    # Temporarily disable only this event type, then restore exact prior state.
     with psycopg.connect(dsn,autocommit=True) as conn:
-        assert conn.execute(
-            "SELECT dispatched_at IS NOT NULL FROM outbox WHERE event_id=%s",
-            (first.event_id,),
-        ).fetchone() == (True,)
-        assert conn.execute(
-            "SELECT count(*) FROM event_deliveries WHERE event_id=%s",
-            (first.event_id,),
-        ).fetchone()[0] == 0
+        enabled = [
+            row[0] for row in conn.execute(
+                "SELECT consumer_id FROM event_subscriptions WHERE event_type=%s AND enabled",
+                (RENAMED,),
+            ).fetchall()
+        ]
+        conn.execute(
+            "UPDATE event_subscriptions SET enabled=false WHERE event_type=%s",
+            (RENAMED,),
+        )
+    try:
+        first=publish(dsn,u,instance)
+        drain(dsn)
+        with psycopg.connect(dsn,autocommit=True) as conn:
+            assert conn.execute(
+                "SELECT dispatched_at IS NOT NULL FROM outbox WHERE event_id=%s",
+                (first.event_id,),
+            ).fetchone() == (True,)
+            assert conn.execute(
+                "SELECT count(*) FROM event_deliveries WHERE event_id=%s",
+                (first.event_id,),
+            ).fetchone()[0] == 0
+    finally:
+        if enabled:
+            with psycopg.connect(dsn,autocommit=True) as conn:
+                conn.execute(
+                    """
+                    UPDATE event_subscriptions SET enabled=true
+                    WHERE event_type=%s AND consumer_id=ANY(%s)
+                    """,
+                    (RENAMED,enabled),
+                )
 
 
 def test_only_one_worker_claims_a_delivery(dsn):
