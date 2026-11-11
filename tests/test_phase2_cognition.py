@@ -30,7 +30,7 @@ from persona_agent.operation_contracts import (
 from persona_agent.operation_scheduler import (
     claim_operation,configure_resource_pool,enqueue_operation,
 )
-from persona_agent.operation_control import reap_stale_operations
+from persona_agent.operation_control import reap_stale_operations,fail_operation
 from persona_agent.runtime import PermissionDenied
 import persona_agent.cognitive_engine as engine_module
 
@@ -382,3 +382,74 @@ def test_concurrent_admission_has_exactly_one_staged_operation(dsn):
                WHERE operation_type=%s AND user_id=%s""",
             (COGNITIVE_OPERATION,user),
         ).fetchone()[0]==1
+
+
+
+def test_terminal_failure_requires_explicit_operator_retry(dsn):
+    """P0 final failure is terminal until a separately authorized fresh attempt."""
+    user,instance,_=seed(dsn)
+    conversation=uuid4()
+    turns(dsn,user,instance,conversation)
+    first=call(dsn,schedule_cognition,platform(user),conversation,instance,1)
+    assert first.admission_attempt==1
+
+    for attempt in range(3):
+        lease=claim(dsn)
+        status=call(
+            dsn,fail_operation,lease,reason="operator test outage",
+            delay_seconds=0,
+        )
+        assert status.value==("FAILED" if attempt==2 else "RETRY_WAIT")
+    assert call(dsn,schedule_cognition,platform(user),conversation,instance,1) is None
+    with pytest.raises(PermissionDenied,match="operator authority"):
+        call(dsn,schedule_cognition,platform(user),conversation,instance,1,
+             retry_failed=True)
+    operator=TrustedPlatformActor(user_id=user,source_id="cognition.operator")
+    retried=call(
+        dsn,schedule_cognition,operator,conversation,instance,1,
+        retry_failed=True,
+    )
+    assert retried.admission_attempt==2
+    assert retried.operation_id!=first.operation_id
+    assert (retried.start_sequence,retried.end_sequence)==(
+        first.start_sequence,first.end_sequence,
+    )
+    assert call(dsn,schedule_cognition,operator,conversation,instance,1,
+                retry_failed=True) is None
+    restored=call(dsn,run_cognition,claim(dsn),FixedCognition(intention=False))
+    assert restored.end_sequence==first.end_sequence
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        rows=conn.execute(
+            """SELECT j.admission_attempt,o.status
+               FROM cognitive_jobs j JOIN operations o
+                 ON o.operation_id=j.operation_id
+               WHERE j.conversation_id=%s
+               ORDER BY j.admission_attempt""",(conversation,),
+        ).fetchall()
+        assert rows==[(1,"FAILED"),(2,"COMPLETED")]
+
+
+def test_repeated_interpretation_links_independent_user_evidence(dsn):
+    """A model repeating itself does not count as its own corroboration."""
+    user,instance,_=seed(dsn)
+    conversation=uuid4()
+    turns(dsn,user,instance,conversation,n=4)
+    call(dsn,schedule_cognition,platform(user),conversation,instance,1)
+    call(dsn,run_cognition,claim(dsn),FixedCognition(intention=False))
+    turns(dsn,user,instance,conversation,n=4)
+    new=call(dsn,schedule_cognition,platform(user),conversation,instance,1)
+    assert new.start_sequence==4
+    call(dsn,run_cognition,claim(dsn),FixedCognition(intention=False))
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        reflections=conn.execute(
+            """SELECT reflection_id,related_reflection_id,evidence_turn_id,
+                      epistemic_status
+               FROM cognitive_reflections
+               WHERE user_id=%s AND instance_id=%s ORDER BY created_at""",
+            (user,instance),
+        ).fetchall()
+        assert len(reflections)==2
+        assert reflections[0][1] is None
+        assert reflections[1][1]==reflections[0][0]
+        assert reflections[0][2]!=reflections[1][2]
+        assert all(row[3]=="MODEL_INTERPRETED" for row in reflections)
