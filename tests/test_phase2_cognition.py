@@ -407,6 +407,11 @@ def test_concurrent_admission_has_exactly_one_staged_operation(dsn):
                WHERE operation_type=%s AND user_id=%s""",
             (COGNITIVE_OPERATION,user),
         ).fetchone()[0]==1
+        current_op=conn.execute(
+            "SELECT operation_id FROM cognitive_jobs WHERE conversation_id=%s",
+            (conversation,),
+        ).fetchone()[0]
+    cancel_pending(dsn,user,current_op)
 
 
 
