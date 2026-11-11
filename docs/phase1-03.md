@@ -138,3 +138,19 @@ anchor, without multiplying user rows ahead of the `max_turns` limit.
 A result delivered after an explicit topic resumption stays in the very
 next conversation context even when its original request is outside the
 recent-turn window.
+
+## Review hardening — complete journal correlation in turn traces
+
+`get_turn_trace` now includes conversation events associated with either
+`turn_id` or `evidence_turn_id`, and tool/operation events associated with
+the turn's scoped `tool_call_id` or `operation_id`. For resumed follow-ups,
+the delivery-anchor turn is associated through
+`conversation_assistant_followups.delivery_turn_id`; the original source
+turn retains its full operation history. All matches require the event
+to belong to the authenticated user and the conversation's persona instance.
+Direct turn/evidence events also require the conversation's event stream.
+The existing bounded event-ID-only response is preserved; message text and
+event payloads are not exposed. PostgreSQL tests cover evidence-linked
+dialogue mutations, automatically resolved acknowledgments, operation events,
+the deferred/ready/delivered transitions and exclusion of unrelated turns
+or users.

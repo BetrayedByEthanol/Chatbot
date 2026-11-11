@@ -603,3 +603,123 @@ def test_resumed_followup_is_positioned_at_delivery_even_when_source_outside_win
         ("user","What did beta count?"),
     ]
     assert len([m for m in full.messages if m.content==published.text])==1
+
+
+
+def test_turn_trace_includes_dialogue_evidence_and_automatic_ack_events(dsn):
+    user,instance=seed(dsn)
+    conv=uuid4()
+    first=incoming(dsn,user,instance,conv,"Please explain the install")
+    thread,_=open_for(dsn,user,instance,conv,first,"Installation steps")
+    referent=uuid4()
+    call(dsn,register_referent,actor(user),RegisterReferentCommand(
+        **base(user,instance,conv,first,revision(dsn,user,conv)),
+        thread_id=thread,referent_id=referent,kind="TOPIC",label="Nginx",
+    ))
+    delivered=response(dsn,user,first,"Please confirm you received this step")
+    pending=uuid4()
+    call(dsn,offer_dialogue_act,actor(user),OfferDialogueActCommand(
+        **base(user,instance,conv,first,revision(dsn,user,conv)),
+        thread_id=thread,act_id=pending,source_response_id=delivered.response_id,
+        kind=DialogueActKind.ACKNOWLEDGMENT,label="Confirm receipt",
+    ))
+    second=incoming(dsn,user,instance,conv,"Okay")
+    trace_first=call(dsn,get_turn_trace,actor(user),first.turn_id)
+    trace_second=call(dsn,get_turn_trace,actor(user),second.turn_id)
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        evidence_events=conn.execute(
+            """
+            SELECT event_id,event_type FROM events
+            WHERE user_id=%s AND instance_id=%s
+              AND payload->>'evidence_turn_id'=%s
+            """,
+            (user,instance,str(first.turn_id)),
+        ).fetchall()
+        ack_event=conn.execute(
+            """
+            SELECT event_id FROM events
+            WHERE user_id=%s AND instance_id=%s
+              AND event_type='conversation.dialogue.ack_resolved.v1'
+              AND payload->>'evidence_turn_id'=%s
+            """,
+            (user,instance,str(second.turn_id)),
+        ).fetchone()[0]
+    assert {kind for _,kind in evidence_events} >= {
+        "conversation.dialogue.thread_opened.v1",
+        "conversation.dialogue.referent_recorded.v1",
+        "conversation.dialogue.act_offered.v1",
+    }
+    assert {event for event,_ in evidence_events} <= set(trace_first.event_ids)
+    assert ack_event in trace_second.event_ids
+    assert ack_event not in trace_first.event_ids
+    assert len(trace_first.event_ids)==len(set(trace_first.event_ids))
+
+
+def test_turn_trace_correlates_tool_lifecycle_and_resumed_delivery(dsn):
+    user,instance=seed(dsn)
+    outsider,_=seed(dsn)
+    call(dsn,configure_resource_pool,RESOURCE_KEY,capacity_units=2)
+    conv=uuid4()
+    first=incoming(dsn,user,instance,conv,"alpha beta beta gamma")
+    thread,_=open_for(dsn,user,instance,conv,first,"Statistics")
+    command=SlowTextToolCommand(turn_id=first.turn_id,max_words=2)
+    notice=call(dsn,respond_to_text_analysis,actor(user),command,await_seconds=0)
+    call(dsn,acknowledge_text_delivery,actor(user),notice.response_id)
+    tool=call(dsn,schedule_text_analysis,actor(user),command)
+    lease=call(dsn,run_one_text_tool,worker_id="trace-worker")
+    assert lease.operation_id==tool.operation_id
+
+    unrelated=incoming(dsn,user,instance,conv,"Unrelated discussion")
+    open_for(dsn,user,instance,conv,unrelated,"Travel")
+    response(dsn,user,unrelated,"We'll discuss travel")
+    assert call(dsn,reconcile_tool_followup,actor(user),
+                tool.tool_call_id).followup_state=="DEFERRED"
+
+    resumed=incoming(dsn,user,instance,conv,"Return to statistics")
+    call(dsn,focus_thread,actor(user),FocusThreadCommand(
+        **base(user,instance,conv,resumed,revision(dsn,user,conv)),
+        thread_id=thread,
+    ))
+    response(dsn,user,resumed,"Now I can provide the result.")
+    assert call(dsn,reconcile_tool_followup,actor(user),
+                tool.tool_call_id).followup_state=="READY"
+    call(dsn,prepare_tool_followup,actor(user),tool.tool_call_id)
+    call(dsn,acknowledge_tool_followup,actor(user),tool.tool_call_id)
+
+    original_trace=call(dsn,get_turn_trace,actor(user),first.turn_id)
+    resumed_trace=call(dsn,get_turn_trace,actor(user),resumed.turn_id)
+    unrelated_trace=call(dsn,get_turn_trace,actor(user),unrelated.turn_id)
+
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        relevant=conn.execute(
+            """
+            SELECT event_id,event_type
+            FROM events WHERE user_id=%s AND instance_id=%s
+              AND (
+                  payload->>'tool_call_id'=%s
+                  OR payload->>'operation_id'=%s
+              )
+            """,
+            (user,instance,str(tool.tool_call_id),str(tool.operation_id)),
+        ).fetchall()
+        anchor=conn.execute(
+            "SELECT turn_id,delivery_turn_id "
+            "FROM conversation_assistant_followups WHERE tool_call_id=%s",
+            (tool.tool_call_id,),
+        ).fetchone()
+    assert anchor==(first.turn_id,resumed.turn_id)
+    assert {kind for _,kind in relevant} >= {
+        "conversation.tool.requested.v1",
+        "conversation.tool.followup_state.v1",
+        "conversation.tool.followup_delivered.v1",
+        "operation.queued.v1",
+        "operation.completed.v1",
+    }
+    all_related_ids={event for event,_ in relevant}
+    assert all_related_ids <= set(original_trace.event_ids)
+    assert all_related_ids <= set(resumed_trace.event_ids)
+    assert all_related_ids.isdisjoint(unrelated_trace.event_ids)
+    assert len(original_trace.event_ids)==len(set(original_trace.event_ids))
+    assert len(resumed_trace.event_ids)==len(set(resumed_trace.event_ids))
+    with pytest.raises(PermissionDenied):
+        call(dsn,get_turn_trace,actor(outsider),first.turn_id)

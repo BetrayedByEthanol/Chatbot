@@ -7,7 +7,7 @@ none of these values are invented from generated or delivered timestamps.
 
 from datetime import datetime
 from statistics import mean
-from uuid import UUID
+from uuid import UUID, NAMESPACE_URL, uuid5
 
 from psycopg import Connection
 from psycopg.rows import dict_row
@@ -78,7 +78,7 @@ def get_turn_trace(
         with connection.cursor(row_factory=dict_row) as cur:
             cur.execute(
                 """
-                SELECT t.conversation_id,t.turn_id,t.sequence,
+                SELECT t.conversation_id,t.instance_id,t.turn_id,t.sequence,
                        t.status AS turn_status,t.created_at AS input_at,
                        r.response_id,r.model_id,r.delivery_status AS response_status,
                        r.generated_at,r.delivered_at,
@@ -103,18 +103,59 @@ def get_turn_trace(
             row=cur.fetchone()
             if row is None:
                 raise PermissionDenied("turn trace outside authenticated scope")
-            # The event journal contains stable identifiers, not raw text.
+            # A turn's event history spans two durable correlation paths:
+            # conversation events use either turn_id or evidence_turn_id;
+            # tool/operation events use an independently scoped tool call or
+            # operation ID. A resumed follow-up additionally belongs to the
+            # turn where delivery was acknowledged, not just its source turn.
+            # The outer user/persona fence applies to *every* matched event.
+            conversation_stream=uuid5(
+                NAMESPACE_URL,
+                f"persona-agent/conversation/{row['conversation_id']}",
+            )
             cur.execute(
                 """
-                SELECT event_id FROM events
-                WHERE user_id=%s AND instance_id=(
-                    SELECT instance_id FROM conversations
-                    WHERE conversation_id=%s AND user_id=%s
+                WITH associated_tools AS (
+                    SELECT call.tool_call_id,call.operation_id
+                    FROM conversation_tool_calls call
+                    LEFT JOIN conversation_assistant_followups followup
+                      ON followup.tool_call_id=call.tool_call_id
+                     AND followup.conversation_id=call.conversation_id
+                     AND followup.user_id=call.user_id
+                     AND followup.instance_id=call.instance_id
+                    WHERE call.conversation_id=%s
+                      AND call.user_id=%s AND call.instance_id=%s
+                      AND (
+                          call.turn_id=%s OR followup.delivery_turn_id=%s
+                      )
                 )
-                AND payload->>'turn_id'=%s
-                ORDER BY recorded_at,event_id LIMIT 32
+                SELECT e.event_id FROM events e
+                WHERE e.user_id=%s AND e.instance_id=%s
+                  AND (
+                      (
+                          e.stream_id=%s
+                          AND (
+                              e.payload->>'turn_id'=%s
+                              OR e.payload->>'evidence_turn_id'=%s
+                          )
+                      )
+                      OR EXISTS (
+                          SELECT 1 FROM associated_tools tool
+                          WHERE e.payload->>'tool_call_id'=tool.tool_call_id::text
+                             OR (
+                                 tool.operation_id IS NOT NULL
+                                 AND e.payload->>'operation_id'=tool.operation_id::text
+                             )
+                      )
+                  )
+                ORDER BY e.recorded_at,e.event_id LIMIT 32
                 """,
-                (actor.user_id,row["conversation_id"],actor.user_id,str(turn_id)),
+                (
+                    row["conversation_id"],actor.user_id,row["instance_id"],
+                    turn_id,turn_id,
+                    actor.user_id,row["instance_id"],conversation_stream,
+                    str(turn_id),str(turn_id),
+                ),
             )
             events=tuple(a["event_id"] for a in cur.fetchall())
             return TurnTrace(
