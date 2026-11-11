@@ -1,0 +1,70 @@
+name: Phase 1 live integrated acceptance
+on:
+  pull_request:
+    paths:
+      - "src/persona_agent/**"
+      - "tests/test_phase1_integrated_acceptance.py"
+      - "scripts/phase1_live_acceptance.py"
+      - ".github/workflows/phase1-acceptance.yml"
+  workflow_dispatch:
+
+jobs:
+  live-ollama-postgres:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: phase1live
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres -d phase1live"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      ACCEPTANCE_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/phase1live
+      ACCEPTANCE_OLLAMA_URL: http://127.0.0.1:11434
+      ACCEPTANCE_MODEL: qwen2.5:0.5b
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Python runtime
+        run: python -m pip install -e ".[test]"
+      - name: Apply database migrations on disposable acceptance DB
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          import psycopg
+          with psycopg.connect(os.environ["ACCEPTANCE_DATABASE_URL"],autocommit=True) as conn:
+              for migration in sorted(Path("migrations").glob("*.sql")):
+                  with conn.transaction():
+                      conn.execute(migration.read_text())
+          PY
+      - name: Start actual Ollama server
+        run: |
+          docker run -d --name phase1-ollama \
+            -p 127.0.0.1:11434:11434 ollama/ollama:latest
+          for attempt in $(seq 1 90); do
+            if curl --fail --silent http://127.0.0.1:11434/api/tags >/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs phase1-ollama
+          exit 1
+      - name: Pull small real model and verify installed model
+        run: |
+          docker exec phase1-ollama ollama pull "$ACCEPTANCE_MODEL"
+          docker exec phase1-ollama ollama list
+      - name: Exercise real model, transport, durable restart and worker
+        run: python scripts/phase1_live_acceptance.py
+      - name: Report Ollama diagnostics on failure
+        if: failure()
+        run: docker logs --tail 100 phase1-ollama || true
