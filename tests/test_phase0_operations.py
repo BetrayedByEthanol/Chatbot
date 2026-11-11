@@ -1779,3 +1779,178 @@ def test_claim_final_deadline_guard_rolls_back_resource_and_group_writes(dsn):
             "AND payload->>'operation_id'=%s",(str(target.operation_id),),
         ).fetchone()[0]==0
     assert resources(dsn,resource)==0
+
+
+
+@pytest.mark.parametrize("expiry_fence",["lease","deadline"])
+def test_failure_cannot_commit_after_authority_lock_wait(dsn,expiry_fence):
+    user,instance=seed(dsn)
+    resource=pool(dsn,capacity=1)
+    deadline=(
+        datetime.now(timezone.utc)+timedelta(seconds=3)
+        if expiry_fence=="deadline" else None
+    )
+    queued=cmd(instance,resource,deadline=deadline)
+    enqueue(dsn,user,queued)
+    lease=invoke(
+        dsn,claim_operation,worker_id="fail-selection-race",
+        capabilities=(),lease_seconds=60 if deadline else 3,
+    )
+    assert lease.operation_id==queued.operation_id
+
+    pid_queue=Queue(maxsize=1)
+    def delayed_fail():
+        with psycopg.connect(dsn,autocommit=True) as conn:
+            pid_queue.put(conn.execute("SELECT pg_backend_pid()").fetchone()[0])
+            return fail_operation(conn,lease,reason="stale failure",delay_seconds=0)
+
+    with ThreadPoolExecutor(max_workers=1) as workers:
+        with psycopg.connect(dsn,autocommit=True) as blocker:
+            with blocker.transaction():
+                # Primary activity acquires an exclusive selection-row lock
+                # without changing generation or Foreground mode.
+                blocker.execute(
+                    "SELECT user_id FROM persona_selection WHERE user_id=%s "
+                    "FOR UPDATE",(user,),
+                ).fetchone()
+                future=workers.submit(delayed_fail)
+                pid=pid_queue.get(timeout=5)
+                _assert_waiting_for_db_lock(dsn,pid)
+                if deadline is None:
+                    _let_lease_expire(lease)
+                else:
+                    time.sleep(max(
+                        0,(deadline-datetime.now(timezone.utc)).total_seconds()+0.15,
+                    ))
+        with pytest.raises(StaleOperation):
+            future.result(timeout=10)
+
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            """
+            SELECT status,attempt_count,claim_generation,worker_id,lease_until,
+                   last_error
+            FROM operations WHERE operation_id=%s
+            """,(queued.operation_id,),
+        ).fetchone()==(
+            "RUNNING",1,lease.claim_generation,lease.worker_id,
+            lease.lease_until,None,
+        )
+        assert conn.execute(
+            """
+            SELECT count(*) FROM events
+            WHERE event_type IN ('operation.retry_wait.v1','operation.failed.v1')
+              AND payload->>'operation_id'=%s
+            """,(str(queued.operation_id),),
+        ).fetchone()[0]==0
+        assert conn.execute(
+            """
+            SELECT count(*) FROM outbox o JOIN events e ON o.event_id=e.event_id
+            WHERE e.event_type IN ('operation.retry_wait.v1','operation.failed.v1')
+              AND e.payload->>'operation_id'=%s
+            """,(str(queued.operation_id),),
+        ).fetchone()[0]==0
+    assert resources(dsn,resource)==1
+    assert invoke(dsn,reap_stale_operations)>=1
+    assert operation(dsn,queued.operation_id)[0]==(
+        "FAILED" if deadline is not None else "RETRY_WAIT"
+    )
+    assert resources(dsn,resource)==0
+
+
+def test_failure_cannot_release_resources_after_pool_lock_wait(dsn):
+    user,instance=seed(dsn)
+    resource=pool(dsn,capacity=1)
+    queued=cmd(instance,resource)
+    enqueue(dsn,user,queued)
+    lease=invoke(
+        dsn,claim_operation,worker_id="fail-pool-race",
+        capabilities=(),lease_seconds=3,
+    )
+    assert lease.operation_id==queued.operation_id
+    pid_queue=Queue(maxsize=1)
+    def delayed_fail():
+        with psycopg.connect(dsn,autocommit=True) as conn:
+            pid_queue.put(conn.execute("SELECT pg_backend_pid()").fetchone()[0])
+            return fail_operation(conn,lease,reason="stale pool failure")
+
+    with ThreadPoolExecutor(max_workers=1) as workers:
+        with psycopg.connect(dsn,autocommit=True) as blocker:
+            with blocker.transaction():
+                blocker.execute(
+                    "SELECT resource_key FROM execution_resource_pools "
+                    "WHERE resource_key=%s FOR UPDATE",(resource,),
+                ).fetchone()
+                future=workers.submit(delayed_fail)
+                pid=pid_queue.get(timeout=5)
+                _assert_waiting_for_db_lock(dsn,pid)
+                _let_lease_expire(lease)
+        with pytest.raises(StaleOperation):
+            future.result(timeout=10)
+
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            """
+            SELECT status,last_error FROM operations WHERE operation_id=%s
+            """,(queued.operation_id,),
+        ).fetchone()==("RUNNING",None)
+        assert conn.execute(
+            "SELECT count(*) FROM operation_resource_reservations "
+            "WHERE operation_id=%s",(queued.operation_id,),
+        ).fetchone()[0]==1
+        assert conn.execute(
+            "SELECT count(*) FROM events "
+            "WHERE event_type='operation.retry_wait.v1' "
+            "AND payload->>'operation_id'=%s",(str(queued.operation_id),),
+        ).fetchone()[0]==0
+    assert resources(dsn,resource)==1
+    assert invoke(dsn,reap_stale_operations)>=1
+    assert operation(dsn,queued.operation_id)[0]=="RETRY_WAIT"
+    assert resources(dsn,resource)==0
+
+
+def test_external_failure_cannot_quarantine_after_lease_expiry(dsn):
+    user,instance=seed(dsn)
+    resource=pool(dsn,capacity=1)
+    queued=cmd(instance,resource,effect=EffectClass.EXTERNAL)
+    enqueue(dsn,user,queued)
+    lease=invoke(
+        dsn,claim_operation,worker_id="fail-external-race",
+        capabilities=(),lease_seconds=3,
+    )
+    invoke(dsn,mark_external_dispatched,lease)
+
+    pid_queue=Queue(maxsize=1)
+    def delayed_fail():
+        with psycopg.connect(dsn,autocommit=True) as conn:
+            pid_queue.put(conn.execute("SELECT pg_backend_pid()").fetchone()[0])
+            return fail_operation(conn,lease,reason="late external failure")
+
+    with ThreadPoolExecutor(max_workers=1) as workers:
+        with psycopg.connect(dsn,autocommit=True) as blocker:
+            with blocker.transaction():
+                blocker.execute(
+                    "SELECT user_id FROM persona_selection WHERE user_id=%s "
+                    "FOR UPDATE",(user,),
+                ).fetchone()
+                future=workers.submit(delayed_fail)
+                pid=pid_queue.get(timeout=5)
+                _assert_waiting_for_db_lock(dsn,pid)
+                _let_lease_expire(lease)
+        with pytest.raises(StaleOperation):
+            future.result(timeout=10)
+
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT status,effect_status,last_error FROM operations "
+            "WHERE operation_id=%s",(queued.operation_id,),
+        ).fetchone()==("RUNNING","DISPATCHED",None)
+        assert conn.execute(
+            "SELECT count(*) FROM events "
+            "WHERE event_type='operation.outcome_unknown.v1' "
+            "AND payload->>'operation_id'=%s",(str(queued.operation_id),),
+        ).fetchone()[0]==0
+    assert resources(dsn,resource)==1
+    assert invoke(dsn,reap_stale_operations)>=1
+    assert operation(dsn,queued.operation_id)[0]=="OUTCOME_UNKNOWN"
+    assert resources(dsn,resource)==1  # conservative external reconciliation

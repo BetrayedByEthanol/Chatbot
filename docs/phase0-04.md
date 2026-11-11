@@ -256,3 +256,19 @@ savepoint rolls back concurrency-group and resource reservations if this
 final guard does not match; no RUNNING lease, attempt increment, event or
 outbox entry can survive an expired admission. Scanning may continue to
 other eligible queued operations.
+
+## Failure reporting lease/deadline fence
+
+`fail_operation` now revalidates the worker claim after potentially
+blocking authority locks and after releasing reserved pools. Its ordinary
+failure/retry UPDATE independently requires a live lease, absolute
+execution timeout, deadline and matching worker/claim/selection generation
+under PostgreSQL time. A stale failure raises `StaleOperation`; the
+transaction rolls back the attempted resource release and produces no
+failure/retry event or outbox entry. Recovery subsequently determines whether
+the attempt can retry or has passed its hard deadline.
+
+Worker-reported failures of already-dispatched external effects use the
+same post-lock claim check and a guarded quarantine UPDATE. Recovery retains
+its distinct authority to quarantine expired DISPATCHED work without
+pretending a provider action was safely undone.

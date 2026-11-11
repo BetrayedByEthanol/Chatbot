@@ -39,19 +39,43 @@ def _update_state(cursor, row: dict, status: str, *, error: str | None = None,
     return cursor.fetchone()
 
 
-def _unknown(cursor, row: dict, reason: str) -> dict:
-    """Unknown external effects retain exclusive reservations until reconciled."""
+def _unknown(
+    cursor, row: dict, reason: str, *, lease: OperationLease | None = None,
+) -> dict:
+    """Unknown external effects retain reservations until reconciled.
+
+    Recovery owns its already-expired attempt and may quarantine it directly.
+    A worker reporting failure must instead pass the still-valid lease fence.
+    """
+    if lease is None:
+        worker_fence=""
+        params=(reason,row["operation_id"])
+    else:
+        worker_fence="""
+          AND status='RUNNING' AND effect_status='DISPATCHED'
+          AND worker_id=%s AND claim_generation=%s
+          AND selection_generation=%s
+          AND lease_until > clock_timestamp()
+          AND claimed_at+(timeout_seconds*interval '1 second') > clock_timestamp()
+          AND (deadline IS NULL OR deadline > clock_timestamp())
+        """
+        params=(reason,row["operation_id"],lease.worker_id,
+                lease.claim_generation,lease.selection_generation)
     cursor.execute(
         """
         UPDATE operations SET status='OUTCOME_UNKNOWN',
             effect_status='UNKNOWN',worker_id=NULL,lease_until=NULL,
             claimed_at=NULL,last_error=%s,version=version+1,
             updated_at=clock_timestamp()
-        WHERE operation_id=%s RETURNING *
+        WHERE operation_id=%s
+        """+worker_fence+"""
+        RETURNING *
         """,
-        (reason,row["operation_id"]),
+        params,
     )
     updated=cursor.fetchone()
+    if updated is None:
+        raise StaleOperation("external failure fence expired before commit")
     event_id=event_for(cursor,updated,"operation.outcome_unknown.v1",{"reason":reason})
     return updated,event_id
 
@@ -234,14 +258,41 @@ def fail_operation(
             row=require_claim(cursor,lease)
             require_current_authority(cursor,row)
             if row["effect_status"]=="DISPATCHED":
-                _unknown(cursor,row,reason[:1000])
+                # The authority locks may have blocked beyond the original
+                # lease or hard deadline. Worker-driven quarantine is fenced;
+                # recovery retains separate authority over expired attempts.
+                require_claim(cursor,lease)
+                _unknown(cursor,row,reason[:1000],lease=lease)
                 return Status.OUTCOME_UNKNOWN
             status=("FAILED" if row["attempt_count"]>=row["max_attempts"]
                     else "RETRY_WAIT")
             release_resources(cursor,row)
-            updated=_update_state(
-                cursor,row,status,error=reason[:1000],eligible_delay=delay_seconds,
+            # Pool locks may have blocked past lease, timeout or deadline.
+            # Rejecting the worker rolls back the resource release entirely;
+            # recovery then decides whether the work is retryable or failed.
+            require_claim(cursor,lease)
+            cursor.execute(
+                """
+                UPDATE operations SET status=%s,worker_id=NULL,
+                    lease_until=NULL,claimed_at=NULL,
+                    version=version+1,updated_at=clock_timestamp(),
+                    eligible_at=clock_timestamp()+(%s*interval '1 second'),
+                    last_error=%s
+                WHERE operation_id=%s
+                  AND status='RUNNING'
+                  AND worker_id=%s AND claim_generation=%s
+                  AND selection_generation=%s
+                  AND lease_until > clock_timestamp()
+                  AND claimed_at+(timeout_seconds*interval '1 second') > clock_timestamp()
+                  AND (deadline IS NULL OR deadline > clock_timestamp())
+                RETURNING *
+                """,
+                (status,delay_seconds,reason[:1000],row["operation_id"],
+                 lease.worker_id,lease.claim_generation,lease.selection_generation),
             )
+            updated=cursor.fetchone()
+            if updated is None:
+                raise StaleOperation("failure fence expired before commit")
             event_for(cursor,updated,"operation.failed.v1" if status=="FAILED"
                       else "operation.retry_wait.v1",{"reason":reason[:1000]})
             return Status(status)
