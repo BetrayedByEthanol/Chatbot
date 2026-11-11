@@ -2,6 +2,8 @@
 
 import json
 from concurrent.futures import ThreadPoolExecutor
+from threading import Event
+from time import monotonic, sleep
 from uuid import uuid4
 
 import pytest
@@ -35,6 +37,7 @@ from persona_agent.operation_control import (
 )
 from persona_agent.runtime import PermissionDenied
 import persona_agent.cognitive_engine as engine_module
+import persona_agent.automatic_cognition as auto_module
 
 
 def call(dsn,fn,*args,**kwargs):
@@ -483,3 +486,197 @@ def test_repeated_interpretation_links_independent_user_evidence(dsn):
         assert reflections[1][1]==reflections[0][0]
         assert reflections[0][2]!=reflections[1][2]
         assert all(row[3]=="MODEL_INTERPRETED" for row in reflections)
+
+
+
+@pytest.mark.parametrize("already_committed",[False,True])
+def test_standalone_worker_reaps_expired_operation_claims(dsn,monkeypatch,already_committed):
+    """A restarted standalone worker must not strand a P0 resource/group lock.
+
+    Cover both crash during model inference and crash AFTER cognitive commit
+    but BEFORE P0 operation completion. In the latter case retry must not
+    repeat model inference or append a duplicate reflection.
+    """
+    user,instance,_=seed(dsn)
+    conversation=uuid4()
+    turns(dsn,user,instance,conversation)
+    scheduled=call(dsn,schedule_cognition,platform(user),conversation,instance,1)
+    original_lease=claim(dsn)
+    assert original_lease.operation_id==scheduled.operation_id
+
+    if already_committed:
+        work=call(dsn,prepare_cognition,original_lease)
+        draft=CognitiveDraft(proposals=(CognitiveProposal(
+            kind="OBSERVATION",subject="USER",
+            content="Garden progress was reported.",
+            source_turn_id=work.turns[0]["turn_id"],
+            evidence_quote="Garden progress",confidence=0.75,
+        ),))
+        assert call(
+            dsn,commit_cognition,original_lease,work,draft,"fake-model",
+        ).reflection_count==1
+
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        conn.execute(
+            """UPDATE operations SET lease_until=clock_timestamp()-interval '1 second'
+               WHERE operation_id=%s""",(scheduled.operation_id,),
+        )
+        assert conn.execute(
+            """SELECT count(*) FROM operation_resource_reservations
+               WHERE operation_id=%s""",(scheduled.operation_id,),
+        ).fetchone()[0]==1
+        assert conn.execute(
+            """SELECT count(*) FROM operation_concurrency_locks
+               WHERE operation_id=%s""",(scheduled.operation_id,),
+        ).fetchone()[0]==1
+
+    stopping=Event()
+    observed=[]
+
+    def observe_recovery(connection,gateway,*,worker_id):
+        # This runs in the restarted worker after its reaper and scheduling
+        # tick. Observe the database effects without doing live inference.
+        with connection.cursor() as cur:
+            cur.execute(
+                "SELECT status FROM operations WHERE operation_id=%s",
+                (scheduled.operation_id,),
+            )
+            observed.append(cur.fetchone()[0])
+        stopping.set()
+        return None
+
+    monkeypatch.setattr(auto_module,"run_one_cognitive_operation",observe_recovery)
+    call_count=[]
+    monkeypatch.setattr(
+        auto_module,"OllamaChatGateway",
+        lambda **kw: call_count.append(kw) or object(),
+    )
+    auto_module.run_cognitive_worker(
+        dsn,model="fake-recovery",worker_id="p206-restart",
+        stop=stopping,poll_seconds=0.1,
+    )
+    assert observed==["RETRY_WAIT"]
+    assert len(call_count)==1
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            """SELECT count(*) FROM operation_resource_reservations
+               WHERE operation_id=%s""",(scheduled.operation_id,),
+        ).fetchone()[0]==0
+        assert conn.execute(
+            """SELECT count(*) FROM operation_concurrency_locks
+               WHERE operation_id=%s""",(scheduled.operation_id,),
+        ).fetchone()[0]==0
+        # Advance P0's test retry clock, not the production backoff policy.
+        conn.execute(
+            """UPDATE operations SET eligible_at=clock_timestamp()-interval '1 second'
+               WHERE operation_id=%s""",(scheduled.operation_id,),
+        )
+
+    recovered_lease=claim(dsn)
+    assert recovered_lease.operation_id==scheduled.operation_id
+    assert recovered_lease.claim_generation>original_lease.claim_generation
+
+    class NoRepeatInference:
+        def generate(self,messages):
+            raise AssertionError("already-committed pass must not infer again")
+
+    if already_committed:
+        result=call(dsn,run_cognition,recovered_lease,NoRepeatInference())
+        assert result.replayed and result.reflection_count==1
+    else:
+        gateway=FixedCognition(intention=False)
+        result=call(dsn,run_cognition,recovered_lease,gateway)
+        assert not result.replayed and gateway.calls==1
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT status FROM operations WHERE operation_id=%s",
+            (scheduled.operation_id,),
+        ).fetchone()[0]=="COMPLETED"
+        assert conn.execute(
+            "SELECT count(*) FROM cognitive_reflections WHERE operation_id=%s",
+            (scheduled.operation_id,),
+        ).fetchone()[0]==1
+
+
+def test_cognitive_commit_locks_conversation_before_job(dsn):
+    """Regression for scheduler/commit AB-BA deadlock under real row locking.
+
+    Hold Conversation externally, start a fenced commit and await PostgreSQL
+    reporting a blocked conversation lock. The existing cognitive job must
+    still be NOWAIT-lockable, proving commit did not lock it first.
+    Concurrent admission must finish after the shared Conversation lock
+    is released, without a deadlock or duplicate job.
+    """
+    user,instance,_=seed(dsn)
+    conversation=uuid4()
+    turns(dsn,user,instance,conversation)
+    scheduled=call(dsn,schedule_cognition,platform(user),conversation,instance,1)
+    lease=claim(dsn)
+    work=call(dsn,prepare_cognition,lease)
+    draft=CognitiveDraft(proposals=(CognitiveProposal(
+        kind="HYPOTHESIS",subject="USER",
+        content="Garden timing may matter.",
+        source_turn_id=work.turns[0]["turn_id"],
+        evidence_quote="Garden progress",confidence=0.62,
+    ),))
+    worker_ready=Event()
+    worker_pid=[]
+
+    def commit_in_second_connection():
+        with psycopg.connect(dsn,autocommit=True) as conn:
+            conn.execute("SET lock_timeout='8s'")
+            worker_pid.append(conn.info.backend_pid)
+            worker_ready.set()
+            return commit_cognition(conn,lease,work,draft,"fake-model")
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        with psycopg.connect(dsn,autocommit=True) as blocker:
+            with blocker.transaction():
+                blocker.execute(
+                    """SELECT cognitive_watermark FROM conversations
+                       WHERE conversation_id=%s FOR UPDATE""",
+                    (conversation,),
+                ).fetchone()
+                committed=pool.submit(commit_in_second_connection)
+                assert worker_ready.wait(3)
+                with psycopg.connect(dsn,autocommit=True) as observer:
+                    deadline=monotonic()+5
+                    blocked=False
+                    while monotonic()<deadline:
+                        row=observer.execute(
+                            """SELECT wait_event_type,query FROM pg_stat_activity
+                               WHERE pid=%s""",(worker_pid[0],),
+                        ).fetchone()
+                        if row and row[0]=="Lock" and (
+                            "cognitive_watermark FROM conversations" in row[1]
+                        ):
+                            blocked=True
+                            break
+                        sleep(0.025)
+                    assert blocked,"cognitive commit never waited on conversation row"
+                    # Prior code locked cognitive_jobs FOR UPDATE first, then
+                    # waited for Conversation: this NOWAIT probe would fail.
+                    with observer.transaction():
+                        observer.execute(
+                            """SELECT operation_id FROM cognitive_jobs
+                               WHERE operation_id=%s FOR UPDATE NOWAIT""",
+                            (scheduled.operation_id,),
+                        ).fetchone()
+                admitted=pool.submit(
+                    call,dsn,schedule_cognition,platform(user),
+                    conversation,instance,1,
+                )
+            # The explicit conversation lock has been released before
+            # awaiting either concurrent transaction.
+            result=committed.result(timeout=8)
+            assert result.reflection_count==1
+            assert admitted.result(timeout=8) is None
+
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT cognitive_watermark FROM conversations WHERE conversation_id=%s",
+            (conversation,),
+        ).fetchone()[0]==scheduled.end_sequence
+    # The P0 lease remains valid after the tested commit; complete it.
+    from persona_agent.operation_control import complete_operation
+    call(dsn,complete_operation,lease,result_ref=f"cognition:{lease.operation_id}")
