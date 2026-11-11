@@ -299,6 +299,7 @@ def _reconcile_active(connection: Connection, policy: AutoSummaryPolicy,
                ORDER BY c.updated_at,c.conversation_id LIMIT %s""",
             (user_id,user_id,policy.retain_recent,policy.min_candidate_turns,
              list(_TERMINAL_OR_ADMITTED),policy.max_turns,policy.retain_recent,limit),
+        )
         rows=cur.fetchall()
     admitted=replayed=0
     for row in rows:
