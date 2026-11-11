@@ -497,6 +497,32 @@ def _reassess_conflict(cur, candidate: dict) -> dict:
             "target_version":current["version"]}
 
 
+def _refresh_review_queue(
+    connection: Connection, actor: TrustedActor, instance_id: UUID,
+    limit: int,
+) -> None:
+    """Bounded candidate-only reconciliation before presenting the queue.
+
+    Lock candidates consistently, using SKIP LOCKED to avoid contention
+    with concurrent approvals. Never lock authoritative memory rows here.
+    """
+    with connection.transaction():
+        with connection.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                """SELECT c.* FROM memory_extraction_candidates c
+                   JOIN memory_records m ON m.memory_id=c.target_memory_id
+                     AND m.user_id=c.user_id AND m.instance_id=c.instance_id
+                   WHERE c.user_id=%s AND c.instance_id=%s
+                     AND c.status='CONFLICT' AND c.target_version<>m.version
+                   ORDER BY c.created_at,c.candidate_id
+                   LIMIT %s FOR UPDATE OF c SKIP LOCKED""",
+                (actor.user_id,instance_id,limit),
+            )
+            candidates=cur.fetchall()
+            for candidate in candidates:
+                _reassess_conflict(cur,candidate)
+
+
 def list_extraction_conflicts(
     connection: Connection, actor: TrustedActor, instance_id: UUID,
     *, limit: int = 20,
