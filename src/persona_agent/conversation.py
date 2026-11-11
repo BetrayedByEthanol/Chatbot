@@ -290,7 +290,7 @@ def prepare_text_context(
                 """
                 SELECT t.conversation_id,t.instance_id,t.selection_generation,
                        t.status,t.sequence,c.revision,c.last_input_turn_id,
-                       c.focus_thread_id,p.stable_key,i.label
+                       c.focus_thread_id,c.summary_watermark,p.stable_key,i.label
                 FROM conversation_turns t
                 JOIN conversations c ON c.conversation_id=t.conversation_id
                 JOIN persona_instances i ON i.id=t.instance_id
@@ -308,7 +308,7 @@ def prepare_text_context(
                 raise StaleConversation("only the latest pending input may be answered")
             cursor.execute(
                 """
-                SELECT t.turn_id,t.input_text,r.response_text,r.delivery_status
+                SELECT t.turn_id,t.sequence,t.input_text,r.response_text,r.delivery_status
                 FROM conversation_turns t
                 LEFT JOIN conversation_responses r ON r.turn_id=t.turn_id
                 WHERE t.conversation_id=%s AND t.user_id=%s
@@ -413,6 +413,25 @@ def prepare_text_context(
                             encoded=json.dumps(state,ensure_ascii=False)
                         if len(encoded)<=cap:
                             prompt+=head+encoded+"\n"
+            # P2-02: Restore old processed ranges without replacing recent
+            # verbatim context. Cross-session episodes are retrieved only for
+            # explicit historical cues, never on ordinary turns.
+            from .summary_memory import summary_context_block, episode_context_block
+            optional_budget=max_context_chars-len(prompt)-len(history[-1].content)-80
+            if item["summary_watermark"] and optional_budget>=180:
+                compact=summary_context_block(
+                    cursor,item["conversation_id"],actor.user_id,
+                    item["instance_id"],recent[0]["sequence"],
+                    min(1100,optional_budget),
+                )
+                prompt+=compact
+                optional_budget-=len(compact)
+            if optional_budget>=220:
+                episode=episode_context_block(
+                    cursor,actor.user_id,item["instance_id"],
+                    history[-1].content,min(1000,optional_budget),
+                )
+                prompt+=episode
             # P2-01: historical memory is optional, scoped and explicitly
             # non-authoritative. Preserve space for the latest verbatim input.
             # Most turns do not issue a historical query at all.
