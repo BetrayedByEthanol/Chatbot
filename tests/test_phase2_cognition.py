@@ -165,6 +165,12 @@ def test_cognitive_range_commits_evidence_linked_proposals_only(dsn):
         ).fetchone()
         assert intention==("PROPOSED",False,"true",True)
         assert conn.execute(
+            """SELECT count(*) FROM cognitive_reflections
+               WHERE user_id=%s AND instance_id=%s
+                 AND privacy_class='INTERNAL' AND temporal_scope='CURRENT'""",
+            (user,instance),
+        ).fetchone()[0]==2
+        assert conn.execute(
             "SELECT count(*) FROM memory_records WHERE user_id=%s",(user,),
         ).fetchone()[0]==0
         assert conn.execute(
