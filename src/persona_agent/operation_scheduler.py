@@ -286,6 +286,7 @@ def claim_operation(
     capabilities: tuple[str,...]=(),
     lease_seconds: int=30,
     scan_limit: int=40,
+    operation_types: tuple[str,...] | None=None,
 ) -> OperationLease | None:
     """Admission under row locks: lifecycle, deps, capabilities and resources."""
     require_idle(connection)
@@ -293,6 +294,11 @@ def claim_operation(
         raise ValueError("worker_id must contain 1–128 characters")
     if not 1 <= lease_seconds <= 3600 or not 1 <= scan_limit <= 200:
         raise ValueError("invalid lease_seconds or scan_limit")
+    if operation_types is not None and (
+        not operation_types or any(not 1 <= len(t) <= 128 for t in operation_types)
+    ):
+        raise ValueError("invalid operation_types filter")
+    allowed_types=list(operation_types) if operation_types is not None else None
 
     with connection.transaction():
         with connection.cursor(row_factory=dict_row) as cur:
@@ -312,6 +318,7 @@ def claim_operation(
                                END AS priority_rank
                         FROM operations o
                         WHERE o.status IN ('QUEUED','RETRY_WAIT')
+                          AND (%s::text[] IS NULL OR o.operation_type=ANY(%s::text[]))
                           AND o.attempt_count < o.max_attempts
                           AND o.eligible_at <= clock_timestamp()
                           AND (o.deadline IS NULL OR o.deadline > clock_timestamp())
@@ -340,7 +347,8 @@ def claim_operation(
                     ORDER BY priority_rank, eligible_at, created_at, operation_id
                     LIMIT %s
                     """,
-                    (list(capabilities), cursor_key[0], *cursor_key, scan_limit),
+                    (allowed_types,allowed_types,list(capabilities),
+                     cursor_key[0], *cursor_key, scan_limit),
                 )
                 page = cur.fetchall()
                 if not page:
@@ -351,13 +359,14 @@ def claim_operation(
                         """
                         SELECT * FROM operations
                         WHERE operation_id=%s
+                          AND (%s::text[] IS NULL OR operation_type=ANY(%s::text[]))
                           AND status IN ('QUEUED','RETRY_WAIT')
                           AND attempt_count < max_attempts
                           AND eligible_at <= clock_timestamp()
                           AND (deadline IS NULL OR deadline > clock_timestamp())
                         FOR UPDATE SKIP LOCKED
                         """,
-                        (op_id,),
+                        (op_id,allowed_types,allowed_types),
                     )
                     op=cur.fetchone()
                     if op is None:
