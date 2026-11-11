@@ -1,6 +1,7 @@
 """P2-03 automatic summary admission: real PostgreSQL integration contracts."""
 
 from uuid import uuid4
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -27,6 +28,8 @@ from persona_agent.operation_contracts import (
 from persona_agent.operation_scheduler import (
     claim_operation, configure_resource_pool, enqueue_operation,
 )
+from persona_agent.operation_control import fail_operation
+import persona_agent.summary_memory as summary_module
 from persona_agent.runtime import PermissionDenied
 from persona_agent.summary_contracts import SUMMARY_CAPABILITY, SUMMARY_OPERATION, SUMMARY_RESOURCE
 from persona_agent.summary_memory import run_summary, schedule_summary
@@ -328,3 +331,174 @@ def test_reconciliation_skips_blocked_and_already_admitted_ranges(dsn):
     assert {r[0] for r in targets}=={already,eligible}
     for _ in range(2):
         call(dsn,run_summary,claim_summary(dsn),FakeSummary())
+
+
+
+def test_reconciliation_handles_temporary_resource_unavailability(dsn):
+    """The worker tick must survive rejected enqueue and recover on the next poll."""
+    consumer=bootstrap(dsn)
+    user,instance,_=seed(dsn)
+    conversation=uuid4()
+    for n in range(1,11):
+        delivered_turn(dsn,user,instance,conversation,n)
+    call(dsn,configure_resource_pool,SUMMARY_RESOURCE,
+         capacity_units=1,p0_reserved_units=1)
+    try:
+        # Event delivery handles the error; the immediate reconciliation
+        # must handle the SAME error instead of killing the worker process.
+        unavailable=tick(dsn,consumer,user)
+        assert unavailable.admitted==0
+        assert unavailable.retry_pending>=1
+        with psycopg.connect(dsn,autocommit=True) as conn:
+            row=conn.execute(
+                """SELECT j.operation_id,o.operation_id
+                   FROM conversation_summary_jobs j
+                   LEFT JOIN operations o ON o.operation_id=j.operation_id
+                   WHERE j.conversation_id=%s""",(conversation,),
+            ).fetchone()
+            assert row is not None and row[1] is None
+    finally:
+        call(dsn,configure_resource_pool,SUMMARY_RESOURCE,
+             capacity_units=3,p0_reserved_units=1)
+    # Recover from the staged row without waiting for the delivery retry
+    # delay to elapse or requiring another user message.
+    restored=tick(dsn,consumer,user)
+    assert restored.admitted==1
+    assert tick(dsn,consumer,user).admitted==0
+    call(dsn,run_summary,claim_summary(dsn),FakeSummary())
+
+
+def test_summary_admission_replay_keeps_original_origin_for_both_callers(dsn):
+    """User and platform replay one operation, never rewrite its fingerprint."""
+    user,instance,_=seed(dsn)
+    platform=TrustedPlatformActor(user_id=user,source_id="memory.auto_summary.v1")
+    for first_actor,next_actor,expected in (
+        (platform,actor(user),"COGNITIVE"),
+        (actor(user),platform,"USER"),
+    ):
+        conversation=uuid4()
+        for n in range(1,11):
+            delivered_turn(dsn,user,instance,conversation,n)
+        first=call(
+            dsn,schedule_summary,first_actor,conversation,instance,1,
+        )
+        second=call(
+            dsn,schedule_summary,next_actor,conversation,instance,1,
+        )
+        assert second.operation_id==first.operation_id
+        assert second.replayed
+        third=call(
+            dsn,schedule_summary,first_actor,conversation,instance,1,
+        )
+        assert third.operation_id==first.operation_id and third.replayed
+        with psycopg.connect(dsn,autocommit=True) as conn:
+            row=conn.execute(
+                """SELECT j.admission_origin,o.origin
+                   FROM conversation_summary_jobs j
+                   JOIN operations o ON o.operation_id=j.operation_id
+                   WHERE j.conversation_id=%s""",(conversation,),
+            ).fetchone()
+            assert row==(expected,expected)
+        call(dsn,run_summary,claim_summary(dsn),FakeSummary())
+
+
+def test_cross_origin_crash_recovery_racing_producers(dsn,monkeypatch):
+    """The origin is durable before enqueue; two callers may safely race to repair."""
+    user,instance,_=seed(dsn)
+    platform=TrustedPlatformActor(user_id=user,source_id="memory.auto_summary.v1")
+    original_enqueue=summary_module.enqueue_operation
+
+    def crashed_enqueue(*args,**kwargs):
+        raise RuntimeError("simulated crash after stage, before P0 enqueue")
+
+    for first_actor,expected in ((platform,"COGNITIVE"),(actor(user),"USER")):
+        conversation=uuid4()
+        for n in range(1,11):
+            delivered_turn(dsn,user,instance,conversation,n)
+        monkeypatch.setattr(summary_module,"enqueue_operation",crashed_enqueue)
+        with pytest.raises(RuntimeError,match="simulated crash"):
+            call(dsn,schedule_summary,first_actor,conversation,instance,1)
+        monkeypatch.setattr(summary_module,"enqueue_operation",original_enqueue)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            one=pool.submit(
+                call,dsn,schedule_summary,platform,conversation,instance,1,
+            )
+            two=pool.submit(
+                call,dsn,schedule_summary,actor(user),conversation,instance,1,
+            )
+            receipts=(one.result(),two.result())
+        assert receipts[0].operation_id==receipts[1].operation_id
+        assert sum(not item.replayed for item in receipts)==1
+        with psycopg.connect(dsn,autocommit=True) as conn:
+            rows=conn.execute(
+                """SELECT j.admission_origin,o.origin
+                   FROM conversation_summary_jobs j
+                   JOIN operations o ON o.operation_id=j.operation_id
+                   WHERE j.conversation_id=%s""",(conversation,),
+            ).fetchall()
+            assert rows==[(expected,expected)]
+        call(dsn,run_summary,claim_summary(dsn),FakeSummary())
+
+
+def test_reconciliation_recovers_latest_operator_retry_staged_after_failed_job(
+    dsn,monkeypatch,
+):
+    """The newest attempt with no operation must take precedence over an older FAILED."""
+    user,instance,_=seed(dsn)
+    conversation=uuid4()
+    for n in range(1,11):
+        delivered_turn(dsn,user,instance,conversation,n)
+    platform=TrustedPlatformActor(user_id=user,source_id="memory.auto_summary.v1")
+    original=call(dsn,schedule_summary,platform,conversation,instance,1)
+    assert original.admission_attempt==1
+    for attempt in range(3):
+        lease=claim_summary(dsn)
+        status=call(
+            dsn,fail_operation,lease,reason="temporary test model outage",
+            delay_seconds=0,
+        )
+        assert status.value==("FAILED" if attempt==2 else "RETRY_WAIT")
+
+    original_enqueue=summary_module.enqueue_operation
+
+    def crashed_enqueue(*args,**kwargs):
+        raise RuntimeError("operator retry crashed before enqueue")
+
+    monkeypatch.setattr(summary_module,"enqueue_operation",crashed_enqueue)
+    with pytest.raises(RuntimeError,match="operator retry crashed"):
+        call(
+            dsn,schedule_summary,actor(user),conversation,instance,1,
+            retry_failed=True,
+        )
+    monkeypatch.setattr(summary_module,"enqueue_operation",original_enqueue)
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        staged=conn.execute(
+            """SELECT j.admission_attempt,j.admission_origin,o.status
+               FROM conversation_summary_jobs j
+               LEFT JOIN operations o ON o.operation_id=j.operation_id
+               WHERE j.conversation_id=%s ORDER BY j.admission_attempt""",
+            (conversation,),
+        ).fetchall()
+        assert staged==[(1,"COGNITIVE","FAILED"),(2,"USER",None)]
+
+    consumer=bootstrap(dsn)
+    recovered=tick(dsn,consumer,user,scan_limit=1)
+    assert recovered.admitted==1
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        restored=conn.execute(
+            """SELECT j.admission_attempt,j.admission_origin,o.origin,o.status
+               FROM conversation_summary_jobs j
+               JOIN operations o ON o.operation_id=j.operation_id
+               WHERE j.conversation_id=%s ORDER BY j.admission_attempt""",
+            (conversation,),
+        ).fetchall()
+        assert restored==[
+            (1,"COGNITIVE","COGNITIVE","FAILED"),
+            (2,"USER","USER","QUEUED"),
+        ]
+    call(dsn,run_summary,claim_summary(dsn),FakeSummary())
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT summary_watermark FROM conversations WHERE conversation_id=%s",
+            (conversation,),
+        ).fetchone()[0]==8
