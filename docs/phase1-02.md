@@ -136,3 +136,17 @@ true token/unique counts and term frequency remain unchanged. The default
 short-input output remains byte-for-byte unchanged. A regression runs the
 full 12,000-character input through the durable worker and confirms it
 COMPLETES on attempt 1 rather than entering an identical retry cycle.
+
+## Review fix — duplicate first-time tool requests
+
+A missing `conversation_tool_calls` row cannot be locked by
+`SELECT ... FOR UPDATE`. First-time admission now uses
+`INSERT ... ON CONFLICT (turn_id) DO NOTHING RETURNING`; only the
+successful inserter emits `conversation.tool.requested.v1`.
+The other caller rereads the committed correlation and applies the
+existing `tool_name`, deterministic ID and configuration comparison.
+A matching `PREPARING` row resumes the separately idempotent P0 enqueue;
+a `QUEUED` row returns its existing result; a mismatched configuration
+raises `IdempotencyConflict`, never `UniqueViolation`. Tests coordinate
+two PostgreSQL sessions at the selection lock to reproduce first-insert
+races and verify one durable tool call and one operation.

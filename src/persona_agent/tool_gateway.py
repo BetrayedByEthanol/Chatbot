@@ -178,20 +178,38 @@ def schedule_text_analysis(
                         tool_call_id,conversation_id,turn_id,user_id,instance_id,
                         selection_generation,tool_name,tool_config
                     ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s::jsonb)
+                    ON CONFLICT (turn_id) DO NOTHING
+                    RETURNING tool_call_id
                     """,
                     (tool_id,turn["conversation_id"],command.turn_id,actor.user_id,
                      turn["instance_id"],turn["selection_generation"],SLOW_TOOL,
                      '{"max_words":'+str(command.max_words)+'}'),
                 )
-                _event(
-                    cur,user_id=actor.user_id,instance_id=turn["instance_id"],
-                    conversation_id=turn["conversation_id"],
-                    event_type="conversation.tool.requested.v1",
-                    source_id=actor.source_id,trust_level="AUTHENTICATED_USER",
-                    detail={"tool_call_id":str(tool_id),"turn_id":str(command.turn_id),
-                            "tool_name":SLOW_TOOL},
-                )
-            else:
+                if cur.fetchone() is None:
+                    # Two callers can both observe no row before either
+                    # inserts. The unique index serializes this conflict;
+                    # this new statement sees the committed winner under
+                    # READ COMMITTED, even if our earlier SELECT saw nothing.
+                    cur.execute(
+                        "SELECT * FROM conversation_tool_calls "
+                        "WHERE turn_id=%s FOR UPDATE",
+                        (command.turn_id,),
+                    )
+                    existing=cur.fetchone()
+                    if existing is None:
+                        raise StaleConversation(
+                            "concurrent tool admission was not found after conflict"
+                        )
+                else:
+                    _event(
+                        cur,user_id=actor.user_id,instance_id=turn["instance_id"],
+                        conversation_id=turn["conversation_id"],
+                        event_type="conversation.tool.requested.v1",
+                        source_id=actor.source_id,trust_level="AUTHENTICATED_USER",
+                        detail={"tool_call_id":str(tool_id),"turn_id":str(command.turn_id),
+                                "tool_name":SLOW_TOOL},
+                    )
+            if existing is not None:
                 if (
                     existing["tool_call_id"]!=tool_id or
                     existing["tool_name"]!=SLOW_TOOL or

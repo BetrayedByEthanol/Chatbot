@@ -1,7 +1,9 @@
 """P1-02 real PostgreSQL gateway/worker and async-followup acceptance."""
 
 from concurrent.futures import ThreadPoolExecutor
-from threading import Event
+from threading import Event, Barrier
+from queue import Queue
+import time
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -681,3 +683,173 @@ def test_longest_accepted_text_completes_slow_tool_without_retry(dsn):
         ).fetchone()==(12000,)
     delivered=invoke(dsn,acknowledge_tool_followup,actor(user),tool.tool_call_id)
     assert delivered.text==followup.text
+
+
+
+def _wait_for_lock_waiters(dsn, backend_ids, *, timeout=8):
+    """Verify each worker reached the blocked database statement."""
+    until=time.monotonic()+timeout
+    with psycopg.connect(dsn,autocommit=True) as observer:
+        while time.monotonic()<until:
+            states=[
+                observer.execute(
+                    "SELECT wait_event_type FROM pg_stat_activity WHERE pid=%s",
+                    (pid,),
+                ).fetchone()
+                for pid in backend_ids
+            ]
+            if all(state is not None and state[0]=="Lock" for state in states):
+                return
+            time.sleep(0.02)
+    raise AssertionError("both first-time admissions did not reach authority lock")
+
+
+def test_concurrent_first_time_tool_admission_replays_one_durable_call(dsn):
+    """Neither missing-row SELECT can prevent the competing initial INSERT."""
+    user,instance=seed(dsn)
+    configure_tool_pool(dsn)
+    turn=incoming(dsn,user,instance)
+    command=SlowTextToolCommand(turn_id=turn.turn_id,max_words=3)
+    backend_ids=Queue()
+
+    def schedule():
+        with psycopg.connect(dsn,autocommit=True) as conn:
+            backend_ids.put(conn.execute("SELECT pg_backend_pid()").fetchone()[0])
+            return schedule_text_analysis(conn,actor(user),command)
+
+    # Hold the persona selection gate: both callers first read that the
+    # correlation row is absent and then block inside _selection.
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        with psycopg.connect(dsn,autocommit=True) as blocker:
+            with blocker.transaction():
+                blocker.execute(
+                    "SELECT user_id FROM persona_selection WHERE user_id=%s "
+                    "FOR UPDATE",(user,),
+                ).fetchone()
+                futures=[workers.submit(schedule) for _ in range(2)]
+                pids=[backend_ids.get(timeout=5) for _ in futures]
+                _wait_for_lock_waiters(dsn,pids)
+        results=[future.result(timeout=15) for future in futures]
+
+    assert results[0].tool_call_id==results[1].tool_call_id
+    assert results[0].operation_id==results[1].operation_id
+    assert results[0].admission_state==results[1].admission_state=="QUEUED"
+    tool_id=results[0].tool_call_id
+    assert event_count(dsn,tool_id,"conversation.tool.requested.v1")==1
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT count(*) FROM conversation_tool_calls WHERE turn_id=%s",
+            (turn.turn_id,),
+        ).fetchone()[0]==1
+        assert conn.execute(
+            "SELECT count(*) FROM operations WHERE operation_id=%s",
+            (tool_id,),
+        ).fetchone()[0]==1
+        assert conn.execute(
+            "SELECT count(*) FROM events WHERE event_type='operation.queued.v1' "
+            "AND payload->>'operation_id'=%s",
+            (str(tool_id),),
+        ).fetchone()[0]==1
+        assert conn.execute(
+            "SELECT count(*) FROM command_receipts "
+            "WHERE instance_id=%s AND command_type='operation.enqueue.v1' "
+            "AND idempotency_key=%s",
+            (instance,f"tool-{tool_id}"),
+        ).fetchone()[0]==1
+        assert conn.execute(
+            "SELECT count(*) FROM outbox o JOIN events e ON e.event_id=o.event_id "
+            "WHERE e.event_type='conversation.tool.requested.v1' "
+            "AND e.payload->>'tool_call_id'=%s",
+            (str(tool_id),),
+        ).fetchone()[0]==1
+
+
+def test_concurrent_first_time_admission_checks_conflicting_configuration(dsn):
+    user,instance=seed(dsn)
+    configure_tool_pool(dsn)
+    turn=incoming(dsn,user,instance)
+    backend_ids=Queue()
+
+    def schedule(limit):
+        with psycopg.connect(dsn,autocommit=True) as conn:
+            backend_ids.put(conn.execute("SELECT pg_backend_pid()").fetchone()[0])
+            return schedule_text_analysis(
+                conn,actor(user),
+                SlowTextToolCommand(turn_id=turn.turn_id,max_words=limit),
+            )
+
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        with psycopg.connect(dsn,autocommit=True) as blocker:
+            with blocker.transaction():
+                blocker.execute(
+                    "SELECT user_id FROM persona_selection WHERE user_id=%s "
+                    "FOR UPDATE",(user,),
+                ).fetchone()
+                futures=[workers.submit(schedule,limit) for limit in (2,3)]
+                pids=[backend_ids.get(timeout=5) for _ in futures]
+                _wait_for_lock_waiters(dsn,pids)
+        results=[]
+        for future in futures:
+            try:
+                results.append(future.result(timeout=15))
+            except IdempotencyConflict as error:
+                results.append(error)
+
+    assert sum(isinstance(r,IdempotencyConflict) for r in results)==1
+    accepted=[r for r in results if not isinstance(r,IdempotencyConflict)]
+    assert len(accepted)==1
+    assert accepted[0].admission_state=="QUEUED"
+    tool_id=accepted[0].tool_call_id
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT count(*) FROM conversation_tool_calls WHERE turn_id=%s",
+            (turn.turn_id,),
+        ).fetchone()[0]==1
+        assert conn.execute(
+            "SELECT count(*) FROM operations WHERE operation_id=%s",
+            (tool_id,),
+        ).fetchone()[0]==1
+        assert event_count(dsn,tool_id,"conversation.tool.requested.v1")==1
+        assert conn.execute(
+            "SELECT count(*) FROM outbox o JOIN events e ON o.event_id=e.event_id "
+            "WHERE e.event_type='conversation.tool.requested.v1' "
+            "AND e.payload->>'tool_call_id'=%s",
+            (str(tool_id),),
+        ).fetchone()[0]==1
+
+
+def test_concurrent_first_time_respond_to_text_analysis_is_idempotent(dsn):
+    """Duplicate foreground requests must not fail on the tool-row insert."""
+    user,instance=seed(dsn)
+    configure_tool_pool(dsn)
+    turn=incoming(dsn,user,instance)
+    go=Barrier(2)
+
+    def respond():
+        with psycopg.connect(dsn,autocommit=True) as conn:
+            go.wait(timeout=10)
+            return respond_to_text_analysis(
+                conn,actor(user),
+                SlowTextToolCommand(turn_id=turn.turn_id,max_words=3),
+                await_seconds=0,
+            )
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        results=list(workers.map(lambda _:respond(),range(2)))
+
+    assert results[0].response_id==results[1].response_id
+    assert results[0].text==results[1].text
+    assert sum(not x.replayed for x in results)==1
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT count(*) FROM conversation_responses WHERE turn_id=%s",
+            (turn.turn_id,),
+        ).fetchone()[0]==1
+        tool_id=conn.execute(
+            "SELECT tool_call_id FROM conversation_tool_calls WHERE turn_id=%s",
+            (turn.turn_id,),
+        ).fetchone()[0]
+        assert conn.execute(
+            "SELECT count(*) FROM operations WHERE operation_id=%s",
+            (tool_id,),
+        ).fetchone()[0]==1
+    assert event_count(dsn,tool_id,"conversation.tool.requested.v1")==1
