@@ -94,11 +94,15 @@ def enqueue_operation(
         (platform and command.origin is Origin.USER)
         or (not platform and command.origin is Origin.COGNITIVE)
     )
+    cross_origin_denied=(
+        "cross-origin admission requires a staged summary" if platform else
+        "agent-originated operation requires a platform actor"
+    )
     if cross_origin and (
         not is_summary_admission
         or command.idempotency_key!=f"summary:{command.operation_id}"
     ):
-        raise PermissionDenied("cross-origin admission requires a staged summary")
+        raise PermissionDenied(cross_origin_denied)
     fingerprint = _fingerprint(command)
     receipt_id=uuid4()
 
@@ -115,7 +119,7 @@ def enqueue_operation(
                 staged=cur.fetchone()
                 if (staged is None or command.concurrency_group
                     !=f"summary:{staged['conversation_id']}"):
-                    raise PermissionDenied("summary origin does not match staged admission")
+                    raise PermissionDenied(cross_origin_denied)
             cur.execute(
                 "SELECT 1 FROM persona_instances WHERE user_id=%s AND id=%s",
                 (actor.user_id,command.instance_id),
