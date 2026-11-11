@@ -84,6 +84,7 @@ def schedule_cognition(
     connection:Connection,actor:TrustedPlatformActor,
     conversation_id:UUID,instance_id:UUID,expected_generation:int,
     *,retain_recent:int=1,max_turns:int=8,min_closed_turns:int=3,
+    retry_failed:bool=False,
 ) -> CognitiveScheduled | None:
     """Serialize a safe, meaningful range; enqueue via the existing P0 runtime.
 
@@ -93,6 +94,8 @@ def schedule_cognition(
     require_idle(connection)
     if type(actor) is not TrustedPlatformActor:
         raise PermissionDenied("cognitive scheduling requires trusted platform authority")
+    if retry_failed and actor.source_id!="cognition.operator":
+        raise PermissionDenied("terminal cognitive retry requires explicit operator authority")
     if not 1<=max_turns<=16 or not 1<=min_closed_turns<=max_turns:
         raise ValueError("invalid cognitive range policy")
     if not 1<=retain_recent<=16 or expected_generation<1:
@@ -125,17 +128,27 @@ def schedule_cognition(
                        ON o.operation_id=j.operation_id
                    WHERE j.conversation_id=%s AND j.start_sequence=%s
                      AND j.expected_generation=%s
-                   ORDER BY j.created_at DESC LIMIT 1 FOR UPDATE OF j""",
+                   ORDER BY j.admission_attempt DESC LIMIT 1 FOR UPDATE OF j""",
                 (conversation_id,start,expected_generation),
             )
             existing=cur.fetchone()
-            if existing is not None and existing["operation_status"] is not None:
+            status=existing["operation_status"] if existing is not None else None
+            if status is not None and not (status=="FAILED" and retry_failed):
+                # P0 owns automatic RETRY_WAIT and terminal status. An
+                # ordinary scheduling tick never retries a FAILED operation.
                 return None
-            if existing is None:
-                end=min(start+max_turns-1,
-                        state["next_sequence"]-1-retain_recent)
-                if end-start+1 < min_closed_turns:
-                    return None
+            create_new=(existing is None or status=="FAILED")
+            if create_new:
+                if existing is None:
+                    end=min(start+max_turns-1,
+                            state["next_sequence"]-1-retain_recent)
+                    if end-start+1 < min_closed_turns:
+                        return None
+                    attempt=1
+                else:
+                    # Explicit operator retry uses the frozen original range.
+                    end=existing["end_sequence"]
+                    attempt=existing["admission_attempt"]+1
                 job={
                     "conversation_id":conversation_id,"user_id":actor.user_id,
                     "instance_id":instance_id,"expected_generation":expected_generation,
@@ -144,20 +157,23 @@ def schedule_cognition(
                 _range(cur,job)
                 op_id=uuid5(
                     NAMESPACE_URL,
-                    f"persona-agent/cognition/{conversation_id}/{start}/{expected_generation}",
+                    f"persona-agent/cognition/{conversation_id}/{start}/"
+                    f"{expected_generation}/{attempt}",
                 )
                 cur.execute(
                     """INSERT INTO cognitive_jobs(
                          operation_id,conversation_id,user_id,instance_id,
-                         expected_generation,start_sequence,end_sequence
-                       ) VALUES (%s,%s,%s,%s,%s,%s,%s)""",
+                         expected_generation,admission_attempt,
+                         start_sequence,end_sequence
+                       ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""",
                     (op_id,conversation_id,actor.user_id,instance_id,
-                     expected_generation,start,end),
+                     expected_generation,attempt,start,end),
                 )
             else:
-                # No newer policy threshold can hide an already staged range.
+                # No newer threshold may hide a staged-but-not-enqueued job.
                 op_id=existing["operation_id"]
                 end=existing["end_sequence"]
+                attempt=existing["admission_attempt"]
                 _range(cur,existing)
 
     receipt=enqueue_operation(connection,actor,EnqueueOperation(
@@ -176,7 +192,8 @@ def schedule_cognition(
     ))
     return CognitiveScheduled(
         operation_id=op_id,conversation_id=conversation_id,
-        start_sequence=start,end_sequence=end,replayed=receipt.replayed,
+        start_sequence=start,end_sequence=end,admission_attempt=attempt,
+        replayed=receipt.replayed,
     )
 
 
