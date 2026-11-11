@@ -30,7 +30,9 @@ from persona_agent.operation_contracts import (
 from persona_agent.operation_scheduler import (
     claim_operation,configure_resource_pool,enqueue_operation,
 )
-from persona_agent.operation_control import reap_stale_operations,fail_operation
+from persona_agent.operation_control import (
+    reap_stale_operations,fail_operation,cancel_operation,CancelOperationCommand,
+)
 from persona_agent.runtime import PermissionDenied
 import persona_agent.cognitive_engine as engine_module
 
@@ -98,6 +100,20 @@ def claim(dsn):
                 operation_types=(COGNITIVE_OPERATION,),lease_seconds=120)
     assert result is not None
     return result
+
+
+def cancel_pending(dsn,user,op_id):
+    """Cancel unclaimed P0 test work without altering scheduler internals."""
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        version,status=conn.execute(
+            "SELECT version,status FROM operations WHERE operation_id=%s",
+            (op_id,),
+        ).fetchone()
+    if status not in ("COMPLETED","FAILED","CANCELLED"):
+        call(dsn,cancel_operation,actor(user),CancelOperationCommand(
+            operation_id=op_id,expected_version=version,
+            idempotency_key=str(uuid4()),
+        ))
 
 
 class FixedCognition:
@@ -206,6 +222,7 @@ def test_invalid_model_evidence_never_commits_or_advances_watermark(dsn):
         assert conn.execute(
             "SELECT count(*) FROM cognitive_intentions WHERE user_id=%s",(user,),
         ).fetchone()[0]==0
+    cancel_pending(dsn,user,lease.operation_id)
 
 
 def test_inference_lease_expiry_rolls_back_all_proposals(dsn):
@@ -238,6 +255,7 @@ def test_inference_lease_expiry_rolls_back_all_proposals(dsn):
     # Resource claims are global across real PostgreSQL test cases: reaping
     # an intentionally expired lease avoids starving independent P1 suites.
     assert call(dsn,reap_stale_operations,limit=100)>=1
+    cancel_pending(dsn,user,lease.operation_id)
 
 
 def test_persona_switch_revokes_commit_without_relabeling_as_user_facts(dsn):
@@ -265,6 +283,7 @@ def test_persona_switch_revokes_commit_without_relabeling_as_user_facts(dsn):
                WHERE operation_id=%s""",(lease.operation_id,),
         )
     assert call(dsn,reap_stale_operations,limit=100)>=1
+    cancel_pending(dsn,user,lease.operation_id)
 
 
 def test_staging_failure_replay_and_duplicate_commit_recovery(dsn,monkeypatch):
