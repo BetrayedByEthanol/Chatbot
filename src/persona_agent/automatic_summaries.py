@@ -238,8 +238,10 @@ def _reconcile_active(connection: Connection, policy: AutoSummaryPolicy,
                       limit: int, user_id: UUID | None = None) -> tuple[int,int]:
     """Repair missed dispatcher/subscription windows and switch-back backlog.
 
-    This is a bounded poll of only selected personas with enough unsummarized
-    input. It also repairs a crash between P2-02 job staging and enqueue.
+    Skip already-admitted and not-yet-deliverable ranges *before* applying
+    LIMIT. Otherwise a few blocked conversations can monopolize the scan
+    page and starve unrelated eligible conversations indefinitely. Retain
+    staged jobs lacking an operation row for crash recovery.
     """
     with connection.cursor(row_factory=dict_row) as cur:
         cur.execute(
@@ -252,8 +254,30 @@ def _reconcile_active(connection: Connection, policy: AutoSummaryPolicy,
                  AND (%s::uuid IS NULL OR c.user_id=%s::uuid)
                  AND c.next_sequence-1-c.summary_watermark-%s
                      >= CASE WHEN p.mode='BACKGROUND' THEN 1 ELSE %s END
+                 AND NOT EXISTS (
+                     SELECT 1 FROM conversation_summary_jobs j
+                     JOIN operations o ON o.operation_id=j.operation_id
+                     WHERE j.conversation_id=c.conversation_id
+                       AND j.start_sequence=c.summary_watermark+1
+                       AND j.expected_generation=p.generation
+                       AND o.status=ANY(%s::text[])
+                 )
+                 AND NOT EXISTS (
+                     SELECT 1 FROM conversation_turns t
+                     LEFT JOIN conversation_responses r ON r.turn_id=t.turn_id
+                     WHERE t.conversation_id=c.conversation_id
+                       AND t.sequence BETWEEN c.summary_watermark+1
+                           AND LEAST(c.summary_watermark+%s,
+                                     c.next_sequence-1-%s)
+                       AND (
+                           t.status='PENDING'
+                           OR (r.delivery_status='GENERATED'
+                               AND r.selection_generation=p.generation)
+                       )
+                 )
                ORDER BY c.updated_at,c.conversation_id LIMIT %s""",
-            (user_id,user_id,policy.retain_recent,policy.min_candidate_turns,limit),
+            (user_id,user_id,policy.retain_recent,policy.min_candidate_turns,
+             list(_TERMINAL_OR_ADMITTED),policy.max_turns,policy.retain_recent,limit),
         )
         rows=cur.fetchall()
     admitted=replayed=0
