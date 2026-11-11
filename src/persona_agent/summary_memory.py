@@ -107,7 +107,8 @@ def _model_source(rows: tuple[dict, ...]) -> str:
 def _read_range(cur, job: dict) -> tuple[dict, ...]:
     cur.execute(
         """SELECT t.turn_id,t.sequence,t.input_text,t.status,t.created_at,
-                  r.response_text,r.delivery_status
+                  r.response_text,r.delivery_status,
+                  r.selection_generation AS response_selection_generation
            FROM conversation_turns t
            LEFT JOIN conversation_responses r ON r.turn_id=t.turn_id
            WHERE t.conversation_id=%s AND t.user_id=%s AND t.instance_id=%s
@@ -122,10 +123,25 @@ def _read_range(cur, job: dict) -> tuple[dict, ...]:
         row["sequence"]!=job["start_sequence"]+i for i,row in enumerate(rows)
     ):
         raise StaleSummary("conversation range is incomplete")
-    if any(row["status"]=="PENDING" or (
-        row["response_text"] is not None and row["delivery_status"]!="DELIVERED"
-    ) for row in rows):
-        raise SummaryNotReady("range contains an unfinished or undelivered response")
+    # A GENERATED reply is recoverable only in its original selection
+    # generation. The conversation acknowledgement contract rejects it once
+    # that generation is revoked (including after switching back). The
+    # authenticated user input may still be summarized, but its undelivered
+    # assistant output must NEVER be projected as conversation history.
+    #
+    # Current-generation GENERATED replies still block: they may yet be
+    # acknowledged by the delivery adapter. Superseded user turns are safe
+    # to summarize because conversation ingress already marks them as such.
+    if any(
+        row["status"]=="PENDING"
+        or (
+            row["response_text"] is not None
+            and row["delivery_status"]=="GENERATED"
+            and row["response_selection_generation"]==job["expected_generation"]
+        )
+        for row in rows
+    ):
+        raise SummaryNotReady("range contains an unfinished or deliverable response")
 
     ids=[row["turn_id"] for row in rows]
     cur.execute(
