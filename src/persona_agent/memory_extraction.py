@@ -527,11 +527,16 @@ def list_extraction_conflicts(
     connection: Connection, actor: TrustedActor, instance_id: UUID,
     *, limit: int = 20,
 ) -> tuple[ConflictCandidate,...]:
-    """Read-only, user-scoped review queue. Inactive personas can be inspected."""
+    """User-scoped queue with bounded candidate-decision reconciliation.
+
+    Inactive personas can be inspected. Only candidate metadata and support
+    are refreshed, never the authoritative memory without approval.
+    """
     require_idle(connection)
     _require_actor(actor)
     if not 1<=limit<=100:
         raise ValueError("invalid review page size")
+    _refresh_review_queue(connection,actor,instance_id,max(64,4*limit))
     with connection.cursor(row_factory=dict_row) as cur:
         cur.execute(
             "SELECT 1 FROM persona_instances WHERE user_id=%s AND id=%s",
@@ -548,7 +553,13 @@ def list_extraction_conflicts(
                FROM memory_extraction_candidates c
                JOIN memory_records m ON m.memory_id=c.target_memory_id
                    AND m.user_id=c.user_id AND m.instance_id=c.instance_id
+               JOIN conversation_turns t ON t.turn_id=c.source_turn_id
+                 AND t.conversation_id=c.conversation_id
+                 AND t.user_id=c.user_id AND t.instance_id=c.instance_id
                WHERE c.user_id=%s AND c.instance_id=%s AND c.status='CONFLICT'
+                 AND c.target_version=m.version
+                 AND t.created_at>m.source_turn_at
+                 AND (m.record_status<>'ACTIVE' OR c.value_text<>m.value_text)
                ORDER BY c.created_at DESC,c.candidate_id LIMIT %s""",
             (actor.user_id,instance_id,limit),
         )
@@ -578,6 +589,7 @@ def approve_extraction_conflict(
             candidate=cur.fetchone()
             if candidate is None:
                 raise PermissionDenied("candidate outside authenticated user scope")
+            candidate=_reassess_conflict(cur,candidate)
             if candidate["status"] not in ("CONFLICT","APPROVED"):
                 raise ValueError("candidate is not a reviewable conflicting claim")
             if (candidate["status"]=="CONFLICT"
