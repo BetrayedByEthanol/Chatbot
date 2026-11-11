@@ -31,7 +31,7 @@ P0 enqueue accepts TrustedPlatformActor **only** for a non-effecting COGNITIVE-o
 
 ## Operator setup
 
-Configure the existing cognition.llm resource pool, apply the ordered migrations through 0009 and launch an authorized worker service:
+Configure the existing cognition.llm resource pool, **apply the ordered migrations through 0010** (including `0010_automatic_summary_admission.sql`, which adds the required `conversation_summary_jobs.admission_origin` column), then launch an authorized worker service:
 
     DATABASE_URL=postgresql://... python -m persona_agent.automatic_summaries --poll-seconds 1 --min-turns 8 --retain-recent 2 --max-turns 8
 
@@ -110,3 +110,23 @@ before the P0 ACK, expire a claim before event preflight, and simulate a
 Background short-range stage/enqueue crash followed by return to Foreground
 without any additional conversation turns. They verify bounded redelivery,
 no illegal stale-claim mutation and original operation provenance.
+
+
+## Review hardening — frozen staged-range eligibility and required migration
+
+A summary staged for a short Background range may remain valid after a later
+user input creates a new response that has not been delivered. During periodic
+reconciliation, the latest staged admission without a P0 operation is recovered
+by checking readiness over its original persisted `end_sequence`, **not**
+the newly calculated prospective range. New, un-staged admission candidates
+continue to be checked across their full prospective range, preventing
+premature summarization of unresolved deliveries. This selection is performed
+before applying the bounded scan limit so unrelated blocked candidates do not
+starve recoverable staged work.
+
+Deployment must include SQL migration **0010**, not just 0009, before enabling
+P2-03: `schedule_summary()` persists and replays `admission_origin` on all
+new and existing staged attempts. A PostgreSQL regression stages range 1–2
+during Background with an unacknowledged generated response on turn 3, resumes
+Foreground, adds turn 5, and verifies that reconciliation recovers exactly 1–2
+without acknowledging turn 3 or creating a new range.
