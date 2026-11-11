@@ -242,9 +242,10 @@ def _reconcile_active(connection: Connection, policy: AutoSummaryPolicy,
     """Repair missed dispatcher/subscription windows and switch-back backlog.
 
     Skip already-admitted and not-yet-deliverable ranges *before* applying
-    LIMIT. Otherwise a few blocked conversations can monopolize the scan
-    page and starve unrelated eligible conversations indefinitely. Retain
-    staged jobs lacking an operation row for crash recovery.
+    LIMIT. For a latest staged job missing its operation, evaluate readiness
+    only through its frozen end_sequence: newer pending/generated responses
+    outside the authorized range must not suppress crash recovery. Continue
+    to check the prospective candidate range for brand-new admissions.
     """
     with connection.cursor(row_factory=dict_row) as cur:
         cur.execute(
@@ -253,48 +254,42 @@ def _reconcile_active(connection: Connection, policy: AutoSummaryPolicy,
                FROM conversations c
                JOIN persona_selection p ON p.user_id=c.user_id
                    AND p.instance_id=c.instance_id
+               LEFT JOIN LATERAL (
+                   SELECT j.operation_id AS staged_operation_id,
+                          j.end_sequence AS staged_end_sequence,
+                          o.operation_id AS enqueued_operation_id,
+                          o.status AS operation_status
+                   FROM conversation_summary_jobs j
+                   LEFT JOIN operations o ON o.operation_id=j.operation_id
+                   WHERE j.conversation_id=c.conversation_id
+                     AND j.start_sequence=c.summary_watermark+1
+                     AND j.expected_generation=p.generation
+                   ORDER BY j.admission_attempt DESC LIMIT 1
+               ) latest ON TRUE
                WHERE p.mode IN ('FOREGROUND','BACKGROUND')
                  AND (%s::uuid IS NULL OR c.user_id=%s::uuid)
                  AND (
                      c.next_sequence-1-c.summary_watermark-%s
                          >= CASE WHEN p.mode='BACKGROUND' THEN 1 ELSE %s END
-                     OR EXISTS (
-                         SELECT 1 FROM conversation_summary_jobs staged
-                         LEFT JOIN operations staged_op
-                            ON staged_op.operation_id=staged.operation_id
-                         WHERE staged.conversation_id=c.conversation_id
-                           AND staged.start_sequence=c.summary_watermark+1
-                           AND staged.expected_generation=p.generation
-                           AND staged.admission_attempt=(
-                               SELECT MAX(candidate.admission_attempt)
-                               FROM conversation_summary_jobs candidate
-                               WHERE candidate.conversation_id=c.conversation_id
-                                 AND candidate.start_sequence=c.summary_watermark+1
-                                 AND candidate.expected_generation=p.generation
-                           )
-                           AND staged_op.operation_id IS NULL
-                     )
+                     OR (latest.staged_operation_id IS NOT NULL
+                         AND latest.enqueued_operation_id IS NULL)
                  )
-                 AND NOT EXISTS (
-                     SELECT 1 FROM conversation_summary_jobs latest
-                     LEFT JOIN operations o ON o.operation_id=latest.operation_id
-                     WHERE latest.operation_id=(
-                         SELECT candidate.operation_id
-                         FROM conversation_summary_jobs candidate
-                         WHERE candidate.conversation_id=c.conversation_id
-                           AND candidate.start_sequence=c.summary_watermark+1
-                           AND candidate.expected_generation=p.generation
-                         ORDER BY candidate.admission_attempt DESC LIMIT 1
-                     )
-                     AND o.status=ANY(%s::text[])
+                 AND (
+                     latest.operation_status IS NULL
+                     OR latest.operation_status <> ALL(%s::text[])
                  )
                  AND NOT EXISTS (
                      SELECT 1 FROM conversation_turns t
                      LEFT JOIN conversation_responses r ON r.turn_id=t.turn_id
                      WHERE t.conversation_id=c.conversation_id
                        AND t.sequence BETWEEN c.summary_watermark+1
-                           AND LEAST(c.summary_watermark+%s,
-                                     c.next_sequence-1-%s)
+                           AND CASE
+                               WHEN latest.staged_operation_id IS NOT NULL
+                                    AND latest.enqueued_operation_id IS NULL
+                               THEN latest.staged_end_sequence
+                               ELSE LEAST(c.summary_watermark+%s,
+                                          c.next_sequence-1-%s)
+                           END
                        AND (
                            t.status='PENDING'
                            OR (r.delivery_status='GENERATED'
@@ -304,7 +299,6 @@ def _reconcile_active(connection: Connection, policy: AutoSummaryPolicy,
                ORDER BY c.updated_at,c.conversation_id LIMIT %s""",
             (user_id,user_id,policy.retain_recent,policy.min_candidate_turns,
              list(_TERMINAL_OR_ADMITTED),policy.max_turns,policy.retain_recent,limit),
-        )
         rows=cur.fetchall()
     admitted=replayed=0
     for row in rows:
