@@ -546,6 +546,14 @@ def test_standalone_worker_reaps_expired_operation_claims(dsn,monkeypatch,alread
         return None
 
     monkeypatch.setattr(auto_module,"run_one_cognitive_operation",observe_recovery)
+    # This regression targets the standalone worker's P0 *operation* reaper.
+    # Global reconciliation would admit unrelated conversations from earlier
+    # integration cases, creating unclaimed P1 work and leaking resources into
+    # subsequent tests. Keep scheduling out of this isolated reaper check.
+    monkeypatch.setattr(
+        auto_module,"run_cognitive_scheduling_tick",
+        lambda *args,**kwargs: auto_module.CognitiveTick(0,0,0,0,0,0),
+    )
     call_count=[]
     monkeypatch.setattr(
         auto_module,"OllamaChatGateway",
@@ -612,6 +620,7 @@ def test_cognitive_commit_locks_conversation_before_job(dsn):
     turns(dsn,user,instance,conversation)
     scheduled=call(dsn,schedule_cognition,platform(user),conversation,instance,1)
     lease=claim(dsn)
+    assert lease.operation_id==scheduled.operation_id
     work=call(dsn,prepare_cognition,lease)
     draft=CognitiveDraft(proposals=(CognitiveProposal(
         kind="HYPOTHESIS",subject="USER",
