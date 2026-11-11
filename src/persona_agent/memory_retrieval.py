@@ -131,6 +131,7 @@ def load_topic_attention(
     if not 1<=limit<=32 or not 1<=recent_days<=365:
         raise ValueError("invalid topic attention window")
     with connection.transaction():
+        connection.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
         with connection.cursor(row_factory=dict_row) as cur:
             cur.execute(
                 """SELECT instance_id,revision,focus_thread_id
@@ -325,6 +326,7 @@ def search_relevant_history(
     if not query.strip() or len(query)>250:
         raise ValueError("invalid historical recall query")
     with connection.transaction():
+        connection.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
         with connection.cursor(row_factory=dict_row) as cur:
             cur.execute(
                 "SELECT 1 FROM persona_instances WHERE user_id=%s AND id=%s",
