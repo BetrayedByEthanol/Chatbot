@@ -153,3 +153,29 @@ response, clock response and persisted delivery metrics. A deterministic
 integration regression runs the same subprocess protocol against the
 mock HTTP Ollama endpoint. This prevents an in-process-only acceptance
 demo from being mistaken for verification of the actual text transport.
+
+## Review hardening — page past deferred tool results
+
+`LocalAcceptanceSession.poll_followups(limit=20)` now treats `limit` as
+the maximum **delivered** follow-ups per invocation, not as a cap on
+candidate records examined. It reads scoped candidate rows in small,
+ordered keyset pages using immutable `(created_at, tool_call_id)`, and
+continues past PENDING or DEFERRED rows until it either reaches the
+delivery cap or exhausts candidates. Terminal DELIVERED/SUPPRESSED
+results are excluded from subsequent polls. No schema changes, durable
+cursor checkpoints or new global scheduler are required.
+
+Every candidate still passes the existing reconciliation, preparation,
+authorization and delivery-ACK fences; failed channel delivery does not
+mark an output DELIVERED. A new PostgreSQL regression creates 22 analysis
+turns, completes all operations, leaves 21 earlier outputs DEFERRED,
+and verifies the latest result is delivered on the first poll even with
+a page size of three. It also verifies no duplication after a new host
+session. Additional tests check that `limit` caps outputs rather than
+how many old non-ready calls are inspected.
+
+**Tradeoff:** A poll may scan many deferred calls, one bounded DB page at
+a time; this is appropriate to the small, local Phase 1 acceptance harness.
+A scaled production transport should maintain an indexed candidate cursor
+or a separate fair dispatch queue rather than relying on O(backlog)
+scanning in a latency-critical foreground request.

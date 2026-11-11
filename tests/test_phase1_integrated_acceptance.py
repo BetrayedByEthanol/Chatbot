@@ -28,6 +28,7 @@ from persona_agent.model_gateway import OllamaChatGateway
 from persona_agent.operation_scheduler import claim_operation
 from persona_agent.observability import get_conversation_metrics, get_turn_trace
 from persona_agent.tool_contracts import SLOW_TOOL
+from persona_agent.tool_gateway import run_one_text_tool
 
 
 def wait_until(check,seconds=12):
@@ -334,3 +335,93 @@ def test_real_json_lines_subprocess_transport_against_mock_ollama(dsn,fake_ollam
     assert outputs[1]["model_id"]=="clock.now.v1"
     assert outputs[2]["data"]["delivered_count"]==2
     assert len(requests)==1
+
+
+
+def test_poll_paginate_past_more_than_twenty_deferred_followups(dsn):
+    """Old unrelated results must not permanently starve the latest result.
+
+    Scanning uses a stable keyset, not the fixed oldest-first LIMIT 20.
+    Repeated polls must not re-deliver any acknowledged follow-up.
+    """
+    identity=seed_local_demo(dsn)
+    output=[]
+    host=LocalAcceptanceSession(
+        dsn,identity,gateway=None,deliver=output.append,await_seconds=0,
+    )
+    # Twenty-two requests: 21 earlier ones become unrelated to the
+    # latest turn and remain DEFERRED after their workers complete.
+    for number in range(22):
+        answer=host.message(
+            text=f"term{number} term{number} data",
+            idempotency_key=f"analysis-{number}",
+            mode="analyze",
+        )
+        assert answer["type"]=="reply"
+        assert "follow up" in answer["text"]
+
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        for _ in range(22):
+            assert run_one_text_tool(conn,worker_id="pagination-worker") is not None
+        assert run_one_text_tool(conn,worker_id="pagination-worker") is None
+        latest=conn.execute(
+            "SELECT c.tool_call_id FROM conversation_tool_calls c "
+            "JOIN conversation_turns t ON t.turn_id=c.turn_id "
+            "WHERE c.conversation_id=%s ORDER BY t.sequence DESC LIMIT 1",
+            (identity.conversation_id,),
+        ).fetchone()[0]
+
+    # The default page size is 20; also exercise a smaller delivery/page
+    # budget to verify we advance through many pages in a *single* poll.
+    assert host.poll_followups(limit=3)==1
+    followups=[item for item in output if item["type"]=="followup"]
+    assert len(followups)==1
+    assert followups[0]["tool_call_id"]==str(latest)
+    assert "term21 (2)" in followups[0]["text"]
+    assert host.poll_followups()==0
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        state_counts=dict(conn.execute(
+            "SELECT followup_state,count(*) "
+            "FROM conversation_tool_calls WHERE conversation_id=%s "
+            "GROUP BY followup_state",
+            (identity.conversation_id,),
+        ).fetchall())
+        assert state_counts=={"DEFERRED":21,"DELIVERED":1}
+        assert conn.execute(
+            "SELECT count(*) FROM conversation_assistant_followups "
+            "WHERE conversation_id=%s",
+            (identity.conversation_id,),
+        ).fetchone()[0]==1
+
+    # A new host process/session cannot replay the already delivered
+    # result or get permanently stuck on earlier deferred records.
+    restored=LocalAcceptanceSession(
+        dsn,identity,gateway=None,deliver=output.append,await_seconds=0,
+    )
+    assert restored.poll_followups(limit=1)==0
+    assert len([item for item in output if item["type"]=="followup"])==1
+
+
+def test_poll_followups_limit_is_a_delivery_cap_not_a_scan_cap(dsn):
+    identity=seed_local_demo(dsn)
+    output=[]
+    host=LocalAcceptanceSession(
+        dsn,identity,gateway=None,deliver=output.append,await_seconds=0,
+    )
+    for i in range(3):
+        host.message(
+            text=f"text{i} text{i}",idempotency_key=f"poll-cap-{i}",
+            mode="analyze",
+        )
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        for _ in range(3):
+            assert run_one_text_tool(conn,worker_id="cap-worker") is not None
+    # Only latest turn is relevant, so one result is deliverable and the
+    # other two must be skipped without consuming the delivery budget.
+    assert host.poll_followups(limit=1)==1
+    assert len([x for x in output if x["type"]=="followup"])==1
+    assert host.poll_followups(limit=1)==0
+    with pytest.raises(ValueError):
+        host.poll_followups(limit=0)
+    with pytest.raises(ValueError):
+        host.poll_followups(limit=101)

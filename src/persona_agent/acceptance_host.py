@@ -158,36 +158,64 @@ class LocalAcceptanceSession:
         return count
 
     def poll_followups(self, *, limit: int=20) -> int:
+        """Send up to `limit` eligible results, scanning bounded DB pages.
+
+        A page full of old DEFERRED calls must never hide a newer READY
+        result. The keyset is stable because reconciliation changes
+        followup_state/updated_at, never created_at/tool_call_id.
+        Each poll starts fresh, so a host restart cannot reset a fairness
+        checkpoint and indefinitely starve subsequent calls.
+        """
         if not 1 <= limit <= 100:
             raise ValueError("poll limit must be 1..100")
-        with self._connection() as conn:
-            with conn.cursor(row_factory=dict_row) as cur:
-                cur.execute(
-                    """
-                    SELECT tool_call_id FROM conversation_tool_calls
-                    WHERE conversation_id=%s AND user_id=%s AND instance_id=%s
-                      AND followup_state IN ('PENDING','READY','DEFERRED')
-                    ORDER BY created_at,tool_call_id LIMIT %s
-                    """,
-                    (self.identity.conversation_id,self.identity.user_id,
-                     self.identity.instance_id,limit),
-                )
-                ids=[r["tool_call_id"] for r in cur.fetchall()]
         sent=0
-        for tool_id in ids:
+        cursor=None
+        while sent<limit:
             with self._connection() as conn:
-                state=reconcile_tool_followup(conn,self.actor,tool_id)
-            if state.followup_state!="READY":
-                continue
-            with self._connection() as conn:
-                result=prepare_tool_followup(conn,self.actor,tool_id)
-            self.deliver({
-                "type":"followup","tool_call_id":str(tool_id),
-                "operation_id":str(result.operation_id),"text":result.text,
-            })
-            with self._connection() as conn:
-                acknowledge_tool_followup(conn,self.actor,tool_id)
-            sent+=1
+                with conn.cursor(row_factory=dict_row) as cur:
+                    cur.execute(
+                        """
+                        SELECT tool_call_id,created_at
+                        FROM conversation_tool_calls
+                        WHERE conversation_id=%s AND user_id=%s AND instance_id=%s
+                          AND followup_state IN ('PENDING','READY','DEFERRED')
+                          AND (
+                              %s::timestamptz IS NULL
+                              OR (created_at,tool_call_id) >
+                                 (%s::timestamptz,%s::uuid)
+                          )
+                        ORDER BY created_at,tool_call_id LIMIT %s
+                        """,
+                        (self.identity.conversation_id,self.identity.user_id,
+                         self.identity.instance_id,
+                         None if cursor is None else cursor[0],
+                         None if cursor is None else cursor[0],
+                         None if cursor is None else cursor[1],
+                         limit),
+                    )
+                    page=cur.fetchall()
+            if not page:
+                break
+            for item in page:
+                # Advance past non-deliverable rows too. Page traversal uses
+                # its stable sort columns, never mutable followup_state.
+                cursor=(item["created_at"],item["tool_call_id"])
+                tool_id=item["tool_call_id"]
+                with self._connection() as conn:
+                    state=reconcile_tool_followup(conn,self.actor,tool_id)
+                if state.followup_state!="READY":
+                    continue
+                with self._connection() as conn:
+                    result=prepare_tool_followup(conn,self.actor,tool_id)
+                self.deliver({
+                    "type":"followup","tool_call_id":str(tool_id),
+                    "operation_id":str(result.operation_id),"text":result.text,
+                })
+                with self._connection() as conn:
+                    acknowledge_tool_followup(conn,self.actor,tool_id)
+                sent+=1
+                if sent>=limit:
+                    break
         return sent
 
     def metrics(self) -> dict:
