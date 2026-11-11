@@ -398,10 +398,10 @@ def commit_summary(
                    FOR UPDATE""",
                 (work.conversation_id,lease.user_id,lease.instance_id),
             )
+            state=cur.fetchone()
             # The conversation FOR UPDATE above can wait longer than the
             # worker's lease/attempt timeout. A pre-lock check is insufficient.
             require_claim(cur,lease)
-            state=cur.fetchone()
             if state is None or state["summary_watermark"]!=work.start_sequence-1:
                 raise StaleSummary("another summary already advanced this range")
             rows=_read_range(cur,job)
