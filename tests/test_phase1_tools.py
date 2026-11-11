@@ -857,3 +857,34 @@ def test_concurrent_first_time_respond_to_text_analysis_is_idempotent(dsn):
             (tool_id,),
         ).fetchone()[0]==1
     assert event_count(dsn,tool_id,"conversation.tool.requested.v1")==1
+
+
+
+def test_deterministic_tool_id_collision_is_rejected_without_primary_key_error(dsn,monkeypatch):
+    """All unique conflicts must pass through the typed idempotency boundary."""
+    user,instance=seed(dsn)
+    configure_tool_pool(dsn)
+    original=incoming(dsn,user,instance)
+    previous=invoke(
+        dsn,schedule_text_analysis,actor(user),
+        SlowTextToolCommand(turn_id=original.turn_id),
+    )
+    distinct=incoming(dsn,user,instance,conversation=uuid4(),text="new turn")
+    monkeypatch.setattr(
+        "persona_agent.tool_gateway._tool_id",
+        lambda _turn: previous.tool_call_id,
+    )
+    with pytest.raises(IdempotencyConflict,match="another turn"):
+        invoke(
+            dsn,schedule_text_analysis,actor(user),
+            SlowTextToolCommand(turn_id=distinct.turn_id),
+        )
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT count(*) FROM conversation_tool_calls WHERE tool_call_id=%s",
+            (previous.tool_call_id,),
+        ).fetchone()[0]==1
+        assert conn.execute(
+            "SELECT count(*) FROM conversation_tool_calls WHERE turn_id=%s",
+            (distinct.turn_id,),
+        ).fetchone()[0]==0

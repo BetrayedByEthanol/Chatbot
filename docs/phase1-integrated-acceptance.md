@@ -131,3 +131,14 @@ actual streaming TTFC, STT/TTS, GPU-budget enforcement, autonomous
 Background cognition and full Phase 2 memory/emotion/goal functionality.
 Phase 1 exit **must remain conditional** until the live workflow has
 succeeded on the feature branch and any resulting defects are fixed.
+
+## Integrated-test discovery: deterministic tool ID conflict
+
+During a full concurrent PostgreSQL run the pre-existing P1-02 first-time
+admission race was found to conflict on `tool_call_id`'s PRIMARY KEY
+before the narrow `ON CONFLICT(turn_id)` handler. It now uses
+`ON CONFLICT DO NOTHING` and rereads the winner by the authenticated
+`turn_id`. A conflicting PK from another turn raises typed
+`IdempotencyConflict`; it cannot become a cross-turn replay or raw
+`UniqueViolation`. The original concurrent admission regressions remain,
+plus an explicit deterministic-ID collision case.
