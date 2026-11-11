@@ -48,3 +48,8 @@ Register before enabling dispatch when possible. On existing deployments the rec
 tests/test_phase2_automatic_summaries.py uses real PostgreSQL to verify threshold admission, contiguous ranges, lost-event-ACK recovery, inactive persona deferral/reselection, short Background handover and platform permission limits.
 
 Deferred: model quality benchmarking, automatic factual promotion, full cognitive reflection, topic-boundary classification, privacy/retention propagation, the complete Background barrier, and deployment process orchestration beyond this operator-owned loop.
+
+
+### Bounded reconciliation fairness
+
+The reconciliation query filters out active/terminally admitted jobs and ranges containing currently unfinished/deliverable responses **before** applying its scan-page LIMIT. Otherwise a few persistent blocked conversations could monopolize every poll and prevent late-subscription recovery of unrelated eligible conversations. A job staged immediately before a crash but not enqueued remains visible for idempotent admission recovery. A PostgreSQL regression forces a one-conversation scan limit and verifies that an eligible range is still scheduled behind both a blocked conversation and an already queued operation.
