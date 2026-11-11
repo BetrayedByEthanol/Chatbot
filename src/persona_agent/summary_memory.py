@@ -703,7 +703,7 @@ def episode_context_block(cur, user_id: UUID, instance_id: UUID,
     specs=[
         (
             f"{row['topic']}: ",
-            f" (source {row['source_turn_id']}, {row['source_turn_at'].date()})\\n",
+            f" (source {row['source_turn_id']}, {row['source_turn_at'].date()})\n",
         )
         for row in rows
     ]
