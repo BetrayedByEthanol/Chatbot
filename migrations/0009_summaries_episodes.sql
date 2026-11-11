@@ -67,9 +67,11 @@ CREATE TABLE conversation_summary_jobs (
     expected_generation bigint NOT NULL CHECK (expected_generation >= 1),
     start_sequence bigint NOT NULL CHECK (start_sequence >= 1),
     end_sequence bigint NOT NULL CHECK (end_sequence >= start_sequence),
-    summary_id uuid REFERENCES conversation_summaries(summary_id),
+    summary_id uuid,
     created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
     UNIQUE (conversation_id,start_sequence,expected_generation),
+    FOREIGN KEY (summary_id,user_id,instance_id)
+        REFERENCES conversation_summaries(summary_id,user_id,instance_id),
     FOREIGN KEY (conversation_id,user_id,instance_id)
         REFERENCES conversations(conversation_id,user_id,instance_id)
 );
