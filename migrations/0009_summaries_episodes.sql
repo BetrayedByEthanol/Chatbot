@@ -16,6 +16,7 @@ CREATE TABLE conversation_summaries (
     UNIQUE (conversation_id,start_sequence),
     UNIQUE (conversation_id,end_sequence),
     UNIQUE (summary_id,user_id,instance_id),
+    UNIQUE (summary_id,conversation_id,user_id,instance_id),
     FOREIGN KEY (conversation_id,user_id,instance_id)
         REFERENCES conversations(conversation_id,user_id,instance_id),
     FOREIGN KEY (conversation_id,first_turn_id,user_id,instance_id)
@@ -44,8 +45,8 @@ CREATE TABLE memory_episodes (
     privacy_class text NOT NULL DEFAULT 'NORMAL'
         CHECK (privacy_class = 'NORMAL'),
     created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
-    FOREIGN KEY (summary_id,user_id,instance_id)
-        REFERENCES conversation_summaries(summary_id,user_id,instance_id),
+    FOREIGN KEY (summary_id,conversation_id,user_id,instance_id)
+        REFERENCES conversation_summaries(summary_id,conversation_id,user_id,instance_id),
     FOREIGN KEY (conversation_id,user_id,instance_id)
         REFERENCES conversations(conversation_id,user_id,instance_id),
     FOREIGN KEY (conversation_id,source_turn_id,user_id,instance_id)
