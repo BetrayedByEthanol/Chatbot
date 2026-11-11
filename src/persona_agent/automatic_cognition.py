@@ -95,6 +95,40 @@ def _event_claim(connection:Connection,lease):
         return current
 
 
+def _event_conversation_id(connection:Connection,event:dict) -> UUID|None:
+    """Resolve trusted conversation event payloads without assuming its shape.
+
+    Delivery and supersession events contain turn_id, while input events
+    carry conversation_id. Re-check the scoped turn ownership in SQL.
+    """
+    if not event["event_type"].startswith("conversation."):
+        return None
+    payload=event["payload"]
+    if not isinstance(payload,dict):
+        return None
+    raw=payload.get("conversation_id")
+    if raw is not None:
+        try:
+            return UUID(str(raw))
+        except (ValueError,TypeError):
+            return None
+    raw=payload.get("turn_id")
+    if raw is None:
+        return None
+    try:
+        turn_id=UUID(str(raw))
+    except (ValueError,TypeError):
+        return None
+    with connection.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            """SELECT conversation_id FROM conversation_turns
+               WHERE turn_id=%s AND user_id=%s AND instance_id=%s""",
+            (turn_id,event["user_id"],event["instance_id"]),
+        )
+        row=cur.fetchone()
+        return row["conversation_id"] if row else None
+
+
 def _admit(connection,user_id:UUID,instance_id:UUID,
            conversation_id:UUID,policy:CognitivePolicy) -> tuple[int,int]:
     selected=_selection(connection,user_id,instance_id)
@@ -247,12 +281,11 @@ def run_cognitive_scheduling_tick(
                     defer_delivery(connection,lease)
                     deferred+=1
                 continue
-            payload=event["payload"]
-            raw_id=payload.get("conversation_id") if isinstance(payload,dict) else None
-            if raw_id and event["event_type"].startswith("conversation."):
+            conversation_id=_event_conversation_id(connection,event)
+            if conversation_id is not None:
                 new,again=_admit(
                     connection,event["user_id"],event["instance_id"],
-                    UUID(raw_id),policy,
+                    conversation_id,policy,
                 )
                 admitted+=new
                 replayed+=again
