@@ -116,7 +116,7 @@ def _admit_if_due(
         cur.execute(
             """SELECT o.status
                FROM conversation_summary_jobs j
-               JOIN operations o ON o.operation_id=j.operation_id
+               LEFT JOIN operations o ON o.operation_id=j.operation_id
                WHERE j.conversation_id=%s AND j.start_sequence=%s
                  AND j.expected_generation=%s
                ORDER BY j.admission_attempt DESC LIMIT 1""",
@@ -255,12 +255,17 @@ def _reconcile_active(connection: Connection, policy: AutoSummaryPolicy,
                  AND c.next_sequence-1-c.summary_watermark-%s
                      >= CASE WHEN p.mode='BACKGROUND' THEN 1 ELSE %s END
                  AND NOT EXISTS (
-                     SELECT 1 FROM conversation_summary_jobs j
-                     JOIN operations o ON o.operation_id=j.operation_id
-                     WHERE j.conversation_id=c.conversation_id
-                       AND j.start_sequence=c.summary_watermark+1
-                       AND j.expected_generation=p.generation
-                       AND o.status=ANY(%s::text[])
+                     SELECT 1 FROM conversation_summary_jobs latest
+                     LEFT JOIN operations o ON o.operation_id=latest.operation_id
+                     WHERE latest.operation_id=(
+                         SELECT candidate.operation_id
+                         FROM conversation_summary_jobs candidate
+                         WHERE candidate.conversation_id=c.conversation_id
+                           AND candidate.start_sequence=c.summary_watermark+1
+                           AND candidate.expected_generation=p.generation
+                         ORDER BY candidate.admission_attempt DESC LIMIT 1
+                     )
+                     AND o.status=ANY(%s::text[])
                  )
                  AND NOT EXISTS (
                      SELECT 1 FROM conversation_turns t
@@ -290,8 +295,12 @@ def _reconcile_active(connection: Connection, policy: AutoSummaryPolicy,
             )
             admitted+=new
             replayed+=old
-        except StaleSelection:
-            continue  # selected generation changed during reconciliation
+        except (StaleSelection,InvalidOperation,ResourceUnavailable):
+            # A temporarily unconfigured/exhausted P1 pool (or a stale
+            # generation) must not terminate the long-running consumer or
+            # prevent other conversations from being inspected. Keep the
+            # staged record for the next bounded reconciliation tick.
+            continue
     return admitted,replayed
 
 
