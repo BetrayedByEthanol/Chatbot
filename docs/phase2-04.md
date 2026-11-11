@@ -34,7 +34,9 @@ Outcomes:
 3. Different value, retracted slot or contradictory later claim → `CONFLICT`; existing record is unchanged and a memory conflict event is emitted for downstream review.
 4. Older historical evidence than the currently authoritative slot → `STALE`; never downgrade newer memory.
 
-`list_extraction_conflicts()` exposes a scoped review queue. Only an authenticated, currently selected user can call `approve_extraction_conflict()`, which delegates to the already-merged P2-01 `amend_memory()`: it enforces expected version, newer source evidence, generation fencing, idempotency and revision/outbox invariants. A model or platform consumer cannot silently approve contradictory values. Other user corrections still use P2-01 directly.
+`list_extraction_conflicts()` exposes a scoped review queue. Only an authenticated user can call `approve_extraction_conflict()`, which uses the same Memory-owned correction primitive as the already-merged P2-01 `amend_memory()` API. Its original, exact command can replay after selection changes; fresh corrections require the selected generation. Both paths enforce expected version, newer source evidence, idempotency and revision/outbox invariants. A model or platform consumer cannot silently approve contradictory values. Other user corrections still use P2-01 directly.
+
+**Atomic review invariant:** `approve_extraction_conflict()` opens one PostgreSQL transaction, locks the candidate row (`FOR UPDATE`), performs the Memory-owned correction within that transaction, and marks the candidate `APPROVED` with the committed revision in the same transaction. The memory record, revision, command receipt, event, outbox and candidate update commit or roll back together. Concurrent approval requests serialize on the candidate lock and replay the original receipt without producing a second correction. A crash after the memory primitive has performed its writes but before the candidate decision **must** leave no durable correction, no receipt or outbox event, and the candidate still in `CONFLICT` for safe retry.
 
 ## Lifecycle, delivery and recovery
 
@@ -59,3 +61,8 @@ This worker is independent of the P2-03 summary scheduler. It consumes only auth
 `tests/test_phase2_extraction.py` uses real PostgreSQL to validate: explicit fact/preference/personal-meaning parsing, persistent provenance and cross-session recall, revision-scoped corroboration, conflicting candidates without silent overwrites, explicit user-approved versioned correction, sensitive/ambiguous statement exclusion, inactive persona deferral/resumption, and stale-evidence protection.
 
 Deferred after this slice: generalized LLM-driven memory proposals, richer semantic/entity normalization, semantic graph merging, fuzzy corroboration, typed sensitive-memory consent and retention/erasure propagation, relevance feedback and full P2-05 hybrid attention/ranking. These require explicit validation/evaluation before enabling broader automation.
+
+
+## P2-04 review hardening — atomic conflict approval
+
+A Codex review identified a two-transaction failure window: the P2-01 correction committed independently before the extraction candidate's approval marker. The fix factors a narrowly scoped `_amend_memory_in_transaction()` primitive inside Memory while retaining the public `amend_memory()` transaction contract. The extraction approval caller now holds the candidate lock and invokes that primitive through the **same PostgreSQL cursor and transaction**, then finalizes the candidate before commit. PostgreSQL regressions inject a failure after all memory effects are written but before candidate finalization, assert complete rollback (including revision, receipt and outbox), retry successfully, and verify concurrent duplicate approvals produce exactly one revision.
