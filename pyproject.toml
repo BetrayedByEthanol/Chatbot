@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "persistent-persona-agent"
+version = "0.0.1"
+description = "Incremental v2.5 persona runtime"
+requires-python = ">=3.11"
+dependencies = [
+  "pydantic>=2.10,<3",
+  "psycopg[binary]>=3.2,<4",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8,<10"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["persona_agent*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
