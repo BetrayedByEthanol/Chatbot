@@ -19,8 +19,9 @@ from persona_agent.event_delivery import (
     claim_delivery, dispatch_outbox, reap_expired_claims,
 )
 from persona_agent.lifecycle import (
-    BackgroundReason, EnterBackgroundCommand, SwitchPersonaCommand,
-    TrustedPlatformActor, enter_background, switch_persona,
+    BackgroundReason, EnterBackgroundCommand, PrimaryActivityCommand,
+    SwitchPersonaCommand, TrustedPlatformActor, enter_background,
+    record_primary_activity, switch_persona,
 )
 from persona_agent.operation_contracts import (
     EffectClass, EnqueueOperation, Origin, Policy, Priority,
@@ -30,6 +31,7 @@ from persona_agent.operation_scheduler import (
 )
 from persona_agent.operation_control import fail_operation
 import persona_agent.summary_memory as summary_module
+import persona_agent.automatic_summaries as auto_module
 from persona_agent.runtime import PermissionDenied
 from persona_agent.summary_contracts import SUMMARY_CAPABILITY, SUMMARY_OPERATION, SUMMARY_RESOURCE
 from persona_agent.summary_memory import run_summary, schedule_summary
@@ -502,3 +504,151 @@ def test_reconciliation_recovers_latest_operator_retry_staged_after_failed_job(
             "SELECT summary_watermark FROM conversations WHERE conversation_id=%s",
             (conversation,),
         ).fetchone()[0]==8
+
+
+
+def test_expired_delivery_lease_after_admission_is_fenced_and_recovered(
+    dsn, monkeypatch,
+):
+    """Admission may commit after the delivery lease expires; ACK must not."""
+    consumer=bootstrap(dsn)
+    user,instance,_=seed(dsn)
+    conversation=uuid4()
+    for n in range(1,11):
+        delivered_turn(dsn,user,instance,conversation,n)
+
+    original=auto_module._admit_if_due
+    expired=[]
+
+    def expire_after_admission(connection, **kwargs):
+        result=original(connection,**kwargs)
+        if result[0] and not expired:
+            row=connection.execute(
+                """UPDATE event_deliveries
+                   SET lease_until=clock_timestamp()-interval '1 second'
+                   WHERE consumer_id=%s AND status='CLAIMED'
+                   RETURNING delivery_id""",
+                (consumer,),
+            ).fetchone()
+            assert row is not None
+            expired.append(row[0])
+        return result
+
+    monkeypatch.setattr(auto_module,"_admit_if_due",expire_after_admission)
+    first=tick(dsn,consumer,user,max_deliveries=1)
+    assert first.admitted==1
+    assert first.processed==0
+    assert first.deferred==0
+    assert first.retry_pending==0
+    assert len(expired)==1
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT status FROM event_deliveries WHERE delivery_id=%s",
+            (expired[0],),
+        ).fetchone()[0]=="CLAIMED"
+    monkeypatch.setattr(auto_module,"_admit_if_due",original)
+    # Next tick reaps expired claim and safely acknowledges its redelivery.
+    again=tick(dsn,consumer,user)
+    assert again.processed>=1 and again.admitted==0
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT status FROM event_deliveries WHERE delivery_id=%s",
+            (expired[0],),
+        ).fetchone()[0]=="PROCESSED"
+        assert conn.execute(
+            """SELECT count(*) FROM conversation_summary_jobs
+               WHERE conversation_id=%s""",(conversation,),
+        ).fetchone()[0]==1
+    call(dsn,run_summary,claim_summary(dsn),FakeSummary())
+
+
+def test_delivery_claim_expired_during_preflight_does_not_defer_or_retry(
+    dsn, monkeypatch,
+):
+    """An already-invalid claim must not enter a fallback mutation."""
+    consumer=bootstrap(dsn)
+    user,instance,_=seed(dsn)
+    conversation=uuid4()
+    delivered_turn(dsn,user,instance,conversation,1)
+    actual=auto_module._claimed_event
+    expired=[]
+
+    def expire_before_read(connection, lease):
+        connection.execute(
+            """UPDATE event_deliveries SET
+                 lease_until=clock_timestamp()-interval '1 second'
+               WHERE delivery_id=%s""",
+            (lease.delivery_id,),
+        )
+        expired.append(lease.delivery_id)
+        return actual(connection,lease)
+
+    monkeypatch.setattr(auto_module,"_claimed_event",expire_before_read)
+    first=tick(dsn,consumer,user,max_deliveries=1)
+    assert (first.processed,first.deferred,first.retry_pending)==(0,0,0)
+    assert len(expired)==1
+    monkeypatch.setattr(auto_module,"_claimed_event",actual)
+    second=tick(dsn,consumer,user)
+    assert second.processed>=1
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT status FROM event_deliveries WHERE delivery_id=%s",
+            (expired[0],),
+        ).fetchone()[0]=="PROCESSED"
+
+
+def test_background_staged_summary_recovers_after_return_to_foreground(
+    dsn, monkeypatch,
+):
+    """Do not require eight new turns to repair a two-turn staged handover."""
+    user,instance,_=seed(dsn)
+    conversation=uuid4()
+    for n in range(1,5):
+        delivered_turn(dsn,user,instance,conversation,n)
+    background=call(dsn,enter_background,actor(user),EnterBackgroundCommand(
+        instance_id=instance,expected_generation=1,expected_presence_revision=0,
+        reason=BackgroundReason.EXPLICIT_DEPARTURE,
+        idempotency_key=str(uuid4()),
+    ))
+    assert background.mode.value=="BACKGROUND" and background.generation==1
+    actual=summary_module.enqueue_operation
+
+    def crash_after_staging(*args,**kwargs):
+        raise RuntimeError("staged Background summary before enqueue")
+
+    monkeypatch.setattr(summary_module,"enqueue_operation",crash_after_staging)
+    platform=TrustedPlatformActor(user_id=user,source_id="memory.auto_summary.v1")
+    with pytest.raises(RuntimeError,match="staged Background"):
+        call(dsn,schedule_summary,platform,conversation,instance,1)
+    monkeypatch.setattr(summary_module,"enqueue_operation",actual)
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        staged=conn.execute(
+            """SELECT j.start_sequence,j.end_sequence,j.admission_origin,
+                      o.operation_id
+               FROM conversation_summary_jobs j
+               LEFT JOIN operations o ON o.operation_id=j.operation_id
+               WHERE j.conversation_id=%s""",(conversation,),
+        ).fetchone()
+        assert staged==(1,2,"COGNITIVE",None)
+    foreground=call(dsn,record_primary_activity,actor(user),PrimaryActivityCommand(
+        instance_id=instance,expected_generation=1,
+        idempotency_key=str(uuid4()),
+    ))
+    assert foreground.mode.value=="FOREGROUND" and foreground.generation==1
+
+    # No event delivery is needed; the threshold must not suppress
+    # reconciliation of an already staged, authorized Background range.
+    consumer=bootstrap(dsn)
+    repaired=tick(dsn,consumer,user,scan_limit=1)
+    assert repaired.admitted==1
+    assert tick(dsn,consumer,user,scan_limit=1).admitted==0
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        operation=conn.execute(
+            """SELECT j.start_sequence,j.end_sequence,o.status,o.origin
+               FROM conversation_summary_jobs j
+               JOIN operations o ON o.operation_id=j.operation_id
+               WHERE j.conversation_id=%s""",(conversation,),
+        ).fetchone()
+        assert operation==(1,2,"QUEUED","COGNITIVE")
+    committed=call(dsn,run_summary,claim_summary(dsn),FakeSummary())
+    assert (committed.start_sequence,committed.end_sequence)==(1,2)
