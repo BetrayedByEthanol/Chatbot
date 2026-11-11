@@ -138,11 +138,27 @@ def drain_outbox(dsn):
     raise AssertionError("Phase 0 outbox could not drain")
 
 
-def test_command_event_delivery_operation_checkpoint_completion(dsn):
+@pytest.fixture
+def rename_consumer(dsn):
+    consumer=f"p05-consumer-{uuid4()}"
+    call(dsn,subscribe,consumer,"persona.instance.renamed.v1")
+    try:
+        yield consumer
+    finally:
+        # Other Phase 0 suites share the disposable test database and
+        # assert an exact subscriber count. Do not leak our subscription.
+        with psycopg.connect(dsn,autocommit=True) as conn:
+            conn.execute(
+                "UPDATE event_subscriptions SET enabled=false "
+                "WHERE consumer_id=%s AND event_type=%s",
+                (consumer,"persona.instance.renamed.v1"),
+            )
+
+
+def test_command_event_delivery_operation_checkpoint_completion(dsn, rename_consumer):
     user, instance=seed(dsn)
     resource=pool(dsn)
-    consumer=f"p05-consumer-{uuid4()}"
-    call(dsn, subscribe, consumer, "persona.instance.renamed.v1")
+    consumer=rename_consumer
     rename_cmd=RenameInstanceCommand(
         instance_id=instance, expected_generation=1,
         expected_version=0, new_label="accepted",
