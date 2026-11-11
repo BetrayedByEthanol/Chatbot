@@ -36,7 +36,7 @@ CREATE TABLE memory_episodes (
     source_turn_id uuid NOT NULL,
     source_sequence bigint NOT NULL CHECK (source_sequence >= 1),
     source_quote text NOT NULL CHECK (char_length(source_quote) BETWEEN 1 AND 1000),
-    occurred_at timestamptz NOT NULL,
+    source_turn_at timestamptz NOT NULL,
     topic text NOT NULL CHECK (char_length(topic) BETWEEN 1 AND 120),
     description text NOT NULL CHECK (char_length(description) BETWEEN 1 AND 1200),
     confidence numeric(4,3) NOT NULL CHECK (confidence BETWEEN 0 AND 1),
@@ -55,7 +55,7 @@ CREATE TABLE memory_episodes (
 CREATE INDEX memory_episodes_topic_idx ON memory_episodes
     USING gin (to_tsvector('simple',topic || ' ' || description));
 CREATE INDEX memory_episodes_scope_time_idx
-    ON memory_episodes(user_id,instance_id,occurred_at DESC);
+    ON memory_episodes(user_id,instance_id,source_turn_at DESC);
 
 -- A durable correlation record is staged before the existing P0 operation
 -- is enqueued; a crash between stages is repaired by idempotent rescheduling.
