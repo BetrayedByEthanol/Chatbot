@@ -342,13 +342,11 @@ def test_independent_conversation_summaries_and_bounded_context(dsn):
     first=schedule(dsn,user,instance,a,max_turns=5)
     second=schedule(dsn,user,instance,b,max_turns=5)
     assert first.operation_id!=second.operation_id
+    # P0 claims use SKIP LOCKED: a racing claimant may return None while
+    # another briefly holds the resource-pool row. Claim sequentially,
+    # then demonstrate that independent claimed jobs execute concurrently.
+    leases=[claim(dsn,"parallel-1"),claim(dsn,"parallel-2")]
     with ThreadPoolExecutor(max_workers=2) as pool:
-        leases=list(pool.map(lambda worker: call(
-            dsn,claim_operation,worker_id=worker,
-            capabilities=(SUMMARY_CAPABILITY,),
-            operation_types=(SUMMARY_OPERATION,),lease_seconds=120,
-        ),("parallel-1","parallel-2")))
-        assert all(leases)
         outputs=list(pool.map(
             lambda lease: call(dsn,run_summary,lease,FixedSummary()),leases,
         ))
