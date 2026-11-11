@@ -101,3 +101,35 @@ The pre-existing P0/P1/P2-01 tests and live Ollama/transport smoke test must
 remain green. The live smoke test is **not** a benchmark of this new model
 summarization protocol; use a separately evaluated summarizer model before
 deploying unattended background summarization.
+
+
+## Review hardening — byte-bounded source projection and fair restore
+
+An accepted text turn can contain 12,000 Unicode characters (or a similarly
+long delivered assistant message). Its original UTF-8 representation may
+exceed the 32,000-byte model-source budget even when the summary range has
+only one turn. The **authoritative source digest always covers the entire**
+original input, delivered assistant output and anchored follow-ups; it is
+never truncated. The summarizer sees a deterministic, UTF-8-byte-bounded
+head/tail excerpt of each turn, with an explicit omission marker and a cap
+on visible follow-ups per turn. All turns in the selected range remain
+represented, even when a single source turn is oversized. The summarizer is
+instructed not to make claims about omitted material. A source-size failure
+can therefore no longer permanently prevent a contiguous watermark from
+advancing. This is a bounded *lossy* view for summarization, not evidence
+that omitted content was read or a replacement for immutable transcript
+retrieval.
+
+When restoring up to three older summaries, the Context Builder allocates
+its limited summary budget fairly among eligible ranges, retaining each
+range's turn numbers and marking omitted middle text. An accepted summary
+may be as long as 4,000 characters; it no longer suppresses all previous
+summaries when it exceeds the 1,100-character context-block cap. Budget
+sharing and head/tail excerpts preserve the latest user input and recent
+verbatim turns; retrieving original turns remains the authoritative way
+to inspect omitted details.
+
+PostgreSQL regression tests cover a 12,000-character multi-byte input plus
+a 12,000-character delivered response (over 70 KB of original evidence),
+subsequent watermark progress, and restoration of multiple 1,200+ character
+summaries in a bounded response context.
