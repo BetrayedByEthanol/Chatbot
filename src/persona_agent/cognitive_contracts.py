@@ -24,6 +24,7 @@ class CognitiveProposal(BaseModel):
     model_config=ConfigDict(extra="forbid",frozen=True)
     kind: ReflectionKind
     subject: Subject
+    temporal_scope: Literal["CURRENT","HISTORICAL","FUTURE"]="CURRENT"
     content: str = Field(min_length=1,max_length=600)
     source_turn_id: UUID
     evidence_quote: str = Field(min_length=1,max_length=400)
