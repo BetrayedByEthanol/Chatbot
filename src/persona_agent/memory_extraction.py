@@ -434,6 +434,69 @@ def run_extraction_tick(
     )
 
 
+def _reassess_conflict(cur, candidate: dict) -> dict:
+    """Re-evaluate one locked candidate against the current memory revision.
+
+    This may retire historical evidence, corroborate the current value, or
+    retarget a newer conflicting claim for explicit user approval. It never
+    applies a memory correction or changes the source evidence.
+    """
+    if candidate["status"]!="CONFLICT":
+        return candidate
+    cur.execute(
+        """SELECT m.version,m.value_text,m.record_status,m.source_turn_at,
+                  t.created_at AS candidate_turn_at
+           FROM memory_records m
+           JOIN conversation_turns t ON t.turn_id=%s
+             AND t.conversation_id=%s AND t.user_id=m.user_id
+             AND t.instance_id=m.instance_id
+           WHERE m.memory_id=%s AND m.user_id=%s AND m.instance_id=%s""",
+        (candidate["source_turn_id"],candidate["conversation_id"],
+         candidate["target_memory_id"],candidate["user_id"],
+         candidate["instance_id"]),
+    )
+    current=cur.fetchone()
+    if current is None:
+        raise PermissionDenied("conflict source or memory outside candidate scope")
+    if candidate["target_version"]==current["version"]:
+        return candidate
+    if current["candidate_turn_at"]<=current["source_turn_at"]:
+        new_status="STALE"
+    elif (current["record_status"]=="ACTIVE"
+          and candidate["value_text"]==current["value_text"]):
+        new_status="CORROBORATED"
+    else:
+        new_status="CONFLICT"
+    cur.execute(
+        """UPDATE memory_extraction_candidates
+           SET status=%s,target_version=%s,
+               reviewed_at=CASE WHEN %s='STALE' THEN clock_timestamp()
+                                ELSE reviewed_at END
+           WHERE candidate_id=%s AND user_id=%s
+             AND status='CONFLICT' AND target_version=%s
+           RETURNING candidate_id""",
+        (new_status,current["version"],new_status,
+         candidate["candidate_id"],candidate["user_id"],
+         candidate["target_version"]),
+    )
+    if cur.fetchone() is None:
+        raise VersionConflict("candidate changed during conflict re-evaluation")
+    if new_status=="CORROBORATED":
+        cur.execute(
+            """INSERT INTO memory_claim_support(
+                 memory_id,version,conversation_id,source_turn_id,user_id,
+                 instance_id,source_quote
+               ) VALUES (%s,%s,%s,%s,%s,%s,%s)
+               ON CONFLICT(memory_id,version,source_turn_id) DO NOTHING""",
+            (candidate["target_memory_id"],current["version"],
+             candidate["conversation_id"],candidate["source_turn_id"],
+             candidate["user_id"],candidate["instance_id"],
+             candidate["source_quote"]),
+        )
+    return {**candidate,"status":new_status,
+            "target_version":current["version"]}
+
+
 def list_extraction_conflicts(
     connection: Connection, actor: TrustedActor, instance_id: UUID,
     *, limit: int = 20,
