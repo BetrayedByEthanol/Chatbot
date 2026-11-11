@@ -330,7 +330,7 @@ def commit_summary(
                     """INSERT INTO memory_episodes(
                          episode_id,summary_id,conversation_id,user_id,
                          instance_id,source_turn_id,source_sequence,
-                         source_quote,occurred_at,topic,description,confidence
+                         source_quote,source_turn_at,topic,description,confidence
                        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
                     (uuid4(),summary_id,work.conversation_id,lease.user_id,
                      lease.instance_id,episode.source_turn_id,source["sequence"],
@@ -426,18 +426,18 @@ def search_episodes(
                 raise PermissionDenied("episode instance outside authenticated scope")
             cur.execute(
                 """SELECT episode_id,conversation_id,source_turn_id,
-                          source_sequence,occurred_at,topic,description,
+                          source_sequence,source_turn_at,topic,description,
                           epistemic_status,confidence
                    FROM memory_episodes
                    WHERE user_id=%s AND instance_id=%s AND privacy_class='NORMAL'
-                     AND (%s::timestamptz IS NULL OR occurred_at >= %s::timestamptz)
-                     AND (%s::timestamptz IS NULL OR occurred_at <= %s::timestamptz)
+                     AND (%s::timestamptz IS NULL OR source_turn_at >= %s::timestamptz)
+                     AND (%s::timestamptz IS NULL OR source_turn_at <= %s::timestamptz)
                      AND to_tsvector('simple',topic || ' ' || description)
                            @@ websearch_to_tsquery('simple',%s)
                    ORDER BY ts_rank_cd(
                        to_tsvector('simple',topic || ' ' || description),
                        websearch_to_tsquery('simple',%s)
-                   ) DESC, occurred_at DESC,episode_id
+                   ) DESC, source_turn_at DESC,episode_id
                    LIMIT %s""",
                 (actor.user_id,instance_id,since,since,until,until,
                  query,query,max_results),
@@ -463,7 +463,7 @@ def episode_source_turn(
     _require_actor(actor)
     with connection.cursor(row_factory=dict_row) as cur:
         cur.execute(
-            """SELECT e.source_turn_id,e.conversation_id,e.occurred_at,
+            """SELECT e.source_turn_id,e.conversation_id,e.source_turn_at,
                       t.input_text,r.response_text,r.delivery_status
                FROM memory_episodes e
                JOIN conversation_turns t
@@ -480,7 +480,7 @@ def episode_source_turn(
         return {
             "turn_id":hit["source_turn_id"],
             "conversation_id":hit["conversation_id"],
-            "occurred_at":hit["occurred_at"],
+            "source_turn_at":hit["source_turn_at"],
             "user_text":hit["input_text"],
             "assistant_text":hit["response_text"]
                 if hit["delivery_status"]=="DELIVERED" else None,
@@ -528,18 +528,18 @@ def episode_context_block(cur, user_id: UUID, instance_id: UUID,
     terms=" OR ".join(dict.fromkeys(words[:6]))
     head="Historical episodes (model interpretations, check original turns):\n"
     cur.execute(
-        """SELECT topic,description,source_turn_id,occurred_at
+        """SELECT topic,description,source_turn_id,source_turn_at
            FROM memory_episodes WHERE user_id=%s AND instance_id=%s
              AND privacy_class='NORMAL'
              AND to_tsvector('simple',topic || ' ' || description)
                  @@ websearch_to_tsquery('simple',%s)
-           ORDER BY occurred_at DESC,episode_id LIMIT 4""",
+           ORDER BY source_turn_at DESC,episode_id LIMIT 4""",
         (user_id,instance_id,terms),
     )
     lines=[]
     for row in cur.fetchall():
         line=(f"{row['topic']}: {row['description']} "
-              f"(source {row['source_turn_id']}, {row['occurred_at'].date()})\n")
+              f"(source {row['source_turn_id']}, {row['source_turn_at'].date()})\n")
         if len(head)+sum(map(len,lines))+len(line)>max_chars:
             break
         lines.append(line)
