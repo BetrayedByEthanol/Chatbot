@@ -96,3 +96,8 @@ Introduce minimal dialogue threads, pending output relevance and measured
 latency/operation metrics. Hardening should add durable worker supervision,
 polling/signal wakeups and production restart drills. Phase 1 acceptance
 will require a live end-to-end demonstration with a real model/transport.
+
+Additional integration tests stage the exact crash boundary between a
+committed P0 enqueue and the P1 correlation update, then verify idempotent
+repair. A separate concurrent test blocks a slow tool provider and proves
+a newer user turn commits without waiting for the tool's database locks.

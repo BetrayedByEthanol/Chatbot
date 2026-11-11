@@ -1,6 +1,7 @@
 """P1-02 real PostgreSQL gateway/worker and async-followup acceptance."""
 
 from concurrent.futures import ThreadPoolExecutor
+from threading import Event
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -331,3 +332,93 @@ def test_scoped_tool_status_and_followup_deny_other_user(dsn):
         invoke(dsn,read_tool_call,actor(stranger),tool.tool_call_id)
     with pytest.raises(PermissionDenied):
         invoke(dsn,reconcile_tool_followup,actor(stranger),tool.tool_call_id)
+
+
+
+def test_staging_reconciles_after_crash_between_enqueue_and_link(dsn):
+    """P0 enqueue receipt survives a crash before P1 correlation is finalized."""
+    user,instance=seed(dsn)
+    configure_tool_pool(dsn)
+    turn=incoming(dsn,user,instance)
+    request=SlowTextToolCommand(turn_id=turn.turn_id)
+    scheduled=invoke(dsn,schedule_text_analysis,actor(user),request)
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        # Simulate the exact durable state present immediately after a
+        # committed P0 enqueue but before the P1 post-enqueue update.
+        conn.execute(
+            "UPDATE conversation_tool_calls SET operation_id=NULL,"
+            "admission_state='PREPARING' WHERE tool_call_id=%s",
+            (scheduled.tool_call_id,),
+        )
+        assert conn.execute(
+            "SELECT count(*) FROM operations WHERE operation_id=%s",
+            (scheduled.operation_id,),
+        ).fetchone()[0]==1
+    restored=invoke(dsn,schedule_text_analysis,actor(user),request)
+    assert restored.tool_call_id==scheduled.tool_call_id
+    assert restored.operation_id==scheduled.operation_id
+    assert restored.admission_state=="QUEUED"
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT count(*) FROM operations WHERE operation_id=%s",
+            (scheduled.operation_id,),
+        ).fetchone()[0]==1
+        assert conn.execute(
+            "SELECT count(*) FROM events WHERE event_type='operation.queued.v1' "
+            "AND payload->>'operation_id'=%s",
+            (str(scheduled.operation_id),),
+        ).fetchone()[0]==1
+
+
+def test_new_user_turn_does_not_wait_for_running_readonly_tool(dsn):
+    """The slow worker's provider call cannot retain a conversation DB lock."""
+    user,instance=seed(dsn)
+    configure_tool_pool(dsn)
+    conversation=uuid4()
+    first=incoming(dsn,user,instance,conversation=conversation)
+    response=invoke(
+        dsn,respond_to_text_analysis,actor(user),
+        SlowTextToolCommand(turn_id=first.turn_id),await_seconds=0,
+    )
+    finish_initial(dsn,user,response.response_id)
+    tool=invoke(
+        dsn,schedule_text_analysis,actor(user),
+        SlowTextToolCommand(turn_id=first.turn_id),
+    )
+    running=Event()
+    release=Event()
+
+    def blocked_tool(text,max_words):
+        running.set()
+        assert release.wait(timeout=10), "test did not release tool"
+        return "Delayed read-only result"
+
+    with ThreadPoolExecutor(max_workers=1) as workers:
+        job=workers.submit(
+            invoke,dsn,run_one_text_tool,
+            worker_id="slow-while-foreground-active",
+            executor=blocked_tool,
+        )
+        try:
+            assert running.wait(timeout=10)
+            # A separate primary-user connection must commit while the tool
+            # is still running, rather than waiting for a held DB lock.
+            with psycopg.connect(dsn,autocommit=True) as conn:
+                conn.execute("SET lock_timeout='500ms'")
+                new=ingest_text(
+                    conn,actor(user),TextInputCommand(
+                        conversation_id=conversation,
+                        instance_id=instance,
+                        expected_generation=1,
+                        idempotency_key=f"concurrent-{uuid4()}",
+                        text="New topic while tool executes",
+                    ),
+                )
+                assert new.sequence==2
+        finally:
+            release.set()
+        lease=job.result(timeout=10)
+    assert lease.operation_id==tool.operation_id
+    assert invoke(
+        dsn,reconcile_tool_followup,actor(user),tool.tool_call_id,
+    ).followup_state=="DEFERRED"
