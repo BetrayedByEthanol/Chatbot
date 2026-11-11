@@ -61,6 +61,7 @@ class CognitiveScheduled(BaseModel):
     conversation_id: UUID
     start_sequence: int = Field(ge=1)
     end_sequence: int = Field(ge=1)
+    admission_attempt: int = Field(ge=1)
     replayed: bool=False
 
 
