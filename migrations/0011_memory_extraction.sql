@@ -17,7 +17,7 @@ CREATE TABLE memory_extraction_candidates (
     source_quote text NOT NULL CHECK (char_length(source_quote) BETWEEN 1 AND 2000),
     confidence numeric(4,3) NOT NULL CHECK (confidence BETWEEN 0 AND 1),
     status text NOT NULL CHECK (
-        status IN ('ADMITTED','CORROBORATED','CONFLICT','STALE','APPROVED')
+        status IN ('PENDING','ADMITTED','CORROBORATED','CONFLICT','STALE','APPROVED')
     ),
     target_memory_id uuid,
     target_version bigint,
@@ -31,9 +31,8 @@ CREATE TABLE memory_extraction_candidates (
     FOREIGN KEY (target_memory_id,user_id,instance_id)
         REFERENCES memory_records(memory_id,user_id,instance_id),
     CHECK ((target_memory_id IS NULL) = (target_version IS NULL)),
-    CHECK ((status='ADMITTED' OR status='CORROBORATED' OR status='APPROVED')
-           = (target_memory_id IS NOT NULL)
-           OR status IN ('CONFLICT','STALE'))
+    CHECK (status NOT IN ('ADMITTED','CORROBORATED','APPROVED')
+           OR target_memory_id IS NOT NULL)
 );
 CREATE INDEX memory_extraction_candidates_review_idx
     ON memory_extraction_candidates(user_id,instance_id,status,created_at DESC);
