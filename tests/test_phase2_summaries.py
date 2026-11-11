@@ -353,3 +353,97 @@ def test_independent_conversation_summaries_and_bounded_context(dsn):
                  max_turns=2,max_context_chars=512)
     assert sum(map(lambda x:len(x.content),context.messages))<=512
     assert context.messages[-1].content=="Can we continue our conversation?"
+
+
+def test_single_oversized_utf8_turn_cannot_block_summary_watermark(dsn):
+    """12k valid CJK characters plus a delivered answer exceed 70k bytes."""
+    from persona_agent.summary_memory import _canonical
+
+    user,instance,_=seed(dsn)
+    conversation=uuid4()
+    original="首"*6000+"中"*5000+"尾"*1000
+    first=add_turn(dsn,user,instance,conversation,original)
+
+    class LongReply:
+        def generate(self,messages):
+            return ModelReply(model_id="long-answer",text="答"*12000)
+
+    generated=call(dsn,respond_to_text,actor(user),first.turn_id,LongReply())
+    call(dsn,acknowledge_text_delivery,actor(user),generated.response_id)
+    for n in range(3):
+        add_turn(dsn,user,instance,conversation,f"Follow-up {n}")
+
+    # Both original messages are preserved; only model-visible input is
+    # projected. Byte length is intentionally much greater than 32,000.
+    planned=schedule(dsn,user,instance,conversation,max_turns=1)
+    assert planned is not None
+    assert (planned.start_sequence,planned.end_sequence)==(1,1)
+    lease=claim(dsn)
+    work=call(dsn,prepare_summary,lease)
+    assert len(_canonical(work.turns))>70000
+    assert work.turns[0]["input_text"]==original
+    assert work.turns[0]["response_text"]=="答"*12000
+
+    class CheckProjection:
+        def generate(self,messages):
+            payload=messages[-1].content
+            assert len(payload.encode("utf-8"))<=32000
+            projected=json.loads(payload)
+            assert len(projected)==1
+            assert "middle of source omitted" in projected[0]["user"]
+            assert "middle of source omitted" in projected[0]["assistant"]
+            assert projected[0]["user"].startswith("首")
+            assert projected[0]["user"].endswith("尾")
+            return ModelReply(
+                model_id="bounded-model",
+                text=json.dumps({"summary":"Long discussion with truncated source text.",
+                                 "episodes":[]}),
+            )
+
+    done=call(dsn,run_summary,lease,CheckProjection())
+    assert done.end_sequence==1
+    following=schedule(dsn,user,instance,conversation,max_turns=1)
+    assert (following.start_sequence,following.end_sequence)==(2,2)
+    call(dsn,run_summary,claim(dsn),FixedSummary())
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT summary_watermark FROM conversations WHERE conversation_id=%s",
+            (conversation,),
+        ).fetchone()[0]==2
+        assert conn.execute(
+            "SELECT input_text FROM conversation_turns WHERE turn_id=%s",
+            (first.turn_id,),
+        ).fetchone()[0]==original
+
+
+def test_long_valid_summaries_are_abridged_without_hiding_older_ranges(dsn):
+    user,instance,_=seed(dsn)
+    conversation=uuid4()
+    history(dsn,user,instance,conversation,n=12)
+
+    class OversizedButValid:
+        def __init__(self,value):
+            self.value=value
+        def generate(self,messages):
+            return ModelReply(
+                model_id="long-summary",
+                text=json.dumps({"summary":self.value,"episodes":[]}),
+            )
+
+    older="OLDER_BEGIN "+("a"*2600)+" OLDER_END"
+    newer="NEWER_BEGIN "+("b"*1500)+" NEWER_END"
+    assert len(older)<4000 and len(newer)<4000
+    assert schedule(dsn,user,instance,conversation,max_turns=4).start_sequence==1
+    call(dsn,run_summary,claim(dsn),OversizedButValid(older))
+    assert schedule(dsn,user,instance,conversation,max_turns=4).start_sequence==5
+    call(dsn,run_summary,claim(dsn),OversizedButValid(newer))
+
+    last=add_turn(dsn,user,instance,conversation,"Can we continue?")
+    ctx=call(dsn,prepare_text_context,actor(user),last.turn_id,max_turns=2)
+    system=ctx.messages[0].content
+    assert "Turns 1-4: OLDER_BEGIN" in system
+    assert "Turns 5-8: NEWER_BEGIN" in system
+    assert "OLDER_END" in system and "NEWER_END" in system
+    assert system.count("[summary abridged]")==2
+    assert ctx.messages[-1].content=="Can we continue?"
+    assert sum(len(x.content) for x in ctx.messages)<=12000
