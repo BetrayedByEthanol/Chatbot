@@ -260,7 +260,7 @@ def schedule_summary(
                 draft_job={
                     "conversation_id":conversation_id,"user_id":actor.user_id,
                     "instance_id":instance_id,"start_sequence":start,
-                    "end_sequence":end,
+                    "end_sequence":end,"expected_generation":expected_generation,
                 }
                 _read_range(cur,draft_job)
                 cur.execute(
