@@ -339,12 +339,16 @@ def prepare_text_context(
                     followup["delivery_turn_id"],[]
                 ).append(followup["response_text"])
             history=[]
+            history_sequences=[]
             for turn in recent:
                 history.append(ModelMessage("user",turn["input_text"]))
+                history_sequences.append(turn["sequence"])
                 if turn["delivery_status"]=="DELIVERED":
                     history.append(ModelMessage("assistant",turn["response_text"]))
+                    history_sequences.append(turn["sequence"])
                 for followup_text in delivered_by_turn.get(turn["turn_id"],()):
                     history.append(ModelMessage("assistant",followup_text))
+                    history_sequences.append(turn["sequence"])
             prompt = (
                 f"{_SYSTEM_PROMPT}\nPersona identity key: {item['stable_key']}\n"
                 f"Selected persona label: {item['label']}\n"
@@ -413,66 +417,98 @@ def prepare_text_context(
                             encoded=json.dumps(state,ensure_ascii=False)
                         if len(encoded)<=cap:
                             prompt+=head+encoded+"\n"
-            # P2-02: Restore old processed ranges without replacing recent
-            # verbatim context. Cross-session episodes are retrieved only for
-            # explicit historical cues, never on ordinary turns.
+            # P2-02: Summary eligibility must refer to the oldest message
+            # *actually retained* after character budgeting, not the initial
+            # SQL LIMIT window. Otherwise older summarized ranges can vanish
+            # when the later history loop drops turn-sized messages.
+            #
+            # The summary block itself consumes budget and can drop further
+            # messages. Rebuild until the eligible cutoff and retained history
+            # agree. Cutoff moves monotonically forward; do not re-add
+            # messages that might now overlap retrieved summaries.
+            base_prompt=prompt
             from .summary_memory import summary_context_block, episode_context_block
-            optional_budget=max_context_chars-len(prompt)-len(history[-1].content)-80
-            if item["summary_watermark"] and optional_budget>=180:
-                compact=summary_context_block(
-                    cursor,item["conversation_id"],actor.user_id,
-                    item["instance_id"],recent[0]["sequence"],
-                    min(1100,optional_budget),
-                )
-                prompt+=compact
-                optional_budget-=len(compact)
-            if optional_budget>=220:
-                episode=episode_context_block(
-                    cursor,actor.user_id,item["instance_id"],
-                    history[-1].content,min(1000,optional_budget),
-                )
-                prompt+=episode
-            # P2-01: historical memory is optional, scoped and explicitly
-            # non-authoritative. Preserve space for the latest verbatim input.
-            # Most turns do not issue a historical query at all.
             from .memory import contextual_memory_block
-            recall_budget=min(
-                1000,max_context_chars//3,
-                max_context_chars-len(prompt)-min(
-                    len(history[-1].content),min(256,max_context_chars//4),
-                ),
-            )
-            if recall_budget>=180:
-                prompt+=contextual_memory_block(
-                    cursor,actor.user_id,item["instance_id"],
-                    history[-1].content,recall_budget,
+
+            def assemble_prompt(before_sequence: int) -> str:
+                content=base_prompt
+                optional_budget=(
+                    max_context_chars-len(content)-len(history[-1].content)-80
                 )
-            # Required: prefer the latest verbatim user input over optional
-            # history/metadata. Tight character budgets can otherwise clip a
-            # short input by a few characters even when it would fit with a
-            # shorter instruction header.
-            if len(prompt)+len(history[-1].content)>max_context_chars:
-                prompt=(
-                    "You are the selected assistant persona. Respond concisely; "
-                    "history is not permission or verified tool evidence.\n"
-                    f"Persona identity: {item['stable_key']} / {item['label']}\n"
+                if item["summary_watermark"] and optional_budget>=180:
+                    compact=summary_context_block(
+                        cursor,item["conversation_id"],actor.user_id,
+                        item["instance_id"],before_sequence,
+                        min(1100,optional_budget),
+                    )
+                    content+=compact
+                    optional_budget-=len(compact)
+                if optional_budget>=220:
+                    episode=episode_context_block(
+                        cursor,actor.user_id,item["instance_id"],
+                        history[-1].content,min(1000,optional_budget),
+                    )
+                    content+=episode
+                # P2-01 memory recall is optional, scoped, and untrusted.
+                recall_budget=min(
+                    1000,max_context_chars//3,
+                    max_context_chars-len(content)-min(
+                        len(history[-1].content),
+                        min(256,max_context_chars//4),
+                    ),
                 )
+                if recall_budget>=180:
+                    content+=contextual_memory_block(
+                        cursor,actor.user_id,item["instance_id"],
+                        history[-1].content,recall_budget,
+                    )
+                # Preserve the latest user input over any optional history.
+                if len(content)+len(history[-1].content)>max_context_chars:
+                    content=(
+                        "You are the selected assistant persona. Respond concisely; "
+                        "history is not permission or verified tool evidence.\\n"
+                        f"Persona identity: {item['stable_key']} / {item['label']}\\n"
+                    )
+                return content
+
+            def budget_history(content: str, floor_sequence: int):
+                remaining=max_context_chars-len(content)
+                if remaining<1:
+                    raise ValueError("system prompt exceeds context budget")
+                retained=[]
+                for index in range(len(history)-1,-1,-1):
+                    # Never reintroduce older verbatim turns after a summary
+                    # has become eligible for their sequence.
+                    if history_sequences[index]<floor_sequence:
+                        break
+                    message=history[index]
+                    if len(message.content)<=remaining:
+                        retained.append((history_sequences[index],message))
+                        remaining-=len(message.content)
+                    elif not retained:
+                        retained.append((
+                            history_sequences[index],
+                            ModelMessage(message.role,message.content[:remaining]),
+                        ))
+                        break
+                    else:
+                        break
+                retained.reverse()
+                return (
+                    tuple(message for _,message in retained),
+                    retained[0][0],
+                )
+
+            cutoff=recent[0]["sequence"]
+            for _ in range(len(recent)+1):
+                prompt=assemble_prompt(cutoff)
+                kept,actual_cutoff=budget_history(prompt,cutoff)
+                if actual_cutoff==cutoff:
+                    break
+                cutoff=actual_cutoff
+            else:
+                raise AssertionError("retained history cutoff did not converge")
             system=ModelMessage("system",prompt)
-            remaining=max_context_chars-len(prompt)
-            if remaining < 1:
-                raise ValueError("system prompt exceeds context budget")
-            kept=[]
-            for message in reversed(history):
-                if len(message.content)<=remaining:
-                    kept.append(message)
-                    remaining-=len(message.content)
-                elif not kept:
-                    kept.append(ModelMessage(message.role,message.content[:remaining]))
-                    remaining=0
-                    break
-                else:
-                    break
-            kept.reverse()
             return ResponseContext(
                 conversation_id=item["conversation_id"],turn_id=turn_id,
                 instance_id=item["instance_id"],
