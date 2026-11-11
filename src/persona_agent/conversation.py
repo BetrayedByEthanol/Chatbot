@@ -385,6 +385,18 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
                 saved=cursor.fetchone()
                 if saved is None:
                     raise StaleConversation("responded turn has no response record")
+                # A competing inference may have started before this response
+                # was committed, and finished only after a newer user turn.
+                # The conversation row is locked here, so a GENERATED
+                # response must still be the latest input before it can be
+                # returned for output. Historical lookup remains unrestricted.
+                if (
+                    saved["delivery_status"]=="GENERATED"
+                    and conversation["last_input_turn_id"]!=context.turn_id
+                ):
+                    raise StaleConversation(
+                        "undelivered reply superseded by a newer input"
+                    )
                 return TextResponseResult(
                     response_id=saved["response_id"],turn_id=saved["turn_id"],
                     text=saved["response_text"],model_id=saved["model_id"],

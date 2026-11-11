@@ -1,7 +1,7 @@
 """Phase 1 durable conversation acceptance on PostgreSQL 16."""
 
 from concurrent.futures import ThreadPoolExecutor
-from threading import Barrier
+from threading import Barrier, Event
 from queue import Queue
 import time
 from uuid import uuid4
@@ -425,3 +425,97 @@ def test_concurrent_delivery_ack_callbacks_are_idempotent(dsn):
             "AND e.payload->>'response_id'=%s",
             (str(generated.response_id),),
         ).fetchone()[0]==1
+
+
+
+def test_competing_inference_replay_rejects_undelivered_reply_after_new_input(dsn):
+    """The loser of two model generations must not replay an obsolete reply.
+
+    Delay the second model after it has assembled the same context; commit
+    the winner and ingest a newer turn before releasing the delayed result.
+    This exercises commit_text_response's RESPONDED branch, not the initial
+    lookup_response replay path.
+    """
+    user, instance = seed(dsn)
+    conversation = uuid4()
+    initial = call(
+        dsn, ingest_text, actor(user),
+        command(instance, conversation, "Original request"),
+    )
+    started = Event()
+    release = Event()
+
+    class DelayedGateway:
+        def generate(self, messages):
+            started.set()
+            if not release.wait(timeout=15):
+                raise AssertionError("delayed model generation never released")
+            return ModelReply(model_id="delayed", text="Late response")
+
+    with ThreadPoolExecutor(max_workers=1) as workers:
+        late = workers.submit(
+            call, dsn, respond_to_text, actor(user), initial.turn_id,
+            DelayedGateway(),
+        )
+        try:
+            assert started.wait(timeout=10), "model did not begin inference"
+            winner = call(
+                dsn, respond_to_text, actor(user), initial.turn_id,
+                FakeGateway("First response"),
+            )
+            assert winner.delivery_status == "GENERATED"
+            newer = call(
+                dsn, ingest_text, actor(user),
+                command(instance, conversation, "Correction"),
+            )
+            assert newer.sequence == 2
+        finally:
+            release.set()
+
+        with pytest.raises(StaleConversation, match="superseded"):
+            late.result(timeout=10)
+
+    historical = call(
+        dsn, lookup_response, actor(user), initial.turn_id,
+    )
+    assert historical.response_id == winner.response_id
+    assert historical.text == "First response"
+    assert historical.delivery_status == "GENERATED"
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT count(*) FROM conversation_responses WHERE turn_id=%s",
+            (initial.turn_id,),
+        ).fetchone()[0] == 1
+        assert conn.execute(
+            "SELECT count(*) FROM events "
+            "WHERE event_type='conversation.response.generated.v1' "
+            "AND payload->>'turn_id'=%s",
+            (str(initial.turn_id),),
+        ).fetchone()[0] == 1
+        assert conn.execute(
+            "SELECT count(*) FROM outbox o JOIN events e ON e.event_id=o.event_id "
+            "WHERE e.event_type='conversation.response.generated.v1' "
+            "AND e.payload->>'turn_id'=%s",
+            (str(initial.turn_id),),
+        ).fetchone()[0] == 1
+
+
+def test_competing_inference_replay_remains_idempotent_without_new_input(dsn):
+    """Two inference workers may still share the saved response if current."""
+    user, instance = seed(dsn)
+    initial = call(
+        dsn, ingest_text, actor(user), command(instance, text="One request"),
+    )
+    context = call(dsn, prepare_text_context, actor(user), initial.turn_id)
+    original = call(
+        dsn, commit_text_response, actor(user), context,
+        ModelReply(model_id="first", text="Answer"),
+    )
+    replay = call(
+        dsn, commit_text_response, actor(user), context,
+        ModelReply(model_id="second", text="Different answer"),
+    )
+    assert replay.replayed
+    assert replay.response_id == original.response_id
+    assert replay.text == "Answer"
+    assert replay.delivery_status == "GENERATED"

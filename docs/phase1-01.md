@@ -99,3 +99,14 @@ adapter should likewise gate an actual send against active authority.
 the conversation's serialization lock. Overlapping callbacks therefore
 return the already-committed `DELIVERED` result with `replayed=True`;
 only the first commit changes the revision and writes an event/outbox row.
+
+## Review hardening — stale competing model response
+
+Two model workers can prepare the same input, but the slower worker may
+reach `commit_text_response` after the winner committed and a newer user
+input arrived. Under the locked conversation row, the `RESPONDED` branch
+now rejects replay of an undelivered `GENERATED` response unless
+`last_input_turn_id` still equals the response's turn. The rejection occurs
+before any reply is returned for output, without changing historical
+`lookup_response` behavior. Ordinary competing-generation replay remains
+idempotent when no newer user input exists.
