@@ -107,6 +107,17 @@ def test_explicit_parser_rejects_ambiguous_sensitive_and_instruction_text():
     prefer=parse_explicit_claim("I prefer tea over coffee.")
     assert prefer is not None and prefer.predicate_key=="prefer_over_coffee"
     for text in (
+        # Positive admission policy: no sensitive or unsupported category
+        # can be silently persisted as NORMAL memory.
+        "My favorite antidepressant is sertraline.",
+        "My favorite church is St Marys.",
+        "My favorite drink is sertraline.",
+        "My favorite food is a prescription medication.",
+        "I prefer sertraline over fluoxetine.",
+        "My hobby is attending church.",
+        "For me, religion means peace.",
+        "For me, home means prayer.",
+        "My dog's name is Prozac.",
         "Perhaps my favorite drink is tea.",
         "My favorite political party is Party A.",
         "My favorite drink is tea? ",
