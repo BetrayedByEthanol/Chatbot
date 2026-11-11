@@ -489,10 +489,11 @@ def test_failed_summary_requires_explicit_fresh_admission(dsn):
         rows=conn.execute(
             """SELECT j.admission_attempt,o.status,j.summary_id
                FROM conversation_summary_jobs j JOIN operations o USING(operation_id)
-               WHERE j.conversation_id=%s ORDER BY j.admission_attempt""",
+               WHERE j.conversation_id=%s AND j.start_sequence=1
+               ORDER BY j.admission_attempt""",
             (conversation,),
         ).fetchall()
-        # The third row is a queued job for the next unsummarized range.
+        # Only retries of the first range are compared; later ranges are separate.
         assert rows[0][0:2]==(1,"FAILED")
         assert rows[1][0:2]==(2,"COMPLETED")
         assert rows[1][2] is not None
