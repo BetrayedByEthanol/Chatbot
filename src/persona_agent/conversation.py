@@ -431,6 +431,11 @@ def prepare_text_context(
             from .memory import contextual_memory_block
             from .memory_retrieval import topic_recall_block
 
+            # The summary-cutoff convergence loop may rebuild the system
+            # prompt, but an identical topic retrieval budget must not issue
+            # redundant historical queries during one foreground turn.
+            topic_recall_cache={}
+
             def assemble_prompt(before_sequence: int) -> str:
                 content=base_prompt
                 optional_budget=(
@@ -472,11 +477,14 @@ def prepare_text_context(
                     len(history[-1].content),min(256,max_context_chars//4),
                 )
                 if remaining>=220:
-                    content+=topic_recall_block(
-                        cursor,actor.user_id,item["instance_id"],
-                        item["conversation_id"],history[-1].content,
-                        min(1000,remaining),
-                    )
+                    recall_cap=min(1000,remaining)
+                    if recall_cap not in topic_recall_cache:
+                        topic_recall_cache[recall_cap]=topic_recall_block(
+                            cursor,actor.user_id,item["instance_id"],
+                            item["conversation_id"],history[-1].content,
+                            recall_cap,
+                        )
+                    content+=topic_recall_cache[recall_cap]
                 # Preserve the latest user input over any optional history.
                 if len(content)+len(history[-1].content)>max_context_chars:
                     content=(
