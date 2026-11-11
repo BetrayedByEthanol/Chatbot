@@ -506,3 +506,100 @@ def test_competing_dialogue_commands_use_conversation_revision_cas(dsn):
             "domain=%s)",
             (f"conversation:{conv}",),
         ).fetchone()[0]==1
+
+
+
+def test_small_context_budget_omits_metadata_without_losing_latest_input(dsn):
+    """Optional active-state metadata cannot overflow a valid 512-char budget."""
+    user,instance=seed(dsn)
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        conn.execute(
+            "UPDATE persona_definitions SET stable_key=%s "
+            "WHERE id=(SELECT persona_id FROM persona_instances WHERE id=%s)",
+            ("s"+uuid4().hex[:8],instance),
+        )
+    conv=uuid4()
+    first=incoming(dsn,user,instance,conv,"First request")
+    before=call(
+        dsn,prepare_text_context,actor(user),first.turn_id,
+        max_turns=1,max_context_chars=512,
+    )
+    assert before.messages[-1].content=="First request"
+    thread,_=open_for(dsn,user,instance,conv,first,"T")
+    after=call(
+        dsn,prepare_text_context,actor(user),first.turn_id,
+        max_turns=1,max_context_chars=512,
+    )
+    assert after.messages[-1].role=="user"
+    assert after.messages[-1].content=="First request"
+    assert sum(len(m.content) for m in after.messages)<=512
+    assert "Active dialogue:" not in after.messages[0].content
+    assert after.conversation_revision>before.conversation_revision
+
+    call(dsn,register_referent,actor(user),RegisterReferentCommand(
+        **base(user,instance,conv,first,revision(dsn,user,conv)),
+        thread_id=thread,referent_id=uuid4(),kind="ENTITY",
+        label="very long but still valid reference",
+    ))
+    with_referent=call(
+        dsn,prepare_text_context,actor(user),first.turn_id,
+        max_turns=1,max_context_chars=512,
+    )
+    assert with_referent.messages[-1].content=="First request"
+    assert sum(len(m.content) for m in with_referent.messages)<=512
+
+
+def test_resumed_followup_is_positioned_at_delivery_even_when_source_outside_window(dsn):
+    """The late analysis follows the resume reply, not its original request."""
+    user,instance=seed(dsn)
+    call(dsn,configure_resource_pool,RESOURCE_KEY,capacity_units=2)
+    conv=uuid4()
+    source=incoming(dsn,user,instance,conv,"alpha beta beta gamma")
+    source_thread,_=open_for(dsn,user,instance,conv,source,"Analysis")
+    request=SlowTextToolCommand(turn_id=source.turn_id,max_words=2)
+    notice=call(dsn,respond_to_text_analysis,actor(user),request,await_seconds=0)
+    call(dsn,acknowledge_text_delivery,actor(user),notice.response_id)
+    tool=call(dsn,schedule_text_analysis,actor(user),request)
+    call(dsn,run_one_text_tool,worker_id="chronology-worker")
+
+    unrelated=incoming(dsn,user,instance,conv,"Unrelated trip planning")
+    open_for(dsn,user,instance,conv,unrelated,"Trip planning")
+    unrelated_reply=response(dsn,user,unrelated,"We can discuss the trip.")
+    resumed=incoming(dsn,user,instance,conv,"Back to the text analysis")
+    call(dsn,focus_thread,actor(user),FocusThreadCommand(
+        **base(user,instance,conv,resumed,revision(dsn,user,conv)),
+        thread_id=source_thread,
+    ))
+    resumed_reply=response(dsn,user,resumed,"The analysis is ready.")
+    assert call(dsn,reconcile_tool_followup,actor(user),
+                tool.tool_call_id).followup_state=="READY"
+    published=call(dsn,prepare_tool_followup,actor(user),tool.tool_call_id)
+    call(dsn,acknowledge_tool_followup,actor(user),tool.tool_call_id)
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT turn_id,delivery_turn_id FROM conversation_assistant_followups "
+            "WHERE tool_call_id=%s",(tool.tool_call_id,),
+        ).fetchone()==(source.turn_id,resumed.turn_id)
+
+    next_turn=incoming(dsn,user,instance,conv,"What did beta count?")
+    window=call(dsn,prepare_text_context,actor(user),next_turn.turn_id,max_turns=2)
+    assert [(m.role,m.content) for m in window.messages[1:]]==[
+        ("user","Back to the text analysis"),
+        ("assistant",resumed_reply.text),
+        ("assistant",published.text),
+        ("user","What did beta count?"),
+    ]
+    # Full recent history preserves the intervening topic *before* the
+    # resumed output, rather than moving that output back to the source.
+    full=call(dsn,prepare_text_context,actor(user),next_turn.turn_id,max_turns=4)
+    assert [(m.role,m.content) for m in full.messages[1:]]==[
+        ("user","alpha beta beta gamma"),
+        ("assistant",notice.text),
+        ("user","Unrelated trip planning"),
+        ("assistant",unrelated_reply.text),
+        ("user","Back to the text analysis"),
+        ("assistant",resumed_reply.text),
+        ("assistant",published.text),
+        ("user","What did beta count?"),
+    ]
+    assert len([m for m in full.messages if m.content==published.text])==1

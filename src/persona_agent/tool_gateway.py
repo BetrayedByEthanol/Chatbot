@@ -579,18 +579,20 @@ def acknowledge_tool_followup(
             text=_completed_result(cur,row)
             if text is None:
                 raise ToolResultNotReady("completed result unavailable")
-            # This is an assistant output, not a fabricated user turn.
-            # Persist the exact acknowledged text with its source turn so
-            # later context assembly can reconstruct what the user received.
+            # Preserve the original request turn as provenance but anchor
+            # this assistant output at the user turn active when delivery
+            # was acknowledged. The conversation lock serializes the anchor
+            # against concurrent ingest and prevents chronology rewrites.
             cur.execute(
                 """
                 INSERT INTO conversation_assistant_followups(
-                    tool_call_id,conversation_id,turn_id,user_id,instance_id,
-                    response_text
-                ) VALUES (%s,%s,%s,%s,%s,%s)
+                    tool_call_id,conversation_id,turn_id,delivery_turn_id,
+                    user_id,instance_id,response_text
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s)
                 """,
                 (tool_call_id,row["conversation_id"],row["turn_id"],
-                 actor.user_id,row["instance_id"],text),
+                 conv["last_input_turn_id"],actor.user_id,
+                 row["instance_id"],text),
             )
             cur.execute(
                 "UPDATE conversation_tool_calls SET followup_state='DELIVERED',"

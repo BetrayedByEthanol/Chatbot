@@ -118,3 +118,23 @@ Restored dialogue-state reads and read-only observability reports use a
 single PostgreSQL repeatable-read snapshot, with no model/provider calls
 under locks. Mutations continue to use short conversation-row CAS
 transactions; a parallel stale proposal fails without overwriting state.
+
+## Review hardening — metadata budget and asynchronous delivery chronology
+
+The context builder now budgets the entire optional focused-dialogue block:
+explanatory prefix, serialized state, terminator, and reserved capacity for
+the newest user input. A valid tight context (including 512 characters)
+does not become invalid solely because a thread is focused. If the optional
+block cannot fit, it is omitted without dropping the most recent user text.
+
+Resumed tool results keep the original `turn_id` as provenance and store
+`delivery_turn_id` separately, pointing to the latest user turn under
+the conversation lock at delivery acknowledgment. Existing P1-02 follow-ups
+are migrated with `delivery_turn_id = turn_id`. Context assembly selects
+its bounded recent user-turn window first, then gathers delivered
+follow-ups anchored to those turns in `(delivered_at, tool_call_id)` order.
+Each follow-up follows the delivered assistant response for its delivery
+anchor, without multiplying user rows ahead of the `max_turns` limit.
+A result delivered after an explicit topic resumption stays in the very
+next conversation context even when its original request is outside the
+recent-turn window.

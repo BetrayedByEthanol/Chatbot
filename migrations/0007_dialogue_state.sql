@@ -98,3 +98,22 @@ CREATE INDEX dialogue_referents_by_thread_idx
 
 -- The conversation row's revision already fences prompt context; no
 -- independent materialized snapshot or telemetry write is required.
+
+
+-- P1-03: distinguish the originating request from the conversation position
+-- where a resumed async result was actually delivered. Migration on existing
+-- P1-02 data preserves the prior, correct immediate-follow-up placement.
+ALTER TABLE conversation_assistant_followups
+    ADD COLUMN delivery_turn_id uuid;
+UPDATE conversation_assistant_followups
+    SET delivery_turn_id=turn_id;
+ALTER TABLE conversation_assistant_followups
+    ALTER COLUMN delivery_turn_id SET NOT NULL;
+ALTER TABLE conversation_assistant_followups
+    ADD CONSTRAINT conversation_assistant_followup_delivery_turn_fk
+    FOREIGN KEY (conversation_id,delivery_turn_id)
+    REFERENCES conversation_turns(conversation_id,turn_id);
+CREATE INDEX conversation_followups_delivery_idx
+    ON conversation_assistant_followups(
+        conversation_id,delivery_turn_id,delivered_at,tool_call_id
+    );
