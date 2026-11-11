@@ -14,6 +14,7 @@ from psycopg import Connection
 from psycopg.rows import dict_row
 
 from .contracts import TrustedActor
+from .lifecycle import TrustedPlatformActor
 from .conversation import _require_actor, _selection
 from .memory_contracts import (
     AdmitMemoryCommand, AmendMemoryCommand, MemoryConflict, MemoryHit,
@@ -80,7 +81,7 @@ def _finish(cur, receipt_id: UUID, result: MemoryWriteResult) -> MemoryWriteResu
     return result
 
 
-def _evidence(cur, actor: TrustedActor, instance_id: UUID,
+def _evidence(cur, actor: TrustedActor | TrustedPlatformActor, instance_id: UUID,
               conversation_id: UUID, turn_id: UUID, quote: str):
     cur.execute(
         """SELECT t.input_text,t.created_at,t.source_id
@@ -97,7 +98,7 @@ def _evidence(cur, actor: TrustedActor, instance_id: UUID,
     return source
 
 
-def _event(cur, actor: TrustedActor, instance_id: UUID, memory_id: UUID,
+def _event(cur, actor: TrustedActor | TrustedPlatformActor, instance_id: UUID, memory_id: UUID,
            version: int, event_type: str, turn_id: UUID, receipt_id: UUID,
            *, trust_level: str = "AUTHENTICATED_USER") -> UUID:
     stream_id=uuid5(NAMESPACE_URL,f"persona-agent/{instance_id}/memory")
@@ -135,7 +136,7 @@ def _event(cur, actor: TrustedActor, instance_id: UUID, memory_id: UUID,
     return event_id
 
 
-def _revision(cur, actor: TrustedActor, command, memory_id: UUID,
+def _revision(cur, actor: TrustedActor | TrustedPlatformActor, command, memory_id: UUID,
               version: int, action: str, value: str, status: str,
               confidence: float, source, event_id: UUID):
     cur.execute(
