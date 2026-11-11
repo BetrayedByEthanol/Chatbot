@@ -26,7 +26,7 @@ from persona_agent.summary_memory import (
     commit_summary, episode_source_turn, prepare_summary, run_summary,
     schedule_summary, search_episodes,
 )
-from persona_agent.runtime import PermissionDenied
+from persona_agent.runtime import PermissionDenied, StaleSelection
 
 
 def call(dsn, fn, *args, **kwargs):
@@ -71,10 +71,10 @@ def actor(user):
     return TrustedActor(user_id=user,source_id="p202-user")
 
 
-def add_turn(dsn,user,instance,conversation,text):
+def add_turn(dsn,user,instance,conversation,text,*,generation=1):
     return call(dsn,ingest_text,actor(user),TextInputCommand(
         conversation_id=conversation,instance_id=instance,
-        expected_generation=1,idempotency_key=str(uuid4()),text=text,
+        expected_generation=generation,idempotency_key=str(uuid4()),text=text,
     ))
 
 
@@ -681,3 +681,90 @@ def test_summary_context_cutoff_follows_actually_retained_messages(dsn):
     assert "Turns 9-16:" not in roomy.messages[0].content
     assert roomy.messages[1].content.startswith("TURN_09 ")
     assert roomy.messages[-1].content.startswith("TURN_20 ")
+
+
+def test_generated_reply_revoked_by_persona_switch_is_summary_safe(dsn):
+    """Undelivered old-generation output is permanently fenced, not a backlog."""
+    user,instance,alternate=seed(dsn,other=True)
+    conversation=uuid4()
+    original_user_text="I spoke about my new houseplant."
+    never_delivered="This is assistant-only text never delivered to the user."
+    first=add_turn(dsn,user,instance,conversation,original_user_text)
+
+    class UnsentReply:
+        def generate(self,messages):
+            return ModelReply(model_id="unsent-model",text=never_delivered)
+
+    generated=call(dsn,respond_to_text,actor(user),first.turn_id,UnsentReply())
+    assert generated.delivery_status=="GENERATED"
+
+    # Keep sufficient later input to make the first turn eligible under
+    # retain_recent=2, while no acknowledgement has been received.
+    for n in range(3):
+        add_turn(dsn,user,instance,conversation,f"Follow-up discussion {n}")
+
+    # The original generation is still selected: delivery is still possible
+    # so this input range must not be summarized prematurely.
+    with pytest.raises(SummaryNotReady):
+        schedule(dsn,user,instance,conversation,max_turns=1)
+
+    away=call(dsn,switch_persona,actor(user),SwitchPersonaCommand(
+        expected_instance_id=instance,target_instance_id=alternate,
+        expected_generation=1,idempotency_key=str(uuid4()),
+    ))
+    assert away.generation==2
+    back=call(dsn,switch_persona,actor(user),SwitchPersonaCommand(
+        expected_instance_id=alternate,target_instance_id=instance,
+        expected_generation=2,idempotency_key=str(uuid4()),
+    ))
+    assert back.generation==3
+
+    # Switching back cannot resurrect the original generation's authority
+    # to deliver. The full unsent output remains durable for diagnostics.
+    with pytest.raises(StaleSelection):
+        call(dsn,acknowledge_text_delivery,actor(user),generated.response_id)
+
+    scheduled=call(
+        dsn,schedule_summary,actor(user),conversation,instance,3,max_turns=1,
+    )
+    assert (scheduled.start_sequence,scheduled.end_sequence)==(1,1)
+    lease=claim(dsn,"revoked-generation-summarizer")
+    snapshot=call(dsn,prepare_summary,lease)
+    assert snapshot.turns[0]["input_text"]==original_user_text
+    assert snapshot.turns[0]["response_text"]==never_delivered
+    assert snapshot.turns[0]["delivery_status"]=="GENERATED"
+    assert snapshot.turns[0]["response_selection_generation"]==1
+
+    class CheckNoUnsentOutput:
+        def generate(self,messages):
+            source=json.loads(messages[-1].content)
+            assert len(source)==1
+            assert source[0]["user"]==original_user_text
+            assert source[0]["assistant"] is None
+            assert never_delivered not in messages[-1].content
+            return ModelReply(model_id="source-safe-summary",text=json.dumps({
+                "summary":"The user discussed a houseplant.",
+                "episodes":[],
+            }))
+
+    committed=call(dsn,run_summary,lease,CheckNoUnsentOutput())
+    assert (committed.start_sequence,committed.end_sequence)==(1,1)
+
+    # The next contiguous range can now progress under generation 3.
+    next_job=call(
+        dsn,schedule_summary,actor(user),conversation,instance,3,max_turns=1,
+    )
+    assert (next_job.start_sequence,next_job.end_sequence)==(2,2)
+    call(dsn,run_summary,claim(dsn,"contiguous-range-summarizer"),FixedSummary())
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        row=conn.execute(
+            """SELECT r.delivery_status,r.response_text,c.summary_watermark
+               FROM conversation_responses r
+               JOIN conversations c ON c.conversation_id=r.conversation_id
+               WHERE r.response_id=%s""",(generated.response_id,),
+        ).fetchone()
+        assert row==("GENERATED",never_delivered,2)
+        assert conn.execute(
+            """SELECT count(*) FROM conversation_summaries
+               WHERE conversation_id=%s""",(conversation,),
+        ).fetchone()[0]==2
