@@ -1954,3 +1954,138 @@ def test_external_failure_cannot_quarantine_after_lease_expiry(dsn):
     assert invoke(dsn,reap_stale_operations)>=1
     assert operation(dsn,queued.operation_id)[0]=="OUTCOME_UNKNOWN"
     assert resources(dsn,resource)==1  # conservative external reconciliation
+
+
+
+def test_exhausted_suspended_attempt_cannot_resume_after_persona_switch(dsn):
+    user,instance,alternative=seed(dsn,two=True)
+    resource=pool(dsn,capacity=1)
+    queued=cmd(instance,resource,max_attempts=1)
+    enqueue(dsn,user,queued)
+    first=claim(dsn,"single-attempt")
+    assert first.operation_id==queued.operation_id
+    assert first.attempt_count==1
+
+    invoke(dsn,switch_persona,actor(user),SwitchPersonaCommand(
+        expected_instance_id=instance,target_instance_id=alternative,
+        expected_generation=1,idempotency_key=str(uuid4()),
+    ))
+    assert invoke(dsn,reap_stale_operations)>=1
+    assert operation(dsn,queued.operation_id)[0]=="SUSPENDED"
+    assert operation(dsn,queued.operation_id)[1]==1
+    assert resources(dsn,resource)==0
+
+    invoke(dsn,switch_persona,actor(user),SwitchPersonaCommand(
+        expected_instance_id=alternative,target_instance_id=instance,
+        expected_generation=2,idempotency_key=str(uuid4()),
+    ))
+    with pytest.raises(InvalidOperation,match="attempt budget exhausted"):
+        invoke(dsn,resume_suspended,actor(user),operation_id=queued.operation_id)
+    with pytest.raises(InvalidOperation,match="attempt budget exhausted"):
+        invoke(dsn,resume_suspended,actor(user),operation_id=queued.operation_id)
+    assert operation(dsn,queued.operation_id)[0]=="SUSPENDED"
+    assert operation(dsn,queued.operation_id)[1]==1
+    assert claim(dsn,"must-not-run-again") is None
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT count(*) FROM events WHERE event_type='operation.resumed.v1' "
+            "AND payload->>'operation_id'=%s",
+            (str(queued.operation_id),),
+        ).fetchone()[0]==0
+        assert conn.execute(
+            "SELECT count(*) FROM operation_resource_reservations "
+            "WHERE operation_id=%s",
+            (queued.operation_id,),
+        ).fetchone()[0]==0
+
+
+def test_suspend_resume_may_use_remaining_attempt_but_not_exceed_budget(dsn):
+    user,instance,alternative=seed(dsn,two=True)
+    resource=pool(dsn,capacity=1)
+    queued=cmd(instance,resource,max_attempts=2)
+    enqueue(dsn,user,queued)
+    first=claim(dsn,"attempt-one")
+    assert first.operation_id==queued.operation_id
+    assert first.attempt_count==1
+
+    invoke(dsn,switch_persona,actor(user),SwitchPersonaCommand(
+        expected_instance_id=instance,target_instance_id=alternative,
+        expected_generation=1,idempotency_key=str(uuid4()),
+    ))
+    assert invoke(dsn,reap_stale_operations)>=1
+    assert operation(dsn,queued.operation_id)[0]=="SUSPENDED"
+    invoke(dsn,switch_persona,actor(user),SwitchPersonaCommand(
+        expected_instance_id=alternative,target_instance_id=instance,
+        expected_generation=2,idempotency_key=str(uuid4()),
+    ))
+    invoke(dsn,resume_suspended,actor(user),operation_id=queued.operation_id)
+    second=claim(dsn,"attempt-two")
+    assert second.operation_id==queued.operation_id
+    assert second.attempt_count==2
+    assert second.claim_generation==first.claim_generation+1
+
+    invoke(dsn,switch_persona,actor(user),SwitchPersonaCommand(
+        expected_instance_id=instance,target_instance_id=alternative,
+        expected_generation=3,idempotency_key=str(uuid4()),
+    ))
+    assert invoke(dsn,reap_stale_operations)>=1
+    assert operation(dsn,queued.operation_id)[0]=="SUSPENDED"
+    invoke(dsn,switch_persona,actor(user),SwitchPersonaCommand(
+        expected_instance_id=alternative,target_instance_id=instance,
+        expected_generation=4,idempotency_key=str(uuid4()),
+    ))
+    with pytest.raises(InvalidOperation,match="attempt budget exhausted"):
+        invoke(dsn,resume_suspended,actor(user),operation_id=queued.operation_id)
+    assert claim(dsn,"attempt-three-forbidden") is None
+    assert operation(dsn,queued.operation_id)[1]==2
+    assert resources(dsn,resource)==0
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT count(*) FROM events WHERE event_type='operation.resumed.v1' "
+            "AND payload->>'operation_id'=%s",
+            (str(queued.operation_id),),
+        ).fetchone()[0]==1
+        assert conn.execute(
+            "SELECT count(*) FROM events WHERE event_type='operation.claimed.v1' "
+            "AND payload->>'operation_id'=%s",
+            (str(queued.operation_id),),
+        ).fetchone()[0]==2
+
+
+@pytest.mark.parametrize("pending_status",["QUEUED","RETRY_WAIT"])
+def test_exhausted_legacy_pending_work_skipped_and_recovered(dsn,pending_status):
+    user,instance=seed(dsn)
+    resource=pool(dsn,capacity=1)
+    exhausted=cmd(instance,resource,max_attempts=1)
+    valid=cmd(instance,resource,max_attempts=1)
+    enqueue(dsn,user,exhausted)
+    enqueue(dsn,user,valid)
+    # Simulate a pre-fix resume/retry that persisted an exhausted pending
+    # operation. No worker should ever receive another lease for it.
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        conn.execute(
+            "UPDATE operations SET status=%s,attempt_count=1,claim_generation=1 "
+            "WHERE operation_id=%s",
+            (pending_status,exhausted.operation_id),
+        )
+    live=claim(dsn,"eligible-following-exhausted")
+    assert live is not None and live.operation_id==valid.operation_id
+    assert live.attempt_count==1
+    assert operation(dsn,exhausted.operation_id)[1]==1
+    invoke(dsn,complete_operation,live,result_ref="other-operation")
+    assert invoke(dsn,reap_stale_operations)>=1
+    assert operation(dsn,exhausted.operation_id)[0]=="FAILED"
+    assert operation(dsn,exhausted.operation_id)[1]==1
+    assert claim(dsn,"exhausted-still-forbidden") is None
+    assert resources(dsn,resource)==0
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT count(*) FROM events WHERE event_type='operation.claimed.v1' "
+            "AND payload->>'operation_id'=%s",
+            (str(exhausted.operation_id),),
+        ).fetchone()[0]==0
+        assert conn.execute(
+            "SELECT count(*) FROM events WHERE event_type='operation.recovered.v1' "
+            "AND payload->>'operation_id'=%s",
+            (str(exhausted.operation_id),),
+        ).fetchone()[0]==1

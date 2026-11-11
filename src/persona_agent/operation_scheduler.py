@@ -312,6 +312,7 @@ def claim_operation(
                                END AS priority_rank
                         FROM operations o
                         WHERE o.status IN ('QUEUED','RETRY_WAIT')
+                          AND o.attempt_count < o.max_attempts
                           AND o.eligible_at <= clock_timestamp()
                           AND (o.deadline IS NULL OR o.deadline > clock_timestamp())
                           AND NOT EXISTS (
@@ -351,6 +352,7 @@ def claim_operation(
                         SELECT * FROM operations
                         WHERE operation_id=%s
                           AND status IN ('QUEUED','RETRY_WAIT')
+                          AND attempt_count < max_attempts
                           AND eligible_at <= clock_timestamp()
                           AND (deadline IS NULL OR deadline > clock_timestamp())
                         FOR UPDATE SKIP LOCKED
@@ -501,6 +503,7 @@ def claim_operation(
                             version=version+1,updated_at=clock_timestamp()
                         WHERE operation_id=%s
                           AND status IN ('QUEUED','RETRY_WAIT')
+                          AND attempt_count < max_attempts
                           AND eligible_at <= clock_timestamp()
                           AND (deadline IS NULL OR deadline > clock_timestamp())
                         RETURNING *

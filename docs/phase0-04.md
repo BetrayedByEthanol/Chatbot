@@ -272,3 +272,19 @@ Worker-reported failures of already-dispatched external effects use the
 same post-lock claim check and a guarded quarantine UPDATE. Recovery retains
 its distinct authority to quarantine expired DISPATCHED work without
 pretending a provider action was safely undone.
+
+## Attempt-budget fencing across suspension and retries
+
+`attempt_count` is a durable count of worker claims; persona selection
+changes and suspension do not reset it. `resume_suspended` rejects exhausted
+attempts (`attempt_count >= max_attempts`) before requeue and independently
+guards its SQL update, with no resume event on rejection. One remaining
+attempt can still be used after an explicit authorized resume.
+
+`claim_operation` filters out exhausted QUEUED/RETRY_WAIT rows during
+candidate discovery, row locking and the final claim UPDATE, so it cannot
+increment beyond the configured limit even for legacy or conflicting queued
+state. The pending-work recovery sweep transitions already-exhausted
+QUEUED/RETRY_WAIT rows to FAILED with a durable recovery event rather than
+leaving indefinitely unclaimable work in the queue. Existing suspended rows
+remain SUSPENDED (with no renewed execution authority) if already exhausted.

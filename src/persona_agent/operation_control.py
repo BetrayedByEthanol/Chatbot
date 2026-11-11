@@ -406,6 +406,10 @@ def resume_suspended(
                 raise PermissionDenied("operation outside authenticated user scope")
             if row["status"]!="SUSPENDED" or row["effect_status"]!="PREPARED":
                 raise InvalidOperation("only safely suspended, undispatched work can resume")
+            # A suspended claim has already consumed an attempt. Switching
+            # personas cannot reset or extend its configured attempt budget.
+            if row["attempt_count"]>=row["max_attempts"]:
+                raise InvalidOperation("operation attempt budget exhausted; cannot resume")
             if row["input_versions"]:
                 raise InvalidOperation("owner must revalidate input versions before resume")
             cursor.execute(
@@ -423,10 +427,16 @@ def resume_suspended(
                     selection_generation=%s,background_epoch=NULL,
                     eligible_at=clock_timestamp(),version=version+1,
                     updated_at=clock_timestamp()
-                WHERE operation_id=%s RETURNING *
+                WHERE operation_id=%s AND status='SUSPENDED'
+                  AND effect_status='PREPARED'
+                  AND attempt_count < max_attempts
+                RETURNING *
                 """,(selected["generation"],operation_id),
             )
-            event_for(cursor,cursor.fetchone(),"operation.resumed.v1",
+            updated=cursor.fetchone()
+            if updated is None:
+                raise InvalidOperation("operation attempt budget exhausted or no longer suspended")
+            event_for(cursor,updated,"operation.resumed.v1",
                       {"selection_generation":selected["generation"]})
 
 
@@ -592,7 +602,8 @@ def reap_stale_operations(connection: Connection, *, limit: int=100) -> int:
                 LEFT JOIN persona_instances i ON i.user_id=o.user_id AND i.id=o.instance_id
                 WHERE o.status IN ('QUEUED','RETRY_WAIT')
                   AND (
-                    (o.deadline IS NOT NULL AND o.deadline <= clock_timestamp())
+                    o.attempt_count >= o.max_attempts
+                    OR (o.deadline IS NOT NULL AND o.deadline <= clock_timestamp())
                     OR s.instance_id IS DISTINCT FROM o.instance_id
                     OR s.generation IS DISTINCT FROM o.selection_generation
                     OR (o.input_versions ? 'persona_instance' AND
@@ -659,6 +670,7 @@ def reap_stale_operations(connection: Connection, *, limit: int=100) -> int:
                                  or selected["background_epoch"]!=row["background_epoch"])
                         )
                     deadline_passed=row["deadline"] is not None and row["deadline"]<=now
+                    exhausted=row["attempt_count"]>=row["max_attempts"]
                     input_invalid=False
                     if "persona_instance" in row["input_versions"]:
                         cursor.execute(
@@ -672,10 +684,11 @@ def reap_stale_operations(connection: Connection, *, limit: int=100) -> int:
                             input_version is None or
                             input_version["version"]!=row["input_versions"]["persona_instance"]
                         )
-                    if not (revoked or epoch_invalid or deadline_passed or input_invalid):
+                    if not (revoked or epoch_invalid or deadline_passed
+                            or input_invalid or exhausted):
                         continue
                     status=(
-                        "FAILED" if deadline_passed else
+                        "FAILED" if deadline_passed or exhausted else
                         "BLOCKED" if input_invalid else
                         "CANCELLED" if row["execution_policy"]=="BACKGROUND_EPHEMERAL"
                         else "SUSPENDED"
