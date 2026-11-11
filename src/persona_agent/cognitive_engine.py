@@ -26,7 +26,7 @@ from .cognitive_contracts import (
     CognitiveWork, InvalidCognitiveProposal, StaleCognition,
 )
 from .conversation import _event
-from .conversation_contracts import ModelMessage,TextModelGateway
+from .conversation_contracts import ModelMessage,TextModelGateway,ModelUnavailable
 from .lifecycle import TrustedPlatformActor
 from .operation_contracts import (
     EffectClass,EnqueueOperation,OperationLease,Origin,Policy,Priority,
@@ -409,13 +409,15 @@ def run_cognition(
             intention_count=counts.get("INTENTION",0),replayed=True,
         )
     else:
-        generated=gateway.generate(_messages(work))
         try:
+            generated=gateway.generate(_messages(work))
             draft=_parse(generated.text)
             result=commit_cognition(
                 connection,lease,work,draft,generated.model_id,
             )
-        except InvalidCognitiveProposal as exc:
+        except (InvalidCognitiveProposal,ModelUnavailable) as exc:
+            # P0 owns retry/backoff and max attempts, not this model worker.
+            # Failed inference does not change the cognitive watermark.
             fail_operation(connection,lease,reason=str(exc),delay_seconds=5)
             raise
     complete_operation(
