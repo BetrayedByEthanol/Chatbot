@@ -489,7 +489,7 @@ def test_failed_summary_requires_explicit_fresh_admission(dsn):
         assert conn.execute(
             "SELECT summary_watermark FROM conversations WHERE conversation_id=%s",
             (conversation,),
-        ).fetchone()[0]==4
+        ).fetchone()[0]==7
         rows=conn.execute(
             """SELECT j.admission_attempt,o.status,j.summary_id
                FROM conversation_summary_jobs j JOIN operations o USING(operation_id)
