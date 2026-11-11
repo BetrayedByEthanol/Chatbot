@@ -429,6 +429,7 @@ def prepare_text_context(
             base_prompt=prompt
             from .summary_memory import summary_context_block, episode_context_block
             from .memory import contextual_memory_block
+            from .memory_retrieval import topic_recall_block
 
             def assemble_prompt(before_sequence: int) -> str:
                 content=base_prompt
@@ -461,6 +462,20 @@ def prepare_text_context(
                     content+=contextual_memory_block(
                         cursor,actor.user_id,item["instance_id"],
                         history[-1].content,recall_budget,
+                    )
+                # P2-05: a focused dialogue reference such as "What about
+                # that?" can recover relevant older user-reported memories
+                # and evidence-linked episodes. Ordinary input makes no
+                # historical query. Explicit recall keeps the established
+                # P2-01/P2-02, provenance-preserving search path above.
+                remaining=max_context_chars-len(content)-min(
+                    len(history[-1].content),min(256,max_context_chars//4),
+                )
+                if remaining>=220:
+                    content+=topic_recall_block(
+                        cursor,actor.user_id,item["instance_id"],
+                        item["conversation_id"],history[-1].content,
+                        min(1000,remaining),
                     )
                 # Preserve the latest user input over any optional history.
                 if len(content)+len(history[-1].content)>max_context_chars:
