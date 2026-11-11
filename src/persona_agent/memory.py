@@ -214,6 +214,72 @@ def admit_memory(connection: Connection, actor: TrustedActor,
             ))
 
 
+def _amend_memory_in_transaction(cur, actor: TrustedActor,
+                                 command: AmendMemoryCommand) -> MemoryWriteResult:
+    """Memory-owned correction primitive; caller owns transaction and row locks.
+
+    P2-04 approval uses this only inside its *same* transaction as the
+    extraction candidate decision, so record, revision, receipt, outbox and
+    approval either all commit or all roll back together. The normal
+    authenticated P2-01 entrypoint retains its public contract.
+    """
+    cur.execute(
+        "SELECT 1 FROM persona_instances WHERE user_id=%s AND id=%s",
+        (actor.user_id,command.instance_id),
+    )
+    if cur.fetchone() is None:
+        raise PermissionDenied("memory instance outside authenticated scope")
+    receipt_id,prior=_receipt(cur,actor,command.instance_id,_AMEND,command)
+    if prior is not None:
+        return prior
+    _selection(cur,actor,command.instance_id,command.expected_generation)
+    cur.execute(
+        """SELECT * FROM memory_records WHERE memory_id=%s
+           AND user_id=%s AND instance_id=%s FOR UPDATE""",
+        (command.memory_id,actor.user_id,command.instance_id),
+    )
+    record=cur.fetchone()
+    if record is None:
+        raise PermissionDenied("memory outside authenticated scope")
+    if record["version"]!=command.expected_version:
+        raise VersionConflict("memory revision is stale")
+    source=_evidence(cur,actor,command.instance_id,command.conversation_id,
+                     command.evidence_turn_id,command.evidence_quote)
+    if source["created_at"]<=record["source_turn_at"]:
+        raise VersionConflict("memory revision must cite a newer user turn")
+    if command.action=="RETRACT" and record["record_status"]=="RETRACTED":
+        raise MemoryConflict("already retracted")
+    value=(command.new_value.strip() if command.action=="CORRECT"
+           else record["value_text"])
+    confidence=(command.confidence if command.action=="CORRECT"
+                else float(record["confidence"]))
+    status="RETRACTED" if command.action=="RETRACT" else "ACTIVE"
+    version=record["version"]+1
+    cur.execute(
+        """UPDATE memory_records SET value_text=%s,confidence=%s,
+             record_status=%s,version=%s,
+             source_conversation_id=%s,source_turn_id=%s,
+             source_turn_at=%s,source_quote=%s,source_id=%s,
+             updated_at=clock_timestamp()
+           WHERE memory_id=%s AND user_id=%s AND instance_id=%s""",
+        (value,confidence,status,version,command.conversation_id,
+         command.evidence_turn_id,source["created_at"],command.evidence_quote,
+         source["source_id"],command.memory_id,actor.user_id,
+         command.instance_id),
+    )
+    event_id=_event(
+        cur,actor,command.instance_id,command.memory_id,version,
+        "memory.record.corrected.v1" if command.action=="CORRECT"
+        else "memory.record.retracted.v1",
+        command.evidence_turn_id,receipt_id,
+    )
+    _revision(cur,actor,command,command.memory_id,version,command.action,
+              value,status,confidence,source,event_id)
+    return _finish(cur,receipt_id,MemoryWriteResult(
+        memory_id=command.memory_id,version=version,event_id=event_id,
+    ))
+
+
 def amend_memory(connection: Connection, actor: TrustedActor,
                  command: AmendMemoryCommand) -> MemoryWriteResult:
     """Explicit correction or retraction, with optimistic version and newer evidence."""
@@ -221,61 +287,7 @@ def amend_memory(connection: Connection, actor: TrustedActor,
     _require_actor(actor)
     with connection.transaction():
         with connection.cursor(row_factory=dict_row) as cur:
-            cur.execute(
-                "SELECT 1 FROM persona_instances WHERE user_id=%s AND id=%s",
-                (actor.user_id,command.instance_id),
-            )
-            if cur.fetchone() is None:
-                raise PermissionDenied("memory instance outside authenticated scope")
-            receipt_id,prior=_receipt(cur,actor,command.instance_id,_AMEND,command)
-            if prior is not None:
-                return prior
-            _selection(cur,actor,command.instance_id,command.expected_generation)
-            cur.execute(
-                """SELECT * FROM memory_records WHERE memory_id=%s
-                   AND user_id=%s AND instance_id=%s FOR UPDATE""",
-                (command.memory_id,actor.user_id,command.instance_id),
-            )
-            record=cur.fetchone()
-            if record is None:
-                raise PermissionDenied("memory outside authenticated scope")
-            if record["version"]!=command.expected_version:
-                raise VersionConflict("memory revision is stale")
-            source=_evidence(cur,actor,command.instance_id,command.conversation_id,
-                             command.evidence_turn_id,command.evidence_quote)
-            if source["created_at"]<=record["source_turn_at"]:
-                raise VersionConflict("memory revision must cite a newer user turn")
-            if command.action=="RETRACT" and record["record_status"]=="RETRACTED":
-                raise MemoryConflict("already retracted")
-            value=(command.new_value.strip() if command.action=="CORRECT"
-                   else record["value_text"])
-            confidence=(command.confidence if command.action=="CORRECT"
-                        else float(record["confidence"]))
-            status="RETRACTED" if command.action=="RETRACT" else "ACTIVE"
-            version=record["version"]+1
-            cur.execute(
-                """UPDATE memory_records SET value_text=%s,confidence=%s,
-                     record_status=%s,version=%s,
-                     source_conversation_id=%s,source_turn_id=%s,
-                     source_turn_at=%s,source_quote=%s,source_id=%s,
-                     updated_at=clock_timestamp()
-                   WHERE memory_id=%s AND user_id=%s AND instance_id=%s""",
-                (value,confidence,status,version,command.conversation_id,
-                 command.evidence_turn_id,source["created_at"],command.evidence_quote,
-                 source["source_id"],command.memory_id,actor.user_id,
-                 command.instance_id),
-            )
-            event_id=_event(
-                cur,actor,command.instance_id,command.memory_id,version,
-                "memory.record.corrected.v1" if command.action=="CORRECT"
-                else "memory.record.retracted.v1",
-                command.evidence_turn_id,receipt_id,
-            )
-            _revision(cur,actor,command,command.memory_id,version,command.action,
-                      value,status,confidence,source,event_id)
-            return _finish(cur,receipt_id,MemoryWriteResult(
-                memory_id=command.memory_id,version=version,event_id=event_id,
-            ))
+            return _amend_memory_in_transaction(cur,actor,command)
 
 
 def _select_memories(cur, user_id: UUID, instance_id: UUID,
