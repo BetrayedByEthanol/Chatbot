@@ -41,6 +41,10 @@ CREATE TABLE cognitive_reflections (
     subject text NOT NULL CHECK(subject IN ('USER','CONVERSATION','PERSONA')),
     content text NOT NULL CHECK(char_length(content) BETWEEN 1 AND 600),
     confidence numeric(4,3) NOT NULL CHECK(confidence BETWEEN 0 AND 1),
+    temporal_scope text NOT NULL DEFAULT 'CURRENT'
+        CHECK(temporal_scope IN ('CURRENT','HISTORICAL','FUTURE')),
+    privacy_class text NOT NULL DEFAULT 'INTERNAL'
+        CHECK(privacy_class='INTERNAL'),
     epistemic_status text NOT NULL DEFAULT 'MODEL_INTERPRETED'
         CHECK(epistemic_status='MODEL_INTERPRETED'),
     review_status text NOT NULL DEFAULT 'PROPOSED'
