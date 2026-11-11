@@ -84,3 +84,29 @@ Four PostgreSQL regressions cover a temporary unavailable cognition pool,
 USER/COGNITIVE replay in both directions, concurrent repair of a staged
 cross-origin operation, and recovery of a newer user-authorized retry staged
 after a failed automated attempt.
+
+
+## Further Codex review hardening — delivery leases and short-range repair
+
+- **Expired event-delivery leases:** `run_auto_summary_tick()` now treats
+  `StaleDelivery` from claim preflight, admission processing or the final
+  `process_delivery()` acknowledgment as a fenced, recoverable outcome. It
+  does not attempt to ACK, defer or retry an invalid delivery claim. The next
+  P0 claim/reap cycle performs redelivery, while P2-02's durable operation
+  identity prevents duplicate summarization. If the lease expires during
+  error handling, the fallback defer/retry also treats `StaleDelivery` as
+  already fenced, rather than terminating the entire polling process.
+- **Repair independent of new-job thresholds:** A staged summary whose
+  newest admission attempt lacks an operation row is already authorized,
+  even if it originated from a short Background handover and the persona
+  subsequently returned to Foreground without changing generation.
+  `_admit_if_due()` now examines the latest staged attempt before applying
+  the normal eight-turn foreground minimum. The bounded reconciliation SQL
+  likewise includes such repairable staged jobs as an alternative to the
+  normal threshold, without rescheduling already queued or terminal jobs.
+
+PostgreSQL regressions explicitly expire a lease after durable admission but
+before the P0 ACK, expire a claim before event preflight, and simulate a
+Background short-range stage/enqueue crash followed by return to Foreground
+without any additional conversation turns. They verify bounded redelivery,
+no illegal stale-claim mutation and original operation provenance.
