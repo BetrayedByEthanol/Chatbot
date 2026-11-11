@@ -25,7 +25,7 @@ from .event_delivery import (
     subscribe,
 )
 from .lifecycle import TrustedPlatformActor
-from .memory import _event, _evidence, _revision, amend_memory
+from .memory import _amend_memory_in_transaction, _event, _evidence, _revision
 from .memory_contracts import AdmitMemoryCommand, AmendMemoryCommand, MemoryWriteResult
 from .operation_contracts import require_idle
 from .runtime import PermissionDenied, VersionConflict
@@ -420,50 +420,63 @@ def approve_extraction_conflict(
     connection: Connection, actor: TrustedActor, candidate_id: UUID,
     *, expected_generation: int, expected_version: int,
 ) -> MemoryWriteResult:
-    """Explicit user authorization delegates correction to P2-01 Memory.
+    """Atomically approve a conflict and revise the Memory-owned record.
 
-    No model or platform actor can approve a conflict. The P2-01 correction
-    enforces newer source evidence, version CAS and persona generation.
+    The candidate row serializes concurrent approvals. Its decision and all
+    P2-01 correction effects (record, revision, receipt, event and outbox)
+    share exactly one short PostgreSQL transaction. A crash rolls back both.
+    No model or platform actor may approve a conflict.
     """
     require_idle(connection)
     _require_actor(actor)
-    with connection.cursor(row_factory=dict_row) as cur:
-        cur.execute(
-            """SELECT * FROM memory_extraction_candidates
-               WHERE candidate_id=%s AND user_id=%s""",
-            (candidate_id,actor.user_id),
-        )
-        candidate=cur.fetchone()
-    if candidate is None:
-        raise PermissionDenied("candidate outside authenticated user scope")
-    if candidate["status"] not in ("CONFLICT","APPROVED"):
-        raise ValueError("candidate is not a reviewable conflicting claim")
-    if candidate["target_version"]!=expected_version and candidate["status"]!="APPROVED":
-        raise VersionConflict("candidate was evaluated against another revision")
-    command=AmendMemoryCommand(
-        instance_id=candidate["instance_id"],
-        expected_generation=expected_generation,
-        memory_id=candidate["target_memory_id"],
-        expected_version=expected_version,
-        conversation_id=candidate["conversation_id"],
-        evidence_turn_id=candidate["source_turn_id"],
-        evidence_quote=candidate["source_quote"],
-        action="CORRECT",new_value=candidate["value_text"],
-        confidence=float(candidate["confidence"]),
-        idempotency_key=f"approve-extraction:{candidate_id}",
-    )
-    result=amend_memory(connection,actor,command)
     with connection.transaction():
-        connection.execute(
-            """UPDATE memory_extraction_candidates
-               SET status='APPROVED',target_version=%s,
-                   reviewed_at=clock_timestamp()
-               WHERE candidate_id=%s AND user_id=%s AND status='CONFLICT'
-                 AND target_memory_id=%s AND target_version=%s""",
-            (result.version,candidate_id,actor.user_id,
-             candidate["target_memory_id"],expected_version),
-        )
-    return result
+        with connection.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                """SELECT * FROM memory_extraction_candidates
+                   WHERE candidate_id=%s AND user_id=%s FOR UPDATE""",
+                (candidate_id,actor.user_id),
+            )
+            candidate=cur.fetchone()
+            if candidate is None:
+                raise PermissionDenied("candidate outside authenticated user scope")
+            if candidate["status"] not in ("CONFLICT","APPROVED"):
+                raise ValueError("candidate is not a reviewable conflicting claim")
+            if (candidate["status"]=="CONFLICT"
+                and candidate["target_version"]!=expected_version):
+                raise VersionConflict("candidate was evaluated against another revision")
+            command=AmendMemoryCommand(
+                instance_id=candidate["instance_id"],
+                expected_generation=expected_generation,
+                memory_id=candidate["target_memory_id"],
+                expected_version=expected_version,
+                conversation_id=candidate["conversation_id"],
+                evidence_turn_id=candidate["source_turn_id"],
+                evidence_quote=candidate["source_quote"],
+                action="CORRECT",new_value=candidate["value_text"],
+                confidence=float(candidate["confidence"]),
+                idempotency_key=f"approve-extraction:{candidate_id}",
+            )
+            result=_amend_memory_in_transaction(cur,actor,command)
+            if candidate["status"]=="APPROVED":
+                # A correctly finalized candidate must replay its exact
+                # original command receipt, not create another revision.
+                if (not result.replayed
+                    or candidate["target_version"]!=result.version):
+                    raise VersionConflict("approved candidate receipt is inconsistent")
+                return result
+            cur.execute(
+                """UPDATE memory_extraction_candidates
+                   SET status='APPROVED',target_version=%s,
+                       reviewed_at=clock_timestamp()
+                   WHERE candidate_id=%s AND user_id=%s AND status='CONFLICT'
+                     AND target_memory_id=%s AND target_version=%s
+                   RETURNING candidate_id""",
+                (result.version,candidate_id,actor.user_id,
+                 candidate["target_memory_id"],expected_version),
+            )
+            if cur.fetchone() is None:
+                raise VersionConflict("candidate changed during correction")
+            return result
 
 
 def run_extraction_worker(
