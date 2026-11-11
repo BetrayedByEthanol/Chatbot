@@ -453,3 +453,166 @@ def test_concurrent_candidate_approvals_share_one_correction(dsn):
             """SELECT status,target_version FROM memory_extraction_candidates
                WHERE candidate_id=%s""",(candidate.candidate_id,),
         ).fetchone()==("APPROVED",2)
+
+
+
+def test_unsupported_sensitive_topics_never_enter_normal_memory(dsn):
+    """A syntactically explicit sensitive report must not bypass consent."""
+    consumer=bootstrap(dsn)
+    user,instance,_=seed(dsn)
+    conversation=uuid4()
+    for statement in (
+        "My favorite antidepressant is sertraline.",
+        "My favorite church is St Marys.",
+        "My favorite drink is sertraline.",
+        "I prefer sertraline over fluoxetine.",
+        "My hobby is attending church.",
+        "For me, religion means peace.",
+        "For me, home means prayer.",
+    ):
+        turn(dsn,user,instance,conversation,statement)
+    result=tick(dsn,consumer)
+    assert result.processed==7
+    assert result.admitted==0 and result.conflicts==0
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT count(*) FROM memory_records WHERE user_id=%s",
+            (user,),
+        ).fetchone()[0]==0
+        assert conn.execute(
+            "SELECT count(*) FROM memory_extraction_candidates WHERE user_id=%s",
+            (user,),
+        ).fetchone()[0]==0
+    assert call(dsn,search_memories,actor(user),instance,"favorite")==()
+
+    # A whitelisted statement remains eligible on the same worker.
+    source=turn(dsn,user,instance,conversation,"My favorite drink is tea.")
+    assert tick(dsn,consumer).admitted==1
+    hits=call(dsn,search_memories,actor(user),instance,"favorite drink")
+    assert len(hits)==1 and hits[0].source_turn_id==source.turn_id
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT privacy_class FROM memory_records WHERE user_id=%s",
+            (user,),
+        ).fetchone()[0]=="NORMAL"
+
+
+def test_later_conflict_retargets_to_new_revision_for_explicit_approval(dsn):
+    """Approving an earlier candidate must not strand a newer conflict."""
+    consumer=bootstrap(dsn)
+    user,instance,_=seed(dsn)
+    conversation=uuid4()
+    turn(dsn,user,instance,conversation,"My favorite drink is tea.")
+    assert tick(dsn,consumer).admitted==1
+    coffee=turn(dsn,user,instance,conversation,
+                "Actually, my favorite drink is coffee.")
+    water=turn(dsn,user,instance,conversation,
+               "Actually, my favorite drink is water.")
+    assert tick(dsn,consumer).conflicts==2
+
+    candidates=call(dsn,list_extraction_conflicts,actor(user),instance)
+    assert len(candidates)==2
+    earlier=next(c for c in candidates if c.source_turn_id==coffee.turn_id)
+    later=next(c for c in candidates if c.source_turn_id==water.turn_id)
+    assert earlier.expected_version==later.expected_version==1
+
+    first=call(
+        dsn,approve_extraction_conflict,actor(user),earlier.candidate_id,
+        expected_generation=1,expected_version=1,
+    )
+    assert first.version==2
+    updated=call(dsn,list_extraction_conflicts,actor(user),instance)
+    assert len(updated)==1
+    assert updated[0].candidate_id==later.candidate_id
+    assert updated[0].expected_version==2
+    assert updated[0].current_value=="coffee"
+    assert updated[0].proposed_value=="water"
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            """SELECT status,target_version FROM memory_extraction_candidates
+               WHERE candidate_id=%s""",(later.candidate_id,),
+        ).fetchone()==("CONFLICT",2)
+    # An obsolete user approval token is rejected, even after re-evaluation.
+    with pytest.raises(VersionConflict):
+        call(
+            dsn,approve_extraction_conflict,actor(user),later.candidate_id,
+            expected_generation=1,expected_version=1,
+        )
+    second=call(
+        dsn,approve_extraction_conflict,actor(user),later.candidate_id,
+        expected_generation=1,expected_version=2,
+    )
+    assert second.version==3 and not second.replayed
+    assert call(dsn,list_extraction_conflicts,actor(user),instance)==()
+    hits=call(dsn,search_memories,actor(user),instance,"favorite drink")
+    assert hits[0].value_text=="water" and hits[0].version==3
+
+
+def test_earlier_conflict_is_retired_when_newer_evidence_wins(dsn):
+    """Chronologically older proposals cannot overwrite a later approval."""
+    consumer=bootstrap(dsn)
+    user,instance,_=seed(dsn)
+    conversation=uuid4()
+    turn(dsn,user,instance,conversation,"My favorite drink is tea.")
+    tick(dsn,consumer)
+    older=turn(dsn,user,instance,conversation,
+               "Actually, my favorite drink is coffee.")
+    newer=turn(dsn,user,instance,conversation,
+               "Actually, my favorite drink is water.")
+    assert tick(dsn,consumer).conflicts==2
+    queue=call(dsn,list_extraction_conflicts,actor(user),instance)
+    old_candidate=next(c for c in queue if c.source_turn_id==older.turn_id)
+    new_candidate=next(c for c in queue if c.source_turn_id==newer.turn_id)
+    assert call(
+        dsn,approve_extraction_conflict,actor(user),new_candidate.candidate_id,
+        expected_generation=1,expected_version=1,
+    ).version==2
+    assert call(dsn,list_extraction_conflicts,actor(user),instance)==()
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            """SELECT status,target_version,reviewed_at IS NOT NULL
+               FROM memory_extraction_candidates WHERE candidate_id=%s""",
+            (old_candidate.candidate_id,),
+        ).fetchone()==("STALE",2,True)
+    with pytest.raises(ValueError,match="not a reviewable"):
+        call(
+            dsn,approve_extraction_conflict,actor(user),old_candidate.candidate_id,
+            expected_generation=1,expected_version=2,
+        )
+    assert call(dsn,search_memories,actor(user),instance,"favorite drink")[0].value_text=="water"
+
+
+def test_matching_conflict_becomes_revision_scoped_corroboration(dsn):
+    """A newer matching proposal becomes evidence, not another correction."""
+    consumer=bootstrap(dsn)
+    user,instance,_=seed(dsn)
+    conversation=uuid4()
+    turn(dsn,user,instance,conversation,"My favorite drink is tea.")
+    tick(dsn,consumer)
+    first=turn(dsn,user,instance,conversation,
+               "Actually, my favorite drink is coffee.")
+    second=turn(dsn,user,instance,conversation,
+                "Actually, my favorite drink is coffee.")
+    assert tick(dsn,consumer).conflicts==2
+    queue=call(dsn,list_extraction_conflicts,actor(user),instance)
+    old_candidate=next(c for c in queue if c.source_turn_id==first.turn_id)
+    matching=next(c for c in queue if c.source_turn_id==second.turn_id)
+    call(
+        dsn,approve_extraction_conflict,actor(user),old_candidate.candidate_id,
+        expected_generation=1,expected_version=1,
+    )
+    assert call(dsn,list_extraction_conflicts,actor(user),instance)==()
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            """SELECT status,target_version FROM memory_extraction_candidates
+               WHERE candidate_id=%s""",(matching.candidate_id,),
+        ).fetchone()==("CORROBORATED",2)
+        assert conn.execute(
+            """SELECT count(*) FROM memory_claim_support
+               WHERE memory_id=%s AND version=2 AND source_turn_id=%s""",
+            (matching.memory_id,second.turn_id),
+        ).fetchone()[0]==1
+        assert conn.execute(
+            "SELECT count(*) FROM memory_revisions WHERE memory_id=%s",
+            (matching.memory_id,),
+        ).fetchone()[0]==2
