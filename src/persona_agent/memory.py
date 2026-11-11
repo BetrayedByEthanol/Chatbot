@@ -98,7 +98,8 @@ def _evidence(cur, actor: TrustedActor, instance_id: UUID,
 
 
 def _event(cur, actor: TrustedActor, instance_id: UUID, memory_id: UUID,
-           version: int, event_type: str, turn_id: UUID, receipt_id: UUID) -> UUID:
+           version: int, event_type: str, turn_id: UUID, receipt_id: UUID,
+           *, trust_level: str = "AUTHENTICATED_USER") -> UUID:
     stream_id=uuid5(NAMESPACE_URL,f"persona-agent/{instance_id}/memory")
     cur.execute(
         """INSERT INTO event_streams(stream_id,user_id,instance_id,domain)
@@ -121,9 +122,9 @@ def _event(cur, actor: TrustedActor, instance_id: UUID, memory_id: UUID,
              event_id,event_type,schema_version,user_id,instance_id,
              stream_id,stream_sequence,source_id,trust_level,correlation_id,
              payload
-           ) VALUES (%s,%s,1,%s,%s,%s,%s,%s,'AUTHENTICATED_USER',%s,%s::jsonb)""",
+           ) VALUES (%s,%s,1,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)""",
         (event_id,event_type,actor.user_id,instance_id,stream_id,
-         sequence["last_sequence"],actor.source_id,receipt_id,
+         sequence["last_sequence"],actor.source_id,trust_level,receipt_id,
          json.dumps({"memory_id":str(memory_id),"version":version,
                      "evidence_turn_id":str(turn_id)})),
     )
