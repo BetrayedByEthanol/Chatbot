@@ -172,7 +172,7 @@ def test_incremental_summary_recall_original_evidence_and_restart(dsn):
 
     hits=call(dsn,search_episodes,actor(user),instance,"dog adoption")
     assert len(hits)==1 and hits[0].source_turn_id==turns[1].turn_id
-    evidence=call(dsn,episode_source_turn,actor(user),hits[0].episode_id)
+    evidence=call(dsn,episode_source_turn,actor(user),instance,hits[0].episode_id)
     assert evidence["user_text"]=="I adopted a rescue dog in September."
     assert evidence["assistant_text"] is None
 
@@ -324,7 +324,9 @@ def test_episode_scope_date_bounds_and_relevance(dsn):
     assert call(dsn,search_episodes,actor(user),instance,"dog",
                 since=datetime.now(timezone.utc)+timedelta(days=1))==()
     with pytest.raises(PermissionDenied):
-        call(dsn,episode_source_turn,actor(outsider),hits[0].episode_id)
+        call(dsn,episode_source_turn,actor(outsider),instance,hits[0].episode_id)
+    with pytest.raises(PermissionDenied):
+        call(dsn,episode_source_turn,actor(user),other,hits[0].episode_id)
     with pytest.raises(ValueError):
         call(dsn,search_episodes,actor(user),instance,"dog",max_results=100)
 
