@@ -64,6 +64,7 @@ _SAFE_FAVORITES = {
 _SAFE_HOBBIES = frozenset({
     "gardening","cycling","reading","painting","drawing","knitting",
     "hiking","swimming","photography","cooking","baking","chess",
+    "woodworking",
 })
 _SAFE_PET_NAMES = frozenset({
     "milo","luna","bella","max","charlie","buddy","daisy","coco",
