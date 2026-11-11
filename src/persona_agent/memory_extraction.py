@@ -117,7 +117,7 @@ def parse_explicit_claim(text: str) -> ExplicitClaim | None:
                 and all(c not in statement for c in ('\n','\r','"',';',':','?','!','[',']','{','}','<','>'))
                 and len(statement)<=320):
             return None
-    normalized=re.sub(r"^actually,\s*", "", statement, flags=re.I)
+    normalized=re.sub(r"^actually,?\s+", "", statement, flags=re.I)
     if normalized.endswith("."):
         normalized=normalized[:-1]
     # Permit only the single optional "For me," introduction comma.
