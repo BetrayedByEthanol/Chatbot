@@ -306,6 +306,20 @@ def commit_cognition(
     proposals=_checked(work,draft)
     with connection.transaction():
         with connection.cursor(row_factory=dict_row) as cur:
+            # The admission path locks Conversation before Cognitive jobs.
+            # Preserve that order here: locking the job first while another
+            # scheduler owns the conversation row creates an AB/BA deadlock.
+            # This first lookup is the *same* conversation lock used below
+            # for watermark validation; it is held through the commit.
+            cur.execute(
+                """SELECT cognitive_watermark FROM conversations
+                   WHERE conversation_id=%s AND user_id=%s AND instance_id=%s
+                   FOR UPDATE""",
+                (work.conversation_id,lease.user_id,lease.instance_id),
+            )
+            state=cur.fetchone()
+            if state is None:
+                raise StaleCognition("cognitive conversation was removed")
             cur.execute(
                 """SELECT * FROM cognitive_jobs WHERE operation_id=%s
                    AND user_id=%s AND instance_id=%s FOR UPDATE""",
@@ -333,13 +347,8 @@ def commit_cognition(
                     reflection_count=sum(kinds.values()),
                     intention_count=kinds.get("INTENTION",0),replayed=True,
                 )
-            cur.execute(
-                """SELECT cognitive_watermark FROM conversations
-                   WHERE conversation_id=%s AND user_id=%s AND instance_id=%s
-                   FOR UPDATE""",
-                (work.conversation_id,lease.user_id,lease.instance_id),
-            )
-            state=cur.fetchone()
+            # Locks were acquired in conversation -> job order above.
+            # Revalidate P0 authority after any wait and before writes.
             require_claim(cur,lease)
             require_current_authority(cur,op)
             if state is None or state["cognitive_watermark"]!=work.start_sequence-1:
