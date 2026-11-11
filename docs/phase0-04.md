@@ -245,3 +245,14 @@ operation while attempting to acquire pool A for a later operation. This
 preserves the per-operation ascending pool-lock order used by completion and
 normal releases. A later per-operation failure does not roll back previously
 committed recoveries; the failed operation can be retried independently.
+
+## Deadline fence at final operation claim
+
+After the potentially blocking persona selection and input-version locks,
+`claim_operation` checks PostgreSQL wall-clock time against the operation's
+deadline again. The final `UPDATE operations ... RETURNING` independently
+requires the deadline to remain in the future. A candidate-level SQL
+savepoint rolls back concurrency-group and resource reservations if this
+final guard does not match; no RUNNING lease, attempt increment, event or
+outbox entry can survive an expired admission. Scanning may continue to
+other eligible queued operations.

@@ -391,7 +391,10 @@ def backfill_subscription(
 ) -> int:
     """Explicit, idempotent recovery for events missed by late subscriptions.
 
-    Only missing rows are inserted. Existing PROCESSED deliveries are never reset.
+    Only missing rows count against the page limit; repeating a call with
+    after_sequence=0 continues across independent streams, including those
+    whose first event has sequence 1. Existing PROCESSED rows are not reset.
+    after_sequence remains a per-stream filter, not a global cursor.
     Caller must quiesce the consumer when historical order matters.
     """
     _boundary(connection)
@@ -420,13 +423,19 @@ def backfill_subscription(
                 raise UnknownSubscription("consumer not subscribed to event type")
             cursor.execute(
                 """
-                SELECT event_id FROM events
-                WHERE user_id = %s AND instance_id = %s AND event_type = %s
-                  AND stream_sequence > %s
-                ORDER BY recorded_at, stream_id, stream_sequence, event_id
+                SELECT e.event_id FROM events e
+                WHERE e.user_id = %s AND e.instance_id = %s
+                  AND e.event_type = %s
+                  AND e.stream_sequence > %s
+                  AND NOT EXISTS (
+                      SELECT 1 FROM event_deliveries d
+                      WHERE d.event_id = e.event_id AND d.consumer_id = %s
+                  )
+                ORDER BY e.recorded_at, e.stream_id, e.stream_sequence, e.event_id
                 LIMIT %s
                 """,
-                (actor.user_id, instance_id, event_type, after_sequence, limit),
+                (actor.user_id, instance_id, event_type, after_sequence,
+                 consumer_id, limit),
             )
             inserted = 0
             for event in cursor.fetchall():

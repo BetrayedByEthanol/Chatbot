@@ -397,6 +397,12 @@ def claim_operation(
                         if (state_version is None or
                             state_version["version"]!=op["input_versions"]["persona_instance"]):
                             continue
+                    # Selection and input-state locks may have waited until
+                    # after the admission deadline without revoking authority.
+                    if op["deadline"] is not None:
+                        cur.execute("SELECT clock_timestamp() AS server_now")
+                        if op["deadline"] <= cur.fetchone()["server_now"]:
+                            continue
                     cur.execute(
                         """
                         SELECT resource_key,units FROM operation_resource_requests
@@ -440,6 +446,9 @@ def claim_operation(
                         pools.append((pool,requested["units"]))
                     if not allowed:
                         continue
+                    # Admission writes must be reversible when the final SQL
+                    # deadline guard loses a race after pool/group acquisition.
+                    cur.execute("SAVEPOINT claim_candidate")
                     if op["concurrency_group"] is not None:
                         cur.execute(
                             """
@@ -454,6 +463,8 @@ def claim_operation(
                             ),
                         )
                         if cur.fetchone() is None:
+                            cur.execute("ROLLBACK TO SAVEPOINT claim_candidate")
+                            cur.execute("RELEASE SAVEPOINT claim_candidate")
                             continue
                     for pool,units in pools:
                         cur.execute(
@@ -488,7 +499,11 @@ def claim_operation(
                             claimed_at=clock_timestamp(),
                             background_epoch=%s,
                             version=version+1,updated_at=clock_timestamp()
-                        WHERE operation_id=%s RETURNING *
+                        WHERE operation_id=%s
+                          AND status IN ('QUEUED','RETRY_WAIT')
+                          AND eligible_at <= clock_timestamp()
+                          AND (deadline IS NULL OR deadline > clock_timestamp())
+                        RETURNING *
                         """,
                         (
                             worker_id,lease_seconds,
@@ -498,6 +513,14 @@ def claim_operation(
                         ),
                     )
                     running=cur.fetchone()
+                    if running is None:
+                        # Revert the claim's group and resource writes.
+                        # Without this savepoint rollback, an expired claim
+                        # would strand capacity despite never becoming RUNNING.
+                        cur.execute("ROLLBACK TO SAVEPOINT claim_candidate")
+                        cur.execute("RELEASE SAVEPOINT claim_candidate")
+                        continue
+                    cur.execute("RELEASE SAVEPOINT claim_candidate")
                     event_for(cur,running,"operation.claimed.v1",{
                         "worker_id":worker_id,
                         "claim_generation":running["claim_generation"],

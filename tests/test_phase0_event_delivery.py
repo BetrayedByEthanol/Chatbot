@@ -446,3 +446,87 @@ def test_second_consumer_not_blocked_by_failed_first_consumer(dsn):
     done(dsn,claim_b)
     assert get_delivery(dsn,first.event_id,a)[0] == "FAILED"
     assert get_delivery(dsn,first.event_id,b)[0] == "PROCESSED"
+
+
+
+def test_late_subscriber_backfill_pages_across_many_sequence_one_streams(dsn):
+    """A page must exclude existing deliveries before LIMIT, even >1,000."""
+    from uuid import NAMESPACE_URL, uuid5
+
+    # An operation has a dedicated event stream, so each queued event is
+    # sequence 1. Synthetic journal rows keep this test fast while retaining
+    # the real event-stream, outbox, and delivery foreign-key constraints.
+    user, instance=seed(dsn)
+    count=1005
+    operation_ids=[uuid4() for _ in range(count)]
+    stream_ids=[
+        uuid5(NAMESPACE_URL,f"persona-agent/operation/{operation_id}")
+        for operation_id in operation_ids
+    ]
+    event_ids=[uuid4() for _ in range(count)]
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        with conn.transaction():
+            conn.execute(
+                """
+                INSERT INTO event_streams(
+                    stream_id,user_id,instance_id,domain,last_sequence
+                )
+                SELECT row.stream_id,%s,%s,'operation:'||row.operation_id::text,1
+                FROM unnest(%s::uuid[],%s::uuid[]) AS row(stream_id,operation_id)
+                """,
+                (user,instance,stream_ids,operation_ids),
+            )
+            conn.execute(
+                """
+                INSERT INTO events(
+                    event_id,event_type,schema_version,user_id,instance_id,
+                    stream_id,stream_sequence,source_id,trust_level,payload
+                )
+                SELECT row.event_id,'operation.queued.v1',1,%s,%s,
+                       row.stream_id,1,'operation.scheduler','TRUSTED_PLATFORM',
+                       jsonb_build_object('operation_id',row.operation_id::text)
+                FROM unnest(
+                    %s::uuid[],%s::uuid[],%s::uuid[]
+                ) AS row(event_id,stream_id,operation_id)
+                """,
+                (user,instance,event_ids,stream_ids,operation_ids),
+            )
+            # The subscriber arrives after these events were dispatched.
+            conn.execute(
+                """
+                INSERT INTO outbox(outbox_id,event_id,dispatched_at)
+                SELECT gen_random_uuid(), event_id, clock_timestamp()
+                FROM events WHERE event_id=ANY(%s::uuid[])
+                """,
+                (event_ids,),
+            )
+    consumer=new_consumer()
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        subscribe(conn,consumer,"operation.queued.v1")
+        pages=[]
+        for _ in range(15):
+            n=backfill_subscription(
+                conn,actor(user),instance_id=instance,consumer_id=consumer,
+                event_type="operation.queued.v1",limit=100,
+            )
+            pages.append(n)
+            if not n:
+                break
+        assert pages==[100]*10+[5,0]
+        assert backfill_subscription(
+            conn,actor(user),instance_id=instance,consumer_id=consumer,
+            event_type="operation.queued.v1",limit=1000,
+        )==0
+        assert conn.execute(
+            """
+            SELECT count(*),count(DISTINCT e.stream_id),
+                   min(e.stream_sequence),max(e.stream_sequence)
+            FROM event_deliveries d JOIN events e ON e.event_id=d.event_id
+            WHERE d.consumer_id=%s AND e.event_type='operation.queued.v1'
+            """,(consumer,),
+        ).fetchone()==(1005,1005,1,1)
+        # The stream-local sequence filter is still honored.
+        assert backfill_subscription(
+            conn,actor(user),instance_id=instance,consumer_id=consumer,
+            event_type="operation.queued.v1",after_sequence=1,
+        )==0

@@ -78,3 +78,15 @@ fanout/no-subscriber cases, duplicate dispatch, competing dispatchers/claims,
 stream causality, independent consumers, atomic DB-only processing,
 rollback/retry, stale worker fencing, deferral, exhaustion/recovery,
 authenticated scoped backfill, and transaction boundary enforcement.
+
+## Cross-stream backfill pagination
+
+`backfill_subscription` now filters out existing deliveries for the
+consumer **before** applying its page limit. Repeating the same authorized,
+instance-scoped call with `after_sequence=0` progresses through all missing
+events, even when each operation has a different stream whose first event
+has `stream_sequence=1`. It does not reset processed deliveries.
+`after_sequence` remains a *per-stream* lower bound, not a global
+pagination watermark; advancing it based on one stream would skip others.
+Concurrent fanout is safe because inserts remain idempotent under the
+`(event_id, consumer_id)` unique constraint.

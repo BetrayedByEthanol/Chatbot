@@ -1616,3 +1616,80 @@ def test_recovery_batch_does_not_hold_pool_locks_across_operations(dsn):
               AND e.payload->>'operation_id' IN (%s,%s)
             """,(str(stale_a.operation_id),str(stale_b.operation_id)),
         ).fetchone()[0]==2
+
+
+
+@pytest.mark.parametrize("blocking_row",["selection","input_version"])
+def test_claim_cannot_cross_deadline_while_waiting_for_authority(dsn,blocking_row):
+    from queue import Queue
+
+    user,instance=seed(dsn)
+    resource=pool(dsn,capacity=1)
+    # Use a deadline later than admission so the worker can reach the
+    # intended row lock before waiting past the wall-clock deadline.
+    deadline=datetime.now(timezone.utc)+timedelta(seconds=3)
+    queued=cmd(
+        instance,resource,deadline=deadline,
+        concurrency_group="deadline-admission",
+        input_versions={"persona_instance":0} if blocking_row=="input_version" else {},
+    )
+    enqueue(dsn,user,queued)
+    pid_queue=Queue(maxsize=1)
+
+    def delayed_claim():
+        with psycopg.connect(dsn,autocommit=True) as conn:
+            pid_queue.put(conn.execute("SELECT pg_backend_pid()").fetchone()[0])
+            return claim_operation(
+                conn,worker_id="deadline-worker",capabilities=(),
+                lease_seconds=60,
+            )
+
+    with ThreadPoolExecutor(max_workers=1) as workers:
+        with psycopg.connect(dsn,autocommit=True) as blocker:
+            with blocker.transaction():
+                if blocking_row=="selection":
+                    blocker.execute(
+                        "SELECT user_id FROM persona_selection "
+                        "WHERE user_id=%s FOR UPDATE",(user,),
+                    ).fetchone()
+                else:
+                    blocker.execute(
+                        "SELECT id FROM persona_instances "
+                        "WHERE user_id=%s AND id=%s FOR UPDATE",
+                        (user,instance),
+                    ).fetchone()
+                future=workers.submit(delayed_claim)
+                pid=pid_queue.get(timeout=5)
+                _assert_waiting_for_db_lock(dsn,pid)
+                delay=(deadline-datetime.now(timezone.utc)).total_seconds()+0.2
+                time.sleep(max(0,delay))
+        assert future.result(timeout=10) is None
+
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            """
+            SELECT status,attempt_count,claim_generation,worker_id,lease_until
+            FROM operations WHERE operation_id=%s
+            """,(queued.operation_id,),
+        ).fetchone()==("QUEUED",0,0,None,None)
+        assert conn.execute(
+            "SELECT count(*) FROM operation_resource_reservations "
+            "WHERE operation_id=%s",(queued.operation_id,),
+        ).fetchone()[0]==0
+        assert conn.execute(
+            "SELECT count(*) FROM operation_concurrency_locks "
+            "WHERE operation_id=%s",(queued.operation_id,),
+        ).fetchone()[0]==0
+        assert conn.execute(
+            "SELECT count(*) FROM events "
+            "WHERE event_type='operation.claimed.v1' "
+            "AND payload->>'operation_id'=%s",(str(queued.operation_id),),
+        ).fetchone()[0]==0
+        assert conn.execute(
+            "SELECT count(*) FROM outbox o JOIN events e ON e.event_id=o.event_id "
+            "WHERE e.event_type='operation.claimed.v1' "
+            "AND e.payload->>'operation_id'=%s",(str(queued.operation_id),),
+        ).fetchone()[0]==0
+    assert resources(dsn,resource)==0
+    assert invoke(dsn,reap_stale_operations)>=1
+    assert operation(dsn,queued.operation_id)[0]=="FAILED"
