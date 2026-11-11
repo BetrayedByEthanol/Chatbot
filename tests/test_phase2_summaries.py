@@ -480,7 +480,11 @@ def test_failed_summary_requires_explicit_fresh_admission(dsn):
     assert schedule(dsn,user,instance,conversation,
                     max_turns=4,retry_failed=True).replayed
     call(dsn,run_summary,claim(dsn,"recovered-summarizer"),FixedSummary())
-    assert schedule(dsn,user,instance,conversation,max_turns=4).start_sequence==5
+    next_range=schedule(dsn,user,instance,conversation,max_turns=4)
+    assert next_range.start_sequence==5
+    # This suite shares a PostgreSQL scheduler: do not leave a runnable
+    # summary operation for a different test to claim.
+    call(dsn,run_summary,claim(dsn,"next-range-cleanup"),FixedSummary())
     with psycopg.connect(dsn,autocommit=True) as conn:
         assert conn.execute(
             "SELECT summary_watermark FROM conversations WHERE conversation_id=%s",
@@ -561,6 +565,16 @@ def test_expired_lease_while_waiting_for_conversation_row_rolls_back(dsn):
             (user,),
         ).fetchone()[0]==0
     assert call(dsn,reap_stale_operations)>=1
+    # Recover the operation through P0 rather than leaving a RETRY_WAIT
+    # candidate that could interfere with a subsequent integration test.
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        conn.execute(
+            "UPDATE operations SET eligible_at=clock_timestamp() WHERE operation_id=%s",
+            (scheduled.operation_id,),
+        )
+    retry=claim(dsn,"expired-worker-recovered")
+    assert retry.operation_id==scheduled.operation_id
+    call(dsn,run_summary,retry,FixedSummary())
 
 
 def test_long_episode_recall_keeps_provenance_and_older_matches(dsn):
