@@ -54,6 +54,7 @@ class SummaryScheduled(BaseModel):
     conversation_id: UUID
     start_sequence: int
     end_sequence: int
+    admission_attempt: int = Field(ge=1)
     replayed: bool = False
 
 
