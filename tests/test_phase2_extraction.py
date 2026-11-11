@@ -99,6 +99,7 @@ def test_explicit_parser_rejects_ambiguous_sensitive_and_instruction_text():
     assert (meaning.memory_kind,meaning.predicate_key,meaning.value_text)==(
         "PERSONAL_MEANING","meaning_home","feeling safe",
     )
+    assert parse_explicit_claim("Actually my favorite drink is coffee.").value_text=="coffee"
     pet=parse_explicit_claim("My dog's name is Milo.")
     assert pet is not None and pet.predicate_key=="pet_dog_name"
     prefer=parse_explicit_claim("I prefer tea over coffee.")
