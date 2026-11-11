@@ -434,11 +434,18 @@ def test_tool_correlation_cannot_reference_another_users_operation(dsn):
         dsn,schedule_text_analysis,actor(user),
         SlowTextToolCommand(turn_id=own_turn.turn_id),
     )
-    foreign_turn=incoming(dsn,other,other_instance)
-    foreign=invoke(
-        dsn,schedule_text_analysis,actor(other),
-        SlowTextToolCommand(turn_id=foreign_turn.turn_id),
+    # Use an otherwise-unlinked operation from the other user, so the
+    # composite tenant FK (rather than the operation_id UNIQUE constraint)
+    # is what rejects the forged correlation.
+    foreign=EnqueueOperation(
+        operation_id=uuid4(),instance_id=other_instance,
+        expected_generation=1,idempotency_key=str(uuid4()),
+        operation_type="unrelated.readonly",
+        execution_policy=Policy.FOREGROUND_ASYNC,
+        priority_class=Priority.P1,effect_class=EffectClass.READ_ONLY,
+        resources={RESOURCE_KEY:1},
     )
+    invoke(dsn,enqueue_operation,actor(other),foreign)
     from psycopg.errors import ForeignKeyViolation
     with psycopg.connect(dsn,autocommit=True) as conn:
         with pytest.raises(ForeignKeyViolation):
