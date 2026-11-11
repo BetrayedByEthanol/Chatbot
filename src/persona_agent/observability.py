@@ -5,13 +5,13 @@ True time-to-first-token, GPU budget and TTS playback are not yet measured;
 none of these values are invented from generated or delivered timestamps.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime
 from statistics import mean
 from uuid import UUID
 
 from psycopg import Connection
 from psycopg.rows import dict_row
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 
 from .contracts import TrustedActor
 from .conversation import _require_actor
@@ -111,7 +111,7 @@ def get_turn_trace(
                     WHERE conversation_id=%s AND user_id=%s
                 )
                 AND payload->>'turn_id'=%s
-                ORDER BY created_at,event_id LIMIT 32
+                ORDER BY recorded_at,event_id LIMIT 32
                 """,
                 (actor.user_id,row["conversation_id"],actor.user_id,str(turn_id)),
             )
