@@ -140,10 +140,22 @@ def drain_outbox(dsn):
 
 @pytest.fixture
 def rename_consumer(dsn):
+    # Reproduce the shared-database backlog deterministically: another
+    # command committed a rename event before this consumer exists.
+    earlier_user, earlier_instance=seed(dsn)
+    earlier=call(dsn,rename_instance,actor(earlier_user),RenameInstanceCommand(
+        instance_id=earlier_instance, expected_generation=1,
+        expected_version=0, new_label="earlier",
+        idempotency_key=f"earlier-rename-{uuid4()}",
+    ))
+    # Outbox fanout follows *dispatch* time, not event creation time.
+    # Drain all earlier events before registration so a new subscription
+    # observes only subsequently published events.
+    drain_outbox(dsn)
     consumer=f"p05-consumer-{uuid4()}"
     call(dsn,subscribe,consumer,"persona.instance.renamed.v1")
     try:
-        yield consumer
+        yield consumer, earlier.event_id
     finally:
         # Other Phase 0 suites share the disposable test database and
         # assert an exact subscriber count. Do not leak our subscription.
@@ -158,7 +170,7 @@ def rename_consumer(dsn):
 def test_command_event_delivery_operation_checkpoint_completion(dsn, rename_consumer):
     user, instance=seed(dsn)
     resource=pool(dsn)
-    consumer=rename_consumer
+    consumer, earlier_event_id=rename_consumer
     rename_cmd=RenameInstanceCommand(
         instance_id=instance, expected_generation=1,
         expected_version=0, new_label="accepted",
@@ -173,6 +185,14 @@ def test_command_event_delivery_operation_checkpoint_completion(dsn, rename_cons
         dsn,claim_delivery,consumer_id=consumer,worker_id="p05-delivery",
     )
     assert delivery is not None and delivery.event_id==renamed.event_id
+    # The pre-registration rename was dispatched before subscription, so
+    # no delivery should exist for this consumer, regardless of test order.
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT count(*) FROM event_deliveries "
+            "WHERE consumer_id=%s AND event_id=%s",
+            (consumer,earlier_event_id),
+        ).fetchone()[0]==0
 
     def check_event(cursor, envelope):
         assert envelope.user_id==user and envelope.instance_id==instance
