@@ -125,3 +125,14 @@ the original delivered notice, in conversation order, within the existing
 recent-turn and character budgets. Prepared-but-not-acknowledged results
 remain excluded. Tenant and turn ownership are enforced by composite
 foreign keys and per-conversation queries.
+
+## Review fix — bound the built-in statistics formatter
+
+`analyze_text` reserves room for the summary, separators, term counts,
+ellipsis and final punctuation within the worker's 12,000-character
+validated result limit. If a word would exceed the remaining space,
+only its display form is shortened (marked with an ellipsis), while the
+true token/unique counts and term frequency remain unchanged. The default
+short-input output remains byte-for-byte unchanged. A regression runs the
+full 12,000-character input through the durable worker and confirms it
+COMPLETES on attempt 1 rather than entering an identical retry cycle.

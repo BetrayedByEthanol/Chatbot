@@ -26,7 +26,7 @@ from persona_agent.tool_contracts import (
 from persona_agent.tool_gateway import (
     acknowledge_tool_followup,prepare_tool_followup,read_tool_call,
     reconcile_tool_followup,respond_to_text_analysis,respond_with_time,
-    run_one_text_tool,schedule_text_analysis,
+    run_one_text_tool,schedule_text_analysis,analyze_text,
 )
 
 
@@ -627,3 +627,57 @@ def test_delivered_followup_is_tenant_scoped_and_undelivered_excluded(dsn):
     assert all("Text analysis" not in m.content for m in other_context.messages)
     with pytest.raises(ToolResultNotReady):
         invoke(dsn,prepare_tool_followup,actor(user),call.tool_call_id)
+
+
+
+def test_statistics_extreme_word_preserves_counts_inside_worker_limit(dsn):
+    long_word="a"*12000
+    result=analyze_text(long_word,max_words=5)
+    assert len(result)==12000
+    assert result.startswith("Text analysis: 1 words, 1 unique. Top: ")
+    assert result.endswith("… (1).")
+    assert result.count("(1)") == 1
+    assert analyze_text("alpha beta beta gamma",max_words=2)==(
+        "Text analysis: 4 words, 3 unique. Top: beta (2), alpha (1)."
+    )
+    assert analyze_text("!?...",max_words=5)==(
+        "Text analysis: 0 words, 0 unique. Top: none."
+    )
+
+
+def test_longest_accepted_text_completes_slow_tool_without_retry(dsn):
+    user,instance=seed(dsn)
+    configure_tool_pool(dsn)
+    turn=incoming(dsn,user,instance,text="a"*12000)
+    command=SlowTextToolCommand(turn_id=turn.turn_id,max_words=5)
+    notice=invoke(
+        dsn,respond_to_text_analysis,actor(user),command,await_seconds=0,
+    )
+    assert notice.model_id=="tool.initial.deferred.v1"
+    finish_initial(dsn,user,notice.response_id)
+    tool=invoke(dsn,schedule_text_analysis,actor(user),command)
+    lease=invoke(dsn,run_one_text_tool,worker_id="max-length-statistics")
+    assert lease is not None and lease.operation_id==tool.operation_id
+    assert lease.attempt_count==1
+    assert invoke(dsn,run_one_text_tool,worker_id="no-retry-needed") is None
+    ready=invoke(dsn,reconcile_tool_followup,actor(user),tool.tool_call_id)
+    assert ready.followup_state=="READY"
+    followup=invoke(dsn,prepare_tool_followup,actor(user),tool.tool_call_id)
+    assert len(followup.text)==12000
+    assert followup.text.startswith("Text analysis: 1 words, 1 unique. Top: ")
+    assert followup.text.endswith("… (1).")
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT status,attempt_count,result_ref "
+            "FROM operations WHERE operation_id=%s",
+            (tool.operation_id,),
+        ).fetchone()==(
+            "COMPLETED",1,f"tool-result:{tool.operation_id}:{lease.claim_generation}"
+        )
+        assert conn.execute(
+            "SELECT length(result_text) FROM conversation_tool_results "
+            "WHERE operation_id=%s",
+            (tool.operation_id,),
+        ).fetchone()==(12000,)
+    delivered=invoke(dsn,acknowledge_tool_followup,actor(user),tool.tool_call_id)
+    assert delivered.text==followup.text

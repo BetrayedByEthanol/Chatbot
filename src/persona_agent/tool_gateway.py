@@ -81,8 +81,29 @@ def analyze_text(text: str, max_words: int) -> str:
     """
     terms=re.findall(r"\b\w+\b",text.casefold())
     top=Counter(terms).most_common(max_words)
-    formatted=", ".join(f"{word} ({count})" for word,count in top) or "none"
-    return f"Text analysis: {len(terms)} words, {len(set(terms))} unique. Top: {formatted}."
+    prefix=f"Text analysis: {len(terms)} words, {len(set(terms))} unique. Top: "
+    if not top:
+        return prefix+"none."
+
+    # The source input can itself be 12,000 characters long. Preserve the
+    # statistics and term counts, reserving room for separators, the ellipsis
+    # and the final period before rendering any term. Never send the worker
+    # an oversized deterministic result it would retry without improvement.
+    remaining=12000-len(prefix)-1  # final period
+    rendered=[]
+    for word,count in top:
+        separator=", " if rendered else ""
+        suffix=f" ({count})"
+        allowed=remaining-len(separator)-len(suffix)
+        if allowed < 1:
+            break
+        shown=word if len(word)<=allowed else word[:allowed-1]+"…"
+        part=separator+shown+suffix
+        rendered.append(part)
+        remaining-=len(part)
+        if len(shown)<len(word):
+            break  # no further full term fits in the exhausted budget
+    return prefix+"".join(rendered)+"."
 
 
 def _tool_id(turn_id: UUID) -> UUID:
