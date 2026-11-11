@@ -350,14 +350,32 @@ def commit_cognition(
             count=intentions=0
             for item in proposals:
                 reflection_id=uuid4()
+                # Link exact normalized repeated interpretations to their
+                # original, independently cited observation. A repeated
+                # model opinion is not independent evidence of its own truth.
+                fingerprint=hashlib.sha256(
+                    " ".join(item.content.casefold().split()).encode("utf-8")
+                ).hexdigest()
+                cur.execute(
+                    """SELECT reflection_id FROM cognitive_reflections
+                       WHERE user_id=%s AND instance_id=%s AND kind=%s
+                         AND subject=%s AND content_fingerprint=%s
+                       ORDER BY created_at DESC,reflection_id LIMIT 1""",
+                    (lease.user_id,lease.instance_id,item.kind,item.subject,
+                     fingerprint),
+                )
+                prior=cur.fetchone()
+                related_id=prior["reflection_id"] if prior else None
                 cur.execute(
                     """INSERT INTO cognitive_reflections(
                          reflection_id,operation_id,user_id,instance_id,
-                         conversation_id,evidence_turn_id,evidence_quote,kind,subject,
+                         conversation_id,evidence_turn_id,related_reflection_id,
+                         content_fingerprint,evidence_quote,kind,subject,
                          content,confidence,model_id,processed_through_sequence
-                       ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                       ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
                     (reflection_id,lease.operation_id,lease.user_id,lease.instance_id,
-                     work.conversation_id,item.source_turn_id,item.evidence_quote,
+                     work.conversation_id,item.source_turn_id,related_id,
+                     fingerprint,item.evidence_quote,
                      item.kind,item.subject,item.content.strip(),item.confidence,
                      model_id,work.end_sequence),
                 )
@@ -455,7 +473,8 @@ def list_cognitive_proposals(
         cur.execute(
             """SELECT r.reflection_id,r.conversation_id,r.evidence_turn_id,
                       r.evidence_quote,r.kind,r.subject,r.content,r.confidence,
-                      r.epistemic_status,r.review_status,r.processed_through_sequence,
+                      r.related_reflection_id,r.epistemic_status,r.review_status,
+                      r.processed_through_sequence,
                       r.created_at
                FROM cognitive_reflections r
                WHERE r.user_id=%s AND r.instance_id=%s
