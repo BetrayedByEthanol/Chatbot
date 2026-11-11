@@ -10,12 +10,13 @@ CREATE TABLE cognitive_jobs (
     user_id uuid NOT NULL,
     instance_id uuid NOT NULL,
     expected_generation bigint NOT NULL CHECK (expected_generation >= 1),
+    admission_attempt bigint NOT NULL DEFAULT 1 CHECK(admission_attempt >= 1),
     start_sequence bigint NOT NULL CHECK (start_sequence >= 1),
     end_sequence bigint NOT NULL CHECK (end_sequence >= start_sequence),
     committed_at timestamptz,
     model_id text CHECK (model_id IS NULL OR char_length(model_id) BETWEEN 1 AND 128),
     created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
-    UNIQUE(conversation_id,start_sequence,expected_generation),
+    UNIQUE(conversation_id,start_sequence,expected_generation,admission_attempt),
     UNIQUE(operation_id,user_id,instance_id),
     FOREIGN KEY(conversation_id,user_id,instance_id)
         REFERENCES conversations(conversation_id,user_id,instance_id)
@@ -30,6 +31,8 @@ CREATE TABLE cognitive_reflections (
     instance_id uuid NOT NULL,
     conversation_id uuid NOT NULL,
     evidence_turn_id uuid NOT NULL,
+    related_reflection_id uuid REFERENCES cognitive_reflections(reflection_id),
+    content_fingerprint char(64) NOT NULL,
     evidence_quote text NOT NULL CHECK(char_length(evidence_quote) BETWEEN 1 AND 400),
     kind text NOT NULL CHECK(kind IN (
         'OBSERVATION','HYPOTHESIS','CONCLUSION','QUESTION','SELF_EVALUATION',
@@ -52,6 +55,9 @@ CREATE TABLE cognitive_reflections (
 );
 CREATE INDEX cognitive_reflections_recent_idx
     ON cognitive_reflections(user_id,instance_id,created_at DESC);
+CREATE INDEX cognitive_reflections_repeat_idx
+    ON cognitive_reflections(user_id,instance_id,kind,subject,content_fingerprint);
+
 
 -- Intention proposals are not permission to speak or to alter a goal.
 -- Attention and the response scheduler must explicitly accept before delivery.
