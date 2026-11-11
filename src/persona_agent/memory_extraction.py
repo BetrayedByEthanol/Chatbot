@@ -245,6 +245,13 @@ def _source(cur, event):
 
 
 def _persist_claim(cur,event,conversation_id,turn_id,source,claim: ExplicitClaim):
+    # Defense in depth: the Memory write boundary must enforce the positive
+    # safe vocabulary even when a candidate bypasses the public parser.
+    if (claim.subject_key!="user"
+        or not _supported_safe_claim(
+            claim.memory_kind,claim.predicate_key,claim.value_text
+        )):
+        return None
     candidate_id=uuid5(
         NAMESPACE_URL,
         f"persona-agent/memory-extract/{turn_id}/{claim.memory_kind}/"
