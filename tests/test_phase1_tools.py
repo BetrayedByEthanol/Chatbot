@@ -126,7 +126,11 @@ def test_immediate_clock_tool_uses_typed_timezone_without_operation(dsn):
                timezone_name="Not/A_Real_Timezone")
 
 
-def test_staged_admission_recovers_after_missing_pool_and_is_idempotent(dsn):
+def test_staged_admission_recovers_after_missing_pool_and_is_idempotent(dsn,monkeypatch):
+    # Each test shares a disposable PostgreSQL DB. Use an unconfigured
+    # resource name instead of assuming no earlier test created tool.readonly.
+    isolated_key=f"missing-tool-pool-{uuid4()}"
+    monkeypatch.setattr("persona_agent.tool_gateway.RESOURCE_KEY",isolated_key)
     user,instance=seed(dsn)
     turn=incoming(dsn,user,instance)
     command=SlowTextToolCommand(turn_id=turn.turn_id,max_words=2)
@@ -138,7 +142,7 @@ def test_staged_admission_recovers_after_missing_pool_and_is_idempotent(dsn):
             "FROM conversation_tool_calls WHERE turn_id=%s",
             (turn.turn_id,)).fetchone()
         assert stage[1:]==(None,"PREPARING")
-    configure_tool_pool(dsn)
+    invoke(dsn,configure_resource_pool,isolated_key,capacity_units=2)
     first=invoke(dsn,schedule_text_analysis,actor(user),command)
     replay=invoke(dsn,schedule_text_analysis,actor(user),command)
     assert first.tool_call_id==stage[0]==first.operation_id
