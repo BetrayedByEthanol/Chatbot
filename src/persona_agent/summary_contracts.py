@@ -75,7 +75,7 @@ class EpisodeHit(BaseModel):
     conversation_id: UUID
     source_turn_id: UUID
     source_sequence: int
-    occurred_at: datetime
+    source_turn_at: datetime
     topic: str
     description: str
     epistemic_status: Literal["MODEL_INTERPRETED"]
