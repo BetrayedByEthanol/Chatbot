@@ -52,6 +52,55 @@ _BLOCKED = re.compile(
 )
 _KEY = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 
+# Positive, deliberately small, non-sensitive domain vocabulary. A syntax
+# match alone never authorizes admission as NORMAL privacy memory. Expand
+# categories only with privacy evaluation and regression evidence.
+_SAFE_FAVORITES = {
+    "drink": frozenset({"tea","coffee","water","milk","juice","lemonade"}),
+    "food": frozenset({"pizza","pasta","soup","salad","rice","bread","sushi"}),
+    "color": frozenset({"red","blue","green","yellow","orange","purple",
+                        "pink","black","white","brown","grey","gray"}),
+}
+_SAFE_HOBBIES = frozenset({
+    "gardening","cycling","reading","painting","drawing","knitting",
+    "hiking","swimming","photography","cooking","baking","chess",
+})
+_SAFE_PET_NAMES = frozenset({
+    "milo","luna","bella","max","charlie","buddy","daisy","coco",
+    "rocky","lucy","oliver","leo","molly",
+})
+_SAFE_MEANINGS = {
+    "home": frozenset({"feeling safe","belonging","comfort"}),
+    "friendship": frozenset({"trust","support","companionship"}),
+    "learning": frozenset({"curiosity","growth","exploration"}),
+}
+_SAFE_PREFERENCES = frozenset().union(
+    *tuple(_SAFE_FAVORITES.values()),_SAFE_HOBBIES,
+)
+
+
+def _supported_safe_claim(kind: str, predicate: str, value: str) -> bool:
+    """Positive allowlist for BOTH the subject topic and its reported value.
+
+    Never use a blacklist or a free-text syntax match as authorization to
+    write NORMAL-privacy authoritative memories.
+    """
+    term=value.casefold()
+    if kind=="PREFERENCE" and predicate.startswith("favorite_"):
+        topic=predicate.removeprefix("favorite_")
+        return term in _SAFE_FAVORITES.get(topic,())
+    if kind=="PREFERENCE" and predicate.startswith("prefer_over_"):
+        alternative=predicate.removeprefix("prefer_over_").replace("_"," ")
+        return term in _SAFE_PREFERENCES and alternative in _SAFE_PREFERENCES
+    if kind=="FACT" and predicate=="hobby":
+        return term in _SAFE_HOBBIES
+    if kind=="FACT" and predicate in ("pet_dog_name","pet_cat_name"):
+        return term in _SAFE_PET_NAMES
+    if kind=="PERSONAL_MEANING" and predicate.startswith("meaning_"):
+        topic=predicate.removeprefix("meaning_")
+        return term in _SAFE_MEANINGS.get(topic,())
+    return False
+
 
 @dataclass(frozen=True)
 class ExplicitClaim:
@@ -151,7 +200,8 @@ def parse_explicit_claim(text: str) -> ExplicitClaim | None:
             value=match[1].strip()
         if (not _KEY.fullmatch(predicate) or not 1<=len(value)<=100
             or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 &/_-]*",value)
-            or re.search(r"\b(and|but|because|unless|although|however)\b",value,re.I)):
+            or re.search(r"\b(and|but|because|unless|although|however)\b",value,re.I)
+            or not _supported_safe_claim(kind,predicate,value)):
             continue
         return ExplicitClaim(kind,"user",predicate,value,statement)
     return None
