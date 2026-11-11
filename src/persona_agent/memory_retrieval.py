@@ -237,7 +237,7 @@ def _rank_rows(
         )
         ranked.append((score,row))
     ranked.sort(key=lambda p:(
-        -p[0],p[1]["source_turn_at"]*-1 if False else 0,
+        -p[0],-p[1]["source_turn_at"].timestamp(),
         p[1]["source_type"],str(p[1]["source_id"]),
     ))
     # Diversify evidence classes when both qualify and cap per type.
