@@ -266,6 +266,7 @@ def schedule_summary(
             # lock, protecting concurrent scheduling and worker recovery.
             create_new=(staged is None or staged["operation_status"]=="FAILED")
             if create_new:
+                admission_origin=Origin.COGNITIVE if platform else Origin.USER
                 admission_attempt=(
                     staged["admission_attempt"]+1 if staged is not None else 1
                 )
@@ -283,10 +284,12 @@ def schedule_summary(
                 cur.execute(
                     """INSERT INTO conversation_summary_jobs(
                          operation_id,conversation_id,user_id,instance_id,
-                         expected_generation,admission_attempt,start_sequence,end_sequence
-                       ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""",
+                         expected_generation,admission_attempt,admission_origin,
+                         start_sequence,end_sequence
+                       ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
                     (op_id,conversation_id,actor.user_id,instance_id,
-                     expected_generation,admission_attempt,start,end),
+                     expected_generation,admission_attempt,
+                     admission_origin.value,start,end),
                 )
             else:
                 # Includes crash after staging but before P0 enqueue:
@@ -294,6 +297,11 @@ def schedule_summary(
                 op_id=staged["operation_id"]
                 end=staged["end_sequence"]
                 admission_attempt=staged["admission_attempt"]
+                # Preserve the original authorization/provenance when either
+                # authenticated user or trusted scheduler repairs a staged
+                # operation after crash. A caller change must not rewrite the
+                # idempotency fingerprint of the original admission.
+                admission_origin=Origin(staged["admission_origin"])
 
     # This is the existing P0 operation system; do not reimplement claims,
     # retries, resource admission or identity generation fencing here.
@@ -302,7 +310,7 @@ def schedule_summary(
         expected_generation=expected_generation,
         idempotency_key=f"summary:{op_id}",
         operation_type=SUMMARY_OPERATION,
-        origin=Origin.COGNITIVE if platform else Origin.USER,
+        origin=admission_origin,
         execution_policy=Policy.FOREGROUND_ASYNC,
         priority_class=Priority.P1,effect_class=EffectClass.NONE,
         resources={SUMMARY_RESOURCE:1},
