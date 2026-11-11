@@ -455,7 +455,8 @@ def search_episodes(
 
 
 def episode_source_turn(
-    connection: Connection, actor: TrustedActor, episode_id: UUID,
+    connection: Connection, actor: TrustedActor,
+    instance_id: UUID, episode_id: UUID,
 ) -> dict:
     """Restore original user turn + *delivered* assistant reply for a hit."""
     require_idle(connection)
@@ -470,8 +471,8 @@ def episode_source_turn(
                 AND t.conversation_id=e.conversation_id
                 AND t.user_id=e.user_id AND t.instance_id=e.instance_id
                LEFT JOIN conversation_responses r ON r.turn_id=t.turn_id
-               WHERE e.episode_id=%s AND e.user_id=%s""",
-            (episode_id,actor.user_id),
+               WHERE e.episode_id=%s AND e.user_id=%s AND e.instance_id=%s""",
+            (episode_id,actor.user_id,instance_id),
         )
         hit=cur.fetchone()
         if hit is None:
