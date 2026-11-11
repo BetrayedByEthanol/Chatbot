@@ -372,7 +372,7 @@ def commit_cognition(
                          conversation_id,evidence_turn_id,related_reflection_id,
                          content_fingerprint,evidence_quote,kind,subject,
                          content,confidence,model_id,processed_through_sequence
-                       ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                       ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
                     (reflection_id,lease.operation_id,lease.user_id,lease.instance_id,
                      work.conversation_id,item.source_turn_id,related_id,
                      fingerprint,item.evidence_quote,
