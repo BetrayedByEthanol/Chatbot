@@ -2,6 +2,8 @@
 
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
+from queue import Queue
+import time
 from uuid import uuid4
 
 import pytest
@@ -287,3 +289,139 @@ def test_bounded_context_excludes_other_user_and_preserves_current_input(dsn):
     assert sum(len(m.content) for m in context.messages)<=512
     assert context.messages[-1].role=="user"
     assert "private text" not in repr(context.messages)
+
+
+
+def test_generated_response_replay_rejects_switched_persona_but_historical_read_works(dsn):
+    user,instance,other=seed(dsn,two=True)
+    request=call(dsn,ingest_text,actor(user),command(instance,text="Original"))
+    gateway=FakeGateway("Response from original persona")
+    generated=call(dsn,respond_to_text,actor(user),request.turn_id,gateway)
+    assert generated.delivery_status=="GENERATED"
+    assert len(gateway.calls)==1
+
+    # While the same generation owns Foreground, a retry safely returns
+    # the exact committed response without invoking the model again.
+    retry=call(dsn,respond_to_text,actor(user),request.turn_id,gateway)
+    assert retry.replayed and retry.response_id==generated.response_id
+    assert len(gateway.calls)==1
+
+    call(dsn,switch_persona,actor(user),SwitchPersonaCommand(
+        expected_instance_id=instance,target_instance_id=other,
+        expected_generation=1,idempotency_key=str(uuid4()),
+    ))
+    with pytest.raises(StaleSelection):
+        call(dsn,respond_to_text,actor(user),request.turn_id,FakeGateway())
+    # lookup_response is intentionally a historical, scoped read; it never
+    # authorizes sending an undelivered reply to the user.
+    historical=call(dsn,lookup_response,actor(user),request.turn_id)
+    assert historical is not None
+    assert historical.response_id==generated.response_id
+    assert historical.delivery_status=="GENERATED"
+    assert historical.text=="Response from original persona"
+
+    # Selecting the original persona again must not revive generation 1.
+    call(dsn,switch_persona,actor(user),SwitchPersonaCommand(
+        expected_instance_id=other,target_instance_id=instance,
+        expected_generation=2,idempotency_key=str(uuid4()),
+    ))
+    with pytest.raises(StaleSelection):
+        call(dsn,respond_to_text,actor(user),request.turn_id,FakeGateway())
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT delivery_status FROM conversation_responses "
+            "WHERE response_id=%s",(generated.response_id,),
+        ).fetchone()==("GENERATED",)
+
+
+def test_generated_response_replay_rejects_newer_user_input(dsn):
+    user,instance=seed(dsn)
+    conversation=uuid4()
+    first=call(dsn,ingest_text,actor(user),
+               command(instance,conversation,text="First question"))
+    generated=call(dsn,respond_to_text,actor(user),first.turn_id,
+                   FakeGateway("Answer to first question"))
+    assert generated.delivery_status=="GENERATED"
+    call(dsn,ingest_text,actor(user),
+         command(instance,conversation,text="Correction to the question"))
+    with pytest.raises(StaleConversation):
+        call(dsn,respond_to_text,actor(user),first.turn_id,FakeGateway())
+    historical=call(dsn,lookup_response,actor(user),first.turn_id)
+    assert historical.response_id==generated.response_id
+    assert historical.delivery_status=="GENERATED"
+
+
+def test_concurrent_delivery_ack_callbacks_are_idempotent(dsn):
+    user,instance=seed(dsn)
+    conversation=uuid4()
+    incoming=call(dsn,ingest_text,actor(user),command(instance,conversation))
+    generated=call(dsn,respond_to_text,actor(user),incoming.turn_id,
+                   FakeGateway("Delivered exactly once"))
+    pid_queue=Queue()
+    def acknowledge():
+        with psycopg.connect(dsn,autocommit=True) as conn:
+            pid_queue.put(conn.execute("SELECT pg_backend_pid()").fetchone()[0])
+            return acknowledge_text_delivery(
+                conn,actor(user),generated.response_id,
+            )
+
+    # Hold the conversation lock so BOTH callbacks read the initial
+    # GENERATED state and block before either can acknowledge it.
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        with psycopg.connect(dsn,autocommit=True) as blocker:
+            with blocker.transaction():
+                blocker.execute(
+                    "SELECT conversation_id FROM conversations "
+                    "WHERE conversation_id=%s FOR UPDATE",
+                    (conversation,),
+                ).fetchone()
+                futures=[executor.submit(acknowledge) for _ in range(2)]
+                pids=[pid_queue.get(timeout=5) for _ in futures]
+                deadline=time.monotonic()+5
+                with psycopg.connect(dsn,autocommit=True) as observer:
+                    while time.monotonic()<deadline:
+                        waits=[
+                            observer.execute(
+                                "SELECT wait_event_type FROM pg_stat_activity "
+                                "WHERE pid=%s",(pid,),
+                            ).fetchone()
+                            for pid in pids
+                        ]
+                        if all(w is not None and w[0]=="Lock" for w in waits):
+                            break
+                        time.sleep(0.025)
+                    else:
+                        raise AssertionError(
+                            "both callbacks did not reach the conversation lock"
+                        )
+        results=[future.result(timeout=10) for future in futures]
+
+    assert {r.response_id for r in results}=={generated.response_id}
+    assert {r.delivery_status for r in results}=={"DELIVERED"}
+    assert sorted(r.replayed for r in results)==[False,True]
+    assert call(dsn,acknowledge_text_delivery,actor(user),
+                generated.response_id).replayed
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT delivery_status,delivered_at IS NOT NULL "
+            "FROM conversation_responses WHERE response_id=%s",
+            (generated.response_id,),
+        ).fetchone()==("DELIVERED",True)
+        # Ingress and generation increment revision twice; only one of
+        # the concurrent callbacks may increment it for delivery.
+        assert conn.execute(
+            "SELECT revision FROM conversations WHERE conversation_id=%s",
+            (conversation,),
+        ).fetchone()==(3,)
+        assert conn.execute(
+            "SELECT count(*) FROM events "
+            "WHERE event_type='conversation.response.delivered.v1' "
+            "AND payload->>'response_id'=%s",
+            (str(generated.response_id),),
+        ).fetchone()[0]==1
+        assert conn.execute(
+            "SELECT count(*) FROM outbox o JOIN events e ON e.event_id=o.event_id "
+            "WHERE e.event_type='conversation.response.delivered.v1' "
+            "AND e.payload->>'response_id'=%s",
+            (str(generated.response_id),),
+        ).fetchone()[0]==1

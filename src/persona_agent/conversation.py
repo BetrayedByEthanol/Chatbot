@@ -463,6 +463,25 @@ def acknowledge_text_delivery(connection: Connection, actor: TrustedActor,
                 "WHERE conversation_id=%s FOR UPDATE",
                 (row["conversation_id"],),
             )
+            # Another callback can commit DELIVERED while this one waits for
+            # the conversation row lock. Re-read only after serialization so
+            # concurrent duplicates behave like sequential retries.
+            cursor.execute(
+                """
+                SELECT delivery_status FROM conversation_responses
+                WHERE response_id=%s AND user_id=%s FOR UPDATE
+                """,
+                (response_id,actor.user_id),
+            )
+            current=cursor.fetchone()
+            if current is None:
+                raise PermissionDenied("response outside authenticated scope")
+            if current["delivery_status"]=="DELIVERED":
+                return TextResponseResult(
+                    response_id=row["response_id"],turn_id=row["turn_id"],
+                    text=row["response_text"],model_id=row["model_id"],
+                    delivery_status="DELIVERED",replayed=True,
+                )
             cursor.execute(
                 """
                 UPDATE conversation_responses
@@ -474,7 +493,7 @@ def acknowledge_text_delivery(connection: Connection, actor: TrustedActor,
                 (response_id,actor.user_id),
             )
             if cursor.fetchone() is None:
-                raise StaleConversation("response delivery was already changed")
+                raise StaleConversation("response delivery changed during acknowledgment")
             cursor.execute(
                 "UPDATE conversations SET revision=revision+1,"
                 "updated_at=clock_timestamp() WHERE conversation_id=%s",
@@ -506,6 +525,43 @@ def respond_to_text(connection: Connection, actor: TrustedActor, turn_id: UUID,
     """
     prior=lookup_response(connection,actor,turn_id)
     if prior is not None:
+        if prior.delivery_status=="GENERATED":
+            # A historical response may be readable long after persona
+            # authority changed. An undelivered reply must not be returned
+            # for output from a revoked selection generation.
+            with connection.transaction():
+                with connection.cursor(row_factory=dict_row) as cursor:
+                    cursor.execute(
+                        """
+                        SELECT instance_id,selection_generation,conversation_id
+                        FROM conversation_responses
+                        WHERE response_id=%s AND user_id=%s
+                        """,
+                        (prior.response_id,actor.user_id),
+                    )
+                    response=cursor.fetchone()
+                    if response is None:
+                        raise StaleConversation("generated response no longer exists")
+                    _selection(
+                        cursor,actor,
+                        response["instance_id"],response["selection_generation"],
+                    )
+                    # A later user message also supersedes the authority to
+                    # send an older, not-yet-delivered generated reply.
+                    cursor.execute(
+                        """
+                        SELECT last_input_turn_id FROM conversations
+                        WHERE conversation_id=%s AND user_id=%s
+                          AND instance_id=%s
+                        """,
+                        (response["conversation_id"],actor.user_id,
+                         response["instance_id"]),
+                    )
+                    state=cursor.fetchone()
+                    if state is None or state["last_input_turn_id"]!=turn_id:
+                        raise StaleConversation(
+                            "undelivered reply superseded by a newer input"
+                        )
         return prior
     context=prepare_text_context(
         connection,actor,turn_id,max_turns=max_turns,

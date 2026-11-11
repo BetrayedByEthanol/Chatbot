@@ -83,3 +83,19 @@ The v2.5 Phase 1 exit gate remains incomplete. Follow-on increments:
 
 Phase 2 retains ownership of extended multi-tier memory, emotional inference
 and asynchronous cognitive reflection.
+
+## Review hardening — response replay and concurrent delivery ACK
+
+`respond_to_text` distinguishes a historical response lookup from
+authorization to return undelivered text for output. Before replaying a
+`GENERATED` response, it checks the current selected Foreground persona
+and its original generation and rejects a response superseded by newer user
+input. `lookup_response` remains a scoped historical read even when the
+persona is no longer active. This is a pre-output authority check, not an
+atomic guarantee across the subsequent network delivery boundary; an output
+adapter should likewise gate an actual send against active authority.
+
+`acknowledge_text_delivery` re-reads `delivery_status` after acquiring
+the conversation's serialization lock. Overlapping callbacks therefore
+return the already-committed `DELIVERED` result with `replayed=True`;
+only the first commit changes the revision and writes an event/outbox row.
