@@ -16,6 +16,7 @@ from psycopg import Connection
 from psycopg.rows import dict_row
 
 from .contracts import TrustedActor
+from .lifecycle import TrustedPlatformActor
 from .conversation import _event, _require_actor, _selection
 from .conversation_contracts import ModelMessage, TextModelGateway
 from .memory import _RECALL_CUE, _STOP
@@ -25,7 +26,7 @@ from .operation_contracts import (
 )
 from .operation_control import complete_operation, fail_operation
 from .operation_scheduler import enqueue_operation
-from .runtime import PermissionDenied
+from .runtime import PermissionDenied, StaleSelection
 from .summary_contracts import (
     EpisodeHit, InvalidSummary, StaleSummary, SummaryCommitted,
     SummaryDraft, SummaryNotReady, SummaryScheduled, SummaryWork,
@@ -179,7 +180,7 @@ def _digest(rows: tuple[dict, ...]) -> str:
 
 
 def schedule_summary(
-    connection: Connection, actor: TrustedActor,
+    connection: Connection, actor: TrustedActor | TrustedPlatformActor,
     conversation_id: UUID, instance_id: UUID, expected_generation: int,
     *, retain_recent: int = 2, max_turns: int = 8,
     retry_failed: bool = False,
@@ -194,14 +195,30 @@ def schedule_summary(
     This is a trusted producer entrypoint, not an autonomous goal scheduler.
     """
     require_idle(connection)
-    _require_actor(actor)
+    platform = type(actor) is TrustedPlatformActor
+    if not platform:
+        _require_actor(actor)
     if not 1 <= retain_recent <= 32 or not 1 <= max_turns <= 16:
         raise ValueError("invalid summary range policy")
     if expected_generation < 1:
         raise ValueError("expected_generation must be positive")
     with connection.transaction():
         with connection.cursor(row_factory=dict_row) as cur:
-            _selection(cur,actor,instance_id,expected_generation)
+            if platform:
+                # The platform can finish a handover summary in selected
+                # Background mode, but never for an inactive or stale persona.
+                cur.execute(
+                    """SELECT instance_id,generation,mode
+                       FROM persona_selection WHERE user_id=%s FOR SHARE""",
+                    (actor.user_id,),
+                )
+                selected=cur.fetchone()
+                if (selected is None or selected["instance_id"]!=instance_id
+                    or selected["generation"]!=expected_generation
+                    or selected["mode"] not in ("FOREGROUND","BACKGROUND")):
+                    raise StaleSelection("automatic summary requires selected persona")
+            else:
+                _selection(cur,actor,instance_id,expected_generation)
             cur.execute(
                 """SELECT * FROM conversations
                    WHERE conversation_id=%s AND user_id=%s AND instance_id=%s
@@ -285,7 +302,8 @@ def schedule_summary(
         expected_generation=expected_generation,
         idempotency_key=f"summary:{op_id}",
         operation_type=SUMMARY_OPERATION,
-        origin=Origin.USER,execution_policy=Policy.FOREGROUND_ASYNC,
+        origin=Origin.COGNITIVE if platform else Origin.USER,
+        execution_policy=Policy.FOREGROUND_ASYNC,
         priority_class=Priority.P1,effect_class=EffectClass.NONE,
         resources={SUMMARY_RESOURCE:1},
         capabilities=(SUMMARY_CAPABILITY,),
