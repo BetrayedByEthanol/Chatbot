@@ -26,6 +26,7 @@ from .event_delivery import (
 )
 from .lifecycle import TrustedPlatformActor
 from .model_gateway import OllamaChatGateway
+from .operation_control import reap_stale_operations
 from .conversation_contracts import ModelUnavailable
 from .operation_contracts import StaleOperation
 from .operation_contracts import InvalidOperation,ResourceUnavailable,require_idle
@@ -340,6 +341,12 @@ def run_cognitive_worker(
         register_cognitive_consumer(connection)
     while not stopping.is_set():
         with psycopg.connect(dsn,autocommit=True) as connection:
+            # P0 operation leases are distinct from P0 event deliveries.
+            # Recover abandoned inference claims *before* attempting a new
+            # claim, freeing both pool reservations and concurrency locks.
+            # The existing reaper enforces claim-generation fencing,
+            # retry/backoff and terminal failure rules.
+            reap_stale_operations(connection,limit=100)
             scheduled=run_cognitive_scheduling_tick(
                 connection,worker_id=worker_id,
             )
