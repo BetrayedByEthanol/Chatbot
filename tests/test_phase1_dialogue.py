@@ -1,5 +1,7 @@
 """P1-03 scoped dialogue progression, context and observability acceptance."""
 
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -440,3 +442,67 @@ def test_pending_dialogue_is_not_confused_with_completed_procedure(dsn):
         assert conn.execute(
             "SELECT count(*) FROM operations WHERE user_id=%s",(user,),
         ).fetchone()[0]==0
+
+
+
+def test_nonadjacent_ack_does_not_close_older_pending_instruction(dsn):
+    user,instance=seed(dsn)
+    conv=uuid4()
+    first=incoming(dsn,user,instance,conv,"Guide me")
+    thread,_=open_for(dsn,user,instance,conv,first,"Guided install")
+    first_response=response(dsn,user,first,"Let me know when you saw this step.")
+    act=uuid4()
+    call(dsn,offer_dialogue_act,actor(user),OfferDialogueActCommand(
+        **base(user,instance,conv,first,revision(dsn,user,conv)),
+        thread_id=thread,act_id=act,kind=DialogueActKind.ACKNOWLEDGMENT,
+        label="Confirm receipt",source_response_id=first_response.response_id,
+    ))
+    intervening=incoming(dsn,user,instance,conv,"Which version should I use?")
+    response(dsn,user,intervening,"Use the version approved for the deployment.")
+    latest=incoming(dsn,user,instance,conv,"Okay")
+    pending=call(dsn,load_active_dialogue,actor(user),conv).pending_acts
+    assert [a.act_id for a in pending]==[act]
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT status,resolution_turn_id FROM dialogue_pending_acts WHERE act_id=%s",
+            (act,),
+        ).fetchone()==("PENDING",None)
+
+
+def test_competing_dialogue_commands_use_conversation_revision_cas(dsn):
+    user,instance=seed(dsn)
+    conv=uuid4()
+    first=incoming(dsn,user,instance,conv,"What should we discuss?")
+    opening_rev=revision(dsn,user,conv)
+    gate=Barrier(2)
+
+    def propose(name):
+        cmd=OpenThreadCommand(
+            **base(user,instance,conv,first,opening_rev),
+            thread_id=uuid4(),title=name,
+        )
+        with psycopg.connect(dsn,autocommit=True) as conn:
+            gate.wait(timeout=10)
+            return open_thread(conn,actor(user),cmd)
+
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        futures=[workers.submit(propose,title) for title in ("A","B")]
+        outcomes=[]
+        for future in futures:
+            try:
+                outcomes.append(future.result(timeout=12))
+            except VersionConflict as exc:
+                outcomes.append(exc)
+    assert sum(isinstance(x,VersionConflict) for x in outcomes)==1
+    assert sum(not isinstance(x,VersionConflict) for x in outcomes)==1
+    state=call(dsn,load_active_dialogue,actor(user),conv)
+    assert state.revision==opening_rev+1
+    assert len(state.threads)==1
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT count(*) FROM events WHERE "
+            "event_type='conversation.dialogue.thread_opened.v1' "
+            "AND stream_id=(SELECT stream_id FROM event_streams WHERE "
+            "domain=%s)",
+            (f"conversation:{conv}",),
+        ).fetchone()[0]==1

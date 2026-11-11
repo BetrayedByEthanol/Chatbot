@@ -360,6 +360,9 @@ def load_active_dialogue(
     require_idle(connection)
     _require_actor(actor)
     with connection.transaction():
+        # A coherent read of state, pending acts and referents at one MVCC
+        # snapshot; later commands still fence on the returned revision.
+        connection.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
         with connection.cursor(row_factory=dict_row) as cur:
             cur.execute(
                 """SELECT instance_id,revision,focus_thread_id
@@ -428,14 +431,31 @@ def resolve_trivial_ack_on_ingress(
         return None
     thread=conv["focus_thread_id"]
     cur.execute(
-        """SELECT act_id FROM dialogue_pending_acts
-           WHERE conversation_id=%s AND thread_id=%s AND user_id=%s
-             AND kind='ACKNOWLEDGMENT' AND status='PENDING'
-           ORDER BY created_at,act_id LIMIT 2""",
+        """SELECT a.act_id,source.sequence AS source_sequence
+           FROM dialogue_pending_acts a
+           JOIN conversation_responses response
+             ON response.response_id=a.source_response_id
+            AND response.user_id=a.user_id
+            AND response.delivery_status='DELIVERED'
+           JOIN conversation_turns source ON source.turn_id=response.turn_id
+           WHERE a.conversation_id=%s AND a.thread_id=%s
+             AND a.user_id=%s AND a.kind='ACKNOWLEDGMENT'
+             AND a.status='PENDING'
+           ORDER BY a.created_at,a.act_id LIMIT 2""",
         (conversation_id,thread,user_id),
     )
     acts=cur.fetchall()
     if len(acts)!=1:
+        return None
+    cur.execute(
+        "SELECT sequence FROM conversation_turns "
+        "WHERE turn_id=%s AND conversation_id=%s AND user_id=%s",
+        (turn_id,conversation_id,user_id),
+    )
+    current=cur.fetchone()
+    if current is None or acts[0]["source_sequence"]+1!=current["sequence"]:
+        # A dangling ACK from an older exchange does not establish what
+        # the user's short acknowledgment refers to. Leave it pending.
         return None
     act_id=acts[0]["act_id"]
     _link_turn(cur,conversation_id,user_id,instance_id,thread,turn_id)

@@ -74,6 +74,7 @@ def get_turn_trace(
     require_idle(connection)
     _require_actor(actor)
     with connection.transaction():
+        connection.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
         with connection.cursor(row_factory=dict_row) as cur:
             cur.execute(
                 """
@@ -149,6 +150,7 @@ def get_conversation_metrics(
     if not 1<=max_turns<=500:
         raise ValueError("metrics sample must cover 1..500 turns")
     with connection.transaction():
+        connection.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
         with connection.cursor(row_factory=dict_row) as cur:
             cur.execute(
                 "SELECT 1 FROM conversations WHERE conversation_id=%s AND user_id=%s",

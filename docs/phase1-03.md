@@ -105,3 +105,16 @@ language-model-driven state proposals, cognitive attention, emotional
 adaptation, and durable ProcedureRun task-step verification remain Phase
 2/3 responsibilities. Avoid modifying approved stable procedures merely
 because their associated dialogue progressed.
+
+### Conservative interpretation and consistency notes
+
+The literal-ack shortcut additionally requires the offered, delivered
+acknowledgment to originate from the **immediately preceding user turn**.
+An older unanswered prompt is not automatically resolved by an unrelated
+later "okay", even when that topic remains focused. An ambiguous ACK is
+left pending for normal conversational clarification.
+
+Restored dialogue-state reads and read-only observability reports use a
+single PostgreSQL repeatable-read snapshot, with no model/provider calls
+under locks. Mutations continue to use short conversation-row CAS
+transactions; a parallel stale proposal fails without overwriting state.
