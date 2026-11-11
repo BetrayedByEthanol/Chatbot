@@ -228,3 +228,20 @@ and one P1 in either claim order. Pool reconfiguration rejects changes
 that would violate *either* currently occupied quota. This improves
 admission correctness, but does not introduce preemption or guarantee
 fair scheduling under sustained full physical capacity.
+
+## Recovery batch transaction boundary
+
+`reap_stale_operations` performs candidate discovery without a retained
+transaction, then runs **one short PostgreSQL transaction per operation**
+for both active-claim and pending-work recovery. Each operation's lock,
+resource release, state transition, journal event and outbox entry commit
+atomically before the next operation is locked. The `limit` remains a
+best-effort per-invocation processing bound, not an atomic batch guarantee.
+Recovery rechecks status, authority and time fences after claiming each row
+because candidates may change between discovery and locking.
+
+In particular, a batch cannot retain a resource-pool B lock from an earlier
+operation while attempting to acquire pool A for a later operation. This
+preserves the per-operation ascending pool-lock order used by completion and
+normal releases. A later per-operation failure does not roll back previously
+committed recoveries; the failed operation can be retried independently.

@@ -421,33 +421,37 @@ def reap_stale_operations(connection: Connection, *, limit: int=100) -> int:
     if not 1 <= limit <= 1000:
         raise ValueError("limit must be 1..1000")
     processed=0
-    with connection.transaction():
-        with connection.cursor(row_factory=dict_row) as cursor:
-            cursor.execute(
-                """
-                SELECT o.operation_id FROM operations o
-                LEFT JOIN persona_selection s ON s.user_id=o.user_id
-                LEFT JOIN persona_instances i ON i.user_id=o.user_id AND i.id=o.instance_id
-                WHERE o.status IN ('RUNNING','CANCEL_REQUESTED','SUSPEND_REQUESTED')
-                  AND (
-                    o.lease_until <= clock_timestamp()
-                    OR s.instance_id IS DISTINCT FROM o.instance_id
-                    OR s.generation IS DISTINCT FROM o.selection_generation
-                    OR (o.claimed_at+(o.timeout_seconds*interval '1 second')
-                        <= clock_timestamp())
-                    OR (o.deadline IS NOT NULL AND o.deadline <= clock_timestamp())
-                    OR (o.input_versions ? 'persona_instance' AND
-                        (o.input_versions->>'persona_instance')::bigint
-                           IS DISTINCT FROM i.version)
-                    OR (o.execution_policy <> 'FOREGROUND_ASYNC'
-                        AND (s.mode IS DISTINCT FROM 'BACKGROUND'
-                             OR s.background_epoch IS DISTINCT FROM o.background_epoch))
-                  )
-                ORDER BY o.lease_until,o.operation_id LIMIT %s
-                """,(limit,),
-            )
-            candidates=[r["operation_id"] for r in cursor.fetchall()]
-            for op_id in candidates:
+    # Candidate discovery runs in autocommit: do not retain row/pool locks.
+    with connection.cursor(row_factory=dict_row) as cursor:
+        cursor.execute(
+            """
+            SELECT o.operation_id FROM operations o
+            LEFT JOIN persona_selection s ON s.user_id=o.user_id
+            LEFT JOIN persona_instances i ON i.user_id=o.user_id AND i.id=o.instance_id
+            WHERE o.status IN ('RUNNING','CANCEL_REQUESTED','SUSPEND_REQUESTED')
+              AND (
+                o.lease_until <= clock_timestamp()
+                OR s.instance_id IS DISTINCT FROM o.instance_id
+                OR s.generation IS DISTINCT FROM o.selection_generation
+                OR (o.claimed_at+(o.timeout_seconds*interval '1 second')
+                    <= clock_timestamp())
+                OR (o.deadline IS NOT NULL AND o.deadline <= clock_timestamp())
+                OR (o.input_versions ? 'persona_instance' AND
+                    (o.input_versions->>'persona_instance')::bigint
+                       IS DISTINCT FROM i.version)
+                OR (o.execution_policy <> 'FOREGROUND_ASYNC'
+                    AND (s.mode IS DISTINCT FROM 'BACKGROUND'
+                         OR s.background_epoch IS DISTINCT FROM o.background_epoch))
+              )
+            ORDER BY o.lease_until,o.operation_id LIMIT %s
+            """,(limit,),
+        )
+        candidates=[r["operation_id"] for r in cursor.fetchall()]
+    for op_id in candidates:
+        # One short transaction per operation. Its resource release, state,
+        # event and outbox commit before inspecting the next operation.
+        with connection.transaction():
+            with connection.cursor(row_factory=dict_row) as cursor:
                 cursor.execute(
                     """
                     SELECT * FROM operations
@@ -527,40 +531,41 @@ def reap_stale_operations(connection: Connection, *, limit: int=100) -> int:
                     event_for(cursor,updated,"operation.recovered.v1",{"status":status})
                 processed+=1
 
-            # Already-queued work can also become ineligible when its persona
-            # is switched, its Background epoch becomes stale, or its deadline
-            # passes. Do not leave it forever in an undrainable queue.
-            if processed < limit:
-                cursor.execute(
-                    """
-                    SELECT o.operation_id FROM operations o
-                    LEFT JOIN persona_selection s ON s.user_id=o.user_id
-                    LEFT JOIN persona_instances i ON i.user_id=o.user_id AND i.id=o.instance_id
-                    WHERE o.status IN ('QUEUED','RETRY_WAIT')
-                      AND (
-                        (o.deadline IS NOT NULL AND o.deadline <= clock_timestamp())
-                        OR s.instance_id IS DISTINCT FROM o.instance_id
-                        OR s.generation IS DISTINCT FROM o.selection_generation
-                        OR (o.input_versions ? 'persona_instance' AND
-                            (o.input_versions->>'persona_instance')::bigint
-                               IS DISTINCT FROM i.version)
-                        OR (o.execution_policy = 'BACKGROUND_EPHEMERAL'
-                            AND (o.background_epoch IS NULL OR NOT (
-                                (s.mode = 'BACKGROUND'
-                                 AND s.background_epoch = o.background_epoch)
-                                OR (s.mode = 'FOREGROUND'
-                                    AND s.background_epoch + 1 = o.background_epoch)
-                            )))
-                        OR (o.execution_policy = 'BACKGROUND_RESUMABLE'
-                            AND o.background_epoch IS NOT NULL
-                            AND (s.mode IS DISTINCT FROM 'BACKGROUND'
-                                 OR s.background_epoch IS DISTINCT FROM o.background_epoch))
-                      )
-                    ORDER BY o.created_at,o.operation_id LIMIT %s
-                    """,(limit-processed,),
-                )
-                pending=[r["operation_id"] for r in cursor.fetchall()]
-                for op_id in pending:
+    # Pending work is discovered separately after processing active claims.
+    if processed < limit:
+        with connection.cursor(row_factory=dict_row) as cursor:
+            cursor.execute(
+                """
+                SELECT o.operation_id FROM operations o
+                LEFT JOIN persona_selection s ON s.user_id=o.user_id
+                LEFT JOIN persona_instances i ON i.user_id=o.user_id AND i.id=o.instance_id
+                WHERE o.status IN ('QUEUED','RETRY_WAIT')
+                  AND (
+                    (o.deadline IS NOT NULL AND o.deadline <= clock_timestamp())
+                    OR s.instance_id IS DISTINCT FROM o.instance_id
+                    OR s.generation IS DISTINCT FROM o.selection_generation
+                    OR (o.input_versions ? 'persona_instance' AND
+                        (o.input_versions->>'persona_instance')::bigint
+                           IS DISTINCT FROM i.version)
+                    OR (o.execution_policy = 'BACKGROUND_EPHEMERAL'
+                        AND (o.background_epoch IS NULL OR NOT (
+                            (s.mode = 'BACKGROUND'
+                             AND s.background_epoch = o.background_epoch)
+                            OR (s.mode = 'FOREGROUND'
+                                AND s.background_epoch + 1 = o.background_epoch)
+                        )))
+                    OR (o.execution_policy = 'BACKGROUND_RESUMABLE'
+                        AND o.background_epoch IS NOT NULL
+                        AND (s.mode IS DISTINCT FROM 'BACKGROUND'
+                             OR s.background_epoch IS DISTINCT FROM o.background_epoch))
+                  )
+                ORDER BY o.created_at,o.operation_id LIMIT %s
+                """,(limit-processed,),
+            )
+            pending=[r["operation_id"] for r in cursor.fetchall()]
+        for op_id in pending:
+            with connection.transaction():
+                with connection.cursor(row_factory=dict_row) as cursor:
                     cursor.execute(
                         """
                         SELECT * FROM operations

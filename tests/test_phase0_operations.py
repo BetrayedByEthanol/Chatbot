@@ -1515,3 +1515,104 @@ def test_resource_accounting_recovery_and_retry_release_correct_tier(dsn):
     invoke(dsn,complete_operation,high_retry,result_ref="high-success")
     invoke(dsn,complete_operation,low_retry,result_ref="low-success")
     assert pool_usage(dsn,resource)==(2,1,0,0)
+
+
+
+def test_recovery_batch_does_not_hold_pool_locks_across_operations(dsn):
+    """B recovered first must release its pool lock before recovery waits on A.
+
+    With the old batch-wide transaction, a completion using A+B cannot
+    finish while recovery waits on a different user's selection lock:
+    completion locks A, then waits for recovery's B; recovery still holds
+    B while waiting on that unrelated selection lock.
+    """
+    user_b,instance_b=seed(dsn)
+    user_a,instance_a=seed(dsn)
+    user_worker,instance_worker=seed(dsn)
+    resource_a,resource_b=sorted((pool(dsn,capacity=2),pool(dsn,capacity=2)))
+    stale_b=cmd(instance_b,resource_b)
+    enqueue(dsn,user_b,stale_b)
+    lease_b=claim(dsn,"stale-b")
+    assert lease_b.operation_id==stale_b.operation_id
+    stale_a=cmd(instance_a,resource_a)
+    enqueue(dsn,user_a,stale_a)
+    lease_a=claim(dsn,"stale-a")
+    assert lease_a.operation_id==stale_a.operation_id
+    combined=cmd(instance_worker,resource_a).model_copy(
+        update={"resources":{resource_a:1,resource_b:1}},
+    )
+    enqueue(dsn,user_worker,combined)
+    combined_lease=claim(dsn,"normal-completion")
+    assert combined_lease.operation_id==combined.operation_id
+    assert resources(dsn,resource_a)==2
+    assert resources(dsn,resource_b)==2
+
+    # Select recovery order explicitly: stale_b precedes stale_a.
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        conn.execute(
+            """
+            UPDATE operations
+            SET lease_until=clock_timestamp()-interval '3 seconds'
+            WHERE operation_id=%s
+            """,(stale_b.operation_id,),
+        )
+        conn.execute(
+            """
+            UPDATE operations
+            SET lease_until=clock_timestamp()-interval '2 seconds'
+            WHERE operation_id=%s
+            """,(stale_a.operation_id,),
+        )
+
+    pid_queue=Queue(maxsize=1)
+    def recover():
+        with psycopg.connect(dsn,autocommit=True) as conn:
+            pid_queue.put(conn.execute("SELECT pg_backend_pid()").fetchone()[0])
+            return reap_stale_operations(conn,limit=2)
+
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        with psycopg.connect(dsn,autocommit=True) as blocker:
+            with blocker.transaction():
+                # Force the second recovery (stale_a) to wait on authority.
+                # The first recovery (stale_b) must already be committed.
+                blocker.execute(
+                    """
+                    SELECT user_id FROM persona_selection
+                    WHERE user_id=%s FOR UPDATE
+                    """,(user_a,),
+                ).fetchone()
+                recovery_future=workers.submit(recover)
+                recovery_pid=pid_queue.get(timeout=5)
+                _assert_waiting_for_db_lock(dsn,recovery_pid)
+
+                # The already recovered B operation must be visible and its
+                # pool lock released, even while the reaper remains blocked.
+                assert operation(dsn,stale_b.operation_id)[0]=="RETRY_WAIT"
+                assert resources(dsn,resource_b)==1
+                assert resources(dsn,resource_a)==2
+
+                # Completion takes A then B. It must finish *before* the
+                # unrelated selection-row blocker is released.
+                completion_future=workers.submit(
+                    invoke,dsn,complete_operation,combined_lease,
+                    result_ref="completed-during-recovery",
+                )
+                completion_future.result(timeout=4)
+                assert operation(dsn,combined.operation_id)[0]=="COMPLETED"
+                assert resources(dsn,resource_b)==0
+                assert resources(dsn,resource_a)==1
+
+        assert recovery_future.result(timeout=5)==2
+
+    assert operation(dsn,stale_a.operation_id)[0]=="RETRY_WAIT"
+    assert operation(dsn,stale_b.operation_id)[0]=="RETRY_WAIT"
+    assert resources(dsn,resource_a)==0
+    assert resources(dsn,resource_b)==0
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            """
+            SELECT count(*) FROM events e JOIN outbox o ON o.event_id=e.event_id
+            WHERE e.event_type='operation.recovered.v1'
+              AND e.payload->>'operation_id' IN (%s,%s)
+            """,(str(stale_a.operation_id),str(stale_b.operation_id)),
+        ).fetchone()[0]==2
