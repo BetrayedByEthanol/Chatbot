@@ -16,7 +16,8 @@ from psycopg import Connection
 from psycopg.rows import dict_row
 
 from .cognitive_contracts import (
-    COGNITIVE_CONSUMER,CognitiveNotReady,
+    COGNITIVE_CONSUMER,CognitiveNotReady,InvalidCognitiveProposal,
+    StaleCognition,
 )
 from .cognitive_engine import run_one_cognitive_operation,schedule_cognition
 from .event_delivery import (
@@ -25,6 +26,8 @@ from .event_delivery import (
 )
 from .lifecycle import TrustedPlatformActor
 from .model_gateway import OllamaChatGateway
+from .conversation_contracts import ModelUnavailable
+from .operation_contracts import StaleOperation
 from .operation_contracts import InvalidOperation,ResourceUnavailable,require_idle
 from .runtime import StaleSelection
 
@@ -340,9 +343,15 @@ def run_cognitive_worker(
             scheduled=run_cognitive_scheduling_tick(
                 connection,worker_id=worker_id,
             )
-            completed=run_one_cognitive_operation(
-                connection,gateway,worker_id=worker_id,
-            )
+            try:
+                completed=run_one_cognitive_operation(
+                    connection,gateway,worker_id=worker_id,
+                )
+            except (InvalidCognitiveProposal,ModelUnavailable,
+                    StaleOperation,StaleCognition,CognitiveNotReady):
+                # P0 retry/fencing already owns the failed or revoked claim.
+                # One bad model pass must not stop scheduling for all users.
+                completed=None
         if (completed is None and scheduled.dispatched==0
             and scheduled.processed==0 and scheduled.admitted==0):
             stopping.wait(poll_seconds)
