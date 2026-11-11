@@ -1,6 +1,7 @@
 """P2-04: authenticated-input extraction and consolidation against PostgreSQL."""
 
 from uuid import uuid4
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 psycopg = pytest.importorskip("psycopg")
@@ -16,6 +17,7 @@ from persona_agent.memory_extraction import (
     approve_extraction_conflict, list_extraction_conflicts,
     parse_explicit_claim, register_extraction_consumer, run_extraction_tick,
 )
+import persona_agent.memory_extraction as extraction_module
 from persona_agent.runtime import PermissionDenied, VersionConflict
 
 
@@ -296,3 +298,147 @@ def test_review_is_user_scoped_and_requires_current_version(dsn):
         call(dsn,approve_extraction_conflict,actor(user),candidate.candidate_id,
              expected_generation=1,expected_version=9)
     assert call(dsn,list_extraction_conflicts,actor(user),instance)[0].candidate_id==candidate.candidate_id
+
+
+
+def test_conflict_approval_rolls_back_revision_receipt_and_outbox_on_failure(
+    dsn,monkeypatch,
+):
+    """A crash after the Memory correction but before candidate finalization
+    cannot leave a durable correction with a still-pending review item.
+    """
+    consumer=bootstrap(dsn)
+    user,instance,other=seed(dsn,alternative=True)
+    conversation=uuid4()
+    turn(dsn,user,instance,conversation,"My favorite drink is tea.")
+    assert tick(dsn,consumer).admitted==1
+    turn(dsn,user,instance,conversation,"Actually, my favorite drink is coffee.")
+    assert tick(dsn,consumer).conflicts==1
+    conflict=call(dsn,list_extraction_conflicts,actor(user),instance)[0]
+    original=extraction_module._amend_memory_in_transaction
+
+    def fail_after_memory_update(cur,primary,command):
+        completed=original(cur,primary,command)
+        assert completed.version==2 and completed.event_id is not None
+        # The correction/revision/receipt/event/outbox have all been written
+        # in this transaction. Simulate process failure at the old gap.
+        raise RuntimeError("simulated failure after memory correction")
+
+    monkeypatch.setattr(
+        extraction_module,"_amend_memory_in_transaction",
+        fail_after_memory_update,
+    )
+    with pytest.raises(RuntimeError,match="simulated failure"):
+        call(
+            dsn,approve_extraction_conflict,actor(user),conflict.candidate_id,
+            expected_generation=1,expected_version=1,
+        )
+
+    # Every authoritative effect must have rolled back together.
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        record=conn.execute(
+            """SELECT value_text,version FROM memory_records
+               WHERE memory_id=%s""",(conflict.memory_id,),
+        ).fetchone()
+        assert record==("tea",1)
+        assert conn.execute(
+            """SELECT status,target_version,reviewed_at
+               FROM memory_extraction_candidates WHERE candidate_id=%s""",
+            (conflict.candidate_id,),
+        ).fetchone()==("CONFLICT",1,None)
+        assert conn.execute(
+            "SELECT count(*) FROM memory_revisions WHERE memory_id=%s",
+            (conflict.memory_id,),
+        ).fetchone()[0]==1
+        assert conn.execute(
+            """SELECT count(*) FROM command_receipts
+               WHERE user_id=%s AND command_type='memory.amend.v1'
+                 AND idempotency_key=%s""",
+            (user,f"approve-extraction:{conflict.candidate_id}"),
+        ).fetchone()[0]==0
+        assert conn.execute(
+            """SELECT count(*) FROM events
+               WHERE user_id=%s AND event_type='memory.record.corrected.v1'""",
+            (user,),
+        ).fetchone()[0]==0
+        assert conn.execute(
+            """SELECT count(*) FROM outbox o JOIN events e ON o.event_id=e.event_id
+               WHERE e.user_id=%s AND e.event_type='memory.record.corrected.v1'""",
+            (user,),
+        ).fetchone()[0]==0
+
+    monkeypatch.setattr(
+        extraction_module,"_amend_memory_in_transaction",original,
+    )
+    corrected=call(
+        dsn,approve_extraction_conflict,actor(user),conflict.candidate_id,
+        expected_generation=1,expected_version=1,
+    )
+    assert corrected.version==2 and not corrected.replayed
+    assert call(dsn,list_extraction_conflicts,actor(user),instance)==()
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            """SELECT status,target_version FROM memory_extraction_candidates
+               WHERE candidate_id=%s""",(conflict.candidate_id,),
+        ).fetchone()==("APPROVED",2)
+        assert conn.execute(
+            "SELECT value_text,version FROM memory_records WHERE memory_id=%s",
+            (conflict.memory_id,),
+        ).fetchone()==("coffee",2)
+        assert conn.execute(
+            """SELECT count(*) FROM events WHERE user_id=%s
+               AND event_type='memory.record.corrected.v1'""",
+            (user,),
+        ).fetchone()[0]==1
+
+    # Receipt replay survives persona selection changes when the ORIGINAL
+    # command (including expected_generation) is replayed unchanged.
+    switched=call(dsn,switch_persona,actor(user),SwitchPersonaCommand(
+        expected_instance_id=instance,target_instance_id=other,
+        expected_generation=1,idempotency_key=str(uuid4()),
+    ))
+    assert switched.generation==2
+    replay=call(
+        dsn,approve_extraction_conflict,actor(user),conflict.candidate_id,
+        expected_generation=1,expected_version=1,
+    )
+    assert replay.replayed and replay.version==2
+
+
+def test_concurrent_candidate_approvals_share_one_correction(dsn):
+    """Candidate FOR UPDATE serializes duplicate authorized approval calls."""
+    consumer=bootstrap(dsn)
+    user,instance,_=seed(dsn)
+    conversation=uuid4()
+    turn(dsn,user,instance,conversation,"My hobby is cycling.")
+    tick(dsn,consumer)
+    turn(dsn,user,instance,conversation,"Actually, my hobby is gardening.")
+    assert tick(dsn,consumer).conflicts==1
+    candidate=call(dsn,list_extraction_conflicts,actor(user),instance)[0]
+
+    def approve():
+        return call(
+            dsn,approve_extraction_conflict,actor(user),candidate.candidate_id,
+            expected_generation=1,expected_version=1,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first=pool.submit(approve)
+        second=pool.submit(approve)
+        results=[first.result(),second.result()]
+    assert [x.version for x in results]==[2,2]
+    assert sorted(x.replayed for x in results)==[False,True]
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            """SELECT count(*) FROM memory_revisions
+               WHERE memory_id=%s""",(candidate.memory_id,),
+        ).fetchone()[0]==2
+        assert conn.execute(
+            """SELECT count(*) FROM events
+               WHERE user_id=%s AND event_type='memory.record.corrected.v1'""",
+            (user,),
+        ).fetchone()[0]==1
+        assert conn.execute(
+            """SELECT status,target_version FROM memory_extraction_candidates
+               WHERE candidate_id=%s""",(candidate.candidate_id,),
+        ).fetchone()==("APPROVED",2)
