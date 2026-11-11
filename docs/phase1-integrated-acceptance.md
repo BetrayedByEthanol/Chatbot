@@ -142,3 +142,14 @@ before the narrow `ON CONFLICT(turn_id)` handler. It now uses
 `IdempotencyConflict`; it cannot become a cross-turn replay or raw
 `UniqueViolation`. The original concurrent admission regressions remain,
 plus an explicit deterministic-ID collision case.
+
+### Text transport process gate
+
+The live model acceptance script also spawns
+`python -m persona_agent.acceptance_host serve --no-worker` as a
+**separate operating-system process**, writes newline-delimited JSON
+requests to its stdin, parses its stdout, and verifies a real model
+response, clock response and persisted delivery metrics. A deterministic
+integration regression runs the same subprocess protocol against the
+mock HTTP Ollama endpoint. This prevents an in-process-only acceptance
+demo from being mistaken for verification of the actual text transport.

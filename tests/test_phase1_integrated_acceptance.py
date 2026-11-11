@@ -9,6 +9,8 @@ import io
 import json
 import os
 import signal
+import subprocess
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -297,3 +299,38 @@ def test_session_does_not_accept_model_supplied_tool_command(dsn,fake_ollama):
             "SELECT count(*) FROM operations WHERE user_id=%s",
             (identity.user_id,),
         ).fetchone()[0]==0
+
+
+
+def test_real_json_lines_subprocess_transport_against_mock_ollama(dsn,fake_ollama):
+    """Exercise the entrypoint and OS text pipes, not only in-process calls."""
+    endpoint,requests=fake_ollama
+    identity=seed_local_demo(dsn)
+    cmd=[
+        sys.executable,"-m","persona_agent.acceptance_host","serve",
+        "--user-id",str(identity.user_id),
+        "--instance-id",str(identity.instance_id),
+        "--conversation-id",str(identity.conversation_id),
+        "--generation",str(identity.generation),
+        "--model","acceptance-mock","--ollama-url",endpoint,
+        "--no-worker",
+    ]
+    packets=[
+        {"action":"message","mode":"model","idempotency_key":"pipe-1",
+         "text":"Hello through the real OS pipe"},
+        {"action":"message","mode":"time","idempotency_key":"pipe-2",
+         "text":"Current UTC time?"},
+        {"action":"metrics"},{"action":"quit"},
+    ]
+    result=subprocess.run(
+        cmd,input="".join(json.dumps(item)+"\n" for item in packets),
+        capture_output=True,text=True,timeout=25,
+        env={**os.environ,"ACCEPTANCE_DATABASE_URL":dsn},
+        check=True,
+    )
+    outputs=[json.loads(line) for line in result.stdout.splitlines() if line.strip()]
+    assert [p["type"] for p in outputs]==["reply","reply","metrics","bye"]
+    assert outputs[0]["text"]=="Received: Hello through the real OS pipe"
+    assert outputs[1]["model_id"]=="clock.now.v1"
+    assert outputs[2]["data"]["delivered_count"]==2
+    assert len(requests)==1

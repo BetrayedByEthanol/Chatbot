@@ -8,6 +8,8 @@ Output intentionally contains metrics and IDs only, never raw user text.
 
 import json
 import os
+import subprocess
+import sys
 import time
 
 import psycopg
@@ -111,6 +113,38 @@ def main():
             (identity.conversation_id,),
         ).fetchone()[0]==4
 
+    # Exercise the actual interactive text host process, not only its class.
+    pipe_identity=seed_local_demo(dsn)
+    cmd=[
+        sys.executable,"-m","persona_agent.acceptance_host","serve",
+        "--user-id",str(pipe_identity.user_id),
+        "--instance-id",str(pipe_identity.instance_id),
+        "--conversation-id",str(pipe_identity.conversation_id),
+        "--generation",str(pipe_identity.generation),
+        "--model",model_id,"--ollama-url",endpoint,"--no-worker",
+    ]
+    packets=[
+        {"action":"message","mode":"model","idempotency_key":"pipe-model",
+         "text":"Say a short greeting."},
+        {"action":"message","mode":"time","idempotency_key":"pipe-clock",
+         "text":"What time is it?","timezone":"UTC"},
+        {"action":"metrics"},{"action":"quit"},
+    ]
+    child=subprocess.run(
+        cmd,input="".join(json.dumps(item)+"\n" for item in packets),
+        capture_output=True,text=True,timeout=200,
+        env={**os.environ,"ACCEPTANCE_DATABASE_URL":dsn},check=True,
+    )
+    outputs=[json.loads(line) for line in child.stdout.splitlines() if line.strip()]
+    ensure([p["type"] for p in outputs]==["reply","reply","metrics","bye"],
+           "real JSON-lines host did not complete")
+    ensure(outputs[0]["model_id"]==model_id and bool(outputs[0]["text"].strip()),
+           "real model did not reply through text host")
+    ensure(outputs[1]["model_id"]=="clock.now.v1",
+           "immediate tool did not reply through text host")
+    ensure(outputs[2]["data"]["delivered_count"]==2,
+           "text host did not persist delivery")
+
     print(json.dumps({
         "phase":"phase1-integrated-acceptance",
         "real_model_used":True,
@@ -120,6 +154,7 @@ def main():
         "immediate_tool":"passed",
         "supervised_deferred_tool":"passed",
         "followup_exactly_once_ack":"passed",
+        "real_jsonl_subprocess_transport":"passed",
         "turns":stats["sample_size"],
         "output_ready_p95_ms":stats["p95_output_ready_ms"],
         "delivery_p95_ms":stats["p95_delivery_ms"],
