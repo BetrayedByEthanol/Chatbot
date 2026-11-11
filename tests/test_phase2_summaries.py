@@ -635,7 +635,7 @@ def test_summary_context_cutoff_follows_actually_retained_messages(dsn):
     for i in range(20):
         turns.append(add_turn(
             dsn,user,instance,conversation,
-            f"TURN_{i+1:02d} "+("long conversation content "*42),
+            f"TURN_{i+1:02d} "+("long conversation content "*42).strip(),
         ))
 
     class RangeSummary:
@@ -666,7 +666,7 @@ def test_summary_context_cutoff_follows_actually_retained_messages(dsn):
     assert "Turns 1-8:" in system
     assert "Turns 9-16:" in system
     assert compact.messages[-1].content==(
-        "TURN_20 "+("long conversation content "*42)
+        "TURN_20 "+("long conversation content "*42).strip()
     )
     assert sum(len(msg.content) for msg in compact.messages)<=4000
     assert "TURN_16" not in "\n".join(m.content for m in compact.messages[1:])
