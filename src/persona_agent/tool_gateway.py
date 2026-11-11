@@ -46,6 +46,12 @@ def respond_with_time(
     """Typed, deterministic immediate read-only tool; no external provider."""
     require_idle(connection)
     _require_actor(actor)
+    # Preserve typed argument validation on both new and replayed calls.
+    # A retry must not silently accept a malformed timezone identifier.
+    try:
+        zone = ZoneInfo(timezone_name)
+    except (ZoneInfoNotFoundError, ValueError) as exc:
+        raise ValueError("unknown timezone") from exc
     prior=lookup_response(connection,actor,turn_id)
     if prior is not None:
         # Reuse P1-01's selected-persona / latest-turn validation for
@@ -55,10 +61,6 @@ def respond_with_time(
             def generate(self,messages):
                 raise AssertionError("persisted clock response must not regenerate")
         return respond_to_text(connection,actor,turn_id,NoRegeneration())
-    try:
-        zone = ZoneInfo(timezone_name)
-    except (ZoneInfoNotFoundError, ValueError) as exc:
-        raise ValueError("unknown timezone") from exc
     instant = now or datetime.now(timezone.utc)
     if instant.tzinfo is None or instant.utcoffset() is None:
         raise ValueError("clock instant must be timezone-aware")
