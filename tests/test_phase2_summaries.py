@@ -278,6 +278,11 @@ def test_model_evidence_rejected_and_watermark_unchanged(dsn):
             "SELECT count(*) FROM memory_episodes WHERE conversation_id=%s",
             (conv,),
         ).fetchone()[0]==0
+        # This test deliberately stops retries; other tests should not claim it.
+        conn.execute(
+            "UPDATE operations SET status='FAILED' WHERE operation_id=%s",
+            (job.operation_id,),
+        )
 
 
 def test_stale_persona_generation_during_model_inference(dsn):
