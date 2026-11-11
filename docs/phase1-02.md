@@ -101,3 +101,9 @@ Additional integration tests stage the exact crash boundary between a
 committed P0 enqueue and the P1 correlation update, then verify idempotent
 repair. A separate concurrent test blocks a slow tool provider and proves
 a newer user turn commits without waiting for the tool's database locks.
+
+The migration also enforces a composite PostgreSQL foreign key
+`(operation_id,user_id,instance_id)` for the tool correlation row and
+a strict PREPARING/QUEUED operation-reference check. This complements
+service-level tenant checking and prevents cross-scope links even if a
+future caller bypasses the service.

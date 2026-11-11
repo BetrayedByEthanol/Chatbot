@@ -422,3 +422,33 @@ def test_new_user_turn_does_not_wait_for_running_readonly_tool(dsn):
     assert invoke(
         dsn,reconcile_tool_followup,actor(user),tool.tool_call_id,
     ).followup_state=="DEFERRED"
+
+
+
+def test_tool_correlation_cannot_reference_another_users_operation(dsn):
+    user,instance=seed(dsn)
+    other,other_instance=seed(dsn)
+    configure_tool_pool(dsn)
+    own_turn=incoming(dsn,user,instance)
+    linked=invoke(
+        dsn,schedule_text_analysis,actor(user),
+        SlowTextToolCommand(turn_id=own_turn.turn_id),
+    )
+    foreign_turn=incoming(dsn,other,other_instance)
+    foreign=invoke(
+        dsn,schedule_text_analysis,actor(other),
+        SlowTextToolCommand(turn_id=foreign_turn.turn_id),
+    )
+    from psycopg.errors import ForeignKeyViolation
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        with pytest.raises(ForeignKeyViolation):
+            conn.execute(
+                "UPDATE conversation_tool_calls SET operation_id=%s "
+                "WHERE tool_call_id=%s",
+                (foreign.operation_id,linked.tool_call_id),
+            )
+        assert conn.execute(
+            "SELECT operation_id FROM conversation_tool_calls "
+            "WHERE tool_call_id=%s",
+            (linked.tool_call_id,),
+        ).fetchone()==(linked.operation_id,)
