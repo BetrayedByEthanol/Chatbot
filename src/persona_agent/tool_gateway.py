@@ -19,6 +19,7 @@ from .contracts import TrustedActor
 from .conversation import (
     _event, _require_actor, _selection, acknowledge_text_delivery,
     commit_text_response, lookup_response, prepare_text_context,
+    respond_to_text,
 )
 from .conversation_contracts import ModelReply, StaleConversation, TextResponseResult
 from .operation_contracts import (
@@ -45,6 +46,15 @@ def respond_with_time(
     """Typed, deterministic immediate read-only tool; no external provider."""
     require_idle(connection)
     _require_actor(actor)
+    prior=lookup_response(connection,actor,turn_id)
+    if prior is not None:
+        # Reuse P1-01's selected-persona / latest-turn validation for
+        # GENERATED responses; lookup_response alone is historical access.
+        # An already delivered clock answer is replayed as persisted.
+        class NoRegeneration:
+            def generate(self,messages):
+                raise AssertionError("persisted clock response must not regenerate")
+        return respond_to_text(connection,actor,turn_id,NoRegeneration())
     try:
         zone = ZoneInfo(timezone_name)
     except (ZoneInfoNotFoundError, ValueError) as exc:
@@ -483,10 +493,31 @@ def acknowledge_tool_followup(
             text=_completed_result(cur,row)
             if text is None:
                 raise ToolResultNotReady("completed result unavailable")
+            # This is an assistant output, not a fabricated user turn.
+            # Persist the exact acknowledged text with its source turn so
+            # later context assembly can reconstruct what the user received.
+            cur.execute(
+                """
+                INSERT INTO conversation_assistant_followups(
+                    tool_call_id,conversation_id,turn_id,user_id,instance_id,
+                    response_text
+                ) VALUES (%s,%s,%s,%s,%s,%s)
+                """,
+                (tool_call_id,row["conversation_id"],row["turn_id"],
+                 actor.user_id,row["instance_id"],text),
+            )
             cur.execute(
                 "UPDATE conversation_tool_calls SET followup_state='DELIVERED',"
                 "updated_at=clock_timestamp() WHERE tool_call_id=%s AND user_id=%s",
                 (tool_call_id,actor.user_id),
+            )
+            # Delivered assistant content changes the usable dialogue
+            # context and must advance optimistic conversation revision.
+            cur.execute(
+                "UPDATE conversations SET revision=revision+1,"
+                "updated_at=clock_timestamp() WHERE conversation_id=%s "
+                "AND user_id=%s AND instance_id=%s",
+                (row["conversation_id"],actor.user_id,row["instance_id"]),
             )
             _event(
                 cur,user_id=actor.user_id,instance_id=row["instance_id"],

@@ -107,3 +107,21 @@ The migration also enforces a composite PostgreSQL foreign key
 a strict PREPARING/QUEUED operation-reference check. This complements
 service-level tenant checking and prevents cross-scope links even if a
 future caller bypasses the service.
+
+## Review fixes — clock replay and delivered assistant context
+
+An immediate clock response now uses the same pre-context historical lookup
+and selected-persona / latest-turn replay fence as ordinary text responses.
+A restart between generation and output delivery replays the original
+`GENERATED` response and timestamp without recomputing it. An undelivered
+response from a revoked persona still cannot be returned for output.
+
+Acknowledged deferred tool results are now materialized as scoped
+`conversation_assistant_followups` rows atomically with the tool delivery
+ACK, event, outbox and conversation revision increment. They are assistant
+messages associated with the originating turn, **not synthetic user turns**.
+`prepare_text_context` includes these delivered assistant outputs after
+the original delivered notice, in conversation order, within the existing
+recent-turn and character budgets. Prepared-but-not-acknowledged results
+remain excluded. Tenant and turn ownership are enforced by composite
+foreign keys and per-conversation queries.

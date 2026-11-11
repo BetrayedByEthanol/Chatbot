@@ -42,3 +42,29 @@ CREATE TABLE conversation_tool_results (
     created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
     PRIMARY KEY(operation_id,claim_generation)
 );
+
+
+-- An acknowledged deferred tool result is ordinary assistant conversation
+-- context, not a synthetic user turn. Store the delivered text atomically
+-- with the tool follow-up ACK. Composite references enforce owner/scope.
+ALTER TABLE conversation_tool_calls
+    ADD CONSTRAINT conversation_tool_call_context_key
+    UNIQUE (tool_call_id,conversation_id,turn_id,user_id,instance_id);
+
+CREATE TABLE conversation_assistant_followups (
+    tool_call_id uuid PRIMARY KEY,
+    conversation_id uuid NOT NULL,
+    turn_id uuid NOT NULL,
+    user_id uuid NOT NULL,
+    instance_id uuid NOT NULL,
+    response_text text NOT NULL CHECK (char_length(response_text) BETWEEN 1 AND 12000),
+    delivered_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    FOREIGN KEY (tool_call_id,conversation_id,turn_id,user_id,instance_id)
+        REFERENCES conversation_tool_calls(
+            tool_call_id,conversation_id,turn_id,user_id,instance_id
+        ),
+    FOREIGN KEY (conversation_id,user_id,instance_id)
+        REFERENCES conversations(conversation_id,user_id,instance_id)
+);
+CREATE INDEX conversation_assistant_followups_by_turn_idx
+    ON conversation_assistant_followups(conversation_id,turn_id);

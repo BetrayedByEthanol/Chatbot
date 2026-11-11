@@ -11,8 +11,9 @@ psycopg=pytest.importorskip("psycopg")
 from persona_agent.contracts import TrustedActor
 from persona_agent.conversation import (
     acknowledge_text_delivery,ingest_text,lookup_response,
+    prepare_text_context,respond_to_text,
 )
-from persona_agent.conversation_contracts import TextInputCommand,StaleConversation
+from persona_agent.conversation_contracts import ModelReply,TextInputCommand,StaleConversation
 from persona_agent.lifecycle import SwitchPersonaCommand,switch_persona
 from persona_agent.operation_contracts import (
     EffectClass,EnqueueOperation,Policy,Priority,ResourceUnavailable,Status,
@@ -459,3 +460,170 @@ def test_tool_correlation_cannot_reference_another_users_operation(dsn):
             "WHERE tool_call_id=%s",
             (linked.tool_call_id,),
         ).fetchone()==(linked.operation_id,)
+
+
+
+def test_clock_response_retries_after_restart_without_regeneration(dsn):
+    user,instance=seed(dsn)
+    turn=incoming(dsn,user,instance,"What time is it?")
+    original=invoke(
+        dsn,respond_with_time,actor(user),turn.turn_id,
+        timezone_name="Europe/Berlin",
+        now=datetime(2026,11,11,9,0,tzinfo=timezone.utc),
+    )
+    assert original.delivery_status=="GENERATED"
+    # The next request is on another connection (process restart). It
+    # must replay the original timestamp, not create a fresh clock result.
+    replay=invoke(
+        dsn,respond_with_time,actor(user),turn.turn_id,
+        timezone_name="Europe/Berlin",
+        now=datetime(2026,11,11,13,0,tzinfo=timezone.utc),
+    )
+    assert replay.response_id==original.response_id
+    assert replay.text==original.text
+    assert replay.replayed and replay.delivery_status=="GENERATED"
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT count(*) FROM conversation_responses WHERE turn_id=%s",
+            (turn.turn_id,),
+        ).fetchone()[0]==1
+        assert conn.execute(
+            "SELECT count(*) FROM events WHERE event_type='conversation.response.generated.v1' "
+            "AND payload->>'turn_id'=%s",
+            (str(turn.turn_id),),
+        ).fetchone()[0]==1
+    finish_initial(dsn,user,original.response_id)
+    delivered_retry=invoke(
+        dsn,respond_with_time,actor(user),turn.turn_id,
+        timezone_name="Europe/Berlin",
+    )
+    assert delivered_retry.response_id==original.response_id
+    assert delivered_retry.delivery_status=="DELIVERED"
+    assert delivered_retry.replayed
+
+
+def test_clock_replay_rejects_undelivered_response_after_persona_switch(dsn):
+    user,instance,other=seed(dsn,two=True)
+    turn=incoming(dsn,user,instance,"What time is it?")
+    original=invoke(
+        dsn,respond_with_time,actor(user),turn.turn_id,
+        now=datetime(2026,11,11,9,0,tzinfo=timezone.utc),
+    )
+    invoke(dsn,switch_persona,actor(user),SwitchPersonaCommand(
+        expected_instance_id=instance,target_instance_id=other,
+        expected_generation=1,idempotency_key=str(uuid4()),
+    ))
+    with pytest.raises(StaleSelection):
+        invoke(dsn,respond_with_time,actor(user),turn.turn_id)
+    historical=invoke(dsn,lookup_response,actor(user),turn.turn_id)
+    assert historical.response_id==original.response_id
+    assert historical.delivery_status=="GENERATED"
+
+
+def test_deferred_followup_appears_as_delivered_assistant_context(dsn):
+    user,instance=seed(dsn)
+    configure_tool_pool(dsn)
+    conv=uuid4()
+    first=incoming(dsn,user,instance,"alpha beta beta gamma",conversation=conv)
+    notice=invoke(
+        dsn,respond_to_text_analysis,actor(user),
+        SlowTextToolCommand(turn_id=first.turn_id,max_words=2),
+        await_seconds=0,
+    )
+    finish_initial(dsn,user,notice.response_id)
+    tool=invoke(
+        dsn,schedule_text_analysis,actor(user),
+        SlowTextToolCommand(turn_id=first.turn_id,max_words=2),
+    )
+    invoke(dsn,run_one_text_tool,worker_id="followup-context-worker")
+    assert invoke(
+        dsn,reconcile_tool_followup,actor(user),tool.tool_call_id,
+    ).followup_state=="READY"
+
+    # A result that is READY/prepared but not ACKnowledged as delivered must
+    # never be included as though the user saw it.
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT count(*) FROM conversation_assistant_followups "
+            "WHERE tool_call_id=%s",(tool.tool_call_id,),
+        ).fetchone()[0]==0
+
+    prepared=invoke(dsn,prepare_tool_followup,actor(user),tool.tool_call_id)
+    delivered=invoke(dsn,acknowledge_tool_followup,actor(user),tool.tool_call_id)
+    repeated=invoke(dsn,acknowledge_tool_followup,actor(user),tool.tool_call_id)
+    assert delivered.text==prepared.text
+    assert repeated.replayed
+
+    # New user input causes an entirely new context to be reconstructed from
+    # PostgreSQL, including the delivered assistant follow-up in correct
+    # order after the defer notice and before this user's next question.
+    question=incoming(
+        dsn,user,instance,
+        text="What did you find about beta?",conversation=conv,
+    )
+    context=invoke(dsn,prepare_text_context,actor(user),question.turn_id)
+    assert [(m.role,m.content) for m in context.messages[1:]]==[
+        ("user","alpha beta beta gamma"),
+        ("assistant",notice.text),
+        ("assistant",prepared.text),
+        ("user","What did you find about beta?"),
+    ]
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT count(*) FROM conversation_turns WHERE conversation_id=%s",
+            (conv,),
+        ).fetchone()[0]==2
+        assert conn.execute(
+            "SELECT count(*),min(response_text) "
+            "FROM conversation_assistant_followups WHERE conversation_id=%s",
+            (conv,),
+        ).fetchone()==(1,prepared.text)
+        assert conn.execute(
+            "SELECT revision FROM conversations WHERE conversation_id=%s",
+            (conv,),
+        ).fetchone()[0]==5
+        assert conn.execute(
+            "SELECT count(*) FROM events "
+            "WHERE event_type='conversation.tool.followup_delivered.v1' "
+            "AND payload->>'tool_call_id'=%s",
+            (str(tool.tool_call_id),),
+        ).fetchone()[0]==1
+
+    class ContextModel:
+        def generate(self,messages):
+            assert any(
+                msg.role=="assistant" and msg.content==prepared.text
+                for msg in messages
+            )
+            return ModelReply(model_id="followup-aware-fake",text="Beta appeared twice.")
+    reply=invoke(dsn,respond_to_text,actor(user),question.turn_id,ContextModel())
+    assert reply.text=="Beta appeared twice."
+
+
+def test_delivered_followup_is_tenant_scoped_and_undelivered_excluded(dsn):
+    user,instance=seed(dsn)
+    stranger,other_instance=seed(dsn)
+    configure_tool_pool(dsn)
+    conv=uuid4()
+    first=incoming(dsn,user,instance,conversation=conv)
+    notice=invoke(dsn,respond_to_text_analysis,actor(user),
+                  SlowTextToolCommand(turn_id=first.turn_id),await_seconds=0)
+    finish_initial(dsn,user,notice.response_id)
+    call=invoke(dsn,schedule_text_analysis,actor(user),
+                SlowTextToolCommand(turn_id=first.turn_id))
+    invoke(dsn,run_one_text_tool,worker_id="unacknowledged-worker")
+    assert invoke(dsn,reconcile_tool_followup,actor(user),
+                  call.tool_call_id).followup_state=="READY"
+    second=incoming(dsn,user,instance,text="Next question",conversation=conv)
+    context=invoke(dsn,prepare_text_context,actor(user),second.turn_id)
+    assert [(m.role,m.content) for m in context.messages[1:]]==[
+        ("user","alpha beta beta gamma"),("assistant",notice.text),
+        ("user","Next question"),
+    ]
+    other_turn=incoming(dsn,stranger,other_instance,text="My question")
+    other_context=invoke(
+        dsn,prepare_text_context,actor(stranger),other_turn.turn_id,
+    )
+    assert all("Text analysis" not in m.content for m in other_context.messages)
+    with pytest.raises(ToolResultNotReady):
+        invoke(dsn,prepare_tool_followup,actor(user),call.tool_call_id)
