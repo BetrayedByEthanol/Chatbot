@@ -288,3 +288,43 @@ def test_platform_actor_cannot_admit_arbitrary_operations(dsn):
             """SELECT count(*) FROM operations
                WHERE user_id=%s AND instance_id=%s""",(user,instance),
         ).fetchone()[0]==0
+
+
+def test_reconciliation_skips_blocked_and_already_admitted_ranges(dsn):
+    """A one-row scan page must not starve a later eligible conversation."""
+    user,instance,_=seed(dsn)
+    blocked=uuid4()
+    current=call(dsn,ingest_text,actor(user),TextInputCommand(
+        conversation_id=blocked,instance_id=instance,
+        expected_generation=1,idempotency_key=str(uuid4()),
+        text="An answer I have not heard yet.",
+    ))
+    # Its generated response is still deliverable in generation 1.
+    pending=call(dsn,respond_to_text,actor(user),current.turn_id,FakeReply())
+    assert pending.delivery_status=="GENERATED"
+    for n in range(2,11):
+        delivered_turn(dsn,user,instance,blocked,n)
+
+    already=uuid4()
+    for n in range(1,11):
+        delivered_turn(dsn,user,instance,already,n)
+    platform=TrustedPlatformActor(user_id=user,source_id="memory.auto_summary.v1")
+    queued=call(dsn,schedule_summary,platform,already,instance,1)
+    assert queued is not None and not queued.replayed
+
+    eligible=uuid4()
+    for n in range(1,11):
+        delivered_turn(dsn,user,instance,eligible,n)
+    # Register AFTER producing and dispatching all three conversations:
+    # only reconciliation can discover the eligible one.
+    consumer=bootstrap(dsn)
+    result=tick(dsn,consumer,user,scan_limit=1)
+    assert result.admitted==1
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        targets=conn.execute(
+            """SELECT conversation_id FROM conversation_summary_jobs
+               WHERE user_id=%s""",(user,),
+        ).fetchall()
+    assert {r[0] for r in targets}=={already,eligible}
+    for _ in range(2):
+        call(dsn,run_summary,claim_summary(dsn),FakeSummary())
