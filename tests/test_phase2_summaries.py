@@ -15,6 +15,7 @@ from persona_agent.conversation import (
 from persona_agent.conversation_contracts import ModelReply, TextInputCommand
 from persona_agent.lifecycle import SwitchPersonaCommand, switch_persona
 from persona_agent.operation_scheduler import claim_operation, configure_resource_pool
+from persona_agent.operation_control import reap_stale_operations
 from persona_agent.operation_contracts import StaleOperation
 from persona_agent.summary_contracts import (
     InvalidSummary, StaleSummary, SUMMARY_CAPABILITY, SUMMARY_OPERATION,
@@ -221,27 +222,18 @@ def test_recovery_after_commit_before_operation_completion(dsn):
     done=call(dsn,commit_summary,lease,prepared,draft,generated.model_id)
     assert done.episode_count==1
 
-    # Simulate lease loss; normal P0 recovery requeues the same operation.
+    # Simulate a worker crash and let the *real P0 reaper* safely release
+    # resources and requeue the operation. Only the test clock is advanced.
     with psycopg.connect(dsn,autocommit=True) as conn:
         conn.execute(
-            """UPDATE operations
-               SET status='RETRY_WAIT',worker_id=NULL,lease_until=NULL,
-                   claimed_at=NULL,eligible_at=clock_timestamp(),
-                   version=version+1
+            """UPDATE operations SET lease_until=clock_timestamp()-interval '1 second'
                WHERE operation_id=%s""",(lease.operation_id,),
         )
+    assert call(dsn,reap_stale_operations)>=1
+    with psycopg.connect(dsn,autocommit=True) as conn:
         conn.execute(
-            "DELETE FROM operation_resource_reservations WHERE operation_id=%s",
+            "UPDATE operations SET eligible_at=clock_timestamp() WHERE operation_id=%s",
             (lease.operation_id,),
-        )
-        conn.execute(
-            "DELETE FROM operation_concurrency_locks WHERE operation_id=%s",
-            (lease.operation_id,),
-        )
-        conn.execute(
-            """UPDATE execution_resource_pools
-               SET active_units=0,active_non_p0_units=0
-               WHERE resource_key=%s""",(SUMMARY_RESOURCE,),
         )
     newlease=claim(dsn,worker="recovered-worker")
     no_model=type("NoModel",(),{
@@ -300,6 +292,9 @@ def test_stale_persona_generation_during_model_inference(dsn):
             return super().generate(messages)
     with pytest.raises(StaleOperation):
         call(dsn,run_summary,lease,SwitchDuringInference())
+    # A revoked claim retains resources until P0 recovery; release them
+    # through its actual recovery contract, not direct pool manipulation.
+    assert call(dsn,reap_stale_operations)>=1
     with psycopg.connect(dsn,autocommit=True) as conn:
         assert conn.execute(
             "SELECT summary_watermark FROM conversations WHERE conversation_id=%s",
