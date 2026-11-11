@@ -30,6 +30,7 @@ from persona_agent.operation_contracts import (
 from persona_agent.operation_scheduler import (
     claim_operation,configure_resource_pool,enqueue_operation,
 )
+from persona_agent.operation_control import reap_stale_operations
 from persona_agent.runtime import PermissionDenied
 import persona_agent.cognitive_engine as engine_module
 
@@ -228,6 +229,9 @@ def test_inference_lease_expiry_rolls_back_all_proposals(dsn):
             "SELECT cognitive_watermark FROM conversations WHERE conversation_id=%s",
             (conversation,),
         ).fetchone()[0]==0
+    # Resource claims are global across real PostgreSQL test cases: reaping
+    # an intentionally expired lease avoids starving independent P1 suites.
+    assert call(dsn,reap_stale_operations,limit=100)>=1
 
 
 def test_persona_switch_revokes_commit_without_relabeling_as_user_facts(dsn):
@@ -249,6 +253,12 @@ def test_persona_switch_revokes_commit_without_relabeling_as_user_facts(dsn):
     with pytest.raises(StaleOperation):
         call(dsn,commit_cognition,lease,work,draft,"fake-model")
     assert call(dsn,list_cognitive_proposals,actor(user),instance)==()
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        conn.execute(
+            """UPDATE operations SET lease_until=clock_timestamp()-interval '1 second'
+               WHERE operation_id=%s""",(lease.operation_id,),
+        )
+    assert call(dsn,reap_stale_operations,limit=100)>=1
 
 
 def test_staging_failure_replay_and_duplicate_commit_recovery(dsn,monkeypatch):
