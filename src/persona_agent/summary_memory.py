@@ -570,7 +570,7 @@ def summary_context_block(cur, conversation_id: UUID, user_id: UUID,
     summaries merely because the first row exceeds the prompt budget.
     """
     head=("Earlier conversation summaries (approximate; abridged text marked; "
-          "original turns retained):\\n")
+          "original turns retained):\n")
     if max_chars<len(head)+60:
         return ""
     cur.execute(
