@@ -68,5 +68,6 @@ CREATE INDEX memory_records_lookup_idx
     WHERE record_status='ACTIVE';
 CREATE INDEX memory_records_search_idx
     ON memory_records USING gin (
-        to_tsvector('simple',subject_key || ' ' || predicate_key || ' ' || value_text)
+        to_tsvector('simple',replace(subject_key,'_',' ') || ' ' ||
+            replace(predicate_key,'_',' ') || ' ' || value_text)
     ) WHERE record_status='ACTIVE';
