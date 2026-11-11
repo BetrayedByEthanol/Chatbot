@@ -1693,3 +1693,89 @@ def test_claim_cannot_cross_deadline_while_waiting_for_authority(dsn,blocking_ro
     assert resources(dsn,resource)==0
     assert invoke(dsn,reap_stale_operations)>=1
     assert operation(dsn,queued.operation_id)[0]=="FAILED"
+
+
+
+def test_claim_final_deadline_guard_rolls_back_resource_and_group_writes(dsn):
+    """A group insert can wait until expiry after the post-authority check.
+
+    Roll back the conflicting group insert after the deadline so the claimant
+    proceeds to reserve resources. Its final UPDATE must reject expiry and
+    its savepoint must undo both the group insert and capacity reservation.
+    """
+    from queue import Queue
+
+    user,instance=seed(dsn)
+    resource=pool(dsn,capacity=1)
+    holder=cmd(instance,resource)
+    enqueue(dsn,user,holder)
+    # A real operation ID is required by the concurrency-group foreign key.
+    # Keep this holder permanently ineligible for the competing claim.
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        conn.execute(
+            "UPDATE operations SET status='FAILED' WHERE operation_id=%s",
+            (holder.operation_id,),
+        )
+    deadline=datetime.now(timezone.utc)+timedelta(seconds=3)
+    target=cmd(
+        instance,resource,deadline=deadline,
+        concurrency_group="deadline-group-conflict",
+    )
+    enqueue(dsn,user,target)
+    pid_queue=Queue(maxsize=1)
+
+    def delayed_claim():
+        with psycopg.connect(dsn,autocommit=True) as conn:
+            pid_queue.put(conn.execute("SELECT pg_backend_pid()").fetchone()[0])
+            return claim_operation(
+                conn,worker_id="deadline-group-worker",
+                capabilities=(),lease_seconds=60,
+            )
+
+    class RollbackBlockingGroup(Exception):
+        pass
+
+    with ThreadPoolExecutor(max_workers=1) as workers:
+        with psycopg.connect(dsn,autocommit=True) as blocker:
+            with pytest.raises(RollbackBlockingGroup):
+                with blocker.transaction():
+                    blocker.execute(
+                        """
+                        INSERT INTO operation_concurrency_locks(
+                            user_id,instance_id,group_key,
+                            operation_id,claim_generation
+                        ) VALUES (%s,%s,%s,%s,1)
+                        """,
+                        (user,instance,"deadline-group-conflict",holder.operation_id),
+                    )
+                    future=workers.submit(delayed_claim)
+                    pid=pid_queue.get(timeout=5)
+                    _assert_waiting_for_db_lock(dsn,pid)
+                    delay=(deadline-datetime.now(timezone.utc)).total_seconds()+0.2
+                    time.sleep(max(0,delay))
+                    # Let the blocked INSERT win its group key only *after*
+                    # expiry by rolling back the conflicting uncommitted row.
+                    raise RollbackBlockingGroup()
+        assert future.result(timeout=10) is None
+
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            """
+            SELECT status,attempt_count,claim_generation,worker_id,lease_until
+            FROM operations WHERE operation_id=%s
+            """,(target.operation_id,),
+        ).fetchone()==("QUEUED",0,0,None,None)
+        assert conn.execute(
+            "SELECT count(*) FROM operation_resource_reservations "
+            "WHERE operation_id=%s",(target.operation_id,),
+        ).fetchone()[0]==0
+        assert conn.execute(
+            "SELECT count(*) FROM operation_concurrency_locks "
+            "WHERE group_key='deadline-group-conflict' AND user_id=%s",(user,),
+        ).fetchone()[0]==0
+        assert conn.execute(
+            "SELECT count(*) FROM events "
+            "WHERE event_type='operation.claimed.v1' "
+            "AND payload->>'operation_id'=%s",(str(target.operation_id),),
+        ).fetchone()[0]==0
+    assert resources(dsn,resource)==0
