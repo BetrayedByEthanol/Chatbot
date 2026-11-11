@@ -171,7 +171,7 @@ def _eligible_rows(
                    WHERE j.conversation_id=c.conversation_id
                      AND j.start_sequence=c.cognitive_watermark+1
                      AND j.expected_generation=p.generation
-                   ORDER BY j.created_at DESC LIMIT 1
+                   ORDER BY j.admission_attempt DESC LIMIT 1
                ) staged ON TRUE
                WHERE p.mode IN ('FOREGROUND','BACKGROUND')
                  AND (%s::uuid IS NULL OR c.user_id=%s::uuid)
