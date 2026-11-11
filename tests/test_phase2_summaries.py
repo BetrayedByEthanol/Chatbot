@@ -1,0 +1,770 @@
+"""P2-02 PostgreSQL integration: source-linked summaries and episodic recall."""
+
+from concurrent.futures import ThreadPoolExecutor
+import time
+from datetime import datetime, timedelta, timezone
+import json
+from uuid import uuid4
+
+import pytest
+psycopg=pytest.importorskip("psycopg")
+
+from persona_agent.contracts import TrustedActor
+from persona_agent.conversation import (
+    acknowledge_text_delivery, ingest_text, prepare_text_context, respond_to_text,
+)
+from persona_agent.conversation_contracts import ModelReply, TextInputCommand
+from persona_agent.lifecycle import SwitchPersonaCommand, switch_persona
+from persona_agent.operation_scheduler import claim_operation, configure_resource_pool
+from persona_agent.operation_control import reap_stale_operations, fail_operation
+from persona_agent.operation_contracts import StaleOperation
+from persona_agent.summary_contracts import (
+    InvalidSummary, StaleSummary, SummaryNotReady, SUMMARY_CAPABILITY, SUMMARY_OPERATION,
+    SUMMARY_RESOURCE, SummaryDraft,
+)
+from persona_agent.summary_memory import (
+    commit_summary, episode_source_turn, prepare_summary, run_summary,
+    schedule_summary, search_episodes,
+)
+from persona_agent.runtime import PermissionDenied, StaleSelection
+
+
+def call(dsn, fn, *args, **kwargs):
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        return fn(conn,*args,**kwargs)
+
+
+def seed(dsn, *, other=False):
+    user,persona,instance=uuid4(),uuid4(),uuid4()
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        with conn.transaction():
+            conn.execute("INSERT INTO users(id) VALUES (%s)",(user,))
+            conn.execute(
+                "INSERT INTO persona_definitions(id,stable_key) VALUES (%s,%s)",
+                (persona,f"p202-{persona}"),
+            )
+            conn.execute(
+                """INSERT INTO persona_instances(id,user_id,persona_id,label)
+                   VALUES (%s,%s,%s,'Memory')""",(instance,user,persona),
+            )
+            alternate=None
+            if other:
+                p2,alternate=uuid4(),uuid4()
+                conn.execute(
+                    "INSERT INTO persona_definitions(id,stable_key) VALUES (%s,%s)",
+                    (p2,f"p202-{p2}"),
+                )
+                conn.execute(
+                    """INSERT INTO persona_instances(id,user_id,persona_id,label)
+                       VALUES (%s,%s,%s,'Alternative')""",(alternate,user,p2),
+                )
+            conn.execute(
+                """INSERT INTO persona_selection(user_id,instance_id,generation,mode)
+                   VALUES (%s,%s,1,'FOREGROUND')""",(user,instance),
+            )
+    call(dsn,configure_resource_pool,SUMMARY_RESOURCE,
+         capacity_units=3,p0_reserved_units=1)
+    return user,instance,alternate
+
+
+def actor(user):
+    return TrustedActor(user_id=user,source_id="p202-user")
+
+
+def add_turn(dsn,user,instance,conversation,text,*,generation=1):
+    return call(dsn,ingest_text,actor(user),TextInputCommand(
+        conversation_id=conversation,instance_id=instance,
+        expected_generation=generation,idempotency_key=str(uuid4()),text=text,
+    ))
+
+
+def history(dsn,user,instance,conversation,n=9):
+    rows=[]
+    for i in range(n):
+        text=("I adopted a rescue dog in September."
+              if i==1 else f"Conversation turn {i}: discussed gardening.")
+        rows.append(add_turn(dsn,user,instance,conversation,text))
+    return rows
+
+
+class FixedSummary:
+    def __init__(self,*,bad_quote=False):
+        self.calls=0
+        self.bad_quote=bad_quote
+
+    def generate(self,messages):
+        self.calls+=1
+        rows=json.loads(messages[-1].content)
+        dog=next((r for r in rows if "rescue dog" in r["user"]),None)
+        episodes=[]
+        if dog is not None:
+            episodes=[{
+                "source_turn_id":dog["turn_id"],
+                "evidence_quote":"invented statement" if self.bad_quote else
+                                 "I adopted a rescue dog",
+                "topic":"dog adoption",
+                "description":"User reported adopting a rescue dog",
+                "confidence":0.8,
+            }]
+        return ModelReply(
+            model_id="fake-summary-v1",
+            text=json.dumps({
+                "summary":"The user discussed gardening and a rescue dog.",
+                "episodes":episodes,
+            }),
+        )
+
+
+def schedule(dsn,user,instance,conversation,**kwargs):
+    return call(dsn,schedule_summary,actor(user),conversation,instance,1,
+                **kwargs)
+
+
+def claim(dsn,worker="summary-worker"):
+    lease=call(
+        dsn,claim_operation,worker_id=worker,
+        capabilities=(SUMMARY_CAPABILITY,),
+        operation_types=(SUMMARY_OPERATION,),lease_seconds=120,
+    )
+    assert lease is not None
+    return lease
+
+
+def test_incremental_summary_recall_original_evidence_and_restart(dsn):
+    user,instance,_=seed(dsn)
+    conversation=uuid4()
+    turns=history(dsn,user,instance,conversation)
+    job=schedule(dsn,user,instance,conversation,max_turns=5)
+    assert (job.start_sequence,job.end_sequence)==(1,5)
+    assert schedule(dsn,user,instance,conversation,max_turns=5).replayed
+    lease=claim(dsn)
+    fake=FixedSummary()
+    result=call(dsn,run_summary,lease,fake)
+    assert fake.calls==1 and result.episode_count==1
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT summary_watermark FROM conversations WHERE conversation_id=%s",
+            (conversation,),
+        ).fetchone()[0]==5
+        assert conn.execute(
+            """SELECT count(*) FROM outbox o JOIN events e USING(event_id)
+               WHERE e.event_type='memory.conversation_range.summarized.v1'
+                 AND e.instance_id=%s""",(instance,),
+        ).fetchone()[0]==1
+        assert conn.execute(
+            "SELECT count(*) FROM conversation_turns WHERE conversation_id=%s",
+            (conversation,),
+        ).fetchone()[0]==9
+
+    # Context is reconstructed on fresh connections, keeping recent exact text.
+    current=add_turn(dsn,user,instance,conversation,"Please continue.")
+    context=call(dsn,prepare_text_context,actor(user),current.turn_id,max_turns=2)
+    assert "Turns 1-5" in context.messages[0].content
+    assert "gardening and a rescue dog" in context.messages[0].content
+    assert context.messages[-1].content=="Please continue."
+
+    other_conversation=uuid4()
+    recall=add_turn(dsn,user,instance,other_conversation,
+                    "Earlier, did I discuss dog adoption?")
+    restored=call(dsn,prepare_text_context,actor(user),recall.turn_id)
+    assert "Historical episodes" in restored.messages[0].content
+    assert "rescue dog" in restored.messages[0].content
+    assert "did I discuss dog adoption?" in restored.messages[-1].content
+
+    hits=call(dsn,search_episodes,actor(user),instance,"dog adoption")
+    assert len(hits)==1 and hits[0].source_turn_id==turns[1].turn_id
+    evidence=call(dsn,episode_source_turn,actor(user),instance,hits[0].episode_id)
+    assert evidence["user_text"]=="I adopted a rescue dog in September."
+    assert evidence["assistant_text"] is None
+
+
+def test_progressive_ranges_do_not_overlap_and_no_unnecessary_summary(dsn):
+    user,instance,_=seed(dsn)
+    conversation=uuid4()
+    history(dsn,user,instance,conversation,n=12)
+    first=schedule(dsn,user,instance,conversation,max_turns=4)
+    assert first.start_sequence==1 and first.end_sequence==4
+    call(dsn,run_summary,claim(dsn),FixedSummary())
+    second=schedule(dsn,user,instance,conversation,max_turns=4)
+    assert second.start_sequence==5 and second.end_sequence==8
+    call(dsn,run_summary,claim(dsn),FixedSummary())
+    third=schedule(dsn,user,instance,conversation,max_turns=4)
+    assert (third.start_sequence,third.end_sequence)==(9,10)
+    call(dsn,run_summary,claim(dsn),FixedSummary())
+    assert schedule(dsn,user,instance,conversation,max_turns=4) is None
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        ranges=conn.execute(
+            """SELECT start_sequence,end_sequence FROM conversation_summaries
+               WHERE conversation_id=%s ORDER BY start_sequence""",
+            (conversation,),
+        ).fetchall()
+        assert ranges==[(1,4),(5,8),(9,10)]
+        assert conn.execute(
+            "SELECT summary_watermark FROM conversations WHERE conversation_id=%s",
+            (conversation,),
+        ).fetchone()[0]==10
+
+
+def test_recovery_after_commit_before_operation_completion(dsn):
+    user,instance,_=seed(dsn)
+    conversation=uuid4()
+    history(dsn,user,instance,conversation)
+    scheduled=schedule(dsn,user,instance,conversation,max_turns=5)
+    lease=claim(dsn)
+    prepared=call(dsn,prepare_summary,lease)
+    generated=FixedSummary().generate((
+        type("Message",(),{"content":""})(),
+        type("Message",(),{"content":json.dumps([
+            {"turn_id":str(row["turn_id"]),"user":row["input_text"]}
+            for row in prepared.turns
+        ])})(),
+    ))
+    draft=SummaryDraft.model_validate(json.loads(generated.text))
+    done=call(dsn,commit_summary,lease,prepared,draft,generated.model_id)
+    assert done.episode_count==1
+
+    # Simulate a worker crash and let the *real P0 reaper* safely release
+    # resources and requeue the operation. Only the test clock is advanced.
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        conn.execute(
+            """UPDATE operations SET lease_until=clock_timestamp()-interval '1 second'
+               WHERE operation_id=%s""",(lease.operation_id,),
+        )
+    assert call(dsn,reap_stale_operations)>=1
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        conn.execute(
+            "UPDATE operations SET eligible_at=clock_timestamp() WHERE operation_id=%s",
+            (lease.operation_id,),
+        )
+    newlease=claim(dsn,worker="recovered-worker")
+    no_model=type("NoModel",(),{
+        "generate":lambda self,messages: (_ for _ in ()).throw(
+            AssertionError("model must not rerun after durable summary commit"))
+    })()
+    resumed=call(dsn,run_summary,newlease,no_model)
+    assert resumed.summary_id==done.summary_id and resumed.replayed
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT count(*) FROM conversation_summaries WHERE conversation_id=%s",
+            (conversation,),
+        ).fetchone()[0]==1
+
+
+def test_model_evidence_rejected_and_watermark_unchanged(dsn):
+    user,instance,_=seed(dsn)
+    conv=uuid4()
+    history(dsn,user,instance,conv)
+    job=schedule(dsn,user,instance,conv,max_turns=5)
+    lease=claim(dsn)
+    with pytest.raises(InvalidSummary):
+        call(dsn,run_summary,lease,FixedSummary(bad_quote=True))
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT summary_watermark FROM conversations WHERE conversation_id=%s",
+            (conv,),
+        ).fetchone()[0]==0
+        assert conn.execute(
+            "SELECT status FROM operations WHERE operation_id=%s",
+            (job.operation_id,),
+        ).fetchone()[0]=="RETRY_WAIT"
+        assert conn.execute(
+            "SELECT count(*) FROM memory_episodes WHERE conversation_id=%s",
+            (conv,),
+        ).fetchone()[0]==0
+        # This test deliberately stops retries; other tests should not claim it.
+        conn.execute(
+            "UPDATE operations SET status='FAILED' WHERE operation_id=%s",
+            (job.operation_id,),
+        )
+
+
+def test_stale_persona_generation_during_model_inference(dsn):
+    user,instance,other=seed(dsn,other=True)
+    conv=uuid4()
+    history(dsn,user,instance,conv)
+    schedule(dsn,user,instance,conv,max_turns=5)
+    lease=claim(dsn)
+    class SwitchDuringInference(FixedSummary):
+        def generate(self,messages):
+            call(dsn,switch_persona,actor(user),SwitchPersonaCommand(
+                expected_instance_id=instance,target_instance_id=other,
+                expected_generation=1,idempotency_key=str(uuid4()),
+            ))
+            return super().generate(messages)
+    with pytest.raises(StaleOperation):
+        call(dsn,run_summary,lease,SwitchDuringInference())
+    # A revoked claim retains resources until P0 recovery; release them
+    # through its actual recovery contract, not direct pool manipulation.
+    assert call(dsn,reap_stale_operations)>=1
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT summary_watermark FROM conversations WHERE conversation_id=%s",
+            (conv,),
+        ).fetchone()[0]==0
+        assert conn.execute(
+            "SELECT count(*) FROM conversation_summaries WHERE conversation_id=%s",
+            (conv,),
+        ).fetchone()[0]==0
+
+
+def test_episode_scope_date_bounds_and_relevance(dsn):
+    user,instance,other=seed(dsn,other=True)
+    outsider,outsider_instance,_=seed(dsn)
+    conv=uuid4()
+    history(dsn,user,instance,conv)
+    schedule(dsn,user,instance,conv,max_turns=5)
+    call(dsn,run_summary,claim(dsn),FixedSummary())
+    assert call(dsn,search_episodes,actor(user),other,"dog")==()
+    assert call(dsn,search_episodes,actor(user),instance,"unrelated")==()
+    with pytest.raises(PermissionDenied):
+        call(dsn,search_episodes,actor(outsider),instance,"dog")
+    hits=call(dsn,search_episodes,actor(user),instance,"dog",
+              since=datetime.now(timezone.utc)-timedelta(hours=2),
+              until=datetime.now(timezone.utc)+timedelta(hours=2))
+    assert len(hits)==1
+    assert call(dsn,search_episodes,actor(user),instance,"dog",
+                since=datetime.now(timezone.utc)+timedelta(days=1))==()
+    with pytest.raises(PermissionDenied):
+        call(dsn,episode_source_turn,actor(outsider),instance,hits[0].episode_id)
+    with pytest.raises(PermissionDenied):
+        call(dsn,episode_source_turn,actor(user),other,hits[0].episode_id)
+    with pytest.raises(ValueError):
+        call(dsn,search_episodes,actor(user),instance,"dog",max_results=100)
+
+
+def test_independent_conversation_summaries_and_bounded_context(dsn):
+    user,instance,_=seed(dsn)
+    a,b=uuid4(),uuid4()
+    history(dsn,user,instance,a)
+    history(dsn,user,instance,b)
+    first=schedule(dsn,user,instance,a,max_turns=5)
+    second=schedule(dsn,user,instance,b,max_turns=5)
+    assert first.operation_id!=second.operation_id
+    # P0 claims use SKIP LOCKED: a racing claimant may return None while
+    # another briefly holds the resource-pool row. Claim sequentially,
+    # then demonstrate that independent claimed jobs execute concurrently.
+    leases=[claim(dsn,"parallel-1"),claim(dsn,"parallel-2")]
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        outputs=list(pool.map(
+            lambda lease: call(dsn,run_summary,lease,FixedSummary()),leases,
+        ))
+    assert {x.conversation_id for x in outputs}=={a,b}
+    current=add_turn(dsn,user,instance,a,"Can we continue our conversation?")
+    context=call(dsn,prepare_text_context,actor(user),current.turn_id,
+                 max_turns=2,max_context_chars=512)
+    assert sum(map(lambda x:len(x.content),context.messages))<=512
+    assert context.messages[-1].content=="Can we continue our conversation?"
+
+
+def test_single_oversized_utf8_turn_cannot_block_summary_watermark(dsn):
+    """12k valid CJK characters plus a delivered answer exceed 70k bytes."""
+    from persona_agent.summary_memory import _canonical
+
+    user,instance,_=seed(dsn)
+    conversation=uuid4()
+    original="首"*6000+"中"*5000+"尾"*1000
+    first=add_turn(dsn,user,instance,conversation,original)
+
+    class LongReply:
+        def generate(self,messages):
+            return ModelReply(model_id="long-answer",text="答"*12000)
+
+    generated=call(dsn,respond_to_text,actor(user),first.turn_id,LongReply())
+    call(dsn,acknowledge_text_delivery,actor(user),generated.response_id)
+    for n in range(3):
+        add_turn(dsn,user,instance,conversation,f"Follow-up {n}")
+
+    # Both original messages are preserved; only model-visible input is
+    # projected. Byte length is intentionally much greater than 32,000.
+    planned=schedule(dsn,user,instance,conversation,max_turns=1)
+    assert planned is not None
+    assert (planned.start_sequence,planned.end_sequence)==(1,1)
+    lease=claim(dsn)
+    work=call(dsn,prepare_summary,lease)
+    assert len(_canonical(work.turns))>70000
+    assert work.turns[0]["input_text"]==original
+    assert work.turns[0]["response_text"]=="答"*12000
+
+    class CheckProjection:
+        def generate(self,messages):
+            payload=messages[-1].content
+            assert len(payload.encode("utf-8"))<=32000
+            projected=json.loads(payload)
+            assert len(projected)==1
+            assert "middle of source omitted" in projected[0]["user"]
+            assert "middle of source omitted" in projected[0]["assistant"]
+            assert projected[0]["user"].startswith("首")
+            assert projected[0]["user"].endswith("尾")
+            return ModelReply(
+                model_id="bounded-model",
+                text=json.dumps({"summary":"Long discussion with truncated source text.",
+                                 "episodes":[]}),
+            )
+
+    done=call(dsn,run_summary,lease,CheckProjection())
+    assert done.end_sequence==1
+    following=schedule(dsn,user,instance,conversation,max_turns=1)
+    assert (following.start_sequence,following.end_sequence)==(2,2)
+    call(dsn,run_summary,claim(dsn),FixedSummary())
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT summary_watermark FROM conversations WHERE conversation_id=%s",
+            (conversation,),
+        ).fetchone()[0]==2
+        assert conn.execute(
+            "SELECT input_text FROM conversation_turns WHERE turn_id=%s",
+            (first.turn_id,),
+        ).fetchone()[0]==original
+
+
+def test_long_valid_summaries_are_abridged_without_hiding_older_ranges(dsn):
+    user,instance,_=seed(dsn)
+    conversation=uuid4()
+    history(dsn,user,instance,conversation,n=12)
+
+    class OversizedButValid:
+        def __init__(self,value):
+            self.value=value
+        def generate(self,messages):
+            return ModelReply(
+                model_id="long-summary",
+                text=json.dumps({"summary":self.value,"episodes":[]}),
+            )
+
+    older="OLDER_BEGIN "+("a"*2600)+" OLDER_END"
+    newer="NEWER_BEGIN "+("b"*1500)+" NEWER_END"
+    assert len(older)<4000 and len(newer)<4000
+    assert schedule(dsn,user,instance,conversation,max_turns=4).start_sequence==1
+    call(dsn,run_summary,claim(dsn),OversizedButValid(older))
+    assert schedule(dsn,user,instance,conversation,max_turns=4).start_sequence==5
+    call(dsn,run_summary,claim(dsn),OversizedButValid(newer))
+
+    last=add_turn(dsn,user,instance,conversation,"Can we continue?")
+    ctx=call(dsn,prepare_text_context,actor(user),last.turn_id,max_turns=2)
+    system=ctx.messages[0].content
+    assert "Turns 1-4: OLDER_BEGIN" in system
+    assert "Turns 5-8: NEWER_BEGIN" in system
+    assert "OLDER_END" in system and "NEWER_END" in system
+    assert system.count("[summary abridged]")==2
+    assert ctx.messages[-1].content=="Can we continue?"
+    assert sum(len(x.content) for x in ctx.messages)<=12000
+
+
+def test_failed_summary_requires_explicit_fresh_admission(dsn):
+    """A terminal FAILED P0 operation may not permanently strand the watermark."""
+    user,instance,_=seed(dsn)
+    conversation=uuid4()
+    history(dsn,user,instance,conversation)
+    first=schedule(dsn,user,instance,conversation,max_turns=4)
+    assert first.admission_attempt==1
+    assert schedule(dsn,user,instance,conversation,max_turns=4).replayed
+    for n in range(3):
+        lease=claim(dsn,f"failed-attempt-{n}")
+        status=call(dsn,fail_operation,lease,reason="temporarily broken model",
+                    delay_seconds=0)
+        assert status.value==("FAILED" if n==2 else "RETRY_WAIT")
+        if n<2:
+            assert schedule(dsn,user,instance,conversation,max_turns=4).replayed
+
+    with pytest.raises(SummaryNotReady,match="retry_failed=True"):
+        schedule(dsn,user,instance,conversation,max_turns=4)
+    # Explicit new admission creates a new correlation and receipt without
+    # mutating terminal operation history or advancing the source watermark.
+    replacement=schedule(dsn,user,instance,conversation,
+                         max_turns=4,retry_failed=True)
+    assert replacement.admission_attempt==2
+    assert replacement.operation_id!=first.operation_id
+    assert not replacement.replayed
+    assert (replacement.start_sequence,replacement.end_sequence)==(1,4)
+    assert schedule(dsn,user,instance,conversation,max_turns=4).replayed
+    assert schedule(dsn,user,instance,conversation,
+                    max_turns=4,retry_failed=True).replayed
+    call(dsn,run_summary,claim(dsn,"recovered-summarizer"),FixedSummary())
+    next_range=schedule(dsn,user,instance,conversation,max_turns=4)
+    assert next_range.start_sequence==5
+    # This suite shares a PostgreSQL scheduler: do not leave a runnable
+    # summary operation for a different test to claim.
+    call(dsn,run_summary,claim(dsn,"next-range-cleanup"),FixedSummary())
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT summary_watermark FROM conversations WHERE conversation_id=%s",
+            (conversation,),
+        ).fetchone()[0]==7
+        rows=conn.execute(
+            """SELECT j.admission_attempt,o.status,j.summary_id
+               FROM conversation_summary_jobs j JOIN operations o USING(operation_id)
+               WHERE j.conversation_id=%s AND j.start_sequence=1
+               ORDER BY j.admission_attempt""",
+            (conversation,),
+        ).fetchall()
+        # Only retries of the first range are compared; later ranges are separate.
+        assert rows[0][0:2]==(1,"FAILED")
+        assert rows[1][0:2]==(2,"COMPLETED")
+        assert rows[1][2] is not None
+
+
+def test_expired_lease_while_waiting_for_conversation_row_rolls_back(dsn):
+    """Late workers must not commit memory after a blocking conversation lock."""
+    user,instance,_=seed(dsn)
+    conversation=uuid4()
+    history(dsn,user,instance,conversation)
+    scheduled=schedule(dsn,user,instance,conversation,max_turns=4)
+    lease=call(
+        dsn,claim_operation,worker_id="lease-expiry-worker",
+        capabilities=(SUMMARY_CAPABILITY,),operation_types=(SUMMARY_OPERATION,),
+        lease_seconds=3,
+    )
+    assert lease is not None and lease.operation_id==scheduled.operation_id
+    work=call(dsn,prepare_summary,lease)
+    proposal=SummaryDraft(summary="Safe source-linked discussion summary.",episodes=())
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with psycopg.connect(dsn,autocommit=True) as holder:
+            with holder.transaction():
+                holder.execute(
+                    "SELECT 1 FROM conversations WHERE conversation_id=%s FOR UPDATE",
+                    (conversation,),
+                ).fetchone()
+                future=pool.submit(call,dsn,commit_summary,lease,work,proposal,"test-model")
+                # Observe that the worker really reached the blocked FOR UPDATE,
+                # so this tests the post-lock time fence rather than initial
+                # stale-lease admission.
+                until=time.monotonic()+2
+                blocked=False
+                with psycopg.connect(dsn,autocommit=True) as monitor:
+                    while time.monotonic()<until:
+                        blocked=monitor.execute(
+                            """SELECT EXISTS(
+                                 SELECT 1 FROM pg_stat_activity
+                                 WHERE state='active' AND wait_event_type='Lock'
+                                   AND query LIKE '%%SELECT * FROM conversations%%'
+                                   AND query LIKE '%%FOR UPDATE%%'
+                               )"""
+                        ).fetchone()[0]
+                        if blocked:
+                            break
+                        time.sleep(0.02)
+                assert blocked, "worker never reached the blocking conversation lock"
+                time.sleep(max(
+                    0,(lease.lease_until-datetime.now(timezone.utc)).total_seconds()+0.25
+                ))
+        with pytest.raises(StaleOperation):
+            future.result(timeout=10)
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT summary_watermark FROM conversations WHERE conversation_id=%s",
+            (conversation,),
+        ).fetchone()[0]==0
+        assert conn.execute(
+            "SELECT count(*) FROM conversation_summaries WHERE conversation_id=%s",
+            (conversation,),
+        ).fetchone()[0]==0
+        assert conn.execute(
+            """SELECT count(*) FROM events WHERE event_type=
+               'memory.conversation_range.summarized.v1' AND user_id=%s""",
+            (user,),
+        ).fetchone()[0]==0
+    assert call(dsn,reap_stale_operations)>=1
+    # Recover the operation through P0 rather than leaving a RETRY_WAIT
+    # candidate that could interfere with a subsequent integration test.
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        conn.execute(
+            "UPDATE operations SET eligible_at=clock_timestamp() WHERE operation_id=%s",
+            (scheduled.operation_id,),
+        )
+    retry=claim(dsn,"expired-worker-recovered")
+    assert retry.operation_id==scheduled.operation_id
+    call(dsn,run_summary,retry,FixedSummary())
+
+
+def test_long_episode_recall_keeps_provenance_and_older_matches(dsn):
+    user,instance,_=seed(dsn)
+    conversation=uuid4()
+    history(dsn,user,instance,conversation,n=12)
+
+    class EpisodeRich:
+        def __init__(self,description):
+            self.description=description
+
+        def generate(self,messages):
+            source=json.loads(messages[-1].content)[0]
+            return ModelReply(
+                model_id="episode-test-model",
+                text=json.dumps({
+                    "summary":"The conversation involved gardening memories.",
+                    "episodes":[{
+                        "source_turn_id":source["turn_id"],
+                        "evidence_quote":source["user"][:12],
+                        "topic":"garden memories",
+                        "description":self.description,
+                        "confidence":0.7,
+                    }],
+                }),
+            )
+
+    older="OLDER_EPISODE_BEGIN "+("o"*1100)+" OLDER_EPISODE_END"
+    newer="NEWER_EPISODE_BEGIN "+("n"*1100)+" NEWER_EPISODE_END"
+    assert len(older)<=1200 and len(newer)<=1200
+    assert schedule(dsn,user,instance,conversation,max_turns=4).start_sequence==1
+    call(dsn,run_summary,claim(dsn),EpisodeRich(older))
+    assert schedule(dsn,user,instance,conversation,max_turns=4).start_sequence==5
+    call(dsn,run_summary,claim(dsn),EpisodeRich(newer))
+
+    episodes=call(dsn,search_episodes,actor(user),instance,"garden memories")
+    assert len(episodes)==2
+    recalled=add_turn(dsn,user,instance,uuid4(),
+                      "Do you remember garden memories?")
+    context=call(dsn,prepare_text_context,actor(user),recalled.turn_id)
+    system=context.messages[0].content
+    assert "Historical episodes" in system
+    assert "OLDER_EPISODE_BEGIN" in system
+    assert "NEWER_EPISODE_BEGIN" in system
+    assert "OLDER_EPISODE_END" in system
+    assert "NEWER_EPISODE_END" in system
+    assert system.count("[episode abridged]")==2
+    assert all(str(item.source_turn_id) in system for item in episodes)
+    assert context.messages[-1].content=="Do you remember garden memories?"
+    assert sum(len(item.content) for item in context.messages)<=12000
+
+
+def test_summary_context_cutoff_follows_actually_retained_messages(dsn):
+    """The SQL window is not the verbatim-history boundary after char trimming."""
+    user,instance,_=seed(dsn)
+    conversation=uuid4()
+    turns=[]
+    for i in range(20):
+        turns.append(add_turn(
+            dsn,user,instance,conversation,
+            f"TURN_{i+1:02d} "+("long conversation content "*42).strip(),
+        ))
+
+    class RangeSummary:
+        def generate(self,messages):
+            rows=json.loads(messages[-1].content)
+            return ModelReply(
+                model_id="range-summary-fake",
+                text=json.dumps({
+                    "summary":f"SUMMARIZED_RANGE_{rows[0]['user'][:7]}",
+                    "episodes":[],
+                }),
+            )
+
+    first=schedule(dsn,user,instance,conversation,max_turns=8)
+    assert (first.start_sequence,first.end_sequence)==(1,8)
+    call(dsn,run_summary,claim(dsn),RangeSummary())
+    second=schedule(dsn,user,instance,conversation,max_turns=8)
+    assert (second.start_sequence,second.end_sequence)==(9,16)
+    call(dsn,run_summary,claim(dsn),RangeSummary())
+
+    # SQL selects turns 9-20, but with a 4k character budget most of
+    # those messages are dropped. Both older summaries must now qualify.
+    compact=call(
+        dsn,prepare_text_context,actor(user),turns[-1].turn_id,
+        max_turns=12,max_context_chars=4000,
+    )
+    system=compact.messages[0].content
+    assert "Turns 1-8:" in system
+    assert "Turns 9-16:" in system
+    assert compact.messages[-1].content==(
+        "TURN_20 "+("long conversation content "*42).strip()
+    )
+    assert sum(len(msg.content) for msg in compact.messages)<=4000
+    assert "TURN_16" not in "\n".join(m.content for m in compact.messages[1:])
+
+    # With a roomy budget the initial SQL history *is* retained, including
+    # turn 9. A summary spanning 9-16 must not overlap verbatim context.
+    roomy=call(
+        dsn,prepare_text_context,actor(user),turns[-1].turn_id,
+        max_turns=12,max_context_chars=24000,
+    )
+    assert "Turns 1-8:" in roomy.messages[0].content
+    assert "Turns 9-16:" not in roomy.messages[0].content
+    assert roomy.messages[1].content.startswith("TURN_09 ")
+    assert roomy.messages[-1].content.startswith("TURN_20 ")
+
+
+def test_generated_reply_revoked_by_persona_switch_is_summary_safe(dsn):
+    """Undelivered old-generation output is permanently fenced, not a backlog."""
+    user,instance,alternate=seed(dsn,other=True)
+    conversation=uuid4()
+    original_user_text="I spoke about my new houseplant."
+    never_delivered="This is assistant-only text never delivered to the user."
+    first=add_turn(dsn,user,instance,conversation,original_user_text)
+
+    class UnsentReply:
+        def generate(self,messages):
+            return ModelReply(model_id="unsent-model",text=never_delivered)
+
+    generated=call(dsn,respond_to_text,actor(user),first.turn_id,UnsentReply())
+    assert generated.delivery_status=="GENERATED"
+
+    # Keep sufficient later input to make the first turn eligible under
+    # retain_recent=2, while no acknowledgement has been received.
+    for n in range(3):
+        add_turn(dsn,user,instance,conversation,f"Follow-up discussion {n}")
+
+    # The original generation is still selected: delivery is still possible
+    # so this input range must not be summarized prematurely.
+    with pytest.raises(SummaryNotReady):
+        schedule(dsn,user,instance,conversation,max_turns=1)
+
+    away=call(dsn,switch_persona,actor(user),SwitchPersonaCommand(
+        expected_instance_id=instance,target_instance_id=alternate,
+        expected_generation=1,idempotency_key=str(uuid4()),
+    ))
+    assert away.generation==2
+    back=call(dsn,switch_persona,actor(user),SwitchPersonaCommand(
+        expected_instance_id=alternate,target_instance_id=instance,
+        expected_generation=2,idempotency_key=str(uuid4()),
+    ))
+    assert back.generation==3
+
+    # Switching back cannot resurrect the original generation's authority
+    # to deliver. The full unsent output remains durable for diagnostics.
+    with pytest.raises(StaleSelection):
+        call(dsn,acknowledge_text_delivery,actor(user),generated.response_id)
+
+    scheduled=call(
+        dsn,schedule_summary,actor(user),conversation,instance,3,max_turns=1,
+    )
+    assert (scheduled.start_sequence,scheduled.end_sequence)==(1,1)
+    lease=claim(dsn,"revoked-generation-summarizer")
+    snapshot=call(dsn,prepare_summary,lease)
+    assert snapshot.turns[0]["input_text"]==original_user_text
+    assert snapshot.turns[0]["response_text"]==never_delivered
+    assert snapshot.turns[0]["delivery_status"]=="GENERATED"
+    assert snapshot.turns[0]["response_selection_generation"]==1
+
+    class CheckNoUnsentOutput:
+        def generate(self,messages):
+            source=json.loads(messages[-1].content)
+            assert len(source)==1
+            assert source[0]["user"]==original_user_text
+            assert source[0]["assistant"] is None
+            assert never_delivered not in messages[-1].content
+            return ModelReply(model_id="source-safe-summary",text=json.dumps({
+                "summary":"The user discussed a houseplant.",
+                "episodes":[],
+            }))
+
+    committed=call(dsn,run_summary,lease,CheckNoUnsentOutput())
+    assert (committed.start_sequence,committed.end_sequence)==(1,1)
+
+    # The next contiguous range can now progress under generation 3.
+    next_job=call(
+        dsn,schedule_summary,actor(user),conversation,instance,3,max_turns=1,
+    )
+    assert (next_job.start_sequence,next_job.end_sequence)==(2,2)
+    call(dsn,run_summary,claim(dsn,"contiguous-range-summarizer"),FixedSummary())
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        row=conn.execute(
+            """SELECT r.delivery_status,r.response_text,c.summary_watermark
+               FROM conversation_responses r
+               JOIN conversations c ON c.conversation_id=r.conversation_id
+               WHERE r.response_id=%s""",(generated.response_id,),
+        ).fetchone()
+        assert row==("GENERATED",never_delivered,2)
+        assert conn.execute(
+            """SELECT count(*) FROM conversation_summaries
+               WHERE conversation_id=%s""",(conversation,),
+        ).fetchone()[0]==2
