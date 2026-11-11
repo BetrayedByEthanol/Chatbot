@@ -606,6 +606,19 @@ def _shorten_summary(text: str, budget: int) -> str:
     return text[:prefix]+marker+text[-suffix:]
 
 
+def _shorten_episode(text: str, budget: int) -> str:
+    """Abridge only derived description text; never drop source citations."""
+    if len(text)<=budget:
+        return text
+    marker=" ... [episode abridged] ... "
+    if budget<=len(marker):
+        return text[:budget]
+    remaining=budget-len(marker)
+    prefix=remaining*2//3
+    suffix=remaining-prefix
+    return text[:prefix]+marker+text[-suffix:]
+
+
 def summary_context_block(cur, conversation_id: UUID, user_id: UUID,
                           instance_id: UUID, before_sequence: int,
                           max_chars: int) -> str:
@@ -683,11 +696,42 @@ def episode_context_block(cur, user_id: UUID, instance_id: UUID,
            ORDER BY source_turn_at DESC,episode_id LIMIT 4""",
         (user_id,instance_id,terms),
     )
-    lines=[]
-    for row in cur.fetchall():
-        line=(f"{row['topic']}: {row['description']} "
-              f"(source {row['source_turn_id']}, {row['source_turn_at'].date()})\n")
-        if len(head)+sum(map(len,lines))+len(line)>max_chars:
-            break
-        lines.append(line)
-    return head+"".join(lines) if lines else ""
+    rows=cur.fetchall()
+    # Keep the original source identifiers and source-turn dates, even when
+    # abridging long derived descriptions. A long newest match cannot hide
+    # other eligible episodes.
+    specs=[
+        (
+            f"{row['topic']}: ",
+            f" (source {row['source_turn_id']}, {row['source_turn_at'].date()})\\n",
+        )
+        for row in rows
+    ]
+    while rows and max_chars-len(head)-sum(
+        len(prefix)+len(suffix) for prefix,suffix in specs
+    )<48*len(rows):
+        rows.pop()     # drop oldest before sacrificing all provenance
+        specs.pop()
+    if not rows:
+        return ""
+    remaining=max_chars-len(head)-sum(
+        len(prefix)+len(suffix) for prefix,suffix in specs
+    )
+    allocations=[0]*len(rows)
+    pending=set(range(len(rows)))
+    while pending and remaining:
+        share=max(1,remaining//len(pending))
+        for index in sorted(tuple(pending)):
+            needed=len(rows[index]["description"])-allocations[index]
+            grant=min(needed,share,remaining)
+            allocations[index]+=grant
+            remaining-=grant
+            if allocations[index]>=len(rows[index]["description"]):
+                pending.remove(index)
+            if not remaining:
+                break
+    lines=[
+        prefix+_shorten_episode(row["description"],budget)+suffix
+        for row,(prefix,suffix),budget in zip(rows,specs,allocations)
+    ]
+    return head+"".join(reversed(lines))
