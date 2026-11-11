@@ -120,7 +120,8 @@ def parse_explicit_claim(text: str) -> ExplicitClaim | None:
     normalized=re.sub(r"^actually,\s*", "", statement, flags=re.I)
     if normalized.endswith("."):
         normalized=normalized[:-1]
-    if "." in normalized or "," in normalized.replace("for me,", ""):
+    # Permit only the single optional "For me," introduction comma.
+    if "." in normalized or "," in re.sub(r"^for me,", "", normalized, flags=re.I):
         return None
     patterns=(
         (_FAVORITE,"PREFERENCE","favorite_"),
