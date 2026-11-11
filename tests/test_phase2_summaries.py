@@ -1,6 +1,7 @@
 """P2-02 PostgreSQL integration: source-linked summaries and episodic recall."""
 
 from concurrent.futures import ThreadPoolExecutor
+import time
 from datetime import datetime, timedelta, timezone
 import json
 from uuid import uuid4
@@ -15,10 +16,10 @@ from persona_agent.conversation import (
 from persona_agent.conversation_contracts import ModelReply, TextInputCommand
 from persona_agent.lifecycle import SwitchPersonaCommand, switch_persona
 from persona_agent.operation_scheduler import claim_operation, configure_resource_pool
-from persona_agent.operation_control import reap_stale_operations
+from persona_agent.operation_control import reap_stale_operations, fail_operation
 from persona_agent.operation_contracts import StaleOperation
 from persona_agent.summary_contracts import (
-    InvalidSummary, StaleSummary, SUMMARY_CAPABILITY, SUMMARY_OPERATION,
+    InvalidSummary, StaleSummary, SummaryNotReady, SUMMARY_CAPABILITY, SUMMARY_OPERATION,
     SUMMARY_RESOURCE, SummaryDraft,
 )
 from persona_agent.summary_memory import (
@@ -447,3 +448,165 @@ def test_long_valid_summaries_are_abridged_without_hiding_older_ranges(dsn):
     assert system.count("[summary abridged]")==2
     assert ctx.messages[-1].content=="Can we continue?"
     assert sum(len(x.content) for x in ctx.messages)<=12000
+
+
+def test_failed_summary_requires_explicit_fresh_admission(dsn):
+    """A terminal FAILED P0 operation may not permanently strand the watermark."""
+    user,instance,_=seed(dsn)
+    conversation=uuid4()
+    history(dsn,user,instance,conversation)
+    first=schedule(dsn,user,instance,conversation,max_turns=4)
+    assert first.admission_attempt==1
+    assert schedule(dsn,user,instance,conversation,max_turns=4).replayed
+    for n in range(3):
+        lease=claim(dsn,f"failed-attempt-{n}")
+        status=call(dsn,fail_operation,lease,reason="temporarily broken model",
+                    delay_seconds=0)
+        assert status.value==("FAILED" if n==2 else "RETRY_WAIT")
+        if n<2:
+            assert schedule(dsn,user,instance,conversation,max_turns=4).replayed
+
+    with pytest.raises(SummaryNotReady,match="retry_failed=True"):
+        schedule(dsn,user,instance,conversation,max_turns=4)
+    # Explicit new admission creates a new correlation and receipt without
+    # mutating terminal operation history or advancing the source watermark.
+    replacement=schedule(dsn,user,instance,conversation,
+                         max_turns=4,retry_failed=True)
+    assert replacement.admission_attempt==2
+    assert replacement.operation_id!=first.operation_id
+    assert not replacement.replayed
+    assert (replacement.start_sequence,replacement.end_sequence)==(1,4)
+    assert schedule(dsn,user,instance,conversation,max_turns=4).replayed
+    assert schedule(dsn,user,instance,conversation,
+                    max_turns=4,retry_failed=True).replayed
+    call(dsn,run_summary,claim(dsn,"recovered-summarizer"),FixedSummary())
+    assert schedule(dsn,user,instance,conversation,max_turns=4).start_sequence==5
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT summary_watermark FROM conversations WHERE conversation_id=%s",
+            (conversation,),
+        ).fetchone()[0]==4
+        rows=conn.execute(
+            """SELECT j.admission_attempt,o.status,j.summary_id
+               FROM conversation_summary_jobs j JOIN operations o USING(operation_id)
+               WHERE j.conversation_id=%s ORDER BY j.admission_attempt""",
+            (conversation,),
+        ).fetchall()
+        # The third row is a queued job for the next unsummarized range.
+        assert rows[0][0:2]==(1,"FAILED")
+        assert rows[1][0:2]==(2,"COMPLETED")
+        assert rows[1][2] is not None
+
+
+def test_expired_lease_while_waiting_for_conversation_row_rolls_back(dsn):
+    """Late workers must not commit memory after a blocking conversation lock."""
+    user,instance,_=seed(dsn)
+    conversation=uuid4()
+    history(dsn,user,instance,conversation)
+    scheduled=schedule(dsn,user,instance,conversation,max_turns=4)
+    lease=call(
+        dsn,claim_operation,worker_id="lease-expiry-worker",
+        capabilities=(SUMMARY_CAPABILITY,),operation_types=(SUMMARY_OPERATION,),
+        lease_seconds=3,
+    )
+    assert lease is not None and lease.operation_id==scheduled.operation_id
+    work=call(dsn,prepare_summary,lease)
+    proposal=SummaryDraft(summary="Safe source-linked discussion summary.",episodes=())
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with psycopg.connect(dsn,autocommit=True) as holder:
+            with holder.transaction():
+                holder.execute(
+                    "SELECT 1 FROM conversations WHERE conversation_id=%s FOR UPDATE",
+                    (conversation,),
+                ).fetchone()
+                future=pool.submit(call,dsn,commit_summary,lease,work,proposal,"test-model")
+                # Observe that the worker really reached the blocked FOR UPDATE,
+                # so this tests the post-lock time fence rather than initial
+                # stale-lease admission.
+                until=time.monotonic()+2
+                blocked=False
+                with psycopg.connect(dsn,autocommit=True) as monitor:
+                    while time.monotonic()<until:
+                        blocked=monitor.execute(
+                            """SELECT EXISTS(
+                                 SELECT 1 FROM pg_stat_activity
+                                 WHERE state='active' AND wait_event_type='Lock'
+                                   AND query LIKE '%%SELECT * FROM conversations%%'
+                                   AND query LIKE '%%FOR UPDATE%%'
+                               )"""
+                        ).fetchone()[0]
+                        if blocked:
+                            break
+                        time.sleep(0.02)
+                assert blocked, "worker never reached the blocking conversation lock"
+                time.sleep(max(
+                    0,(lease.lease_until-datetime.now(timezone.utc)).total_seconds()+0.25
+                ))
+        with pytest.raises(StaleOperation):
+            future.result(timeout=10)
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT summary_watermark FROM conversations WHERE conversation_id=%s",
+            (conversation,),
+        ).fetchone()[0]==0
+        assert conn.execute(
+            "SELECT count(*) FROM conversation_summaries WHERE conversation_id=%s",
+            (conversation,),
+        ).fetchone()[0]==0
+        assert conn.execute(
+            """SELECT count(*) FROM events WHERE event_type=
+               'memory.conversation_range.summarized.v1' AND user_id=%s""",
+            (user,),
+        ).fetchone()[0]==0
+    assert call(dsn,reap_stale_operations)>=1
+
+
+def test_long_episode_recall_keeps_provenance_and_older_matches(dsn):
+    user,instance,_=seed(dsn)
+    conversation=uuid4()
+    history(dsn,user,instance,conversation,n=12)
+
+    class EpisodeRich:
+        def __init__(self,description):
+            self.description=description
+
+        def generate(self,messages):
+            source=json.loads(messages[-1].content)[0]
+            return ModelReply(
+                model_id="episode-test-model",
+                text=json.dumps({
+                    "summary":"The conversation involved gardening memories.",
+                    "episodes":[{
+                        "source_turn_id":source["turn_id"],
+                        "evidence_quote":source["user"][:12],
+                        "topic":"garden memories",
+                        "description":self.description,
+                        "confidence":0.7,
+                    }],
+                }),
+            )
+
+    older="OLDER_EPISODE_BEGIN "+("o"*1100)+" OLDER_EPISODE_END"
+    newer="NEWER_EPISODE_BEGIN "+("n"*1100)+" NEWER_EPISODE_END"
+    assert len(older)<=1200 and len(newer)<=1200
+    assert schedule(dsn,user,instance,conversation,max_turns=4).start_sequence==1
+    call(dsn,run_summary,claim(dsn),EpisodeRich(older))
+    assert schedule(dsn,user,instance,conversation,max_turns=4).start_sequence==5
+    call(dsn,run_summary,claim(dsn),EpisodeRich(newer))
+
+    episodes=call(dsn,search_episodes,actor(user),instance,"garden memories")
+    assert len(episodes)==2
+    recalled=add_turn(dsn,user,instance,uuid4(),
+                      "Do you remember garden memories?")
+    context=call(dsn,prepare_text_context,actor(user),recalled.turn_id)
+    system=context.messages[0].content
+    assert "Historical episodes" in system
+    assert "OLDER_EPISODE_BEGIN" in system
+    assert "NEWER_EPISODE_BEGIN" in system
+    assert "OLDER_EPISODE_END" in system
+    assert "NEWER_EPISODE_END" in system
+    assert system.count("[episode abridged]")==2
+    assert all(str(item.source_turn_id) in system for item in episodes)
+    assert context.messages[-1].content=="Do you remember garden memories?"
+    assert sum(len(item.content) for item in context.messages)<=12000
