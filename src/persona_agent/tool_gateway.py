@@ -178,7 +178,7 @@ def schedule_text_analysis(
                         tool_call_id,conversation_id,turn_id,user_id,instance_id,
                         selection_generation,tool_name,tool_config
                     ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s::jsonb)
-                    ON CONFLICT (turn_id) DO NOTHING
+                    ON CONFLICT DO NOTHING
                     RETURNING tool_call_id
                     """,
                     (tool_id,turn["conversation_id"],command.turn_id,actor.user_id,
@@ -186,10 +186,11 @@ def schedule_text_analysis(
                      '{"max_words":'+str(command.max_words)+'}'),
                 )
                 if cur.fetchone() is None:
-                    # Two callers can both observe no row before either
-                    # inserts. The unique index serializes this conflict;
-                    # this new statement sees the committed winner under
-                    # READ COMMITTED, even if our earlier SELECT saw nothing.
+                    # Two callers may race on BOTH the turn_id UNIQUE key
+                    # and the deterministic tool_call_id PRIMARY KEY. Handle
+                    # either conflict, then reread by the authenticated turn.
+                    # This new statement sees the committed winner under
+                    # READ COMMITTED even if our earlier SELECT saw nothing.
                     cur.execute(
                         "SELECT * FROM conversation_tool_calls "
                         "WHERE turn_id=%s FOR UPDATE",
@@ -197,8 +198,11 @@ def schedule_text_analysis(
                     )
                     existing=cur.fetchone()
                     if existing is None:
-                        raise StaleConversation(
-                            "concurrent tool admission was not found after conflict"
+                        # A deterministic tool ID already belongs to a
+                        # different turn. Never expose a raw PK violation or
+                        # accidentally replay the wrong turn's operation.
+                        raise IdempotencyConflict(
+                            "tool identifier belongs to another turn"
                         )
                 else:
                     _event(
