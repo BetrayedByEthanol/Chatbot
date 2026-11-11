@@ -255,7 +255,7 @@ def _messages(work:CognitiveWork) -> tuple[ModelMessage,...]:
         "Do not invent user facts, inferred emotions or authorization. "
         "Return ONLY JSON matching {\"proposals\":[{\"kind\":"
         "\"OBSERVATION|HYPOTHESIS|CONCLUSION|QUESTION|SELF_EVALUATION|INTENTION\","
-        "\"subject\":\"USER|CONVERSATION|PERSONA\",\"content\":\"...\","
+        "\"subject\":\"USER|CONVERSATION|PERSONA\",\"temporal_scope\":\"CURRENT|HISTORICAL|FUTURE\",\"content\":\"...\","
         "\"source_turn_id\":\"uuid\",\"evidence_quote\":\"verbatim user span\","
         "\"confidence\":0.5,\"trigger_text\":null,\"expiry_days\":null}]}. "
         "For intentions set trigger_text and expiry_days (1-30); otherwise null. "
@@ -371,13 +371,14 @@ def commit_cognition(
                          reflection_id,operation_id,user_id,instance_id,
                          conversation_id,evidence_turn_id,related_reflection_id,
                          content_fingerprint,evidence_quote,kind,subject,
-                         content,confidence,model_id,processed_through_sequence
-                       ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                         content,confidence,temporal_scope,model_id,
+                         processed_through_sequence
+                       ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
                     (reflection_id,lease.operation_id,lease.user_id,lease.instance_id,
                      work.conversation_id,item.source_turn_id,related_id,
                      fingerprint,item.evidence_quote,
                      item.kind,item.subject,item.content.strip(),item.confidence,
-                     model_id,work.end_sequence),
+                     item.temporal_scope,model_id,work.end_sequence),
                 )
                 count+=1
                 if item.kind=="INTENTION":
@@ -473,7 +474,8 @@ def list_cognitive_proposals(
         cur.execute(
             """SELECT r.reflection_id,r.conversation_id,r.evidence_turn_id,
                       r.evidence_quote,r.kind,r.subject,r.content,r.confidence,
-                      r.related_reflection_id,r.epistemic_status,r.review_status,
+                      r.related_reflection_id,r.temporal_scope,r.privacy_class,
+                      r.epistemic_status,r.review_status,
                       r.processed_through_sequence,
                       r.created_at
                FROM cognitive_reflections r
