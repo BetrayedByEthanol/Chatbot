@@ -65,11 +65,12 @@ CREATE TABLE conversation_summary_jobs (
     user_id uuid NOT NULL,
     instance_id uuid NOT NULL,
     expected_generation bigint NOT NULL CHECK (expected_generation >= 1),
+    admission_attempt bigint NOT NULL DEFAULT 1 CHECK (admission_attempt >= 1),
     start_sequence bigint NOT NULL CHECK (start_sequence >= 1),
     end_sequence bigint NOT NULL CHECK (end_sequence >= start_sequence),
     summary_id uuid,
     created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
-    UNIQUE (conversation_id,start_sequence,expected_generation),
+    UNIQUE (conversation_id,start_sequence,expected_generation,admission_attempt),
     FOREIGN KEY (summary_id,user_id,instance_id)
         REFERENCES conversation_summaries(summary_id,user_id,instance_id),
     FOREIGN KEY (conversation_id,user_id,instance_id)
