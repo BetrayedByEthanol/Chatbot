@@ -133,3 +133,32 @@ PostgreSQL regression tests cover a 12,000-character multi-byte input plus
 a 12,000-character delivered response (over 70 KB of original evidence),
 subsequent watermark progress, and restoration of multiple 1,200+ character
 summaries in a bounded response context.
+
+
+## Review hardening — terminal retry, post-lock fencing, episode recall
+
+- **Fresh admission after terminal failure.** `schedule_summary(..., retry_failed=True)`
+  is an intentional, authenticated retry boundary. The previous operation's
+  `FAILED` state, command receipt, and source job history stay unchanged.
+  A new monotonically numbered `admission_attempt` uses a different
+  operation UUID and idempotency key for the same contiguous watermark range.
+  Repeated scheduling of queued, running, retry-waiting or staged-but-not-
+  enqueued work always replays its existing operation. Without explicit
+  `retry_failed=True`, a failed job raises `SummaryNotReady` instead of
+  silently consuming unlimited model attempts. Cancelled, blocked, and
+  suspended jobs are not automatically restarted.
+- **Lease check after potentially blocking locks.** `commit_summary()`
+  repeats the P0 `require_claim()` fence after acquiring the conversation
+  `FOR UPDATE` lock, and again after inserts/outbox append but before
+  returning from the transaction. If it expires while blocked or during
+  validation, the summary, episodes, watermark and event/outbox writes roll
+  back together.
+- **Budgeted episodic restoration.** The Context Builder distributes the
+  episode block's optional character budget across eligible matches,
+  preserves each topic, source UUID and source-turn date, and marks truncated
+  episode descriptions. One valid 1,200-character description does not
+  suppress itself and all older matches.
+
+New PostgreSQL regressions cover three failed P0 operation claims followed
+by explicit new admission, a real blocked conversation lock across worker
+lease expiry, and two oversized episodic descriptions recalled together.
