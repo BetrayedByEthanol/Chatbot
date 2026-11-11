@@ -264,8 +264,9 @@ def prepare_text_context(
 ) -> ResponseContext:
     """Return a bounded, scoped context without historical vector retrieval.
 
-    Only DELIVERED assistant messages appear as conversational history;
-    GENERATED alone is not evidence that the user heard or saw a response.
+    Only DELIVERED assistant messages appear as conversational history,
+    including acknowledged deferred tool follow-ups associated with the
+    original user turn. GENERATED alone is not evidence of delivery.
     """
     require_idle(connection)
     _require_actor(actor)
@@ -295,9 +296,15 @@ def prepare_text_context(
                 raise StaleConversation("only the latest pending input may be answered")
             cursor.execute(
                 """
-                SELECT t.input_text,r.response_text,r.delivery_status
+                SELECT t.input_text,r.response_text,r.delivery_status,
+                       followup.response_text AS followup_text
                 FROM conversation_turns t
                 LEFT JOIN conversation_responses r ON r.turn_id=t.turn_id
+                LEFT JOIN conversation_assistant_followups followup
+                  ON followup.conversation_id=t.conversation_id
+                 AND followup.turn_id=t.turn_id
+                 AND followup.user_id=t.user_id
+                 AND followup.instance_id=t.instance_id
                 WHERE t.conversation_id=%s AND t.user_id=%s
                   AND t.sequence<=%s
                 ORDER BY t.sequence DESC LIMIT %s
@@ -309,6 +316,8 @@ def prepare_text_context(
                 history.append(ModelMessage("user",turn["input_text"]))
                 if turn["delivery_status"]=="DELIVERED":
                     history.append(ModelMessage("assistant",turn["response_text"]))
+                if turn["followup_text"] is not None:
+                    history.append(ModelMessage("assistant",turn["followup_text"]))
             prompt = (
                 f"{_SYSTEM_PROMPT}\nPersona identity key: {item['stable_key']}\n"
                 f"Selected persona label: {item['label']}\n"
