@@ -19,7 +19,7 @@ from psycopg import Connection
 from psycopg.rows import dict_row
 
 from .event_delivery import (
-    claim_delivery, defer_delivery, dispatch_outbox, process_delivery,
+    StaleDelivery, claim_delivery, defer_delivery, dispatch_outbox, process_delivery,
     resume_deferred, retry_delivery, reap_expired_claims, subscribe,
 )
 from .lifecycle import TrustedPlatformActor
@@ -107,11 +107,6 @@ def _admit_if_due(
             policy.max_turns,
             row["next_sequence"]-1-policy.retain_recent-row["summary_watermark"],
         )
-        # A meaningful departure is a natural safe point to compress even
-        # short ranges. Normal foreground work waits for a useful batch.
-        threshold=1 if mode=="BACKGROUND" else policy.min_candidate_turns
-        if eligible<threshold:
-            return 0,0
         start=row["summary_watermark"]+1
         cur.execute(
             """SELECT o.status
@@ -126,6 +121,14 @@ def _admit_if_due(
         if last is not None and last["status"] in _TERMINAL_OR_ADMITTED:
             # Explicit user/operator recovery owns terminal FAILED retry.
             # Active jobs are already admitted and consume no further tokens.
+            return 0,0
+        # Recovery is not a *new* scheduling decision. A short Background
+        # range staged before an enqueue crash remains authorized when the
+        # same generation returns to Foreground. Inspect the latest attempt
+        # before applying the larger Foreground threshold.
+        staged_without_operation=last is not None and last["status"] is None
+        threshold=1 if mode=="BACKGROUND" else policy.min_candidate_turns
+        if not staged_without_operation and eligible<threshold:
             return 0,0
 
     actor=TrustedPlatformActor(user_id=user_id,source_id=SUMMARY_CONSUMER)
@@ -158,7 +161,7 @@ def _claimed_event(connection: Connection, lease):
         )
         row=cur.fetchone()
         if row is None:
-            raise StaleSelection("automatic summary delivery claim is no longer active")
+            raise StaleDelivery("automatic summary delivery claim is no longer active")
         return row
 
 
@@ -252,8 +255,26 @@ def _reconcile_active(connection: Connection, policy: AutoSummaryPolicy,
                    AND p.instance_id=c.instance_id
                WHERE p.mode IN ('FOREGROUND','BACKGROUND')
                  AND (%s::uuid IS NULL OR c.user_id=%s::uuid)
-                 AND c.next_sequence-1-c.summary_watermark-%s
-                     >= CASE WHEN p.mode='BACKGROUND' THEN 1 ELSE %s END
+                 AND (
+                     c.next_sequence-1-c.summary_watermark-%s
+                         >= CASE WHEN p.mode='BACKGROUND' THEN 1 ELSE %s END
+                     OR EXISTS (
+                         SELECT 1 FROM conversation_summary_jobs staged
+                         LEFT JOIN operations staged_op
+                            ON staged_op.operation_id=staged.operation_id
+                         WHERE staged.conversation_id=c.conversation_id
+                           AND staged.start_sequence=c.summary_watermark+1
+                           AND staged.expected_generation=p.generation
+                           AND staged.admission_attempt=(
+                               SELECT MAX(candidate.admission_attempt)
+                               FROM conversation_summary_jobs candidate
+                               WHERE candidate.conversation_id=c.conversation_id
+                                 AND candidate.start_sequence=c.summary_watermark+1
+                                 AND candidate.expected_generation=p.generation
+                           )
+                           AND staged_op.operation_id IS NULL
+                     )
+                 )
                  AND NOT EXISTS (
                      SELECT 1 FROM conversation_summary_jobs latest
                      LEFT JOIN operations o ON o.operation_id=latest.operation_id
@@ -337,9 +358,9 @@ def run_auto_summary_tick(
         )
         if lease is None:
             break
-        event=_claimed_event(connection,lease)
-        kind=event["event_type"]
         try:
+            event=_claimed_event(connection,lease)
+            kind=event["event_type"]
             if kind in _EVENTS:
                 selection=_current_selection(
                     connection,event["user_id"],event["instance_id"],
@@ -378,12 +399,24 @@ def run_auto_summary_tick(
                     replayed+=old
             process_delivery(connection,lease,lambda cursor,envelope: None)
             processed+=1
+        except StaleDelivery:
+            # Already fenced by P0. Do not defer, retry or ACK an invalid
+            # lease; its expired claim is recoverable by another worker.
+            continue
         except StaleSelection:
-            defer_delivery(connection,lease)
-            deferred+=1
+            try:
+                defer_delivery(connection,lease)
+                deferred+=1
+            except StaleDelivery:
+                # The claim expired while checking persona authority.
+                pass
         except (InvalidOperation,ResourceUnavailable) as exc:
-            retry_delivery(connection,lease,error=str(exc),delay_seconds=5)
-            retry_pending+=1
+            try:
+                retry_delivery(connection,lease,error=str(exc),delay_seconds=5)
+                retry_pending+=1
+            except StaleDelivery:
+                # No valid lease remains to schedule a retry; P0 reclaims it.
+                pass
             break
     # A lifecycle switch does not necessarily produce a new conversation
     # event, so periodic reconciliation is required to unlock stale-gen
