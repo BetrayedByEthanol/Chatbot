@@ -8,8 +8,10 @@ from psycopg import Connection
 from psycopg.rows import dict_row
 
 from .contracts import TrustedActor
+from .lifecycle import TrustedPlatformActor
+from .summary_contracts import SUMMARY_OPERATION, SUMMARY_CAPABILITY, SUMMARY_RESOURCE
 from .operation_contracts import (
-    EffectClass, EnqueueOperation, EnqueueResult, InvalidOperation,
+    EffectClass, EnqueueOperation, EnqueueResult, InvalidOperation, Origin,
     OperationLease, Policy, Priority, ResourceUnavailable, Status,
     event_for, require_idle,
 )
@@ -56,13 +58,29 @@ def configure_resource_pool(
 
 def enqueue_operation(
     connection: Connection,
-    actor: TrustedActor,
+    actor: TrustedActor | TrustedPlatformActor,
     command: EnqueueOperation,
 ) -> EnqueueResult:
     """Idempotent admission to durable queue; actual worker eligibility is rechecked."""
     require_idle(connection)
-    if type(actor) is not TrustedActor:
-        raise PermissionDenied("enqueue requires authenticated primary user")
+    platform = type(actor) is TrustedPlatformActor
+    if type(actor) is not TrustedActor and not platform:
+        raise PermissionDenied("enqueue requires a trusted user or platform actor")
+    # P2-03 grants the internal automation worker ONLY non-effecting summary
+    # admission. It is not a generic platform permission to enqueue tools,
+    # goals, external effects or arbitrary cognitive operations.
+    if platform and not (
+        command.origin is Origin.COGNITIVE
+        and command.operation_type == SUMMARY_OPERATION
+        and command.effect_class is EffectClass.NONE
+        and command.execution_policy is Policy.FOREGROUND_ASYNC
+        and command.priority_class is Priority.P1
+        and command.resources == {SUMMARY_RESOURCE: 1}
+        and command.capabilities == (SUMMARY_CAPABILITY,)
+        and not command.dependencies
+        and command.task_id is None
+    ):
+        raise PermissionDenied("platform admission is restricted to memory summaries")
     fingerprint = _fingerprint(command)
     receipt_id=uuid4()
 
@@ -139,10 +157,8 @@ def enqueue_operation(
             # has now elapsed. New admissions must still have a future deadline.
             if command.deadline is not None and command.deadline <= datetime.now(timezone.utc):
                 raise InvalidOperation("operation deadline has already passed")
-            if command.origin.value != "USER":
-                # The first caller is an authenticated user. Later internal
-                # cognitive/goal producers require their own authorized actor.
-                raise PermissionDenied("agent-originated operation admission is not yet authorized")
+            if (not platform and command.origin is not Origin.USER):
+                raise PermissionDenied("agent-originated operation requires a platform actor")
 
             # Bind ephemeral work to one Background epoch from admission.
             # An operation queued in Foreground targets only the next epoch.
@@ -234,7 +250,8 @@ def enqueue_operation(
                 {"status":"QUEUED","origin":command.origin.value,
                  "execution_policy":command.execution_policy.value,
                  "background_epoch":admitted_background_epoch},
-                source_id=actor.source_id,trust_level="AUTHENTICATED_USER",
+                source_id=actor.source_id,
+                trust_level="TRUSTED_PLATFORM" if platform else "AUTHENTICATED_USER",
             )
             result=EnqueueResult(
                 operation_id=command.operation_id,event_id=event_id,
