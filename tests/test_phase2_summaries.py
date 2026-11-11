@@ -625,3 +625,59 @@ def test_long_episode_recall_keeps_provenance_and_older_matches(dsn):
     assert all(str(item.source_turn_id) in system for item in episodes)
     assert context.messages[-1].content=="Do you remember garden memories?"
     assert sum(len(item.content) for item in context.messages)<=12000
+
+
+def test_summary_context_cutoff_follows_actually_retained_messages(dsn):
+    """The SQL window is not the verbatim-history boundary after char trimming."""
+    user,instance,_=seed(dsn)
+    conversation=uuid4()
+    turns=[]
+    for i in range(20):
+        turns.append(add_turn(
+            dsn,user,instance,conversation,
+            f"TURN_{i+1:02d} "+("long conversation content "*42),
+        ))
+
+    class RangeSummary:
+        def generate(self,messages):
+            rows=json.loads(messages[-1].content)
+            return ModelReply(
+                model_id="range-summary-fake",
+                text=json.dumps({
+                    "summary":f"SUMMARIZED_RANGE_{rows[0]['user'][:7]}",
+                    "episodes":[],
+                }),
+            )
+
+    first=schedule(dsn,user,instance,conversation,max_turns=8)
+    assert (first.start_sequence,first.end_sequence)==(1,8)
+    call(dsn,run_summary,claim(dsn),RangeSummary())
+    second=schedule(dsn,user,instance,conversation,max_turns=8)
+    assert (second.start_sequence,second.end_sequence)==(9,16)
+    call(dsn,run_summary,claim(dsn),RangeSummary())
+
+    # SQL selects turns 9-20, but with a 4k character budget most of
+    # those messages are dropped. Both older summaries must now qualify.
+    compact=call(
+        dsn,prepare_text_context,actor(user),turns[-1].turn_id,
+        max_turns=12,max_context_chars=4000,
+    )
+    system=compact.messages[0].content
+    assert "Turns 1-8:" in system
+    assert "Turns 9-16:" in system
+    assert compact.messages[-1].content==(
+        "TURN_20 "+("long conversation content "*42)
+    )
+    assert sum(len(msg.content) for msg in compact.messages)<=4000
+    assert "TURN_16" not in "\n".join(m.content for m in compact.messages[1:])
+
+    # With a roomy budget the initial SQL history *is* retained, including
+    # turn 9. A summary spanning 9-16 must not overlap verbatim context.
+    roomy=call(
+        dsn,prepare_text_context,actor(user),turns[-1].turn_id,
+        max_turns=12,max_context_chars=24000,
+    )
+    assert "Turns 1-8:" in roomy.messages[0].content
+    assert "Turns 9-16:" not in roomy.messages[0].content
+    assert roomy.messages[1].content.startswith("TURN_09 ")
+    assert roomy.messages[-1].content.startswith("TURN_20 ")
