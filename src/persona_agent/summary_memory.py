@@ -166,13 +166,16 @@ def schedule_summary(
     connection: Connection, actor: TrustedActor,
     conversation_id: UUID, instance_id: UUID, expected_generation: int,
     *, retain_recent: int = 2, max_turns: int = 8,
+    retry_failed: bool = False,
 ) -> SummaryScheduled | None:
     """Stage source range then idempotently enqueue via the existing P0 scheduler.
 
     A crash after staging but before enqueue is repaired by repeating this
     call. Nothing is scheduled when the conversation is too short or when the
-    candidate range contains unfinished delivery. This is an explicit trusted
-    producer entrypoint, not an autonomous goal/job scheduler.
+    candidate range contains unfinished delivery. retry_failed=True explicitly
+    admits a new operation only after the previous admission is FAILED;
+    active, queued and not-yet-enqueued jobs always replay their original ID.
+    This is a trusted producer entrypoint, not an autonomous goal scheduler.
     """
     require_idle(connection)
     _require_actor(actor)
@@ -197,33 +200,67 @@ def schedule_summary(
                     conversation["next_sequence"]-1-retain_recent)
             if end<start:
                 return None
-            op_id=uuid5(NAMESPACE_URL,
-                        f"persona-agent/summary/{conversation_id}/{start}/{expected_generation}")
             cur.execute(
-                """SELECT * FROM conversation_summary_jobs
-                   WHERE conversation_id=%s AND start_sequence=%s
-                     AND expected_generation=%s FOR UPDATE""",
+                """SELECT j.*,o.status AS operation_status
+                   FROM conversation_summary_jobs j
+                   LEFT JOIN operations o ON o.operation_id=j.operation_id
+                   WHERE j.conversation_id=%s AND j.start_sequence=%s
+                     AND j.expected_generation=%s
+                   ORDER BY j.admission_attempt DESC
+                   LIMIT 1 FOR UPDATE OF j""",
                 (conversation_id,start,expected_generation),
             )
             staged=cur.fetchone()
-            if staged is None:
+            # A failed operation is terminal in P0. Never reuse its receipt:
+            # only a deliberate retry can stage a *different* operation ID.
+            if staged is not None and staged["operation_status"]=="FAILED":
+                if not retry_failed:
+                    raise SummaryNotReady(
+                        "summary operation failed; explicitly set retry_failed=True"
+                    )
+            elif staged is not None and staged["operation_status"] in (
+                "CANCELLED","COMPLETED","BLOCKED","OUTCOME_UNKNOWN"
+            ):
+                raise StaleSummary(
+                    "terminal or blocked summary operation requires operator review"
+                )
+            elif staged is not None and staged["operation_status"]=="SUSPENDED":
+                raise StaleSummary(
+                    "suspended summary operation must use scheduler re-admission"
+                )
+            # No job, or an explicitly retried FAILED job: reserve a new
+            # monotonic attempt while holding the conversation serialization
+            # lock, protecting concurrent scheduling and worker recovery.
+            create_new=(staged is None or staged["operation_status"]=="FAILED")
+            if create_new:
+                admission_attempt=(
+                    staged["admission_attempt"]+1 if staged is not None else 1
+                )
+                op_id=uuid5(
+                    NAMESPACE_URL,
+                    f"persona-agent/summary/{conversation_id}/{start}/"
+                    f"{expected_generation}/{admission_attempt}",
+                )
                 draft_job={
                     "conversation_id":conversation_id,"user_id":actor.user_id,
                     "instance_id":instance_id,"start_sequence":start,
                     "end_sequence":end,
                 }
-                rows=_read_range(cur,draft_job)
+                _read_range(cur,draft_job)
                 cur.execute(
                     """INSERT INTO conversation_summary_jobs(
                          operation_id,conversation_id,user_id,instance_id,
-                         expected_generation,start_sequence,end_sequence
-                       ) VALUES (%s,%s,%s,%s,%s,%s,%s)""",
+                         expected_generation,admission_attempt,start_sequence,end_sequence
+                       ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""",
                     (op_id,conversation_id,actor.user_id,instance_id,
-                     expected_generation,start,end),
+                     expected_generation,admission_attempt,start,end),
                 )
             else:
+                # Includes crash after staging but before P0 enqueue:
+                # NULL operation_status re-enqueues the exact staged ID.
                 op_id=staged["operation_id"]
                 end=staged["end_sequence"]
+                admission_attempt=staged["admission_attempt"]
 
     # This is the existing P0 operation system; do not reimplement claims,
     # retries, resource admission or identity generation fencing here.
@@ -241,7 +278,8 @@ def schedule_summary(
     ))
     return SummaryScheduled(
         operation_id=op_id,conversation_id=conversation_id,
-        start_sequence=start,end_sequence=end,replayed=queued.replayed,
+        start_sequence=start,end_sequence=end,
+        admission_attempt=admission_attempt,replayed=queued.replayed,
     )
 
 
@@ -360,6 +398,9 @@ def commit_summary(
                    FOR UPDATE""",
                 (work.conversation_id,lease.user_id,lease.instance_id),
             )
+            # The conversation FOR UPDATE above can wait longer than the
+            # worker's lease/attempt timeout. A pre-lock check is insufficient.
+            require_claim(cur,lease)
             state=cur.fetchone()
             if state is None or state["summary_watermark"]!=work.start_sequence-1:
                 raise StaleSummary("another summary already advanced this range")
@@ -421,6 +462,10 @@ def commit_summary(
                         "end_sequence":work.end_sequence,
                         "episodes":len(draft.episodes)},
             )
+            # Enforce time fences even if source validation and inserts took
+            # longer than the lease. A rejection rolls back summary, episodes,
+            # watermark, event and outbox in the same transaction.
+            require_claim(cur,lease)
             return SummaryCommitted(
                 summary_id=summary_id,conversation_id=work.conversation_id,
                 start_sequence=work.start_sequence,end_sequence=work.end_sequence,
