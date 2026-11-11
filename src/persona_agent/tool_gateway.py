@@ -335,6 +335,45 @@ def _completed_result(cur, row) -> str | None:
     return op["result_text"]
 
 
+def _relevant_to_latest(cur, call, latest_turn_id: UUID) -> bool:
+    """A later user turn is relevant only after an explicit thread link.
+
+    A typed focus_thread command links the currently resumed input. Plain
+    conversation turn arrival does not implicitly authorize old results;
+    the resumed turn must also have a DELIVERED response before interrupting.
+    """
+    if latest_turn_id==call["turn_id"]:
+        return True
+    cur.execute(
+        """
+        SELECT 1 FROM dialogue_turn_links source
+        JOIN dialogue_turn_links resumed
+          ON resumed.conversation_id=source.conversation_id
+         AND resumed.thread_id=source.thread_id
+         AND resumed.user_id=source.user_id
+         AND resumed.instance_id=source.instance_id
+        JOIN conversations c
+          ON c.conversation_id=source.conversation_id
+         AND c.user_id=source.user_id
+         AND c.instance_id=source.instance_id
+         AND c.focus_thread_id=source.thread_id
+        JOIN dialogue_threads thread
+          ON thread.thread_id=source.thread_id
+         AND thread.resolution_status='OPEN'
+        JOIN conversation_responses last_reply
+          ON last_reply.turn_id=resumed.turn_id
+         AND last_reply.user_id=source.user_id
+         AND last_reply.delivery_status='DELIVERED'
+        WHERE source.turn_id=%s AND resumed.turn_id=%s
+          AND source.conversation_id=%s AND source.user_id=%s
+          AND c.last_input_turn_id=resumed.turn_id
+        LIMIT 1
+        """,
+        (call["turn_id"],latest_turn_id,call["conversation_id"],call["user_id"]),
+    )
+    return cur.fetchone() is not None
+
+
 def _await_result(connection,actor,tool_id,seconds:float) -> str | None:
     if not 0<=seconds<=5:
         raise ValueError("foreground wait budget must be within 0..5 seconds")
@@ -438,8 +477,10 @@ def reconcile_tool_followup(
             elif mode is None or done is None:
                 status="PENDING"
             elif (
-                conversation["last_input_turn_id"]!=row["turn_id"]
-                or response["delivery_status"]!="DELIVERED"
+                response["delivery_status"]!="DELIVERED"
+                or not _relevant_to_latest(
+                    cur,row,conversation["last_input_turn_id"]
+                )
             ):
                 status="DEFERRED"
             else:
@@ -484,7 +525,9 @@ def prepare_tool_followup(
                 (row["conversation_id"],actor.user_id),
             )
             current=cur.fetchone()
-            if current is None or current["last_input_turn_id"]!=row["turn_id"]:
+            if current is None or not _relevant_to_latest(
+                cur,row,current["last_input_turn_id"]
+            ):
                 raise StaleConversation("tool follow-up no longer relevant")
             if row["followup_state"]!="READY":
                 raise ToolResultNotReady("tool follow-up not ready")
@@ -527,7 +570,9 @@ def acknowledge_tool_followup(
                     tool_call_id=tool_call_id,operation_id=row["operation_id"],
                     text=text,replayed=True,
                 )
-            if conv is None or conv["last_input_turn_id"]!=row["turn_id"]:
+            if conv is None or not _relevant_to_latest(
+                cur,row,conv["last_input_turn_id"]
+            ):
                 raise StaleConversation("follow-up superseded before acknowledgment")
             if row["followup_state"]!="READY":
                 raise ToolResultNotReady("tool follow-up not ready")

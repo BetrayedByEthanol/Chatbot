@@ -8,7 +8,7 @@ revision. A plain 'okay' only resolves an ACKNOWLEDGMENT, never permission.
 from enum import Enum
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class Attention(str, Enum):
@@ -75,17 +75,11 @@ class ResolveDialogueActCommand(DialogueBaseCommand):
     outcome: DialogueOutcome | None
     cancel: bool=False
 
-    @field_validator("outcome")
-    @classmethod
-    def _valid_outcome(cls, value):
-        return value
-
-    @classmethod
-    def model_validate(cls, obj, *args, **kwargs):
-        result=super().model_validate(obj,*args,**kwargs)
-        if result.cancel == (result.outcome is not None):
+    @model_validator(mode="after")
+    def _check_cancel_or_outcome(self):
+        if self.cancel == (self.outcome is not None):
             raise ValueError("provide an outcome or cancel, not both or neither")
-        return result
+        return self
 
 
 class RegisterReferentCommand(DialogueBaseCommand):
