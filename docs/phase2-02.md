@@ -185,3 +185,33 @@ summarizes ranges 1–8 and 9–16. With a tight 4,000-character context
 budget, both historical ranges are restored when the recent window is
 trimmed. With a roomy budget, 9–16 is represented verbatim and its summary
 is correctly excluded from the system prompt.
+
+
+## Review hardening — permanently fenced assistant deliveries
+
+The summary-readiness gate distinguishes a recoverable `GENERATED`
+assistant response from one whose original selection generation has been
+revoked. `acknowledge_text_delivery()` cannot authorize an output after
+its original selection generation is revoked, even if the user later
+reselects the same persona. The original user turn can therefore be
+summarized under a newly authorized generation, **without** projecting
+the undelivered assistant text as something the user heard.
+
+- `GENERATED` with the **current generation** remains ineligible until
+  actually `DELIVERED`; pending messages still block as before.
+- `GENERATED` with a **revoked generation** no longer blocks the
+  contiguous watermark. The original generated response remains stored
+  with `GENERATED` status for traceability; its text is excluded from
+  the canonical delivered history and model summarization input.
+- `DELIVERED` responses remain included regardless of subsequent
+  persona switches because delivery evidence was committed in the
+  original generation.
+- Scheduling and summary commit require the current selected persona's
+  fenced authority, so a late acknowledgement cannot race the revoked
+  classification and become a valid delivery retroactively.
+
+PostgreSQL regression: generate but do not acknowledge a response, confirm
+summarization is blocked while delivery remains authorized, switch to
+another persona and back, confirm the original response can no longer be
+acknowledged, then summarize the source user input without the unsent text
+and advance the next contiguous watermark range.
