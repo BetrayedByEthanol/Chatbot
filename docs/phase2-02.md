@@ -162,3 +162,26 @@ summaries in a bounded response context.
 New PostgreSQL regressions cover three failed P0 operation claims followed
 by explicit new admission, a real blocked conversation lock across worker
 lease expiry, and two oversized episodic descriptions recalled together.
+
+
+## Review hardening — summary cutoff follows budgeted history
+
+The SQL LIMIT window is only a *candidate* for recent verbatim history.
+When character budgeting drops messages from that window, its first
+sequence is not the first message actually retained. Historical summary
+retrieval now uses the oldest **retained** message sequence, tracked
+across user turns, delivered replies and delivered tool follow-ups.
+
+Summary text itself consumes context and may displace additional messages.
+The Context Builder therefore recomputes the candidate summary block and
+the budgeted recent-history boundary until the cutoff stabilizes (bounded
+by the number of candidate turns, with a monotone cutoff). It does not
+reintroduce verbatim messages below the resulting boundary, avoiding
+overlap with newly eligible summaries. This keeps the latest user input
+prioritized without silently discarding eligible compacted history.
+
+A PostgreSQL regression builds 20 roughly 1,000-character turns and
+summarizes ranges 1–8 and 9–16. With a tight 4,000-character context
+budget, both historical ranges are restored when the recent window is
+trimmed. With a roomy budget, 9–16 is represented verbatim and its summary
+is correctly excluded from the system prompt.
