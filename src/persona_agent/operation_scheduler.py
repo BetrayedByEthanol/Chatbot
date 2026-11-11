@@ -10,6 +10,7 @@ from psycopg.rows import dict_row
 from .contracts import TrustedActor
 from .lifecycle import TrustedPlatformActor
 from .summary_contracts import SUMMARY_OPERATION, SUMMARY_CAPABILITY, SUMMARY_RESOURCE
+from .cognitive_contracts import COGNITIVE_OPERATION, COGNITIVE_CAPABILITY, COGNITIVE_RESOURCE
 from .operation_contracts import (
     EffectClass, EnqueueOperation, EnqueueResult, InvalidOperation, Origin,
     OperationLease, Policy, Priority, ResourceUnavailable, Status,
@@ -85,8 +86,24 @@ def enqueue_operation(
         and command.max_attempts == 3
         and not command.input_versions
     )
-    if platform and not is_summary_admission:
-        raise PermissionDenied("platform admission is restricted to memory summaries")
+    is_cognitive_admission=(
+        platform
+        and command.operation_type==COGNITIVE_OPERATION
+        and command.origin is Origin.COGNITIVE
+        and command.effect_class is EffectClass.NONE
+        and command.execution_policy is Policy.FOREGROUND_ASYNC
+        and command.priority_class is Priority.P1
+        and command.resources=={COGNITIVE_RESOURCE:1}
+        and command.capabilities==(COGNITIVE_CAPABILITY,)
+        and command.concurrency_group is not None
+        and not command.dependencies and command.task_id is None
+        and command.eligible_at is None and command.deadline is None
+        and command.timeout_seconds==300 and command.max_attempts==3
+        and not command.input_versions
+        and command.idempotency_key==f"cognition:{command.operation_id}"
+    )
+    if platform and not (is_summary_admission or is_cognitive_admission):
+        raise PermissionDenied("platform admission is restricted to staged summary or cognitive operations")
     # A caller can repair a job staged by the OTHER authorized producer,
     # but may not create fresh operations with that producer's origin.
     # Validate the immutable P2-03 staged job before a cross-origin enqueue.
@@ -108,6 +125,20 @@ def enqueue_operation(
 
     with connection.transaction():
         with connection.cursor(row_factory=dict_row) as cur:
+            if is_cognitive_admission:
+                # Stage-before-enqueue is a separately committed Cognitive
+                # domain authorization, not a blanket platform permission.
+                cur.execute(
+                    """SELECT conversation_id FROM cognitive_jobs
+                       WHERE operation_id=%s AND user_id=%s AND instance_id=%s
+                         AND expected_generation=%s""",
+                    (command.operation_id,actor.user_id,command.instance_id,
+                     command.expected_generation),
+                )
+                staged=cur.fetchone()
+                if (staged is None or command.concurrency_group
+                    !=f"cognition:{staged['conversation_id']}"):
+                    raise PermissionDenied("cognitive operation has no matching staged range")
             if cross_origin:
                 cur.execute(
                     """SELECT conversation_id FROM conversation_summary_jobs
