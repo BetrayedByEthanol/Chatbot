@@ -68,7 +68,7 @@ CREATE TABLE conversation_summary_jobs (
     end_sequence bigint NOT NULL CHECK (end_sequence >= start_sequence),
     summary_id uuid REFERENCES conversation_summaries(summary_id),
     created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
-    UNIQUE (conversation_id,start_sequence),
+    UNIQUE (conversation_id,start_sequence,expected_generation),
     FOREIGN KEY (conversation_id,user_id,instance_id)
         REFERENCES conversations(conversation_id,user_id,instance_id)
 );
