@@ -652,3 +652,80 @@ def test_background_staged_summary_recovers_after_return_to_foreground(
         assert operation==(1,2,"QUEUED","COGNITIVE")
     committed=call(dsn,run_summary,claim_summary(dsn),FakeSummary())
     assert (committed.start_sequence,committed.end_sequence)==(1,2)
+
+
+
+def test_staged_short_range_readiness_excludes_later_unsent_response(
+    dsn,monkeypatch,
+):
+    """Reconcile the persisted 1–2 range, never expand readiness through turn 3."""
+    user,instance,_=seed(dsn)
+    conversation=uuid4()
+    delivered_turn(dsn,user,instance,conversation,1)
+    delivered_turn(dsn,user,instance,conversation,2)
+
+    # Turn 3 has a generated assistant reply, but no delivery ACK.
+    third=call(dsn,ingest_text,actor(user),TextInputCommand(
+        conversation_id=conversation,instance_id=instance,
+        expected_generation=1,idempotency_key=str(uuid4()),
+        text="Turn 3: response generated but not yet delivered.",
+    ))
+    unsent=call(dsn,respond_to_text,actor(user),third.turn_id,FakeReply())
+    assert unsent.delivery_status=="GENERATED"
+    delivered_turn(dsn,user,instance,conversation,4)
+
+    background=call(dsn,enter_background,actor(user),EnterBackgroundCommand(
+        instance_id=instance,expected_generation=1,expected_presence_revision=0,
+        reason=BackgroundReason.EXPLICIT_DEPARTURE,
+        idempotency_key=str(uuid4()),
+    ))
+    assert background.mode.value=="BACKGROUND"
+
+    actual_enqueue=summary_module.enqueue_operation
+    def crash_before_enqueue(*args,**kwargs):
+        raise RuntimeError("short summary staged before enqueue")
+
+    monkeypatch.setattr(summary_module,"enqueue_operation",crash_before_enqueue)
+    platform=TrustedPlatformActor(user_id=user,source_id="memory.auto_summary.v1")
+    with pytest.raises(RuntimeError,match="short summary staged"):
+        call(dsn,schedule_summary,platform,conversation,instance,1)
+    monkeypatch.setattr(summary_module,"enqueue_operation",actual_enqueue)
+
+    foreground=call(dsn,record_primary_activity,actor(user),PrimaryActivityCommand(
+        instance_id=instance,expected_generation=1,
+        idempotency_key=str(uuid4()),
+    ))
+    assert foreground.mode.value=="FOREGROUND" and foreground.generation==1
+
+    # Turn 5 widens the *new* candidate to 1–3, whose generated response
+    # is still unacknowledged. The staged range remains exactly 1–2.
+    delivered_turn(dsn,user,instance,conversation,5)
+    consumer=bootstrap(dsn)  # no subscribed event can trigger recovery
+    recovered=tick(dsn,consumer,user,scan_limit=1)
+    assert recovered.admitted==1
+    assert tick(dsn,consumer,user,scan_limit=1).admitted==0
+
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        job=conn.execute(
+            """SELECT j.start_sequence,j.end_sequence,j.admission_origin,
+                      o.status,o.origin
+               FROM conversation_summary_jobs j
+               JOIN operations o ON o.operation_id=j.operation_id
+               WHERE j.conversation_id=%s""",
+            (conversation,),
+        ).fetchone()
+        assert job==(1,2,"COGNITIVE","QUEUED","COGNITIVE")
+        still_unsent=conn.execute(
+            """SELECT delivery_status FROM conversation_responses
+               WHERE response_id=%s""",
+            (unsent.response_id,),
+        ).fetchone()
+        assert still_unsent==("GENERATED",)
+
+    committed=call(dsn,run_summary,claim_summary(dsn),FakeSummary())
+    assert (committed.start_sequence,committed.end_sequence)==(1,2)
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT summary_watermark FROM conversations WHERE conversation_id=%s",
+            (conversation,),
+        ).fetchone()[0]==2
