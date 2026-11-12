@@ -18,8 +18,8 @@ from datetime import datetime,timezone
 from time import monotonic
 from uuid import uuid4
 
-import psycopg
 import pytest
+psycopg=pytest.importorskip("psycopg")
 
 from persona_agent.affect_observers import (
     register_affect_consumers,run_affect_tick,
