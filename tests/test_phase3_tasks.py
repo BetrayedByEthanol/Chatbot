@@ -124,8 +124,8 @@ def test_user_completion_gates_dependent_work_and_preserves_provenance(dsn):
         )
         assert conn.execute(
             """SELECT count(*) FROM events e JOIN outbox o ON o.event_id=e.event_id
-               WHERE e.instance_id=%s AND e.event_type LIKE 'task.%'""",
-            (inst,),
+               WHERE e.instance_id=%s AND e.event_type LIKE %s""",
+            (inst,"task.%"),
         ).fetchone()[0]>=5
 
 
@@ -321,3 +321,24 @@ def test_cancelled_predecessor_never_unblocks_successor(dsn):
     assert view(dsn,user,inst,b).actionability=="WAITING_DEPENDENCIES"
     with pytest.raises(VersionConflict):
         confirm(dsn,user,inst,conv,a,2)
+
+
+def test_exclusive_priority_expires_when_user_completes_or_cancels_task(dsn):
+    user,inst,_,conv,goal,source=ctx(dsn)
+    a,_=create(dsn,user,inst,conv,goal,source,title="Task A")
+    b,_=create(dsn,user,inst,conv,goal,source,title="Task B")
+    c,_=create(dsn,user,inst,conv,goal,source,title="Task C")
+    priority(dsn,user,inst,conv,source,a,1,"ONLY")
+    assert view(dsn,user,inst,b).actionability=="EXCLUSIVE_OTHER"
+    confirm(dsn,user,inst,conv,a,2)
+    assert view(dsn,user,inst,b).actionability=="READY"
+    priority(dsn,user,inst,conv,source,b,1,"ONLY")
+    assert view(dsn,user,inst,c).actionability=="EXCLUSIVE_OTHER"
+    cancelled=CancelTaskCommand(
+        instance_id=inst,expected_generation=1,idempotency_key=str(uuid4()),
+        conversation_id=conv,evidence_turn_id=source.turn_id,
+        evidence_quote="I want to plan tasks",task_id=b,expected_task_version=2,
+    )
+    call(dsn,cancel_task,actor(user),approve(dsn,user,inst,cancelled))
+    assert view(dsn,user,inst,c).actionability=="READY"
+    assert view(dsn,user,inst,b).exclusive_only is False
