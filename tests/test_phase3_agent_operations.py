@@ -128,6 +128,7 @@ def test_agent_step_executes_only_with_versioned_explicit_user_approval(dsn):
     assert accepted.step_event_id is not None
     replay=call(dsn,reconcile_agent_step,platform(user),cmd.operation_id)
     assert replay.replayed and replay.resolution=="VERIFIED"
+    assert replay.step_event_id==accepted.step_event_id
     state=call(dsn,read_procedure_run,actor(user),instance,run)
     assert state.steps[0].status=="VERIFIED"
     assert state.next_step_id is None
@@ -241,5 +242,44 @@ def test_completed_operation_is_not_accepted_after_run_version_change(dsn):
     run_status(dsn,user,instance,conv,run,1,"PAUSE")
     result=call(dsn,reconcile_agent_step,platform(user),cmd.operation_id)
     assert result.resolution=="INVALIDATED"
+    assert call(dsn,read_procedure_run,actor(user),instance,run
+                ).steps[0].status=="NOT_STARTED"
+
+
+def test_user_approval_is_mandatory_and_run_cancellation_revokes_claim(dsn):
+    user,instance,conv,goal,task,run=staged(dsn)
+    approved=authorization(dsn,user,instance,conv,run)
+    tampered=approved.model_copy(update={
+        "approval_turn_id":None,"idempotency_key":uuid4().hex,
+    })
+    with pytest.raises(PermissionDenied,match="separate user approval"):
+        call(dsn,authorize_agent_step,actor(user),tampered)
+    queued=call(dsn,schedule_agent_step,actor(user),approved)
+    assert queued.status.value=="QUEUED"
+    run_status(dsn,user,instance,conv,run,1,"CANCEL")
+    assert call(dsn,claim_operation,worker_id="revoked-after-run-stop",
+                capabilities=(SLOW_TOOL,),
+                operation_types=(PROCEDURE_AGENT_OPERATION,)) is None
+    assert operation_row(dsn,approved.operation_id)[0]=="QUEUED"
+    assert call(dsn,read_procedure_run,actor(user),instance,run
+                ).steps[0].status=="NOT_STARTED"
+
+
+def test_task_version_revocation_during_read_only_execution_rejects_result(dsn):
+    user,instance,conv,goal,task,run=staged(dsn)
+    approved=authorization(dsn,user,instance,conv,run)
+    call(dsn,schedule_agent_step,actor(user),approved)
+    def mutate_authority_during_tool(instruction,max_words):
+        changed=priority(dsn,user,instance,conv,task,1,"SUSPEND")
+        assert changed.version==2
+        return "Text analysis: valid text from an obsolete task execution."
+    lease=call(dsn,run_one_agent_step,worker_id="stale-task-version",
+               executor=mutate_authority_during_tool)
+    assert lease is not None
+    # The tool ran with no DB lock. P0 refused its stale completion after
+    # the Task domain changed while the worker was outside the transaction.
+    current=operation_row(dsn,approved.operation_id)
+    assert current[0]=="RUNNING" and current[3]==1
+    assert current[4] is None
     assert call(dsn,read_procedure_run,actor(user),instance,run
                 ).steps[0].status=="NOT_STARTED"
