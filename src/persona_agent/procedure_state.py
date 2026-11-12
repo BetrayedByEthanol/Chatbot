@@ -30,7 +30,8 @@ from .runtime import (
 
 
 def _publish(cur, actor: TrustedActor, instance_id: UUID,
-             kind: str, payload: dict, receipt_id: UUID) -> UUID:
+             kind: str, payload: dict, receipt_id: UUID, *,
+             trust_level: str = "AUTHENTICATED_USER") -> UUID:
     """Procedure-owned journal, kept distinct from the Goal/Task streams."""
     stream_id = uuid5(NAMESPACE_URL, f"persona-agent/procedure/{actor.user_id}/{instance_id}")
     cur.execute(
@@ -52,9 +53,9 @@ def _publish(cur, actor: TrustedActor, instance_id: UUID,
         """INSERT INTO events(
              event_id,event_type,schema_version,user_id,instance_id,
              stream_id,stream_sequence,source_id,trust_level,correlation_id,payload
-           ) VALUES(%s,%s,1,%s,%s,%s,%s,%s,'AUTHENTICATED_USER',%s,%s::jsonb)""",
+           ) VALUES(%s,%s,1,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)""",
         (event_id,kind,actor.user_id,instance_id,stream_id,
-         seq["last_sequence"],actor.source_id,receipt_id,json.dumps(payload)),
+         seq["last_sequence"],actor.source_id,trust_level,receipt_id,json.dumps(payload)),
     )
     cur.execute("INSERT INTO outbox(outbox_id,event_id) VALUES (%s,%s)",
                 (uuid4(),event_id))
