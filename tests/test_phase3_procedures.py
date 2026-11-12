@@ -427,5 +427,6 @@ def test_scoped_library_discovery(dsn):
     assert any(x.template_id==template for x in
                call(dsn,list_shared_procedures,actor(outsider),outsider_instance))
     assert call(dsn,list_personalized_approaches,actor(outsider),outsider_instance)==()
-    with pytest.raises(ValueError):
-        call(dsn,list_shared_procedures,actor(user),instance,limit=0)
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        with pytest.raises(ValueError):
+            list_shared_procedures(conn,actor(user),instance,limit=0)
