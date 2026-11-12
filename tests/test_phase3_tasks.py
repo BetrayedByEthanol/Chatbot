@@ -13,11 +13,11 @@ from persona_agent.goal_state import create_goal
 from persona_agent.lifecycle import SwitchPersonaCommand, switch_persona
 from persona_agent.runtime import PermissionDenied, StaleSelection, VersionConflict
 from persona_agent.task_contracts import (
-    CreateTaskCommand, AddTaskDependencyCommand, ReportTaskOutcomeCommand,
+    CreateTaskCommand, AddTaskDependencyCommand, CancelTaskCommand, ReportTaskOutcomeCommand,
     SetTaskPriorityCommand, task_approval_phrase,
 )
 from persona_agent.task_state import (
-    create_task, add_task_dependency, report_task_outcome,
+    create_task, add_task_dependency, cancel_task, report_task_outcome,
     set_task_priority, list_tasks,
 )
 
@@ -253,3 +253,33 @@ def test_priority_suspend_resume_and_deadline_revisions(dsn):
     assert call(dsn,list_tasks,actor(uid),instance,goal)[0].deadline==when
     assert priority(4,"CLEAR_DEADLINE").version==5
     assert call(dsn,list_tasks,actor(uid),instance,goal)[0].deadline is None
+
+
+def test_cancellation_is_fenced_and_blocks_dependents_without_goal_mutation(dsn):
+    uid,instance,_=seed(dsn)
+    conv=uuid4()
+    goal=make_goal(dsn,uid,instance,conv)
+    first,_,_=make_task(dsn,uid,instance,conv,goal,1)
+    second,_,_=make_task(dsn,uid,instance,conv,goal,2)
+    edge(dsn,uid,instance,conv,second,first,3)
+    user_turn=turn(dsn,uid,instance,conv,"Cancel my first task.")
+    cmd=CancelTaskCommand(
+        instance_id=instance,expected_generation=1,idempotency_key=uuid4().hex,
+        conversation_id=conv,evidence_turn_id=user_turn.turn_id,
+        evidence_quote="Cancel my first task",task_id=first,expected_task_version=1,
+    )
+    cmd=approve(dsn,uid,instance,cmd)
+    result=call(dsn,cancel_task,actor(uid),cmd)
+    assert result.action=="TASK_CANCELLED" and result.version==2
+    assert call(dsn,cancel_task,actor(uid),cmd).replayed
+    items={x.task_id:x for x in call(dsn,list_tasks,actor(uid),instance,goal)}
+    assert not items[first].actionable and "CANCELLED" in items[first].blockers
+    assert not items[second].actionable and "PREREQUISITE_NOT_VERIFIED" in items[second].blockers
+    with pytest.raises(VersionConflict):
+        call(dsn,cancel_task,actor(uid),cmd.model_copy(update={
+            "idempotency_key":uuid4().hex,
+        }))
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT status FROM goal_records WHERE goal_id=%s",(goal,),
+        ).fetchone()==("ACTIVE",)
