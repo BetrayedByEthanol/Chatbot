@@ -39,4 +39,4 @@ Future `ProcedureRun` evidence can be proposed to the Goal & Task domain, but it
 
 ## Acceptance
 
-`tests/test_phase3_tasks.py` adds: latest-report rejection; obstacle and stale-correction rejection; evidence immutability and reconfirmation; three-level transitive invalidation that persists after upstream reconfirmation; and cross-user authority/version fencing. Full PostgreSQL and live-model CI must pass on the new PR head before merge.
+`tests/test_phase3_tasks.py` adds: latest-report rejection; obstacle and stale-correction rejection; evidence immutability and reconfirmation; three-level transitive invalidation that persists after upstream reconfirmation; cross-user authority/version fencing; and concurrent confirmation-versus-correction arbitration, which must commit exactly one event and receipt. Full PostgreSQL and live-model CI must pass on the new PR head before merge.
