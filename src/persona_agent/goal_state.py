@@ -7,6 +7,7 @@ completion. Domain transactions use P0's receipts and transactional outbox.
 """
 
 import json
+from datetime import timedelta
 from typing import Callable
 from uuid import UUID,NAMESPACE_URL,uuid4,uuid5
 
@@ -19,6 +20,7 @@ from .goal_contracts import (
     CreateGoalCommand,EvidenceView,GoalCommandResult,GoalUserCommand,GoalView,
     ProposeGoalStrategyCommand,RecordGoalEvidenceCommand,
     SelectGoalStrategyCommand,SetGoalStatusCommand,StrategyView,
+    goal_action_approval_phrase,
 )
 from .operation_contracts import require_idle
 from .runtime import (
@@ -103,6 +105,44 @@ def _source(cur,actor:TrustedActor,command:GoalUserCommand)->dict:
     return row
 
 
+def _require_goal_approval(cur,actor:TrustedActor,command:GoalUserCommand,
+                           source:dict)->None:
+    """Reject goal state changes that lack a distinct exact user confirmation."""
+    approval_id=command.approval_turn_id
+    if approval_id is None or approval_id==command.evidence_turn_id:
+        raise PermissionDenied("goal change requires a separate user confirmation")
+    cur.execute(
+        """SELECT input_text,created_at FROM conversation_turns
+           WHERE conversation_id=%s AND turn_id=%s
+             AND user_id=%s AND instance_id=%s""",
+        (command.conversation_id,approval_id,
+         actor.user_id,command.instance_id),
+    )
+    confirmation=cur.fetchone()
+    if (confirmation is None
+        or confirmation["input_text"].strip()!=goal_action_approval_phrase(command)
+        or confirmation["created_at"]<source["created_at"]
+        or confirmation["created_at"]>source["created_at"]+timedelta(days=1)):
+        raise PermissionDenied("goal approval does not match the exact action")
+
+
+def _read_selected(cur,actor:TrustedActor,instance_id:UUID)->None:
+    """Persona context must not read private state of a nonselected instance."""
+    cur.execute(
+        "SELECT 1 FROM persona_instances WHERE user_id=%s AND id=%s",
+        (actor.user_id,instance_id),
+    )
+    if cur.fetchone() is None:
+        raise PermissionDenied("goal read outside authenticated persona scope")
+    cur.execute(
+        "SELECT instance_id FROM persona_selection WHERE user_id=%s",
+        (actor.user_id,),
+    )
+    selected=cur.fetchone()
+    if selected is None or selected["instance_id"]!=instance_id:
+        raise StaleSelection("private goal read requires the selected persona")
+
+
 def _goal(cur,actor:TrustedActor,instance_id:UUID,goal_id:UUID,
           *,lock:str="UPDATE")->dict:
     if lock not in ("UPDATE","SHARE"):
@@ -168,7 +208,12 @@ def _command(
                     prior["result_json"]
                 ).model_copy(update={"replayed":True})
             _selected(cur,actor,command)
-            _source(cur,actor,command)
+            source=_source(cur,actor,command)
+            if isinstance(command,(
+                CreateGoalCommand,SetGoalStatusCommand,
+                SelectGoalStrategyCommand,
+            )):
+                _require_goal_approval(cur,actor,command,source)
             result=apply(cur,actor,command,receipt_id)
             cur.execute(
                 """UPDATE command_receipts SET event_id=%s,result_json=%s::jsonb
@@ -220,6 +265,7 @@ def create_goal(
                   if cmd.parent_goal_id else None,
                 "source_turn_id":str(cmd.evidence_turn_id),
                 "user_approved":True,"depth":depth,
+                "approval_turn_id":str(cmd.approval_turn_id),
             },receipt,
         )
         cur.execute(
@@ -264,6 +310,7 @@ def set_goal_status(
             "goal_id":str(cmd.goal_id),"old_status":old,
             "new_status":cmd.new_status,
             "source_turn_id":str(cmd.evidence_turn_id),"version":version,
+            "approval_turn_id":str(cmd.approval_turn_id),
         },receipt)
         cur.execute(
             """UPDATE goal_records SET status=%s,version=%s,
@@ -309,6 +356,7 @@ def record_goal_evidence(
         evt=_publish(cur,who,cmd.instance_id,"goal.evidence.recorded.v1",{
             "goal_id":str(cmd.goal_id),"evidence_id":str(cmd.evidence_id),
             "kind":cmd.evidence_kind,"epistemic_status":"USER_REPORTED",
+            "classification_status":"UNREVIEWED",
             "source_turn_id":str(cmd.evidence_turn_id),
             "goal_version":version,
         },receipt)
@@ -396,6 +444,7 @@ def select_goal_strategy(
         evt=_publish(cur,who,cmd.instance_id,"goal.strategy.selected.v1",{
             "goal_id":str(cmd.goal_id),"strategy_id":str(cmd.strategy_id),
             "goal_version":version,"source_turn_id":str(cmd.evidence_turn_id),
+            "approval_turn_id":str(cmd.approval_turn_id),
         },receipt)
         cur.execute(
             """INSERT INTO goal_strategy_selections(
@@ -428,12 +477,7 @@ def list_goals(
     if not 1<=limit<=300:
         raise ValueError("invalid goal list bound")
     with connection.cursor(row_factory=dict_row) as cur:
-        cur.execute(
-            "SELECT 1 FROM persona_instances WHERE user_id=%s AND id=%s",
-            (actor.user_id,instance_id),
-        )
-        if cur.fetchone() is None:
-            raise PermissionDenied("goal read outside authenticated persona scope")
+        _read_selected(cur,actor,instance_id)
         cur.execute(
             """SELECT g.goal_id,g.parent_goal_id,g.depth,g.title,
                       g.desired_outcome,g.success_criterion,g.horizon,
@@ -460,6 +504,7 @@ def list_goal_strategies(
     if not 1<=limit<=100:
         raise ValueError("invalid strategy list bound")
     with connection.cursor(row_factory=dict_row) as cur:
+        _read_selected(cur,actor,instance_id)
         _goal(cur,actor,instance_id,goal_id,lock="SHARE")
         cur.execute(
             """SELECT strategy_id,goal_id,title,approach,suitability_note,status
@@ -479,10 +524,12 @@ def list_goal_evidence(
     if not 1<=limit<=100:
         raise ValueError("invalid evidence list bound")
     with connection.cursor(row_factory=dict_row) as cur:
+        _read_selected(cur,actor,instance_id)
         _goal(cur,actor,instance_id,goal_id,lock="SHARE")
         cur.execute(
             """SELECT evidence_id,goal_id,evidence_kind AS kind,
-                      epistemic_status,source_turn_id,source_quote
+                      epistemic_status,classification_status,
+                      source_turn_id,source_quote
                FROM goal_evidence WHERE goal_id=%s AND user_id=%s AND instance_id=%s
                ORDER BY recorded_at DESC,evidence_id DESC LIMIT %s""",
             (goal_id,actor.user_id,instance_id,limit),
