@@ -124,9 +124,10 @@ def test_actionability_and_user_report_never_verify_dependency(dsn):
         evidence_quote="I completed preparing lunch",task_id=first,
         expected_task_version=1,report="DONE",
     )
-    done=call(dsn,report_task_outcome,actor(uid),approve(dsn,uid,instance,cmd))
-    again=call(dsn,report_task_outcome,actor(uid),approve(dsn,uid,instance,cmd))
-    assert done.version==2 and again.replayed is False  # new approval = distinct command
+    approved=approve(dsn,uid,instance,cmd)
+    done=call(dsn,report_task_outcome,actor(uid),approved)
+    again=call(dsn,report_task_outcome,actor(uid),approved)
+    assert done.version==2 and again.replayed is True
     items={x.task_id:x for x in call(dsn,list_tasks,actor(uid),instance,goal)}
     assert items[first].status=="USER_REPORTED_DONE"
     assert "AWAITING_VERIFICATION" in items[first].blockers
