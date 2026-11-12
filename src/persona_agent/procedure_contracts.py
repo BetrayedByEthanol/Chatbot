@@ -156,6 +156,7 @@ class CreatePersonalizedApproachCommand(ProcedureUserCommand):
     template_version: int = Field(ge=1)
     goal_id: UUID | None = None
     strategy_id: UUID | None = None
+    intended_contribution: str | None = Field(default=None, min_length=10, max_length=600)
     parameters: dict[str, ParameterValue] = Field(default_factory=dict)
     step_text_overrides: dict[str, str] = Field(default_factory=dict)
     adaptation_reason: str | None = Field(default=None, min_length=10, max_length=800)
@@ -164,6 +165,11 @@ class CreatePersonalizedApproachCommand(ProcedureUserCommand):
     def goal_pair(self):
         if (self.goal_id is None) != (self.strategy_id is None):
             raise ValueError("goal and selected strategy must be supplied together")
+        if self.goal_id is not None:
+            if self.intended_contribution is None or not self.intended_contribution.strip():
+                raise ValueError("goal-linked procedure needs intended contribution")
+        elif self.intended_contribution is not None:
+            raise ValueError("standalone procedure cannot claim goal contribution")
         return self
 
 
@@ -213,6 +219,8 @@ class PersonalizedApproachView(BaseModel):
     revision: int
     goal_id: UUID | None
     strategy_id: UUID | None
+    intended_contribution: str | None
+    suitability_status: Literal["UNREVIEWED"] = "UNREVIEWED"
     parameters: dict[str, ParameterValue]
     step_text_overrides: dict[str, str]
     rendered_steps: tuple[ProcedureStep, ...]
