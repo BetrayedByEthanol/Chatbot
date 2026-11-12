@@ -222,9 +222,12 @@ def complete_operation(
                 and row["effect_status"]!="DISPATCHED"):
                 raise InvalidOperation("external effects require a prior dispatch record")
             release_resources(cursor,row)
-            # Selection and pool locks can outlive a lease. Validate after
-            # acquiring them, then enforce time fences again in the UPDATE.
-            # Rejection rolls back released reservations and all other writes.
+            # Selection, goal and pool locks can outlive a lease or a
+            # Task-domain deadline. Revalidate the lease, then fence the
+            # Task deadline against PostgreSQL's live clock in the final
+            # UPDATE itself (operations.deadline is intentionally NULL for
+            # the registered procedure-agent operation).
+            # Rejection rolls back resource release and every other write.
             require_claim(cursor,lease)
             cursor.execute(
                 """
@@ -239,10 +242,22 @@ def complete_operation(
                   AND lease_until > clock_timestamp()
                   AND claimed_at+(timeout_seconds*interval '1 second') > clock_timestamp()
                   AND (deadline IS NULL OR deadline > clock_timestamp())
+                  AND (
+                      operation_type <> %s
+                      OR EXISTS (
+                          SELECT 1 FROM goal_tasks task
+                          WHERE task.task_id=operations.task_id
+                            AND task.user_id=operations.user_id
+                            AND task.instance_id=operations.instance_id
+                            AND (task.deadline IS NULL
+                                 OR task.deadline > clock_timestamp())
+                      )
+                  )
                 RETURNING *
                 """,
                 (result_ref,row["operation_id"],lease.worker_id,
-                 lease.claim_generation,lease.selection_generation),
+                 lease.claim_generation,lease.selection_generation,
+                 PROCEDURE_AGENT_OPERATION),
             )
             updated=cursor.fetchone()
             if updated is None:
