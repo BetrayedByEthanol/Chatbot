@@ -452,3 +452,40 @@ def test_reported_completion_cannot_bypass_inactive_ancestor(dsn):
         assert conn.execute(
             "SELECT count(*) FROM task_user_confirmations WHERE task_id=%s",(task,),
         ).fetchone()[0]==0
+
+
+def test_concurrent_reverse_run_after_edges_cannot_form_cycle(dsn):
+    uid,instance,_=seed(dsn)
+    conv=uuid4()
+    goal=make_goal(dsn,uid,instance,conv)
+    first,_,_=make_task(dsn,uid,instance,conv,goal,1)
+    second,_,_=make_task(dsn,uid,instance,conv,goal,2)
+
+    def command(task_id, predecessor):
+        text=turn(dsn,uid,instance,conv,"Order these two tasks as requested.")
+        cmd=SetTaskPriorityCommand(
+            instance_id=instance,expected_generation=1,
+            idempotency_key=uuid4().hex,conversation_id=conv,
+            evidence_turn_id=text.turn_id,
+            evidence_quote="Order these two tasks",
+            task_id=task_id,expected_task_version=1,
+            rule="RUN_AFTER",other_task_id=predecessor,
+        )
+        return approve(dsn,uid,instance,cmd)
+
+    a=command(first,second)
+    b=command(second,first)
+
+    def apply(cmd):
+        try:
+            return call(dsn,set_task_priority,actor(uid),cmd)
+        except VersionConflict:
+            return None
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        x=pool.submit(apply,a)
+        y=pool.submit(apply,b)
+        results=(x.result(timeout=15),y.result(timeout=15))
+    assert sum(item is not None for item in results)==1
+    items={x.task_id:x for x in call(dsn,list_tasks,actor(uid),instance,goal)}
+    assert sum(bool(x.run_after) for x in items.values())==1
