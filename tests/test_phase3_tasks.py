@@ -713,3 +713,56 @@ def test_correction_authority_and_cross_persona_isolation(dsn):
     with pytest.raises(VersionConflict):
         call(dsn,correct_task_outcome,actor(user),stale)
     assert call(dsn,correct_task_outcome,actor(user),current).version==3
+
+
+def test_concurrent_confirmation_vs_correction_is_one_serialized_commit(dsn):
+    from threading import Barrier
+    uid,instance,_=seed(dsn)
+    conv=uuid4()
+    goal=make_goal(dsn,uid,instance,conv)
+    task,_,_=make_task(dsn,uid,instance,conv,goal,1)
+    reported=report_done(dsn,uid,instance,conv,task,1)
+    msg=turn(dsn,uid,instance,conv,
+             "I confirm my completed task after checking its outcome.")
+    confirmation=approve(dsn,uid,instance,ConfirmUserTaskCommand(
+        instance_id=instance,expected_generation=1,
+        idempotency_key=uuid4().hex,conversation_id=conv,
+        evidence_turn_id=msg.turn_id,
+        evidence_quote="I confirm my completed task",
+        task_id=task,expected_task_version=2,
+        report_id=reported.report_id,
+    ))
+    correction=correction_command(dsn,uid,instance,conv,task,2,
+                                  report_id=reported.report_id)
+    barrier=Barrier(2)
+
+    def race(fn,cmd):
+        barrier.wait(timeout=15)
+        try:
+            return call(dsn,fn,actor(uid),cmd)
+        except VersionConflict:
+            return None
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        a=pool.submit(race,confirm_user_task,confirmation)
+        b=pool.submit(race,correct_task_outcome,correction)
+        results=[a.result(timeout=20),b.result(timeout=20)]
+    assert sum(result is not None for result in results)==1
+    view=call(dsn,list_tasks,actor(uid),instance,goal)[0]
+    assert view.version==3
+    assert view.status in ("USER_CONFIRMED","NEEDS_REVIEW")
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            """SELECT count(*) FROM events
+               WHERE user_id=%s AND instance_id=%s AND
+                 event_type IN ('goal.task.user_confirmed.v1',
+                                'goal.task.outcome.corrected.v1')""",
+            (uid,instance),
+        ).fetchone()[0]==1
+        assert conn.execute(
+            """SELECT count(*) FROM command_receipts
+               WHERE user_id=%s AND instance_id=%s AND
+                 command_type IN ('goal.task.user.confirm.v1',
+                                  'goal.task.outcome.correct.v1')""",
+            (uid,instance),
+        ).fetchone()[0]==1
