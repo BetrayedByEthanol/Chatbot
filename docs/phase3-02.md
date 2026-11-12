@@ -9,6 +9,7 @@ This is a **contract-first vertical slice** of the existing Goal & Task domain, 
 
 - `goal_tasks`: concrete, evidence-defined USER or AGENT work associated with an approved goal. `completion_criterion` and `evidence_requirement` are separate; AGENT tasks declare a capability.
 - `task_dependencies`: goal-local prerequisite DAG. Edges are created only under current selected Foreground authority, exact user confirmation, parent goal version CAS, and goal-row serialization. A recursive reachability check rejects cycles. Depth/fan-in are bounded by 64 tasks per goal and 16 prerequisites per task (provisional limits).
+- `cancel_task`: explicit, action-confirmed, version-checked cancellation; cancelled tasks cannot be reported complete or prioritized. This cancels the **task record**, not a future external operation. Dependents stay blocked and the approved parent goal remains unchanged.
 - `task_outcome_reports`: user report evidence is `USER_REPORTED` and `UNREVIEWED`; `DONE` yields `USER_REPORTED_DONE`, **never** a verified completion. Neither advice nor reported completion satisfies prerequisite dependencies. Verification and evaluation arrive in P3-05/P3-06.
 - `task_priority_rules`: append-only user-directed `PREFER_OVER`, `SUSPEND`, `SET_DEADLINE`, and `RUN_AFTER` statements. These are preference records, not executable scheduler admission overrides. A preference to prioritize B is not an exclusive ban on A; deadlines do not grant permission.
 - `list_tasks`: derived, per-persona actionability from goal/ancestor activation, task status, prerequisites and agent capability/permission checks. Agent execution remains blocked until Phase 4 connects capability/authorization gates. A user task with all prerequisites clear is *actionable*; it is not **done**.
@@ -27,4 +28,4 @@ P3-02 doesn't initiate autonomous tasks, issue tools, guarantee agent capabiliti
 
 ## Acceptance
 
-`tests/test_phase3_tasks.py` verifies scoped authority, distinct confirmations, idempotent replay, concurrent parent version CAS, dependency reachability/cycle prevention, cross-goal isolation, evidence uncertainty, derived readiness, stored preference and persona-switch fencing. The full PostgreSQL and live-model integration workflows must pass before merge.
+`tests/test_phase3_tasks.py` verifies scoped authority, distinct confirmations, task cancellation, idempotent replay, concurrent parent version CAS, dependency reachability/cycle prevention, cross-goal isolation, evidence uncertainty, derived readiness, stored preference and persona-switch fencing. The full PostgreSQL and live-model integration workflows must pass before merge.
