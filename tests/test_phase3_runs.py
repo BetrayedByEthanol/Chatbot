@@ -354,3 +354,32 @@ def test_unrelated_step_activity_does_not_clear_outstanding_correction(dsn):
     assert resumed.version==6
     assert call(dsn,read_procedure_run,actor(user),instance,
                 start.run_id).status=="ACTIVE"
+
+
+def test_step_corrections_during_pause_do_not_implicitly_resume(dsn):
+    user,persona,instance,conv,template=published(dsn)
+    start=start_command(dsn,user,instance,conv,template)
+    call(dsn,start_procedure_run,actor(user),start)
+    evidence=record(dsn,user,instance,conv,start.run_id,1,
+                    "generate",1,"USER_REPORTED_DONE")
+    paused=run_status(dsn,user,instance,conv,start.run_id,2,"PAUSE")
+    assert paused.version==3
+    corrected=call(dsn,correct_procedure_step,actor(user),correction(
+        dsn,user,instance,conv,start.run_id,3,"generate",2,
+        evidence.step_event_id,
+    ))
+    assert corrected.version==4
+    view=call(dsn,read_procedure_run,actor(user),instance,start.run_id)
+    assert view.status=="PAUSED"
+    assert view.steps[0].status=="NEEDS_REVIEW"
+    resumed=run_status(dsn,user,instance,conv,start.run_id,4,"RESUME")
+    assert resumed.version==5
+    assert call(dsn,read_procedure_run,actor(user),instance,
+                start.run_id).status=="NEEDS_REVIEW"
+    with pytest.raises(VersionConflict,match="all user steps"):
+        run_status(dsn,user,instance,conv,start.run_id,5,"FINISH")
+    recovered=record(dsn,user,instance,conv,start.run_id,5,
+                     "generate",3,"USER_REPORTED_DONE")
+    assert recovered.version==6
+    assert call(dsn,read_procedure_run,actor(user),instance,
+                start.run_id).status=="ACTIVE"
