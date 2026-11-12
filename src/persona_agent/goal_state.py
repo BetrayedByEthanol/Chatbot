@@ -318,7 +318,7 @@ def record_goal_evidence(
                  evidence_id,goal_id,user_id,instance_id,evidence_kind,
                  source_conversation_id,source_turn_id,source_quote,
                  goal_version,event_id
-               ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+               ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
             (cmd.evidence_id,cmd.goal_id,who.user_id,cmd.instance_id,
              cmd.evidence_kind,cmd.conversation_id,cmd.evidence_turn_id,
              cmd.evidence_quote,version,evt),
