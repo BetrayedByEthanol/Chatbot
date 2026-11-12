@@ -100,11 +100,22 @@ class ProcedureRunResult(BaseModel):
     replayed: bool = False
 
 
+class RenderedProcedureStep(ProcedureStep):
+    """A persisted step after parameter interpolation.
+
+    Published templates use the tighter ProcedureStep limits (800/400);
+    validate_variant and migration 0018 admit rendered text up to 1200/800.
+    Keep all inherited step identity/executor/capability validation.
+    """
+    instruction: str = Field(min_length=1, max_length=1200)
+    success_test: str = Field(min_length=1, max_length=800)
+
+
 class ProcedureRunStepView(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     step_id: str
     position: int
-    step: ProcedureStep
+    step: RenderedProcedureStep
     status: StepStatus
     version: int
     last_step_event_id: UUID | None
