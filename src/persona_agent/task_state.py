@@ -19,7 +19,8 @@ from .runtime import (
     _fingerprint,
 )
 from .task_contracts import (
-    AddTaskDependencyCommand, CreateTaskCommand, ReportTaskOutcomeCommand,
+    AddTaskDependencyCommand, CancelTaskCommand, CreateTaskCommand,
+    ReportTaskOutcomeCommand,
     SetTaskPriorityCommand, TaskCommandResult, TaskUserCommand, TaskView,
     task_approval_phrase,
 )
@@ -218,6 +219,35 @@ def add_task_dependency(connection: Connection, actor: TrustedActor,
                                  version=cur.fetchone()["version"],
                                  event_id=event,action="DEPENDENCY_ADDED")
     return _command(connection,actor,command,"goal.task.dependency.add.v1",apply)
+
+
+def cancel_task(connection: Connection, actor: TrustedActor,
+                command: CancelTaskCommand) -> TaskCommandResult:
+    """Explicitly cancel planned/reported work without altering its approved goal.
+
+    This does not cancel external operations; task-owned execution does not
+    exist in P3-02. Later operation admission must read task cancellation.
+    """
+    def apply(cur,receipt):
+        task=_task(cur,actor,command.instance_id,command.task_id)
+        if task["version"]!=command.expected_task_version:
+            raise VersionConflict("task changed")
+        if task["status"]=="CANCELLED":
+            raise VersionConflict("task already cancelled")
+        event=_publish(cur,actor,command.instance_id,"goal.task.cancelled.v1",{
+            "task_id":str(command.task_id),
+            "approval_turn_id":str(command.approval_turn_id),
+        },receipt)
+        cur.execute(
+            """UPDATE goal_tasks SET status='CANCELLED',
+                 version=version+1,updated_at=clock_timestamp()
+               WHERE task_id=%s RETURNING version""",
+            (command.task_id,),
+        )
+        return TaskCommandResult(task_id=command.task_id,
+                                 version=cur.fetchone()["version"],
+                                 event_id=event,action="TASK_CANCELLED")
+    return _command(connection,actor,command,"goal.task.cancel.v1",apply)
 
 
 def report_task_outcome(connection: Connection, actor: TrustedActor,
