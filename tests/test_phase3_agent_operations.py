@@ -462,28 +462,28 @@ def test_task_deadline_fenced_after_resource_pool_lock_wait(dsn):
             pid_queue.put(conn.info.backend_pid)
             complete_operation(conn,lease,result_ref="untrusted-after-deadline")
 
-    with psycopg.connect(dsn,autocommit=True) as locker:
-        with locker.transaction():
-            locker.execute(
-                "SELECT resource_key FROM execution_resource_pools "
-                "WHERE resource_key=%s FOR UPDATE",
-                (RESOURCE_KEY,),
-            ).fetchone()
-            with ThreadPoolExecutor(max_workers=1) as pool:
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with psycopg.connect(dsn,autocommit=True) as locker:
+            with locker.transaction():
+                locker.execute(
+                    "SELECT resource_key FROM execution_resource_pools "
+                    "WHERE resource_key=%s FOR UPDATE",
+                    (RESOURCE_KEY,),
+                ).fetchone()
                 future=pool.submit(complete_after_lock)
                 backend_pid=pid_queue.get(timeout=5)
                 _wait_until_db_lock(dsn,backend_pid)
-                # We have established the first gate completed and the
-                # transaction is now WAITING to release its resource.
+                # First gate passed; completion is WAITING to release its
+                # resource. Keep this lock held through Task expiry.
                 _wait_past_postgres_timestamp(
                     dsn,
                     "SELECT deadline<=clock_timestamp() "
                     "FROM goal_tasks WHERE task_id=%s",
                     (task,),
                 )
-        # The lock is released on commit; P0's final SQL fence must fail.
-        with pytest.raises(StaleOperation,match="completion fence"):
-            future.result(timeout=10)
+            # Locker committed, so completion can reach the final SQL fence.
+            with pytest.raises(StaleOperation,match="completion fence"):
+                future.result(timeout=10)
 
     row=operation_row(dsn,cmd.operation_id)
     assert row[0]=="RUNNING" and row[4] is None
@@ -525,24 +525,24 @@ def test_claim_revalidated_after_goal_lock_wait_before_tool_dispatch(dsn):
             # Only reached if the pre-dispatch lease remains valid.
             executed.append((instruction,max_words))
 
-    with psycopg.connect(dsn,autocommit=True) as locker:
-        with locker.transaction():
-            locker.execute(
-                "SELECT goal_id FROM goal_records WHERE goal_id=%s FOR UPDATE",
-                (goal,),
-            ).fetchone()
-            with ThreadPoolExecutor(max_workers=1) as pool:
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with psycopg.connect(dsn,autocommit=True) as locker:
+            with locker.transaction():
+                locker.execute(
+                    "SELECT goal_id FROM goal_records WHERE goal_id=%s FOR UPDATE",
+                    (goal,),
+                ).fetchone()
                 future=pool.submit(prepare_then_dispatch)
                 backend_pid=pid_queue.get(timeout=5)
                 _wait_until_db_lock(dsn,backend_pid)
-                # This is a goal ancestor lock that begins *after* the
-                # P0 lease check, so it cannot be detected by that check.
+                # Hold the goal ancestor lock after the FIRST claim check
+                # until its P0 lease expires.
                 _wait_past_postgres_timestamp(
                     dsn,"SELECT clock_timestamp()>=%s::timestamptz",
                     (lease.lease_until,),
                 )
-        with pytest.raises(StaleOperation,match="attempt is no longer valid"):
-            future.result(timeout=10)
+            with pytest.raises(StaleOperation,match="attempt is no longer valid"):
+                future.result(timeout=10)
 
     assert executed==[]
     row=operation_row(dsn,cmd.operation_id)
