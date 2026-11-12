@@ -286,3 +286,169 @@ def test_cancellation_is_fenced_and_blocks_dependents_without_goal_mutation(dsn)
         assert conn.execute(
             "SELECT status FROM goal_records WHERE goal_id=%s",(goal,),
         ).fetchone()==("ACTIVE",)
+
+
+def priority(dsn, uid, instance, conv, task_id, version, rule,
+             *, other=None, deadline=None):
+    source=turn(dsn,uid,instance,conv,"Apply this specific task ordering preference.")
+    cmd=SetTaskPriorityCommand(
+        instance_id=instance,expected_generation=1,idempotency_key=uuid4().hex,
+        conversation_id=conv,evidence_turn_id=source.turn_id,
+        evidence_quote="Apply this specific task ordering preference",
+        task_id=task_id,expected_task_version=version,
+        rule=rule,other_task_id=other,deadline=deadline,
+    )
+    return call(dsn,set_task_priority,actor(uid),approve(dsn,uid,instance,cmd))
+
+
+def report_done(dsn,uid,instance,conv,task_id,version):
+    msg=turn(dsn,uid,instance,conv,"I completed the requested task.")
+    cmd=ReportTaskOutcomeCommand(
+        instance_id=instance,expected_generation=1,idempotency_key=uuid4().hex,
+        conversation_id=conv,evidence_turn_id=msg.turn_id,
+        evidence_quote="I completed the requested task",
+        task_id=task_id,expected_task_version=version,report="DONE",
+    )
+    return call(dsn,report_task_outcome,actor(uid),approve(dsn,uid,instance,cmd))
+
+
+def confirm_done(dsn,uid,instance,conv,task_id,version,report_id):
+    msg=turn(dsn,uid,instance,conv,"I explicitly confirm that I finished this task.")
+    cmd=ConfirmUserTaskCommand(
+        instance_id=instance,expected_generation=1,idempotency_key=uuid4().hex,
+        conversation_id=conv,evidence_turn_id=msg.turn_id,
+        evidence_quote="I explicitly confirm that I finished this task",
+        task_id=task_id,expected_task_version=version,report_id=report_id,
+    )
+    cmd=approve(dsn,uid,instance,cmd)
+    return call(dsn,confirm_user_task,actor(uid),cmd)
+
+
+def test_user_confirmation_unlocks_dependent_work_without_verified_claim(dsn):
+    uid,instance,_=seed(dsn)
+    conv=uuid4()
+    goal=make_goal(dsn,uid,instance,conv)
+    first,_,_=make_task(dsn,uid,instance,conv,goal,1)
+    second,_,_=make_task(dsn,uid,instance,conv,goal,2,title="Second action")
+    edge(dsn,uid,instance,conv,second,first,3)
+    report=report_done(dsn,uid,instance,conv,first,1)
+    assert report.report_id is not None
+    assert not next(x for x in call(dsn,list_tasks,actor(uid),instance,goal)
+                    if x.task_id==second).actionable
+    with pytest.raises(PermissionDenied):
+        confirm_done(dsn,uid,instance,conv,second,2,report.report_id)
+    confirmed=confirm_done(dsn,uid,instance,conv,first,2,report.report_id)
+    assert confirmed.action=="USER_COMPLETION_CONFIRMED"
+    items={x.task_id:x for x in call(dsn,list_tasks,actor(uid),instance,goal)}
+    assert items[first].status=="USER_CONFIRMED"
+    assert items[second].actionable
+    assert not items[second].dispatch_authorized
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT epistemic_status FROM task_user_confirmations "
+            "WHERE task_id=%s",(first,),
+        ).fetchone()==("USER_CONFIRMED",)
+        assert conn.execute(
+            "SELECT status FROM goal_records WHERE goal_id=%s",(goal,),
+        ).fetchone()==("ACTIVE",)
+
+
+def test_run_after_and_dependencies_share_cycle_detection(dsn):
+    uid,instance,_=seed(dsn)
+    conv=uuid4()
+    goal=make_goal(dsn,uid,instance,conv)
+    a,_,_=make_task(dsn,uid,instance,conv,goal,1)
+    b,_,_=make_task(dsn,uid,instance,conv,goal,2)
+    assert priority(dsn,uid,instance,conv,b,1,"RUN_AFTER",other=a).version==2
+    assert "PREREQUISITE_NOT_CONFIRMED" in next(
+        t for t in call(dsn,list_tasks,actor(uid),instance,goal)
+        if t.task_id==b
+    ).blockers
+    with pytest.raises(VersionConflict,match="cycle"):
+        edge(dsn,uid,instance,conv,a,b,3)
+    with pytest.raises(VersionConflict,match="cycle"):
+        priority(dsn,uid,instance,conv,a,1,"RUN_AFTER",other=b)
+    assert priority(dsn,uid,instance,conv,b,2,"CLEAR_RUN_AFTER").version==3
+    assert priority(dsn,uid,instance,conv,a,1,"RUN_AFTER",other=b).version==2
+    assert not next(t for t in call(dsn,list_tasks,actor(uid),instance,goal)
+                    if t.task_id==a).actionable
+
+
+def test_exclusive_only_priority_is_scoped_reversible_and_nonimplicit(dsn):
+    uid,instance,_=seed(dsn)
+    conv=uuid4()
+    goal=make_goal(dsn,uid,instance,conv)
+    a,_,_=make_task(dsn,uid,instance,conv,goal,1)
+    b,_,_=make_task(dsn,uid,instance,conv,goal,2)
+    assert priority(dsn,uid,instance,conv,a,1,"PREFER_OVER",other=b).version==2
+    assert all(x.actionable for x in call(dsn,list_tasks,actor(uid),instance,goal))
+    assert priority(dsn,uid,instance,conv,a,2,"ONLY").version==3
+    items={x.task_id:x for x in call(dsn,list_tasks,actor(uid),instance,goal)}
+    assert items[a].exclusive_only and items[a].actionable
+    assert "EXCLUSIVE_OTHER" in items[b].blockers
+    with pytest.raises(VersionConflict,match="exclusive"):
+        priority(dsn,uid,instance,conv,b,1,"ONLY")
+    assert priority(dsn,uid,instance,conv,a,3,"CLEAR_ONLY").version==4
+    assert priority(dsn,uid,instance,conv,a,4,"CLEAR_PREFERENCE").version==5
+    items={x.task_id:x for x in call(dsn,list_tasks,actor(uid),instance,goal)}
+    assert items[b].actionable and items[a].preferred_over==()
+
+
+def test_cross_persona_dependency_denied(dsn):
+    uid,instance,_=seed(dsn)
+    foreign,foreign_instance,_=seed(dsn)
+    conv=uuid4()
+    goal=make_goal(dsn,uid,instance,conv)
+    a,_,_=make_task(dsn,uid,instance,conv,goal,1)
+    foreign_conv=uuid4()
+    foreign_goal=make_goal(dsn,foreign,foreign_instance,foreign_conv)
+    b,_,_=make_task(dsn,foreign,foreign_instance,foreign_conv,foreign_goal,1)
+    with pytest.raises(PermissionDenied):
+        edge(dsn,uid,instance,conv,a,b,2)
+
+
+def test_reported_completion_cannot_bypass_inactive_ancestor(dsn):
+    # A task completion that overlaps a parent pause must observe the pause.
+    from concurrent.futures import ThreadPoolExecutor
+    uid,instance,_=seed(dsn)
+    conv=uuid4()
+    parent=make_goal(dsn,uid,instance,conv)
+    source=turn(dsn,uid,instance,conv,"I want to improve my meals through lunch prep.")
+    child_cmd=CreateGoalCommand(
+        instance_id=instance,expected_generation=1,
+        idempotency_key=uuid4().hex,conversation_id=conv,
+        evidence_turn_id=source.turn_id,
+        evidence_quote="I want to improve my meals",
+        approval_turn_id=None,goal_id=uuid4(),parent_goal_id=parent,
+        expected_parent_version=1,title="Lunch preparation",
+        desired_outcome="Prepare lunches",success_criterion="Lunch made",horizon="SHORT",
+    )
+    confirm=turn(dsn,uid,instance,conv,goal_action_approval_phrase(child_cmd))
+    child_cmd=child_cmd.model_copy(update={"approval_turn_id":confirm.turn_id})
+    call(dsn,create_goal,actor(uid),child_cmd)
+    task,_,_=make_task(dsn,uid,instance,conv,child_cmd.goal_id,1)
+    report=report_done(dsn,uid,instance,conv,task,1)
+    msg=turn(dsn,uid,instance,conv,"I explicitly confirm that I finished this task.")
+    command=ConfirmUserTaskCommand(
+        instance_id=instance,expected_generation=1,idempotency_key=uuid4().hex,
+        conversation_id=conv,evidence_turn_id=msg.turn_id,
+        evidence_quote="I explicitly confirm that I finished this task",
+        task_id=task,expected_task_version=2,report_id=report.report_id,
+    )
+    command=approve(dsn,uid,instance,command)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with psycopg.connect(dsn,autocommit=True) as conn:
+            with conn.transaction():
+                conn.execute("SELECT 1 FROM goal_records WHERE goal_id=%s FOR UPDATE",
+                             (parent,))
+                future=pool.submit(call,dsn,confirm_user_task,actor(uid),command)
+                conn.execute(
+                    "UPDATE goal_records SET status='PAUSED',version=version+1 "
+                    "WHERE goal_id=%s",(parent,),
+                )
+        with pytest.raises(VersionConflict,match="ancestor"):
+            future.result(timeout=15)
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT count(*) FROM task_user_confirmations WHERE task_id=%s",(task,),
+        ).fetchone()[0]==0
