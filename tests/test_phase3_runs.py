@@ -176,7 +176,7 @@ def test_user_steps_are_not_task_completion_and_correction_preserves_history(dsn
     assert view.steps[0].status=="NEEDS_REVIEW"
     assert view.steps[1].status=="USER_CONFIRMED"
     assert not view.steps[0].independently_verified
-    with pytest.raises(VersionConflict,match="latest evidence"):
+    with pytest.raises(VersionConflict,match="no current claim"):
         call(dsn,correct_procedure_step,actor(user),
              correction(dsn,user,instance,conv,run,7,"generate",4,
                         first.step_event_id))
