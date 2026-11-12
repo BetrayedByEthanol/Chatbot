@@ -56,11 +56,36 @@ def authorize_agent_step(connection: Connection, actor: TrustedActor,
         cur.execute(
             """SELECT operation_id FROM procedure_agent_operation_authorizations
                WHERE run_id=%s AND step_id=%s AND state='AUTHORIZED'
-               LIMIT 1""",
+               FOR UPDATE""",
             (command.run_id,command.step_id),
         )
-        if cur.fetchone() is not None:
-            raise VersionConflict("step already has an outstanding AGENT operation")
+        pending=cur.fetchone()
+        if pending is not None:
+            cur.execute(
+                "SELECT status FROM operations WHERE operation_id=%s",
+                (pending["operation_id"],),
+            )
+            old_operation=cur.fetchone()
+            if old_operation is not None:
+                raise VersionConflict(
+                    "step has an admitted operation; cancel/reconcile it before replacing"
+                )
+            # Stage-before-enqueue may crash or encounter a newly revoked
+            # Task/Run authorization. A NEW separately approved user command
+            # may supersede its orphaned, nonexecutable stage atomically.
+            superseded=_publish(
+                cur,actor,command.instance_id,"procedure.agent.stage_superseded.v1",{
+                    "prior_operation_id":str(pending["operation_id"]),
+                    "new_operation_id":str(command.operation_id),
+                    "run_id":str(command.run_id),"step_id":command.step_id,
+                },receipt,
+            )
+            cur.execute(
+                """UPDATE procedure_agent_operation_authorizations
+                   SET state='INVALIDATED',result_event_id=%s
+                   WHERE operation_id=%s""",
+                (superseded,pending["operation_id"]),
+            )
         cur.execute(
             "SELECT 1 FROM procedure_agent_operation_authorizations WHERE operation_id=%s",
             (command.operation_id,),
