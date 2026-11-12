@@ -208,7 +208,13 @@ def test_goal_progress_is_source_linked_and_never_self_verified(dsn):
     assert view.selected_strategy_id is None
     with pytest.raises(VersionConflict):
         call(dsn,record_goal_evidence,actor(user),command.model_copy(
-            update={"idempotency_key":str(uuid4()),"expected_goal_version":2},
+            update={
+                "idempotency_key":str(uuid4()),
+                "expected_goal_version":2,
+                # A different excerpt from the same source turn must
+                # not be independently counted as new evidence.
+                "evidence_quote":"prepared lunch",
+            },
         ))
     with psycopg.connect(dsn,autocommit=True) as conn:
         assert conn.execute(
@@ -228,23 +234,25 @@ def test_pause_resume_and_abandon_require_explicit_user_evidence(dsn):
     conv=uuid4()
     first=turn(dsn,user,instance,conv,"I want to improve my eating habits.")
     goal,_,_=root(dsn,user,instance,conv,first)
-    statement=turn(dsn,user,instance,conv,"Pause my eating goal for now.")
-    def change(version,status):
+    pause=turn(dsn,user,instance,conv,"Pause my eating goal for now.")
+    resume=turn(dsn,user,instance,conv,"Resume my eating goal now.")
+    abandon=turn(dsn,user,instance,conv,"Abandon my eating goal.")
+    def change(version,status,source,quote):
         return call(dsn,set_goal_status,actor(user),SetGoalStatusCommand(
             instance_id=instance,expected_generation=1,
             idempotency_key=str(uuid4()),conversation_id=conv,
-            evidence_turn_id=statement.turn_id,
-            evidence_quote="Pause my eating goal for now",
+            evidence_turn_id=source.turn_id,
+            evidence_quote=quote,
             goal_id=goal,expected_goal_version=version,
             new_status=status,
         ))
-    assert change(1,"PAUSED").goal_version==2
+    assert change(1,"PAUSED",pause,"Pause my eating goal").goal_version==2
     with pytest.raises(VersionConflict):
-        change(1,"ACTIVE")
-    assert change(2,"ACTIVE").goal_version==3
-    assert change(3,"ABANDONED").goal_version==4
+        change(1,"ACTIVE",resume,"Resume my eating goal")
+    assert change(2,"ACTIVE",resume,"Resume my eating goal").goal_version==3
+    assert change(3,"ABANDONED",abandon,"Abandon my eating goal").goal_version==4
     with pytest.raises(VersionConflict):
-        change(4,"ACTIVE")
+        change(4,"ACTIVE",resume,"Resume my eating goal")
     assert call(dsn,list_goals,actor(user),instance)[0].status=="ABANDONED"
     with psycopg.connect(dsn,autocommit=True) as conn:
         assert conn.execute(
