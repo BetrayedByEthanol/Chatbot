@@ -437,46 +437,83 @@ def confirm_user_task(connection: Connection, actor: TrustedActor,
 
 def set_task_priority(connection: Connection, actor: TrustedActor,
                       command: SetTaskPriorityCommand) -> TaskCommandResult:
+    """Version, enforce and record separate durable user priority constraints."""
     def apply(cur,receipt):
+        _graph_lock(cur,actor,command.instance_id)
         task=_task(cur,actor,command.instance_id,command.task_id)
         if task["version"]!=command.expected_task_version:
             raise VersionConflict("task changed")
-        if task["status"]=="CANCELLED":
-            raise VersionConflict("cancelled task cannot be prioritized")
-        if command.other_task_id is not None:
-            cur.execute(
-                """SELECT goal_id FROM goal_tasks WHERE task_id=%s
-                   AND user_id=%s AND instance_id=%s""",
-                (command.other_task_id,actor.user_id,command.instance_id),
-            )
-            other=cur.fetchone()
-            if other is None or other["goal_id"]!=task["goal_id"]:
-                raise PermissionDenied("relative priority must target task in same goal")
+        if task["status"] in ("CANCELLED","USER_CONFIRMED"):
+            raise VersionConflict("terminal task cannot be prioritized")
+        changes={}
+        if command.rule in ("PREFER_OVER","RUN_AFTER"):
+            other=_task(cur,actor,command.instance_id,command.other_task_id,lock="SHARE")
+            if other["status"]=="CANCELLED":
+                raise VersionConflict("cancelled task is not a valid priority target")
+            if command.rule=="RUN_AFTER":
+                if _would_cycle(cur,actor,command.instance_id,
+                                command.task_id,command.other_task_id):
+                    raise VersionConflict("RUN_AFTER would introduce a cycle")
+                changes["run_after_task_id"]=command.other_task_id
+            else:
+                changes["preferred_over_task_id"]=command.other_task_id
+        elif command.rule=="CLEAR_PREFERENCE":
+            changes["preferred_over_task_id"]=None
+        elif command.rule=="CLEAR_RUN_AFTER":
+            changes["run_after_task_id"]=None
+        elif command.rule in ("SUSPEND","RESUME"):
+            changes["suspended"]=command.rule=="SUSPEND"
+        elif command.rule in ("ONLY","CLEAR_ONLY"):
+            changes["exclusive_only"]=command.rule=="ONLY"
+            if command.rule=="ONLY":
+                cur.execute(
+                    """SELECT 1 FROM goal_tasks
+                       WHERE user_id=%s AND instance_id=%s
+                         AND exclusive_only AND task_id<>%s LIMIT 1""",
+                    (actor.user_id,command.instance_id,command.task_id),
+                )
+                if cur.fetchone() is not None:
+                    raise VersionConflict("another task already has exclusive priority")
+        elif command.rule=="SET_DEADLINE":
+            if command.deadline<=datetime.now(timezone.utc):
+                raise VersionConflict("task deadline must be in the future")
+            changes["deadline"]=command.deadline
+        elif command.rule=="CLEAR_DEADLINE":
+            changes["deadline"]=None
+        else:
+            raise ValueError("unsupported task priority rule")
+        if all(task[key]==value for key,value in changes.items()):
+            raise VersionConflict("priority would not change task state")
         event=_publish(cur,actor,command.instance_id,"goal.task.priority.set.v1",{
             "task_id":str(command.task_id),"rule":command.rule,
             "other_task_id":str(command.other_task_id) if command.other_task_id else None,
             "deadline":command.deadline.isoformat() if command.deadline else None,
+            "approval_turn_id":str(command.approval_turn_id),
         },receipt)
+        version=task["version"]+1
+        setters=",".join(f"{key}=%s" for key in changes)
+        cur.execute(
+            f"""UPDATE goal_tasks SET {setters},version=%s,
+                 updated_at=clock_timestamp()
+               WHERE task_id=%s AND user_id=%s AND instance_id=%s""",
+            (*changes.values(),version,command.task_id,
+             actor.user_id,command.instance_id),
+        )
         cur.execute(
             """INSERT INTO task_priority_rules(
                  priority_id,task_id,goal_id,user_id,instance_id,rule,
                  other_task_id,deadline,task_version,
-                 source_conversation_id,source_turn_id,approval_turn_id,event_id
-               ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                 source_conversation_id,source_turn_id,source_quote,
+                 approval_turn_id,event_id
+               ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
             (uuid4(),task["task_id"],task["goal_id"],actor.user_id,
              command.instance_id,command.rule,command.other_task_id,
-             command.deadline,task["version"]+1,
-             command.conversation_id,command.evidence_turn_id,
+             command.deadline,version,command.conversation_id,
+             command.evidence_turn_id,command.evidence_quote,
              command.approval_turn_id,event),
         )
-        cur.execute(
-            """UPDATE goal_tasks SET version=version+1,
-               updated_at=clock_timestamp() WHERE task_id=%s RETURNING version""",
-            (command.task_id,),
-        )
         return TaskCommandResult(task_id=command.task_id,
-                                 version=cur.fetchone()["version"],
-                                 event_id=event,action="PRIORITY_SET")
+                                 version=version,event_id=event,action="PRIORITY_SET")
     return _command(connection,actor,command,"goal.task.priority.set.v1",apply)
 
 
