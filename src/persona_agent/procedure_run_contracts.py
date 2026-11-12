@@ -7,7 +7,7 @@ from typing import Literal
 from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .procedure_contracts import ProcedureUserCommand, ProcedureStep
+from .procedure_contracts import ProcedureUserCommand, ProcedureStep, ParameterValue
 
 RunStatus = Literal["ACTIVE", "PAUSED", "NEEDS_REVIEW", "USER_CONFIRMED", "CANCELLED"]
 StepStatus = Literal[
@@ -26,11 +26,14 @@ class StartProcedureRunCommand(ProcedureUserCommand):
     variant_id: UUID | None = None
     variant_revision: int | None = Field(default=None, ge=1)
     task_id: UUID | None = None
+    parameters: dict[str, ParameterValue] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def version_pins(self):
         if (self.variant_id is None) != (self.variant_revision is None):
             raise ValueError("private procedure runs require an exact variant revision")
+        if self.variant_id is not None and self.parameters:
+            raise ValueError("private run parameters come from the pinned variant revision")
         return self
 
 
