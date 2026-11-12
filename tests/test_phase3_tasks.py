@@ -13,11 +13,11 @@ from persona_agent.goal_state import create_goal
 from persona_agent.lifecycle import SwitchPersonaCommand, switch_persona
 from persona_agent.runtime import PermissionDenied, StaleSelection, VersionConflict
 from persona_agent.task_contracts import (
-    CreateTaskCommand, AddTaskDependencyCommand, CancelTaskCommand, ReportTaskOutcomeCommand,
+    CreateTaskCommand, AddTaskDependencyCommand, CancelTaskCommand, ConfirmUserTaskCommand, ReportTaskOutcomeCommand,
     SetTaskPriorityCommand, task_approval_phrase,
 )
 from persona_agent.task_state import (
-    create_task, add_task_dependency, cancel_task, report_task_outcome,
+    create_task, add_task_dependency, cancel_task, confirm_user_task, report_task_outcome,
     set_task_priority, list_tasks,
 )
 
@@ -87,7 +87,8 @@ def make_task(dsn,uid,instance,conversation,goal_id,goal_version,*,executor="USE
         instance_id=instance,expected_generation=1,idempotency_key=uuid4().hex,
         conversation_id=conversation,evidence_turn_id=source.turn_id,
         evidence_quote="Please add a task",task_id=uuid4(),goal_id=goal_id,
-        expected_goal_version=goal_version,title=title,executor=executor,
+        expected_goal_version=goal_version,title=title,
+        action_description="Prepare one observable meal or household action",executor=executor,
         capability=capability,completion_criterion="Meal is prepared",
         evidence_requirement="User report or independent confirmation",
     )
@@ -116,7 +117,7 @@ def test_actionability_and_user_report_never_verify_dependency(dsn):
     items={x.task_id:x for x in call(dsn,list_tasks,actor(uid),instance,goal)}
     assert items[first].actionable
     assert not items[second].actionable
-    assert "PREREQUISITE_NOT_VERIFIED" in items[second].blockers
+    assert "PREREQUISITE_NOT_CONFIRMED" in items[second].blockers
     msg=turn(dsn,uid,instance,conv,"I completed preparing lunch.")
     cmd=ReportTaskOutcomeCommand(
         instance_id=instance,expected_generation=1,idempotency_key=uuid4().hex,
@@ -130,11 +131,11 @@ def test_actionability_and_user_report_never_verify_dependency(dsn):
     assert done.version==2 and again.replayed is True
     items={x.task_id:x for x in call(dsn,list_tasks,actor(uid),instance,goal)}
     assert items[first].status=="USER_REPORTED_DONE"
-    assert "AWAITING_VERIFICATION" in items[first].blockers
-    assert "PREREQUISITE_NOT_VERIFIED" in items[second].blockers
+    assert "AWAITING_USER_CONFIRMATION" in items[first].blockers
+    assert "PREREQUISITE_NOT_CONFIRMED" in items[second].blockers
 
 
-def test_cycle_and_cross_goal_dependency_rejected(dsn):
+def test_cycle_and_same_persona_cross_goal_dependency(dsn):
     uid,instance,_=seed(dsn)
     conv=uuid4()
     goal=make_goal(dsn,uid,instance,conv)
@@ -145,8 +146,9 @@ def test_cycle_and_cross_goal_dependency_rejected(dsn):
         edge(dsn,uid,instance,conv,a,b,4)
     other_goal=make_goal(dsn,uid,instance,uuid4())
     c,_,_=make_task(dsn,uid,instance,conv,other_goal,1)
-    with pytest.raises(PermissionDenied):
-        edge(dsn,uid,instance,conv,b,c,4)
+    linked=edge(dsn,uid,instance,conv,b,c,4)
+    assert linked.action=="DEPENDENCY_ADDED"
+    assert c in call(dsn,list_tasks,actor(uid),instance,goal)[1].prerequisite_ids
 
 
 def test_concurrent_task_cas_and_duplicate_replay(dsn):
@@ -159,7 +161,7 @@ def test_concurrent_task_cas_and_duplicate_replay(dsn):
             instance_id=instance,expected_generation=1,idempotency_key=uuid4().hex,
             conversation_id=conv,evidence_turn_id=source.turn_id,evidence_quote="Add one task",
             task_id=uuid4(),goal_id=goal,expected_goal_version=1,
-            title="Check ingredients",executor="USER",
+            title="Check ingredients",action_description="List required ingredients",executor="USER",
             completion_criterion="Ingredients listed",evidence_requirement="User statement",
         )
         return approve(dsn,uid,instance,cmd)
@@ -215,7 +217,8 @@ def test_missing_confirmation_and_wrong_source_block_task_creation(dsn):
         instance_id=instance,expected_generation=1,idempotency_key=uuid4().hex,
         conversation_id=conv,evidence_turn_id=source.turn_id,
         evidence_quote="Perhaps add a task",task_id=uuid4(),goal_id=goal,
-        expected_goal_version=1,title="Preparation",executor="USER",
+        expected_goal_version=1,title="Preparation",
+        action_description="Prepare the kitchen area",executor="USER",
         completion_criterion="Prepared",evidence_requirement="Observation",
     )
     with pytest.raises(PermissionDenied,match="separate user approval"):
@@ -274,7 +277,7 @@ def test_cancellation_is_fenced_and_blocks_dependents_without_goal_mutation(dsn)
     assert call(dsn,cancel_task,actor(uid),cmd).replayed
     items={x.task_id:x for x in call(dsn,list_tasks,actor(uid),instance,goal)}
     assert not items[first].actionable and "CANCELLED" in items[first].blockers
-    assert not items[second].actionable and "PREREQUISITE_NOT_VERIFIED" in items[second].blockers
+    assert not items[second].actionable and "PREREQUISITE_NOT_CONFIRMED" in items[second].blockers
     with pytest.raises(VersionConflict):
         call(dsn,cancel_task,actor(uid),cmd.model_copy(update={
             "idempotency_key":uuid4().hex,
