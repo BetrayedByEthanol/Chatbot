@@ -241,13 +241,18 @@ def reconcile_agent_step(connection: Connection, actor: TrustedPlatformActor,
             if stage is None:
                 raise PermissionDenied("operation has no approved stage")
             if stage["state"]!="AUTHORIZED":
+                cur.execute(
+                    """SELECT step_event_id,new_status
+                       FROM procedure_run_step_events
+                       WHERE event_id=%s""",
+                    (stage["result_event_id"],),
+                )
+                prior=cur.fetchone()
                 return AgentStepReconcileResult(
                     operation_id=operation_id,run_id=stage["run_id"],
                     resolution=("INVALIDATED" if stage["state"]=="INVALIDATED"
-                                else "VERIFIED" if operation["status"]=="COMPLETED"
-                                else "OUTCOME_UNKNOWN" if operation["status"]=="OUTCOME_UNKNOWN"
-                                else "BLOCKED" if operation["status"]=="CANCELLED"
-                                else "FAILED"),
+                                else prior["new_status"] if prior else "INVALIDATED"),
+                    step_event_id=prior["step_event_id"] if prior else None,
                     replayed=True,
                 )
             if operation["status"] not in (
