@@ -105,7 +105,8 @@ CREATE TABLE task_priority_revisions (
     instance_id uuid NOT NULL,
     task_version bigint NOT NULL CHECK (task_version >= 2),
     rule_kind text NOT NULL CHECK (rule_kind IN (
-        'PREFER_OVER','RUN_AFTER','SUSPEND','RESUME',
+        'PREFER_OVER','CLEAR_PREFERENCE','RUN_AFTER','CLEAR_RUN_AFTER',
+        'SUSPEND','RESUME',
         'SET_DEADLINE','CLEAR_DEADLINE','ONLY','CLEAR_ONLY')),
     related_task_id uuid,
     deadline timestamptz,
