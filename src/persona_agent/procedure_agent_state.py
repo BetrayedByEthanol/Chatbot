@@ -26,7 +26,7 @@ from .procedure_agent_contracts import (
 from .procedure_agent_gate import require_procedure_agent_gate
 from .procedure_run_state import _run, _step
 from .procedure_state import _command, _publish
-from .runtime import PermissionDenied, VersionConflict
+from .runtime import PermissionDenied, StaleSelection, VersionConflict
 from .task_state import _graph_read_lock
 from .tool_contracts import (
     PROCEDURE_AGENT_OPERATION, RESOURCE_KEY, SLOW_TOOL,
@@ -255,6 +255,17 @@ def reconcile_agent_step(connection: Connection, actor: TrustedPlatformActor,
                     step_event_id=prior["step_event_id"] if prior else None,
                     replayed=True,
                 )
+            # Only the selected persona may accept new procedure state.
+            # A fully completed P0 result is retained and may be reconciled
+            # after this persona is selected again; no automatic activation.
+            cur.execute(
+                """SELECT instance_id FROM persona_selection
+                   WHERE user_id=%s FOR SHARE""",
+                (actor.user_id,),
+            )
+            selected=cur.fetchone()
+            if selected is None or selected["instance_id"]!=operation["instance_id"]:
+                raise StaleSelection("defer AGENT result until persona is selected")
             if operation["status"] not in (
                 "COMPLETED","FAILED","BLOCKED","CANCELLED","OUTCOME_UNKNOWN"
             ):
@@ -278,7 +289,12 @@ def reconcile_agent_step(connection: Connection, actor: TrustedPlatformActor,
                     or cur.fetchone() is None):
                     raise VersionConflict("completed operation lacks fenced trusted result")
             try:
-                require_procedure_agent_gate(cur,operation)
+                # P0 already accepted completion under its live deadline
+                # fence. Late reconciliation is evidence admission, not
+                # permission to execute a new operation after the deadline.
+                require_procedure_agent_gate(
+                    cur,operation,allow_past_deadline_evidence=True,
+                )
             except (VersionConflict,PermissionDenied):
                 event=_publish(
                     cur,actor,operation["instance_id"],
