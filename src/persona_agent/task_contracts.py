@@ -8,7 +8,7 @@ import json
 from datetime import datetime
 from typing import Literal
 from uuid import UUID
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator, field_validator
 
 Executor = Literal["USER", "AGENT"]
 TaskStatus = Literal["PLANNED", "USER_REPORTED_DONE", "CANCELLED"]
@@ -23,6 +23,13 @@ class TaskUserCommand(BaseModel):
     evidence_turn_id: UUID
     evidence_quote: str = Field(min_length=1, max_length=300)
     approval_turn_id: UUID | None = None
+
+    @field_validator('evidence_quote')
+    @classmethod
+    def nonempty_quote(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError('source quote must not be blank')
+        return value
 
 class CreateTaskCommand(TaskUserCommand):
     task_id: UUID
@@ -55,6 +62,11 @@ class AddTaskDependencyCommand(TaskUserCommand):
             raise ValueError("task cannot depend on itself")
         return self
 
+class CancelTaskCommand(TaskUserCommand):
+    task_id: UUID
+    expected_task_version: int = Field(ge=1)
+
+
 class ReportTaskOutcomeCommand(TaskUserCommand):
     task_id: UUID
     expected_task_version: int = Field(ge=1)
@@ -84,7 +96,7 @@ class TaskCommandResult(BaseModel):
     task_id: UUID
     version: int
     event_id: UUID
-    action: Literal["TASK_CREATED", "DEPENDENCY_ADDED", "OUTCOME_REPORTED", "PRIORITY_SET"]
+    action: Literal["TASK_CREATED", "DEPENDENCY_ADDED", "OUTCOME_REPORTED", "PRIORITY_SET", "TASK_CANCELLED"]
     replayed: bool = False
 
 class TaskView(BaseModel):
