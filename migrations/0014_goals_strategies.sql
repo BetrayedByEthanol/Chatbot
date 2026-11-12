@@ -11,6 +11,9 @@ CREATE TABLE goal_records (
     success_criterion text NOT NULL CHECK (char_length(success_criterion) BETWEEN 1 AND 600),
     horizon text NOT NULL CHECK (horizon IN ('SHORT','MEDIUM','LONG','OPEN')),
     target_at timestamptz,
+    evaluation_start_at timestamptz,
+    evaluation_end_at timestamptz,
+    privacy_class text NOT NULL DEFAULT 'INTERNAL' CHECK(privacy_class='INTERNAL'),
     status text NOT NULL DEFAULT 'ACTIVE'
         CHECK (status IN ('ACTIVE','PAUSED','ABANDONED')),
     version bigint NOT NULL DEFAULT 1 CHECK (version >= 1),
@@ -24,6 +27,8 @@ CREATE TABLE goal_records (
     CHECK ((parent_goal_id IS NULL AND depth=0)
         OR (parent_goal_id IS NOT NULL AND depth>0)),
     CHECK (parent_goal_id IS NULL OR parent_goal_id<>goal_id),
+    CHECK (evaluation_start_at IS NULL OR evaluation_end_at IS NULL
+           OR evaluation_end_at>evaluation_start_at),
     FOREIGN KEY(user_id,instance_id)
         REFERENCES persona_instances(user_id,id),
     FOREIGN KEY(parent_goal_id,user_id,instance_id)
