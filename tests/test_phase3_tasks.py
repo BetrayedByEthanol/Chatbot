@@ -342,3 +342,43 @@ def test_exclusive_priority_expires_when_user_completes_or_cancels_task(dsn):
     call(dsn,cancel_task,actor(user),approve(dsn,user,inst,cancelled))
     assert view(dsn,user,inst,c).actionability=="READY"
     assert view(dsn,user,inst,b).exclusive_only is False
+
+
+def test_cross_scope_dependency_rejected_without_disclosing_foreign_task(dsn):
+    user,inst,_,conv,goal,source=ctx(dsn)
+    foreign,foreign_inst,_,foreign_conv,foreign_goal,foreign_source=ctx(dsn)
+    local,_=create(dsn,user,inst,conv,goal,source,title="Local")
+    alien,_=create(dsn,foreign,foreign_inst,foreign_conv,foreign_goal,
+                   foreign_source,title="Foreign")
+    with pytest.raises(PermissionDenied,match="task outside"):
+        depend(dsn,user,inst,conv,source,local,alien,1)
+    assert view(dsn,user,inst,local).version==1
+
+
+def test_task_budget_is_bounded_per_approved_goal(dsn,monkeypatch):
+    from persona_agent import task_state
+    monkeypatch.setattr(task_state,"_MAX_TASKS_PER_GOAL",2)
+    user,inst,_,conv,goal,source=ctx(dsn)
+    create(dsn,user,inst,conv,goal,source,title="A")
+    create(dsn,user,inst,conv,goal,source,title="B")
+    with pytest.raises(VersionConflict,match="bounded decomposition"):
+        create(dsn,user,inst,conv,goal,source,title="Too many")
+    assert len(call(dsn,list_tasks,actor(user),inst,goal_id=goal))==2
+
+
+def test_overdue_user_report_is_recorded_without_claiming_on_time_success(dsn):
+    user,inst,_,conv,goal,source=ctx(dsn)
+    tid,_=create(dsn,user,inst,conv,goal,source,title="Late lunch")
+    priority(dsn,user,inst,conv,source,tid,1,"SET_DEADLINE",
+             deadline=datetime.now(timezone.utc)+timedelta(days=1))
+    # Simulate clock passing without waiting; this is test fixture setup only.
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        conn.execute(
+            "UPDATE task_records SET deadline=clock_timestamp()-interval '1 hour' "
+            "WHERE task_id=%s",(tid,),
+        )
+    assert view(dsn,user,inst,tid).actionability=="DEADLINE_EXPIRED"
+    confirm(dsn,user,inst,conv,tid,2)
+    assert view(dsn,user,inst,tid).status=="USER_CONFIRMED"
+    # The persisted deadline can still be evaluated as late in P3-05.
+    assert view(dsn,user,inst,tid).deadline < datetime.now(timezone.utc)
