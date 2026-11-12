@@ -12,7 +12,7 @@ from persona_agent.conversation import ingest_text
 from persona_agent.conversation_contracts import TextInputCommand
 from persona_agent.goal_contracts import (
     CreateGoalCommand,RecordGoalEvidenceCommand,ProposeGoalStrategyCommand,
-    SelectGoalStrategyCommand,SetGoalStatusCommand,
+    SelectGoalStrategyCommand,SetGoalStatusCommand,goal_action_approval_phrase,
 )
 from persona_agent.goal_state import (
     create_goal,record_goal_evidence,propose_goal_strategy,
@@ -76,6 +76,21 @@ def turn(dsn,user,instance,conversation,text,*,generation=1):
     ))
 
 
+def authorize(dsn,user,instance,command):
+    """User confirms the exact proposed goal action in a separate turn."""
+    confirmation=turn(
+        dsn,user,instance,command.conversation_id,
+        goal_action_approval_phrase(command),
+        generation=command.expected_generation,
+    )
+    return command.model_copy(update={"approval_turn_id":confirmation.turn_id})
+
+
+def choose(dsn,user,instance,command):
+    return call(dsn,select_goal_strategy,actor(user),
+                authorize(dsn,user,instance,command))
+
+
 def root(dsn,user,instance,conversation,source,*,goal_id=None,
          title="Improve eating habits",parent=None,parent_version=None,
          generation=1,idempotency=None):
@@ -93,6 +108,7 @@ def root(dsn,user,instance,conversation,source,*,goal_id=None,
         evaluation_start_at=datetime.now(timezone.utc),
         evaluation_end_at=datetime.now(timezone.utc)+timedelta(days=30),
     )
+    command=authorize(dsn,user,instance,command)
     return goal_id,call(dsn,create_goal,actor(user),command),command
 
 
@@ -131,7 +147,7 @@ def test_root_subgoal_candidates_and_selection_preserve_approved_outcome(dsn):
     )]==["CANDIDATE","CANDIDATE"]
     assert call(dsn,list_goals,actor(user),instance)[0].selected_strategy_id is None
 
-    selected=call(dsn,select_goal_strategy,actor(user),SelectGoalStrategyCommand(
+    selected=choose(dsn,user,instance,SelectGoalStrategyCommand(
         instance_id=instance,expected_generation=1,
         idempotency_key=str(uuid4()),conversation_id=conversation,
         evidence_turn_id=source.turn_id,
@@ -202,6 +218,7 @@ def test_goal_progress_is_source_linked_and_never_self_verified(dsn):
     assert len(evidence)==1
     assert evidence[0].kind=="SUCCESS_REPORTED"
     assert evidence[0].epistemic_status=="USER_REPORTED"
+    assert evidence[0].classification_status=="UNREVIEWED"
     assert evidence[0].source_turn_id==outcome.turn_id
     view=call(dsn,list_goals,actor(user),instance)[0]
     assert view.status=="ACTIVE" and view.evidence_count==1
@@ -238,14 +255,16 @@ def test_pause_resume_and_abandon_require_explicit_user_evidence(dsn):
     resume=turn(dsn,user,instance,conv,"Resume my eating goal now.")
     abandon=turn(dsn,user,instance,conv,"Abandon my eating goal.")
     def change(version,status,source,quote):
-        return call(dsn,set_goal_status,actor(user),SetGoalStatusCommand(
+        command=SetGoalStatusCommand(
             instance_id=instance,expected_generation=1,
             idempotency_key=str(uuid4()),conversation_id=conv,
             evidence_turn_id=source.turn_id,
             evidence_quote=quote,
             goal_id=goal,expected_goal_version=version,
             new_status=status,
-        ))
+        )
+        return call(dsn,set_goal_status,actor(user),
+                    authorize(dsn,user,instance,command))
     assert change(1,"PAUSED",pause,"Pause my eating goal").goal_version==2
     with pytest.raises(VersionConflict):
         change(1,"ACTIVE",resume,"Resume my eating goal")
@@ -295,8 +314,19 @@ def test_cross_persona_scope_and_generation_fencing(dsn):
         call(dsn,create_goal,actor(user),command.model_copy(
             update={"title":"silent changed outcome"},
         ))
-    assert call(dsn,list_goals,actor(user),instance)[0].goal_id==gid
+    with pytest.raises(StaleSelection):
+        call(dsn,list_goals,actor(user),instance)
+    with pytest.raises(StaleSelection):
+        call(dsn,list_goal_strategies,actor(user),instance,gid)
+    with pytest.raises(StaleSelection):
+        call(dsn,list_goal_evidence,actor(user),instance,gid)
     assert call(dsn,list_goals,actor(user),other)==()
+    restored=call(dsn,switch_persona,actor(user),SwitchPersonaCommand(
+        expected_instance_id=other,target_instance_id=instance,
+        expected_generation=2,idempotency_key=str(uuid4()),
+    ))
+    assert restored.generation==3
+    assert call(dsn,list_goals,actor(user),instance)[0].goal_id==gid
     with psycopg.connect(dsn,autocommit=True) as conn:
         assert conn.execute(
             "SELECT count(*) FROM goal_records WHERE user_id=%s",(user,),
@@ -314,7 +344,7 @@ def test_cannot_select_other_goals_strategy_or_inferred_interpretation(dsn):
     other,_,_=root(dsn,user,instance,conv,source)
     sid,_=strategy(dsn,user,instance,conv,source,gid,"Sunday plan")
     with pytest.raises(PermissionDenied):
-        call(dsn,select_goal_strategy,actor(user),SelectGoalStrategyCommand(
+        choose(dsn,user,instance,SelectGoalStrategyCommand(
             instance_id=instance,expected_generation=1,
             idempotency_key=str(uuid4()),conversation_id=conv,
             evidence_turn_id=source.turn_id,
@@ -402,8 +432,7 @@ def test_user_report_and_strategy_switch_do_not_mutate_main_objective(dsn):
     goal,_,_=root(dsn,user,instance,conv,initial)
     first,_=strategy(dsn,user,instance,conv,initial,goal,"Weekend batch cooking")
     another,_=strategy(dsn,user,instance,conv,initial,goal,"Weekday substitutions")
-    selection=call(dsn,select_goal_strategy,actor(user),
-                   SelectGoalStrategyCommand(
+    selection=choose(dsn,user,instance,SelectGoalStrategyCommand(
         instance_id=instance,expected_generation=1,
         idempotency_key=str(uuid4()),conversation_id=conv,
         evidence_turn_id=initial.turn_id,
@@ -428,8 +457,7 @@ def test_user_report_and_strategy_switch_do_not_mutate_main_objective(dsn):
     assert call(dsn,list_goals,actor(user),instance)[0].selected_strategy_id==first
     report=turn(dsn,user,instance,conv,
                 "Instead, I want to try the second strategy.")
-    changed=call(dsn,select_goal_strategy,actor(user),
-                 SelectGoalStrategyCommand(
+    changed=choose(dsn,user,instance,SelectGoalStrategyCommand(
         instance_id=instance,expected_generation=1,
         idempotency_key=str(uuid4()),conversation_id=conv,
         evidence_turn_id=report.turn_id,
@@ -446,3 +474,62 @@ def test_user_report_and_strategy_switch_do_not_mutate_main_objective(dsn):
             """SELECT strategy_id,goal_version FROM goal_strategy_selections
                WHERE goal_id=%s ORDER BY goal_version""",(goal,),
         ).fetchall()==[(first,2),(another,4)]
+
+
+def test_action_bound_confirmation_rejects_nonapproval_and_tampering(dsn):
+    user,instance,_=seed(dsn)
+    conv=uuid4()
+    source=turn(dsn,user,instance,conv,
+                "Maybe I should improve my eating habits, but I am not sure.")
+    command=CreateGoalCommand(
+        instance_id=instance,expected_generation=1,
+        idempotency_key=str(uuid4()),conversation_id=conv,
+        evidence_turn_id=source.turn_id,
+        evidence_quote="Maybe I should improve my eating habits",
+        goal_id=uuid4(),title="Healthy meals",
+        desired_outcome="Eat better",
+        success_criterion="User reports weekly meals",horizon="MEDIUM",
+    )
+    with pytest.raises(PermissionDenied,match="separate user confirmation"):
+        call(dsn,create_goal,actor(user),command)
+    wrong=turn(dsn,user,instance,conv,
+               "I do NOT "+goal_action_approval_phrase(command))
+    with pytest.raises(PermissionDenied,match="does not match"):
+        call(dsn,create_goal,actor(user),command.model_copy(
+            update={"approval_turn_id":wrong.turn_id},
+        ))
+    approved=authorize(dsn,user,instance,command)
+    assert call(dsn,create_goal,actor(user),approved).action=="GOAL_CREATED"
+    with pytest.raises(PermissionDenied,match="does not match"):
+        call(dsn,create_goal,actor(user),approved.model_copy(update={
+            "idempotency_key":str(uuid4()),"goal_id":uuid4(),
+            "desired_outcome":"An unapproved substituted objective",
+        }))
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        event=conn.execute(
+            "SELECT payload->>'approval_turn_id' FROM events "
+            "WHERE event_type='goal.created.v1' AND user_id=%s",(user,),
+        ).fetchone()
+        assert event==(str(approved.approval_turn_id),)
+
+
+def test_incorrectly_labelled_user_report_remains_unreviewed(dsn):
+    user,instance,_=seed(dsn)
+    conv=uuid4()
+    source=turn(dsn,user,instance,conv,"I want to improve my eating habits.")
+    gid,_,_=root(dsn,user,instance,conv,source)
+    negative=turn(dsn,user,instance,conv,
+                  "I did not prepare a healthy lunch this week.")
+    call(dsn,record_goal_evidence,actor(user),RecordGoalEvidenceCommand(
+        instance_id=instance,expected_generation=1,
+        idempotency_key=str(uuid4()),conversation_id=conv,
+        evidence_turn_id=negative.turn_id,
+        evidence_quote="did not prepare a healthy lunch",
+        goal_id=gid,expected_goal_version=1,
+        evidence_kind="SUCCESS_REPORTED",evidence_id=uuid4(),
+    ))
+    reported=call(dsn,list_goal_evidence,actor(user),instance,gid)
+    assert reported[0].kind=="SUCCESS_REPORTED"
+    assert reported[0].classification_status=="UNREVIEWED"
+    assert reported[0].source_quote=="did not prepare a healthy lunch"
+    assert call(dsn,list_goals,actor(user),instance)[0].status=="ACTIVE"
