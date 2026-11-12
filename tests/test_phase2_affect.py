@@ -150,7 +150,7 @@ def test_evidence_linked_mood_and_relationship_are_separate_and_idempotent(dsn):
     assert applied.emotion_applied==4
     assert applied.relationship_recorded==4
     assert applied.processed==8
-    no_duplicates=tick(dsn)
+    no_duplicates=tick(dsn,consumers)
     assert no_duplicates.emotion_applied==0
     assert no_duplicates.relationship_recorded==0
 
@@ -192,11 +192,11 @@ def test_evidence_linked_mood_and_relationship_are_separate_and_idempotent(dsn):
 
 
 def test_tentative_affect_expires_and_mood_decays_without_mutation(dsn):
-    register(dsn)
+    consumers=register(dsn)
     user,instance,_=seed(dsn)
     conv=uuid4()
     turn(dsn,user,instance,conv,"I'm excited.")
-    tick(dsn)
+    tick(dsn,consumers)
     current=call(dsn,read_emotion_state,actor(user),instance)
     assert current.tentative_user_affect=="EXCITED"
     assert current.affect_confidence<1
@@ -216,13 +216,13 @@ def test_tentative_affect_expires_and_mood_decays_without_mutation(dsn):
 
 
 def test_explicit_user_preferences_outweigh_mood_in_context(dsn):
-    register(dsn)
+    consumers=register(dsn)
     user,instance,_=seed(dsn)
     conv=uuid4()
     turn(dsn,user,instance,conv,"Please keep replies short.")
     turn(dsn,user,instance,conv,"Please don't use emojis.")
     turn(dsn,user,instance,conv,"I'm frustrated.")
-    assert tick(dsn).relationship_recorded==3
+    assert tick(dsn,consumers).relationship_recorded==3
 
     state=call(dsn,read_relationship_state,actor(user),instance)
     assert {(p.preference_key,p.preference_value) for p in state.preferences}=={
@@ -351,7 +351,7 @@ def test_preference_cannot_be_changed_by_another_user_or_persona(dsn):
 
 
 def test_inactive_persona_defers_then_replays_event_without_cross_contamination(dsn):
-    register(dsn)
+    consumers=register(dsn)
     user,instance,other=seed(dsn,second=True)
     conv=uuid4()
     source=turn(dsn,user,instance,conv,"I'm happy.")
@@ -360,7 +360,7 @@ def test_inactive_persona_defers_then_replays_event_without_cross_contamination(
         expected_generation=1,idempotency_key=str(uuid4()),
     ))
     assert away.generation==2
-    paused=tick(dsn)
+    paused=tick(dsn,consumers)
     assert paused.deferred>=2
     assert call(dsn,read_emotion_state,actor(user),instance).version==0
     assert call(dsn,read_relationship_state,actor(user),instance).interaction_count==0
@@ -370,7 +370,7 @@ def test_inactive_persona_defers_then_replays_event_without_cross_contamination(
         expected_generation=2,idempotency_key=str(uuid4()),
     ))
     assert back.generation==3
-    restored=tick(dsn)
+    restored=tick(dsn,consumers)
     assert restored.emotion_applied==1
     assert restored.relationship_recorded==1
     assert call(dsn,read_relationship_state,actor(user),instance).interaction_count==1
@@ -380,11 +380,11 @@ def test_inactive_persona_defers_then_replays_event_without_cross_contamination(
             "SELECT source_turn_id FROM emotion_appraisals WHERE user_id=%s",
             (user,),
         ).fetchone()[0]==source.turn_id
-    assert tick(dsn).relationship_recorded==0
+    assert tick(dsn,consumers).relationship_recorded==0
 
 
 def test_cognitive_or_quoted_or_hypothetical_content_does_not_become_affect(dsn):
-    register(dsn)
+    consumers=register(dsn)
     user,instance,_=seed(dsn)
     conv=uuid4()
     for statement in (
@@ -392,7 +392,7 @@ def test_cognitive_or_quoted_or_hypothetical_content_does_not_become_affect(dsn)
         'My friend said "I am sad."', "What if I am frustrated?",
     ):
         turn(dsn,user,instance,conv,statement)
-    processed=tick(dsn)
+    processed=tick(dsn,consumers)
     assert processed.relationship_recorded==5
     assert processed.emotion_applied==0
     mood=call(dsn,read_emotion_state,actor(user),instance)
@@ -407,17 +407,17 @@ def test_cognitive_or_quoted_or_hypothetical_content_does_not_become_affect(dsn)
 
 
 def test_concurrent_consumer_ticks_record_each_authenticated_turn_once(dsn):
-    register(dsn)
+    consumers=register(dsn)
     user,instance,_=seed(dsn)
     conv=uuid4()
     for i in range(8):
         turn(dsn,user,instance,conv,f"Routine user message {i}.")
     with ThreadPoolExecutor(max_workers=2) as pool:
         a=pool.submit(tick,dsn,consumers)
-        b=pool.submit(tick,dsn)
+        b=pool.submit(tick,dsn,consumers)
         assert a.result().retry_pending==0
         assert b.result().retry_pending==0
-    assert tick(dsn).relationship_recorded==0
+    assert tick(dsn,consumers).relationship_recorded==0
     assert call(dsn,read_relationship_state,actor(user),instance).interaction_count==8
     with psycopg.connect(dsn,autocommit=True) as conn:
         assert conn.execute(
@@ -427,7 +427,7 @@ def test_concurrent_consumer_ticks_record_each_authenticated_turn_once(dsn):
 
 
 def test_domain_changes_roll_back_with_p0_delivery_ack(dsn,monkeypatch):
-    register(dsn)
+    consumers=register(dsn)
     user,instance,_=seed(dsn)
     conv=uuid4()
     source=turn(dsn,user,instance,conv,"I'm excited.")
@@ -440,7 +440,7 @@ def test_domain_changes_roll_back_with_p0_delivery_ack(dsn,monkeypatch):
     monkeypatch.setattr(observer_module,"observe_emotion_input",
                         fail_after_domain_writes)
     with pytest.raises(RuntimeError,match="injected crash"):
-        tick(dsn)
+        tick(dsn,consumers)
     with psycopg.connect(dsn,autocommit=True) as conn:
         assert conn.execute(
             "SELECT count(*) FROM emotion_appraisals WHERE user_id=%s",
@@ -467,20 +467,20 @@ def test_domain_changes_roll_back_with_p0_delivery_ack(dsn,monkeypatch):
         conn.execute(
             """UPDATE event_deliveries SET eligible_at=clock_timestamp()-interval '1 second'
                WHERE consumer_id=%s AND status='RETRY_PENDING'""",
-            (EMOTION_CONSUMER,),
+            (consumers[0],),
         )
-    assert tick(dsn).emotion_applied==1
+    assert tick(dsn,consumers).emotion_applied==1
     assert call(dsn,read_emotion_state,actor(user),instance).version==1
 
 
 def test_stale_emotion_evidence_cannot_reverse_newer_mood(dsn):
     """Historical explicit user statement is retained but not re-applied."""
-    register(dsn)
+    consumers=register(dsn)
     user,instance,_=seed(dsn)
     conv=uuid4()
     first=turn(dsn,user,instance,conv,"I am sad.")
     second=turn(dsn,user,instance,conv,"I'm happy.")
-    tick(dsn)
+    tick(dsn,consumers)
     # Real delivery is stream-ordered; simulate a late historical replay by
     # creating a new, authenticated source input event with an old timestamp.
     extra=turn(dsn,user,instance,conv,"I am sad.")
@@ -490,7 +490,7 @@ def test_stale_emotion_evidence_cannot_reverse_newer_mood(dsn):
                WHERE turn_id=%s""",
             (extra.turn_id,),
         )
-    assert tick(dsn).emotion_applied==0
+    assert tick(dsn,consumers).emotion_applied==0
     mood=call(dsn,read_emotion_state,actor(user),instance)
     assert mood.version==2 and mood.valence>0
     with psycopg.connect(dsn,autocommit=True) as conn:
