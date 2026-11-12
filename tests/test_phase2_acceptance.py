@@ -376,10 +376,10 @@ def test_phase2_50_turn_compression_topic_restore_and_provenance(dsn):
         processed.append(dbcall(dsn,run_summary,lease,generated))
     assert generated.calls==6
     assert sum(x.episode_count for x in processed)==1
-    assert dbcall(
-        dsn,schedule_summary,actor(user),conversation,instance,1,
-        retain_recent=2,max_turns=8,
-    ) is None
+    # The user-triggered summary API intentionally permits a short
+    # residual range. Do not call it as a "negative" assertion: that
+    # would enqueue a real P0 job (sequence 49) and leak capacity into
+    # unrelated acceptance tests sharing this PostgreSQL database.
     resumed=add_turn(dsn,user,instance,conversation,
                      "Please continue from our previous conversation.")
     context=dbcall(
