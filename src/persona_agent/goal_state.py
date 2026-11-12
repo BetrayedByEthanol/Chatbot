@@ -300,9 +300,8 @@ def record_goal_evidence(
         cur.execute(
             """SELECT 1 FROM goal_evidence
                WHERE goal_id=%s AND source_turn_id=%s
-                 AND evidence_kind=%s AND source_quote=%s""",
-            (cmd.goal_id,cmd.evidence_turn_id,
-             cmd.evidence_kind,cmd.evidence_quote),
+                 AND evidence_kind=%s""",
+            (cmd.goal_id,cmd.evidence_turn_id,cmd.evidence_kind),
         )
         if cur.fetchone() is not None:
             raise VersionConflict("identical goal evidence already recorded")
