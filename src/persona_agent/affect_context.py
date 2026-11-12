@@ -24,9 +24,20 @@ def persona_affect_context_block(
         """SELECT preference_key,scope_key,preference_value
            FROM relationship_preferences
            WHERE user_id=%s AND instance_id=%s AND status='ACTIVE'
-           ORDER BY preference_key,scope_key LIMIT 20""",
+           ORDER BY CASE preference_key
+               WHEN 'RESPONSE_LENGTH' THEN 0
+               WHEN 'EMOJI_USE' THEN 1
+               WHEN 'PROACTIVE_MESSAGES' THEN 2
+               WHEN 'AVOID_PROACTIVE_TOPIC' THEN 3
+               ELSE 4 END,
+               scope_key
+           LIMIT 20""",
         (user_id,instance_id),
     )
+    # Global communication preferences occupy the first three query slots
+    # and first context lines. Topic-specific boundaries use only the
+    # remaining slots/character budget; otherwise 20 topic rows can hide
+    # global instructions from the foreground model.
     preferences=cur.fetchall()
     cur.execute(
         """SELECT valence,arousal,engagement,baseline_valence,
