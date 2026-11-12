@@ -16,7 +16,8 @@ from .conversation import _require_actor
 from .goal_state import _goal, _read_selected, _selected, _source
 from .operation_contracts import require_idle
 from .procedure_contracts import (
-    CreatePersonalizedApproachCommand, PersonalizedApproachView,
+    CreatePersonalizedApproachCommand, PersonalizedApproachHandle,
+    PersonalizedApproachView,
     ProcedureChangeResult, ProcedureDefinition, ProcedureUserCommand,
     PublishSharedProcedureCommand, RevisePersonalizedApproachCommand,
     SharedProcedureView, procedure_approval_phrase, procedure_content_hash,
@@ -410,3 +411,74 @@ def read_personalized_approach(connection: Connection, actor: TrustedActor,
                 adaptation_reason=record["adaptation_reason"],
                 definition_policy=definition.policy,
             )
+
+
+def list_shared_procedures(connection: Connection, actor: TrustedActor,
+                           instance_id: UUID, *, limit: int = 50
+                           ) -> tuple[SharedProcedureView, ...]:
+    """Browse only approved definitions for the currently selected persona."""
+    require_idle(connection)
+    _require_actor(actor)
+    if not 1 <= limit <= 50:
+        raise ValueError("shared procedure list limit must be 1..50")
+    with connection.transaction():
+        with connection.cursor(row_factory=dict_row) as cur:
+            _read_selected(cur,actor,instance_id)
+            persona_id=_current_persona(cur,actor,instance_id)
+            cur.execute(
+                """SELECT t.template_id,t.current_version,v.definition,
+                          v.definition_sha256
+                   FROM procedure_templates t
+                   JOIN procedure_template_versions v
+                     ON v.template_id=t.template_id
+                    AND v.version=t.current_version
+                   WHERE t.persona_id=%s AND t.approved
+                   ORDER BY t.created_at,t.template_id LIMIT %s""",
+                (persona_id,limit),
+            )
+            result=[]
+            for row in cur.fetchall():
+                definition=ProcedureDefinition.model_validate(row["definition"])
+                digest=procedure_content_hash(definition)
+                if digest!=row["definition_sha256"]:
+                    raise VersionConflict("shared procedure definition checksum mismatch")
+                result.append(SharedProcedureView(
+                    template_id=row["template_id"],persona_id=persona_id,
+                    version=row["current_version"],definition=definition,
+                    content_hash=digest,
+                ))
+            return tuple(result)
+
+
+def list_personalized_approaches(connection: Connection, actor: TrustedActor,
+                                 instance_id: UUID, *, limit: int = 50
+                                 ) -> tuple[PersonalizedApproachHandle, ...]:
+    """List private variant handles; content remains scoped/version-pinned."""
+    require_idle(connection)
+    _require_actor(actor)
+    if not 1 <= limit <= 50:
+        raise ValueError("personal procedure list limit must be 1..50")
+    with connection.transaction():
+        with connection.cursor(row_factory=dict_row) as cur:
+            _read_selected(cur,actor,instance_id)
+            cur.execute(
+                """SELECT p.variant_id,p.template_id,p.current_revision,
+                          p.goal_id,p.strategy_id,r.template_version,
+                          v.definition->>'title' AS title
+                   FROM personalized_procedures p
+                   JOIN personalized_procedure_revisions r
+                     ON r.variant_id=p.variant_id
+                    AND r.revision=p.current_revision
+                   JOIN procedure_template_versions v
+                     ON v.template_id=p.template_id
+                    AND v.version=r.template_version
+                   WHERE p.user_id=%s AND p.instance_id=%s
+                   ORDER BY p.created_at,p.variant_id LIMIT %s""",
+                (actor.user_id,instance_id,limit),
+            )
+            return tuple(PersonalizedApproachHandle(
+                variant_id=row["variant_id"],template_id=row["template_id"],
+                template_version=row["template_version"],
+                revision=row["current_revision"],goal_id=row["goal_id"],
+                strategy_id=row["strategy_id"],title=row["title"],
+            ) for row in cur.fetchall())
