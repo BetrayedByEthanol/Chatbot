@@ -12,7 +12,8 @@ from .task_state import _active_goal_chain, _confirmation_state, _graph_read_loc
 from .tool_contracts import SLOW_TOOL, PROCEDURE_AGENT_OPERATION
 
 
-def require_procedure_agent_gate(cur, operation: dict) -> dict:
+def require_procedure_agent_gate(cur, operation: dict, *,
+                                 allow_past_deadline_evidence: bool=False) -> dict:
     """Return approved staging record or reject a stale task/run/capability.
 
     Caller holds selected persona authority (FOR SHARE) and, when applicable,
@@ -79,7 +80,9 @@ def require_procedure_agent_gate(cur, operation: dict) -> dict:
         or task["version"]!=stage["task_version"]
         or task["suspended"]):
         raise VersionConflict("task authority, capability or status changed")
-    if task["deadline"] is not None and task["deadline"]<=datetime.now(timezone.utc):
+    if (not allow_past_deadline_evidence
+        and task["deadline"] is not None
+        and task["deadline"]<=datetime.now(timezone.utc)):
         raise VersionConflict("task deadline expired")
     actor=TrustedActor(user_id=user_id,source_id="procedure.gate")
     _active_goal_chain(cur,actor,instance_id,task["goal_id"])
