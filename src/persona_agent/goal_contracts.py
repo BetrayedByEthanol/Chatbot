@@ -5,6 +5,8 @@ This increment provides user-authorized goal/strategy state and progress
 evidence only. It does not define or execute procedures or automatically
 declare real-world user actions verified.
 """
+import hashlib
+import json
 from datetime import datetime
 from typing import Literal
 from uuid import UUID
@@ -12,7 +14,7 @@ from pydantic import BaseModel,ConfigDict,Field,model_validator,field_validator
 
 GoalHorizon=Literal["SHORT","MEDIUM","LONG","OPEN"]
 GoalStatus=Literal["ACTIVE","PAUSED","ABANDONED"]
-EvidenceKind=Literal["PROGRESS","OBSTACLE","SUCCESS_REPORTED"]
+EvidenceKind=Literal["UNCLASSIFIED","PROGRESS","OBSTACLE","SUCCESS_REPORTED"]
 
 
 class GoalUserCommand(BaseModel):
@@ -23,6 +25,8 @@ class GoalUserCommand(BaseModel):
     conversation_id:UUID
     evidence_turn_id:UUID
     evidence_quote:str=Field(min_length=1,max_length=300)
+    # Required for goal creation, status changes and strategy selection.
+    approval_turn_id:UUID|None=None
 
     @field_validator("evidence_quote")
     @classmethod
@@ -143,5 +147,26 @@ class EvidenceView(BaseModel):
     goal_id:UUID
     kind:EvidenceKind
     epistemic_status:Literal["USER_REPORTED"]="USER_REPORTED"
+    classification_status:Literal["UNREVIEWED"]="UNREVIEWED"
     source_turn_id:UUID
     source_quote:str
+
+def goal_action_approval_phrase(command:GoalUserCommand)->str:
+    """Generate a separate, exact user approval challenge for a proposed action.
+
+    The digest binds the target, expected version, original evidence, and
+    action-specific payload. Retry and selection metadata are excluded.
+    """
+    if not isinstance(command,(
+        CreateGoalCommand,SetGoalStatusCommand,SelectGoalStrategyCommand,
+    )):
+        raise ValueError("action does not require approval")
+    payload=command.model_dump(
+        mode="json",
+        exclude={"approval_turn_id","idempotency_key","expected_generation"},
+    )
+    encoded=json.dumps(
+        {"command_type":type(command).__name__,"payload":payload},
+        sort_keys=True,separators=(",",":"),
+    ).encode("utf-8")
+    return "APPROVE GOAL CHANGE "+hashlib.sha256(encoded).hexdigest()[:24].upper()
