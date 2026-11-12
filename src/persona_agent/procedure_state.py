@@ -163,6 +163,29 @@ def _selected_strategy(cur, actor: TrustedActor, instance_id: UUID,
     goal=_goal(cur,actor,instance_id,goal_id,lock="SHARE")
     if goal["status"]!="ACTIVE":
         raise VersionConflict("personalized approach requires active goal")
+    # Parent pause can invalidate the derived method. Hold all ancestors'
+    # SHARE locks until this short procedure transaction commits.
+    cur.execute(
+        """WITH RECURSIVE ancestors AS (
+             SELECT goal_id,parent_goal_id FROM goal_records
+               WHERE goal_id=%s AND user_id=%s AND instance_id=%s
+             UNION ALL
+             SELECT g.goal_id,g.parent_goal_id FROM goal_records g
+               JOIN ancestors a ON g.goal_id=a.parent_goal_id
+               WHERE g.user_id=%s AND g.instance_id=%s
+           ) SELECT goal_id FROM ancestors""",
+        (goal_id,actor.user_id,instance_id,actor.user_id,instance_id),
+    )
+    ancestor_ids=[row["goal_id"] for row in cur.fetchall()]
+    cur.execute(
+        """SELECT status FROM goal_records
+           WHERE goal_id=ANY(%s) AND user_id=%s AND instance_id=%s
+           ORDER BY goal_id FOR SHARE""",
+        (ancestor_ids,actor.user_id,instance_id),
+    )
+    statuses=cur.fetchall()
+    if len(statuses)!=len(ancestor_ids) or any(x["status"]!="ACTIVE" for x in statuses):
+        raise VersionConflict("goal or ancestor inactive for personalized approach")
     cur.execute(
         """SELECT strategy_id FROM goal_strategy_selections
            WHERE goal_id=%s AND user_id=%s AND instance_id=%s
@@ -288,16 +311,19 @@ def create_personalized_approach(connection: Connection, actor: TrustedActor,
             "template_version":command.template_version,
             "goal_id":str(command.goal_id) if command.goal_id else None,
             "strategy_id":str(command.strategy_id) if command.strategy_id else None,
+            "intended_contribution":command.intended_contribution,
+            "suitability_status":"UNREVIEWED",
             "approval_turn_id":str(command.approval_turn_id),
         },receipt)
         cur.execute(
             """INSERT INTO personalized_procedures(
                  variant_id,user_id,instance_id,persona_id,template_id,
-                 goal_id,strategy_id,current_revision,created_event_id
-               ) VALUES(%s,%s,%s,%s,%s,%s,%s,1,%s)""",
+                 goal_id,strategy_id,intended_contribution,
+                 current_revision,created_event_id
+               ) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,1,%s)""",
             (command.variant_id,actor.user_id,command.instance_id,
              persona_id,command.template_id,command.goal_id,
-             command.strategy_id,event),
+             command.strategy_id,command.intended_contribution,event),
         )
         _save_variant_revision(cur,actor,command,command.variant_id,command.template_id,
                                1,command.template_version,command.parameters,
@@ -405,6 +431,8 @@ def read_personalized_approach(connection: Connection, actor: TrustedActor,
                 variant_id=variant_id,template_id=variant["template_id"],
                 template_version=record["template_version"],revision=pinned,
                 goal_id=variant["goal_id"],strategy_id=variant["strategy_id"],
+                intended_contribution=variant["intended_contribution"],
+                suitability_status=variant["suitability_status"],
                 parameters=record["parameters"],
                 step_text_overrides=record["step_text_overrides"],
                 rendered_steps=rendered,
