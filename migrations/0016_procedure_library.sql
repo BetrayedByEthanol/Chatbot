@@ -64,11 +64,17 @@ CREATE TABLE personalized_procedures (
     template_id uuid NOT NULL,
     goal_id uuid,
     strategy_id uuid,
+    intended_contribution text CHECK (
+        intended_contribution IS NULL
+        OR char_length(intended_contribution) BETWEEN 10 AND 600),
+    suitability_status text NOT NULL DEFAULT 'UNREVIEWED'
+        CHECK(suitability_status='UNREVIEWED'),
     current_revision integer NOT NULL CHECK(current_revision>=1),
     created_event_id uuid NOT NULL,
     created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
     updated_at timestamptz NOT NULL DEFAULT clock_timestamp(),
     CHECK((goal_id IS NULL)=(strategy_id IS NULL)),
+    CHECK((goal_id IS NULL)=(intended_contribution IS NULL)),
     UNIQUE(variant_id,user_id,instance_id),
     UNIQUE(variant_id,template_id,user_id,instance_id),
     FOREIGN KEY(user_id,instance_id,persona_id)
