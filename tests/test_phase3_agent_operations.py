@@ -26,6 +26,7 @@ from persona_agent.procedure_contracts import (
     ProcedureDefinition, ProcedureStep,
 )
 from persona_agent.procedure_agent_contracts import AuthorizeAgentStepCommand
+import persona_agent.procedure_agent_state as agent_state
 from persona_agent.procedure_agent_state import (
     _read_authorized_execution, authorize_agent_step, reconcile_agent_step,
     run_one_agent_step, schedule_agent_step,
@@ -577,3 +578,95 @@ def test_claim_revalidated_after_goal_lock_wait_before_tool_dispatch(dsn):
             operation_id=cmd.operation_id,expected_version=recovered[5],
             idempotency_key=uuid4().hex,
         ))
+
+
+def test_task_deadline_expires_while_goal_lock_blocks_pre_dispatch(dsn,monkeypatch):
+    """A live P0 lease must not authorize a tool after Task deadline expiry.
+
+    The Task gate reads its deadline before _active_goal_chain takes its
+    shared goal lock. Force that lock to wait across the task deadline,
+    while the lease remains valid, and assert the executor is NOT called.
+    """
+    user,instance,conv,goal,task,run=staged(dsn)
+    cmd=authorization(dsn,user,instance,conv,run)
+    call(dsn,schedule_agent_step,actor(user),cmd)
+    lease=call(
+        dsn,claim_operation,worker_id="task-deadline-pre-dispatch",
+        capabilities=(SLOW_TOOL,),operation_types=(PROCEDURE_AGENT_OPERATION,),
+        lease_seconds=30,
+    )
+    assert lease is not None and lease.operation_id==cmd.operation_id
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        conn.execute(
+            """UPDATE goal_tasks
+               SET deadline=clock_timestamp()+INTERVAL '5 seconds'
+               WHERE task_id=%s AND user_id=%s AND instance_id=%s""",
+            (task,user,instance),
+        )
+        assert conn.execute(
+            """SELECT deadline>clock_timestamp() FROM goal_tasks
+               WHERE task_id=%s""",(task,),
+        ).fetchone()==(True,)
+
+    # The production runner uses P0's claim_operation. Supply the already
+    # claimed lease to exercise its real pre-dispatch read without allowing
+    # it to claim another job from the global P0 queue.
+    monkeypatch.setattr(agent_state,"claim_operation",lambda *args,**kwargs:lease)
+    executed=[]
+    pid_queue=Queue()
+
+    def executor(instruction,max_words):
+        executed.append((instruction,max_words))
+        return "This result must not exist"
+
+    def run_after_goal_wait():
+        with psycopg.connect(dsn,autocommit=True) as conn:
+            pid_queue.put(conn.info.backend_pid)
+            return agent_state.run_one_agent_step(
+                conn,worker_id=lease.worker_id,executor=executor,
+                lease_seconds=30,
+            )
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with psycopg.connect(dsn,autocommit=True) as locker:
+            with locker.transaction():
+                locker.execute(
+                    """SELECT goal_id FROM goal_records
+                       WHERE goal_id=%s FOR UPDATE""",(goal,),
+                ).fetchone()
+                future=pool.submit(run_after_goal_wait)
+                pid=pid_queue.get(timeout=5)
+                _wait_until_db_lock(dsn,pid)
+                # The worker is blocked in _active_goal_chain, after the
+                # first Task deadline gate but before final dispatch checks.
+                _wait_past_postgres_timestamp(
+                    dsn,
+                    """SELECT deadline<=clock_timestamp() FROM goal_tasks
+                       WHERE task_id=%s""",
+                    (task,),
+                )
+                with psycopg.connect(dsn,autocommit=True) as monitor:
+                    assert monitor.execute(
+                        """SELECT lease_until>clock_timestamp()
+                           FROM operations WHERE operation_id=%s""",
+                        (cmd.operation_id,),
+                    ).fetchone()==(True,)
+            result=future.result(timeout=10)
+
+    assert result is not None and result.operation_id==cmd.operation_id
+    assert executed==[]
+    operation=operation_row(dsn,cmd.operation_id)
+    assert operation[0]=="RUNNING" and operation[4] is None
+    assert call(dsn,read_procedure_run,actor(user),instance,run
+                ).steps[0].status=="NOT_STARTED"
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            """SELECT count(*) FROM procedure_agent_operation_results
+               WHERE operation_id=%s""",(cmd.operation_id,),
+        ).fetchone()==(0,)
+    cancelled=call(dsn,cancel_operation,actor(user),CancelOperationCommand(
+        operation_id=cmd.operation_id,expected_version=operation[5],
+        idempotency_key=uuid4().hex,
+    ))
+    assert cancelled.value=="CANCEL_REQUESTED"
+    call(dsn,acknowledge_cancel,lease)
