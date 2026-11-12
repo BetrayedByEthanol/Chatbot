@@ -304,7 +304,7 @@ def test_cannot_select_other_goals_strategy_or_inferred_interpretation(dsn):
     )
     gid,_,_=root(dsn,user,instance,conv,source)
     other,_,_=root(dsn,user,instance,conv,source)
-    sid,_=strategy(dsn,user,instance,conv,gid,"Sunday plan")
+    sid,_=strategy(dsn,user,instance,conv,source,gid,"Sunday plan")
     with pytest.raises(PermissionDenied):
         call(dsn,select_goal_strategy,actor(user),SelectGoalStrategyCommand(
             instance_id=instance,expected_generation=1,
