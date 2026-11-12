@@ -704,19 +704,10 @@ def list_tasks(connection: Connection, actor: TrustedActor, instance_id: UUID,
             edges={}
             for row in cur.fetchall():
                 edges.setdefault(row["task_id"],set()).add(row["prerequisite_task_id"])
-            predecessors=set()
-            for task in rows:
-                predecessors.update(edges.get(task["task_id"],()))
-                if task["run_after_task_id"] is not None:
-                    predecessors.add(task["run_after_task_id"])
-            statuses={}
-            if predecessors:
-                cur.execute(
-                    """SELECT task_id,status FROM goal_tasks
-                       WHERE task_id=ANY(%s) AND user_id=%s AND instance_id=%s""",
-                    (list(predecessors),actor.user_id,instance_id),
-                )
-                statuses={row["task_id"]:row["status"] for row in cur.fetchall()}
+            # Check the complete prerequisite closure (including RUN_AFTER),
+            # so a corrected ancestor invalidates downstream readiness even
+            # when intermediate tasks remain historically USER_CONFIRMED.
+            unmet_by_task=_unmet_prerequisites(cur,actor,instance_id,ids)
             cur.execute(
                 """SELECT task_id FROM goal_tasks
                    WHERE user_id=%s AND instance_id=%s AND exclusive_only""",
@@ -734,21 +725,19 @@ def list_tasks(connection: Connection, actor: TrustedActor, instance_id: UUID,
                     blockers.append("USER_CONFIRMED")
                 elif task["status"]=="USER_REPORTED_DONE":
                     blockers.append("AWAITING_USER_CONFIRMATION")
+                elif task["status"]=="NEEDS_REVIEW":
+                    blockers.append("NEEDS_REVIEW")
                 if not active:
                     blockers.append("GOAL_OR_ANCESTOR_INACTIVE")
                 if task["suspended"]:
                     blockers.append("USER_SUSPENDED")
                 if only_id is not None and only_id!=task["task_id"]:
                     blockers.append("EXCLUSIVE_OTHER")
-                prerequisites=set(edges.get(task["task_id"],()))
-                if task["run_after_task_id"] is not None:
-                    prerequisites.add(task["run_after_task_id"])
-                unmet=tuple(sorted(
-                    (p for p in prerequisites if statuses.get(p)!="USER_CONFIRMED"),
-                    key=str,
-                ))
+                unmet=unmet_by_task.get(task["task_id"],())
                 if unmet:
                     blockers.append("PREREQUISITE_NOT_CONFIRMED")
+                    if task["status"]=="USER_CONFIRMED":
+                        blockers.append("CONFIRMATION_REQUIRES_REASSESSMENT")
                 if task["deadline"] is not None and task["deadline"]<=now:
                     blockers.append("DEADLINE_EXPIRED")
                 if task["executor"]=="AGENT":
@@ -770,5 +759,12 @@ def list_tasks(connection: Connection, actor: TrustedActor, instance_id: UUID,
                     deadline=task["deadline"],
                     exclusive_only=task["exclusive_only"],
                     unmet_dependencies=unmet,
+                    effective_completion=(
+                        task["status"]=="USER_CONFIRMED" and not unmet
+                    ),
+                    needs_reassessment=(
+                        task["status"]=="NEEDS_REVIEW"
+                        or (task["status"]=="USER_CONFIRMED" and bool(unmet))
+                    ),
                 ))
             return tuple(result)
