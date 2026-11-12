@@ -189,11 +189,21 @@ def _read_authorized_execution(cur, lease):
     item=cur.fetchone()
     if item is None:
         raise VersionConflict("AGENT step input vanished")
-    # Selected-persona, goal, graph and step locks may have blocked longer
-    # than the operation's lease or timeout. The initial claim check alone
-    # is insufficient: never return work to the external executor on an
-    # already-expired attempt. No LLM/tool runs while these locks are held.
+    # Selection, goal, graph and step locks may have blocked past either
+    # the P0 lease or the Task deadline. Recheck BOTH against PostgreSQL's
+    # live clock after those waits, immediately before dispatch admission.
+    # operations.deadline is intentionally NULL for this registered tool.
     require_claim(cur,lease)
+    cur.execute(
+        """SELECT (deadline IS NULL OR deadline>clock_timestamp()) AS eligible
+           FROM goal_tasks
+           WHERE task_id=%s AND user_id=%s AND instance_id=%s""",
+        (stage["task_id"],row["user_id"],row["instance_id"]),
+    )
+    deadline=cur.fetchone()
+    if deadline is None or not deadline["eligible"]:
+        raise VersionConflict("task deadline expired before AGENT dispatch")
+    # No LLM/tool runs while these locks are held.
     return item["instruction"],stage["max_words"]
 
 
