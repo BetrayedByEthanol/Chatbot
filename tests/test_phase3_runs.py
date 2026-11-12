@@ -460,6 +460,9 @@ def test_task_deadline_blocks_new_guided_run_but_not_late_evidence(dsn):
         approve_task(dsn,user,instance,cmd),
     ).version==2
     assert call(dsn,list_tasks,actor(user),instance,goal)[0].actionable
+    # A future deadline is valid for new work, unlike an expired one.
+    valid_start=start_command(dsn,user,instance,conv,template,task=task)
+    assert call(dsn,start_procedure_run,actor(user),valid_start).version==1
 
     # Simulate time passing without sleeping a day or bypassing the
     # task-domain SET_DEADLINE validation for initial configuration.
