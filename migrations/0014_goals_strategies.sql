@@ -58,7 +58,7 @@ CREATE TABLE goal_evidence (
     goal_version bigint NOT NULL CHECK (goal_version >= 1),
     event_id uuid NOT NULL,
     recorded_at timestamptz NOT NULL DEFAULT clock_timestamp(),
-    UNIQUE (goal_id,source_turn_id,evidence_kind,source_quote),
+    UNIQUE (goal_id,source_turn_id,evidence_kind),
     FOREIGN KEY(goal_id,user_id,instance_id)
         REFERENCES goal_records(goal_id,user_id,instance_id),
     FOREIGN KEY(source_conversation_id,source_turn_id,user_id,instance_id)
