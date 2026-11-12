@@ -226,3 +226,30 @@ def test_missing_confirmation_and_wrong_source_block_task_creation(dsn):
             "idempotency_key":uuid4().hex,"title":"Different task",
         }))
     assert call(dsn,create_task,actor(uid),authorized).action=="TASK_CREATED"
+
+
+def test_priority_suspend_resume_and_deadline_revisions(dsn):
+    from datetime import datetime, timezone, timedelta
+    uid,instance,_=seed(dsn)
+    conv=uuid4()
+    goal=make_goal(dsn,uid,instance,conv)
+    task,_,_=make_task(dsn,uid,instance,conv,goal,1)
+    def priority(version,rule,deadline=None):
+        msg=turn(dsn,uid,instance,conv,"Set task priority as requested.")
+        cmd=SetTaskPriorityCommand(
+            instance_id=instance,expected_generation=1,
+            idempotency_key=uuid4().hex,conversation_id=conv,
+            evidence_turn_id=msg.turn_id,
+            evidence_quote="Set task priority",task_id=task,
+            expected_task_version=version,rule=rule,deadline=deadline,
+        )
+        return call(dsn,set_task_priority,actor(uid),approve(dsn,uid,instance,cmd))
+    assert priority(1,"SUSPEND").version==2
+    assert "USER_SUSPENDED" in call(dsn,list_tasks,actor(uid),instance,goal)[0].blockers
+    assert priority(2,"RESUME").version==3
+    assert call(dsn,list_tasks,actor(uid),instance,goal)[0].actionable
+    when=datetime.now(timezone.utc)+timedelta(days=3)
+    assert priority(3,"SET_DEADLINE",when).version==4
+    assert call(dsn,list_tasks,actor(uid),instance,goal)[0].deadline==when
+    assert priority(4,"CLEAR_DEADLINE").version==5
+    assert call(dsn,list_tasks,actor(uid),instance,goal)[0].deadline is None
