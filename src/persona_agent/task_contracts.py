@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 Executor = Literal["USER", "AGENT"]
 TaskStatus = Literal["PLANNED", "USER_REPORTED_DONE", "CANCELLED"]
-PriorityRule = Literal["PREFER_OVER", "SUSPEND", "SET_DEADLINE", "RUN_AFTER"]
+PriorityRule = Literal["PREFER_OVER", "SUSPEND", "RESUME", "SET_DEADLINE", "CLEAR_DEADLINE", "RUN_AFTER"]
 
 class TaskUserCommand(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -76,7 +76,7 @@ class SetTaskPriorityCommand(TaskUserCommand):
             if self.deadline is None or self.other_task_id is not None or self.deadline.tzinfo is None or self.deadline.utcoffset() is None:
                 raise ValueError("deadline must be timezone-aware and standalone")
         elif self.other_task_id is not None or self.deadline is not None:
-            raise ValueError("suspension cannot carry deadline or other task")
+            raise ValueError("standalone priority changes cannot carry deadline or other task")
         return self
 
 class TaskCommandResult(BaseModel):
@@ -102,6 +102,7 @@ class TaskView(BaseModel):
     blockers: tuple[str, ...]
     prerequisite_ids: tuple[UUID, ...]
     preferred_over: tuple[UUID, ...]
+    run_after: tuple[UUID, ...]
     deadline: datetime | None
 
 def task_approval_phrase(command: TaskUserCommand) -> str:
