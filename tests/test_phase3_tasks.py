@@ -335,7 +335,7 @@ def test_user_confirmation_unlocks_dependent_work_without_verified_claim(dsn):
     assert report.report_id is not None
     assert not next(x for x in call(dsn,list_tasks,actor(uid),instance,goal)
                     if x.task_id==second).actionable
-    with pytest.raises(PermissionDenied):
+    with pytest.raises(VersionConflict,match="outstanding DONE"):
         confirm_done(dsn,uid,instance,conv,second,2,report.report_id)
     confirmed=confirm_done(dsn,uid,instance,conv,first,2,report.report_id)
     assert confirmed.action=="USER_COMPLETION_CONFIRMED"
