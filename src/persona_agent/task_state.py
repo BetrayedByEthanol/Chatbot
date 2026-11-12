@@ -20,7 +20,7 @@ from .runtime import (
 )
 from .task_contracts import (
     AddTaskDependencyCommand, CancelTaskCommand, ConfirmUserTaskCommand,
-    CreateTaskCommand, ReportTaskOutcomeCommand,
+    CorrectTaskOutcomeCommand, CreateTaskCommand, ReportTaskOutcomeCommand,
     SetTaskPriorityCommand, TaskCommandResult, TaskUserCommand, TaskView,
     task_approval_phrase,
 )
@@ -127,6 +127,143 @@ def _would_cycle(cur, actor: TrustedActor, instance_id: UUID,
         (predecessor,actor.user_id,instance_id,actor.user_id,instance_id,task_id),
     )
     return cur.fetchone()["cycle"]
+
+
+def _latest_report(cur, actor: TrustedActor, instance_id: UUID,
+                   task_id: UUID) -> dict | None:
+    """Order report evidence by durable event sequence, not timestamp.
+
+    Task row locking and the persona graph lock serialize mutations.
+    The goal journal's stream_sequence is unique and increasing for reports.
+    """
+    cur.execute(
+        """SELECT r.report_id,r.report FROM task_outcome_reports r
+           JOIN events e ON e.event_id=r.event_id
+           WHERE r.task_id=%s AND r.user_id=%s AND r.instance_id=%s
+           ORDER BY e.stream_sequence DESC LIMIT 1""",
+        (task_id,actor.user_id,instance_id),
+    )
+    return cur.fetchone()
+
+
+def _confirmation_state(cur, actor: TrustedActor, instance_id: UUID,
+                        task_ids: list[UUID]):
+    """Compute effective completion and pinned direct prerequisites.
+
+    The transitive DAG closure checks that every user confirmation is still
+    valid for the *same* prerequisite confirmation IDs it observed. A newer
+    confirmation does not silently rehabilitate an older dependent completion.
+    Returns (unmet_by_root, effective_by_task, edges_by_task, latest_ids).
+    """
+    if not task_ids:
+        return {}, {}, {}, {}
+    cur.execute(
+        """WITH RECURSIVE closure(root_id,node_id) AS (
+             SELECT task_id,task_id FROM goal_tasks
+             WHERE task_id=ANY(%s) AND user_id=%s AND instance_id=%s
+             UNION
+             SELECT c.root_id,edge.predecessor_id
+             FROM closure c JOIN (
+                  SELECT task_id,prerequisite_task_id AS predecessor_id,
+                         user_id,instance_id FROM task_dependencies
+                  UNION ALL
+                  SELECT task_id,run_after_task_id AS predecessor_id,
+                         user_id,instance_id
+                  FROM goal_tasks WHERE run_after_task_id IS NOT NULL
+             ) edge ON edge.task_id=c.node_id
+             WHERE edge.user_id=%s AND edge.instance_id=%s
+           ) SELECT root_id,node_id FROM closure""",
+        (task_ids,actor.user_id,instance_id,actor.user_id,instance_id),
+    )
+    closure: dict[UUID,set[UUID]]={}
+    for row in cur.fetchall():
+        closure.setdefault(row["root_id"],set()).add(row["node_id"])
+    nodes=set().union(*closure.values()) if closure else set()
+    if len(nodes)>4096:
+        raise VersionConflict("task dependency closure exceeds bounded evaluation")
+    node_ids=list(nodes)
+    cur.execute(
+        """SELECT task_id,status,run_after_task_id FROM goal_tasks
+           WHERE task_id=ANY(%s) AND user_id=%s AND instance_id=%s""",
+        (node_ids,actor.user_id,instance_id),
+    )
+    node_rows=cur.fetchall()
+    statuses={row["task_id"]:row["status"] for row in node_rows}
+    direct: dict[UUID,set[UUID]]={}
+    for row in node_rows:
+        if row["run_after_task_id"] is not None:
+            direct.setdefault(row["task_id"],set()).add(row["run_after_task_id"])
+    cur.execute(
+        """SELECT task_id,prerequisite_task_id FROM task_dependencies
+           WHERE task_id=ANY(%s) AND user_id=%s AND instance_id=%s""",
+        (node_ids,actor.user_id,instance_id),
+    )
+    for row in cur.fetchall():
+        direct.setdefault(row["task_id"],set()).add(row["prerequisite_task_id"])
+    cur.execute(
+        """SELECT DISTINCT ON (task_id) task_id,confirmation_id
+           FROM task_user_confirmations
+           WHERE task_id=ANY(%s) AND user_id=%s AND instance_id=%s
+           ORDER BY task_id,task_version DESC""",
+        (node_ids,actor.user_id,instance_id),
+    )
+    confirmations={row["task_id"]:row["confirmation_id"] for row in cur.fetchall()}
+    snapshots: dict[UUID,dict[UUID,UUID]]={}
+    if confirmations:
+        cur.execute(
+            """SELECT confirmation_id,prerequisite_task_id,
+                      prerequisite_confirmation_id
+               FROM task_confirmation_prerequisites
+               WHERE confirmation_id=ANY(%s) AND user_id=%s AND instance_id=%s""",
+            (list(confirmations.values()),actor.user_id,instance_id),
+        )
+        for row in cur.fetchall():
+            snapshots.setdefault(row["confirmation_id"],{})[
+                row["prerequisite_task_id"]
+            ]=row["prerequisite_confirmation_id"]
+    effective: dict[UUID,bool]={}
+    visiting: set[UUID]=set()
+
+    def valid(node_id: UUID) -> bool:
+        if node_id in effective:
+            return effective[node_id]
+        if node_id in visiting:
+            raise VersionConflict("task dependency cycle detected during evaluation")
+        if statuses.get(node_id)!="USER_CONFIRMED":
+            effective[node_id]=False
+            return False
+        visiting.add(node_id)
+        confirmation_id=confirmations.get(node_id)
+        pinned=snapshots.get(confirmation_id,{})
+        ok=confirmation_id is not None
+        for predecessor in direct.get(node_id,()):
+            if (not valid(predecessor)
+                or pinned.get(predecessor)!=confirmations.get(predecessor)):
+                ok=False
+        visiting.remove(node_id)
+        effective[node_id]=ok
+        return ok
+
+    unmet: dict[UUID,tuple[UUID,...]]={}
+    for root,ancestors in closure.items():
+        invalid=set()
+        for node in ancestors:
+            if node!=root and not valid(node):
+                invalid.add(node)
+            if statuses.get(node)=="USER_CONFIRMED":
+                pinned=snapshots.get(confirmations.get(node),{})
+                for predecessor in direct.get(node,()):
+                    if pinned.get(predecessor)!=confirmations.get(predecessor):
+                        invalid.add(predecessor)
+        unmet[root]=tuple(sorted(invalid,key=str))
+        valid(root)
+    return unmet,effective,direct,confirmations
+
+
+def _graph_read_lock(cur, actor: TrustedActor, instance_id: UUID) -> None:
+    """Keep multi-query DAG projections consistent with graph/status writes."""
+    cur.execute("SELECT pg_advisory_xact_lock_shared(hashtextextended(%s,0))",
+                (f"p3-task-dag:{actor.user_id}:{instance_id}",))
 
 
 def _command(connection: Connection, actor: TrustedActor,
@@ -314,6 +451,9 @@ def cancel_task(connection: Connection, actor: TrustedActor,
 def report_task_outcome(connection: Connection, actor: TrustedActor,
                         command: ReportTaskOutcomeCommand) -> TaskCommandResult:
     def apply(cur,receipt):
+        # All evidence-driven readiness changes serialize with confirmations,
+        # graph updates and corrections within this selected persona.
+        _graph_lock(cur,actor,command.instance_id)
         task=_task(cur,actor,command.instance_id,command.task_id)
         if task["version"]!=command.expected_task_version:
             raise VersionConflict("task changed")
@@ -377,6 +517,10 @@ def confirm_user_task(connection: Connection, actor: TrustedActor,
         )
         if cur.fetchone() is None:
             raise PermissionDenied("task report does not belong to this action")
+        latest=_latest_report(cur,actor,command.instance_id,command.task_id)
+        if (latest is None or latest["report_id"]!=command.report_id
+            or latest["report"]!="DONE"):
+            raise VersionConflict("DONE report was superseded by newer task evidence")
         _active_goal_chain(cur,actor,command.instance_id,task["goal_id"])
         if task["suspended"]:
             raise VersionConflict("user-suspended task cannot be confirmed actionable")
@@ -387,27 +531,22 @@ def confirm_user_task(connection: Connection, actor: TrustedActor,
         )
         if cur.fetchone() is not None:
             raise VersionConflict("another task has exclusive priority")
-        cur.execute(
-            """SELECT 1 FROM task_dependencies d
-               JOIN goal_tasks prerequisite ON prerequisite.task_id=d.prerequisite_task_id
-               WHERE d.task_id=%s AND d.user_id=%s AND d.instance_id=%s
-                 AND prerequisite.status<>'USER_CONFIRMED' LIMIT 1""",
-            (command.task_id,actor.user_id,command.instance_id),
+        # A prerequisite can be historically USER_CONFIRMED but no longer
+        # effective after a correction further up the DAG. Check the complete
+        # dependency closure, not only immediate predecessor status.
+        unmet,effective,predecessors,current=_confirmation_state(
+            cur,actor,command.instance_id,[command.task_id],
         )
-        if cur.fetchone() is not None:
-            raise VersionConflict("prerequisite has not been user-confirmed")
-        if task["run_after_task_id"] is not None:
-            cur.execute(
-                """SELECT status FROM goal_tasks
-                   WHERE task_id=%s AND user_id=%s AND instance_id=%s""",
-                (task["run_after_task_id"],actor.user_id,command.instance_id),
-            )
-            predecessor=cur.fetchone()
-            if predecessor is None or predecessor["status"]!="USER_CONFIRMED":
-                raise VersionConflict("RUN_AFTER prerequisite is not confirmed")
+        if unmet.get(command.task_id):
+            raise VersionConflict("prerequisite confirmation is no longer effective")
+        for predecessor in predecessors.get(command.task_id,()):
+            if not effective.get(predecessor) or predecessor not in current:
+                raise VersionConflict("prerequisite is not effectively confirmed")
         version=task["version"]+1
+        confirmation_id=uuid4()
         event=_publish(cur,actor,command.instance_id,"goal.task.user_confirmed.v1",{
             "task_id":str(command.task_id),"report_id":str(command.report_id),
+            "confirmation_id":str(confirmation_id),
             "epistemic_status":"USER_CONFIRMED","independently_verified":False,
             "approval_turn_id":str(command.approval_turn_id),
             "task_version":version,
@@ -418,11 +557,20 @@ def confirm_user_task(connection: Connection, actor: TrustedActor,
                  task_version,source_conversation_id,source_turn_id,
                  approval_turn_id,source_quote,event_id
                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
-            (uuid4(),command.report_id,command.task_id,task["goal_id"],
+            (confirmation_id,command.report_id,command.task_id,task["goal_id"],
              actor.user_id,command.instance_id,version,command.conversation_id,
              command.evidence_turn_id,command.approval_turn_id,
              command.evidence_quote,event),
         )
+        for predecessor in sorted(predecessors.get(command.task_id,()),key=str):
+            cur.execute(
+                """INSERT INTO task_confirmation_prerequisites(
+                     confirmation_id,task_id,prerequisite_task_id,
+                     prerequisite_confirmation_id,user_id,instance_id
+                   ) VALUES(%s,%s,%s,%s,%s,%s)""",
+                (confirmation_id,command.task_id,predecessor,
+                 current[predecessor],actor.user_id,command.instance_id),
+            )
         cur.execute(
             """UPDATE goal_tasks SET status='USER_CONFIRMED',exclusive_only=false,
                  version=%s,updated_at=clock_timestamp()
@@ -431,8 +579,96 @@ def confirm_user_task(connection: Connection, actor: TrustedActor,
         )
         return TaskCommandResult(task_id=command.task_id,version=version,
                                  event_id=event,action="USER_COMPLETION_CONFIRMED",
-                                 report_id=command.report_id)
+                                 report_id=command.report_id,
+                                 confirmation_id=confirmation_id)
     return _command(connection,actor,command,"goal.task.user.confirm.v1",apply)
+
+
+def correct_task_outcome(connection: Connection, actor: TrustedActor,
+                         command: CorrectTaskOutcomeCommand) -> TaskCommandResult:
+    """Record a correction and move only this task into NEEDS_REVIEW.
+
+    Earlier reports/confirmations remain immutable. Downstream task evidence
+    is not silently rewritten: read/confirmation admission computes effective
+    prerequisite validity transitively. Corrections remain admissible even
+    when the associated goal is paused or the task was user-suspended.
+    """
+    def apply(cur,receipt):
+        _graph_lock(cur,actor,command.instance_id)
+        task=_task(cur,actor,command.instance_id,command.task_id)
+        if task["version"]!=command.expected_task_version:
+            raise VersionConflict("task changed before its correction")
+        if task["status"] in ("CANCELLED","NEEDS_REVIEW"):
+            raise VersionConflict("task has no current completion claim to correct")
+
+        if command.superseded_report_id is not None:
+            if task["status"] not in ("PLANNED","USER_REPORTED_DONE"):
+                raise VersionConflict("confirmed task must correct its confirmation")
+            cur.execute(
+                """SELECT 1 FROM task_outcome_reports
+                   WHERE report_id=%s AND task_id=%s AND goal_id=%s
+                     AND user_id=%s AND instance_id=%s""",
+                (command.superseded_report_id,command.task_id,task["goal_id"],
+                 actor.user_id,command.instance_id),
+            )
+            if cur.fetchone() is None:
+                raise PermissionDenied("report not owned by this task")
+            latest=_latest_report(cur,actor,command.instance_id,command.task_id)
+            if latest is None or latest["report_id"]!=command.superseded_report_id:
+                raise VersionConflict("report already superseded by newer evidence")
+        else:
+            if task["status"]!="USER_CONFIRMED":
+                raise VersionConflict("task has no effective user confirmation")
+            cur.execute(
+                """SELECT confirmation_id FROM task_user_confirmations
+                   WHERE task_id=%s AND user_id=%s AND instance_id=%s
+                   ORDER BY task_version DESC LIMIT 1""",
+                (command.task_id,actor.user_id,command.instance_id),
+            )
+            latest=cur.fetchone()
+            if (latest is None or
+                latest["confirmation_id"]!=command.superseded_confirmation_id):
+                raise VersionConflict("confirmation is not the latest effective one")
+
+        correction_id=uuid4()
+        version=task["version"]+1
+        event=_publish(cur,actor,command.instance_id,"goal.task.outcome.corrected.v1",{
+            "task_id":str(command.task_id),"correction_id":str(correction_id),
+            "superseded_report_id":(
+                str(command.superseded_report_id)
+                if command.superseded_report_id else None),
+            "superseded_confirmation_id":(
+                str(command.superseded_confirmation_id)
+                if command.superseded_confirmation_id else None),
+            "old_status":task["status"],"new_status":"NEEDS_REVIEW",
+            "reason":command.reason.strip(),"task_version":version,
+            "source_turn_id":str(command.evidence_turn_id),
+            "approval_turn_id":str(command.approval_turn_id),
+        },receipt)
+        cur.execute(
+            """INSERT INTO task_outcome_corrections(
+                 correction_id,task_id,goal_id,user_id,instance_id,task_version,
+                 superseded_report_id,superseded_confirmation_id,
+                 old_status,reason,source_conversation_id,source_turn_id,
+                 source_quote,approval_turn_id,event_id
+               ) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+            (correction_id,command.task_id,task["goal_id"],actor.user_id,
+             command.instance_id,version,command.superseded_report_id,
+             command.superseded_confirmation_id,task["status"],
+             command.reason.strip(),command.conversation_id,
+             command.evidence_turn_id,command.evidence_quote,
+             command.approval_turn_id,event),
+        )
+        cur.execute(
+            """UPDATE goal_tasks SET status='NEEDS_REVIEW',version=%s,
+                 updated_at=clock_timestamp()
+               WHERE task_id=%s AND user_id=%s AND instance_id=%s""",
+            (version,command.task_id,actor.user_id,command.instance_id),
+        )
+        return TaskCommandResult(task_id=command.task_id,version=version,
+                                 event_id=event,action="OUTCOME_CORRECTED",
+                                 correction_id=correction_id)
+    return _command(connection,actor,command,"goal.task.outcome.correct.v1",apply)
 
 
 def set_task_priority(connection: Connection, actor: TrustedActor,
@@ -527,6 +763,7 @@ def list_tasks(connection: Connection, actor: TrustedActor, instance_id: UUID,
     with connection.transaction():
         with connection.cursor(row_factory=dict_row) as cur:
             _read_selected(cur,actor,instance_id)
+            _graph_read_lock(cur,actor,instance_id)
             _goal(cur,actor,instance_id,goal_id,lock="SHARE")
             cur.execute(
                 """WITH RECURSIVE ancestors AS (
@@ -558,19 +795,12 @@ def list_tasks(connection: Connection, actor: TrustedActor, instance_id: UUID,
             edges={}
             for row in cur.fetchall():
                 edges.setdefault(row["task_id"],set()).add(row["prerequisite_task_id"])
-            predecessors=set()
-            for task in rows:
-                predecessors.update(edges.get(task["task_id"],()))
-                if task["run_after_task_id"] is not None:
-                    predecessors.add(task["run_after_task_id"])
-            statuses={}
-            if predecessors:
-                cur.execute(
-                    """SELECT task_id,status FROM goal_tasks
-                       WHERE task_id=ANY(%s) AND user_id=%s AND instance_id=%s""",
-                    (list(predecessors),actor.user_id,instance_id),
-                )
-                statuses={row["task_id"]:row["status"] for row in cur.fetchall()}
+            # Check the complete prerequisite closure (including RUN_AFTER),
+            # so a corrected ancestor invalidates downstream readiness even
+            # when intermediate tasks remain historically USER_CONFIRMED.
+            unmet_by_task,effective_by_task,_,_=_confirmation_state(
+                cur,actor,instance_id,ids,
+            )
             cur.execute(
                 """SELECT task_id FROM goal_tasks
                    WHERE user_id=%s AND instance_id=%s AND exclusive_only""",
@@ -588,21 +818,19 @@ def list_tasks(connection: Connection, actor: TrustedActor, instance_id: UUID,
                     blockers.append("USER_CONFIRMED")
                 elif task["status"]=="USER_REPORTED_DONE":
                     blockers.append("AWAITING_USER_CONFIRMATION")
+                elif task["status"]=="NEEDS_REVIEW":
+                    blockers.append("NEEDS_REVIEW")
                 if not active:
                     blockers.append("GOAL_OR_ANCESTOR_INACTIVE")
                 if task["suspended"]:
                     blockers.append("USER_SUSPENDED")
                 if only_id is not None and only_id!=task["task_id"]:
                     blockers.append("EXCLUSIVE_OTHER")
-                prerequisites=set(edges.get(task["task_id"],()))
-                if task["run_after_task_id"] is not None:
-                    prerequisites.add(task["run_after_task_id"])
-                unmet=tuple(sorted(
-                    (p for p in prerequisites if statuses.get(p)!="USER_CONFIRMED"),
-                    key=str,
-                ))
+                unmet=unmet_by_task.get(task["task_id"],())
                 if unmet:
                     blockers.append("PREREQUISITE_NOT_CONFIRMED")
+                    if task["status"]=="USER_CONFIRMED":
+                        blockers.append("CONFIRMATION_REQUIRES_REASSESSMENT")
                 if task["deadline"] is not None and task["deadline"]<=now:
                     blockers.append("DEADLINE_EXPIRED")
                 if task["executor"]=="AGENT":
@@ -624,5 +852,13 @@ def list_tasks(connection: Connection, actor: TrustedActor, instance_id: UUID,
                     deadline=task["deadline"],
                     exclusive_only=task["exclusive_only"],
                     unmet_dependencies=unmet,
+                    effective_completion=effective_by_task.get(
+                        task["task_id"],False,
+                    ),
+                    needs_reassessment=(
+                        task["status"]=="NEEDS_REVIEW"
+                        or (task["status"]=="USER_CONFIRMED"
+                            and not effective_by_task.get(task["task_id"],False))
+                    ),
                 ))
             return tuple(result)
