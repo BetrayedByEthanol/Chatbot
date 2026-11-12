@@ -440,6 +440,10 @@ def confirm_user_task(connection: Connection, actor: TrustedActor,
         )
         if cur.fetchone() is None:
             raise PermissionDenied("task report does not belong to this action")
+        latest=_latest_report(cur,actor,command.instance_id,command.task_id)
+        if (latest is None or latest["report_id"]!=command.report_id
+            or latest["report"]!="DONE"):
+            raise VersionConflict("DONE report was superseded by newer task evidence")
         _active_goal_chain(cur,actor,command.instance_id,task["goal_id"])
         if task["suspended"]:
             raise VersionConflict("user-suspended task cannot be confirmed actionable")
@@ -450,27 +454,18 @@ def confirm_user_task(connection: Connection, actor: TrustedActor,
         )
         if cur.fetchone() is not None:
             raise VersionConflict("another task has exclusive priority")
-        cur.execute(
-            """SELECT 1 FROM task_dependencies d
-               JOIN goal_tasks prerequisite ON prerequisite.task_id=d.prerequisite_task_id
-               WHERE d.task_id=%s AND d.user_id=%s AND d.instance_id=%s
-                 AND prerequisite.status<>'USER_CONFIRMED' LIMIT 1""",
-            (command.task_id,actor.user_id,command.instance_id),
-        )
-        if cur.fetchone() is not None:
-            raise VersionConflict("prerequisite has not been user-confirmed")
-        if task["run_after_task_id"] is not None:
-            cur.execute(
-                """SELECT status FROM goal_tasks
-                   WHERE task_id=%s AND user_id=%s AND instance_id=%s""",
-                (task["run_after_task_id"],actor.user_id,command.instance_id),
-            )
-            predecessor=cur.fetchone()
-            if predecessor is None or predecessor["status"]!="USER_CONFIRMED":
-                raise VersionConflict("RUN_AFTER prerequisite is not confirmed")
+        # A prerequisite can be historically USER_CONFIRMED but no longer
+        # effective after a correction further up the DAG. Check the complete
+        # dependency closure, not only immediate predecessor status.
+        if _unmet_prerequisites(
+            cur,actor,command.instance_id,[command.task_id],
+        ).get(command.task_id):
+            raise VersionConflict("prerequisite confirmation is no longer effective")
         version=task["version"]+1
+        confirmation_id=uuid4()
         event=_publish(cur,actor,command.instance_id,"goal.task.user_confirmed.v1",{
             "task_id":str(command.task_id),"report_id":str(command.report_id),
+            "confirmation_id":str(confirmation_id),
             "epistemic_status":"USER_CONFIRMED","independently_verified":False,
             "approval_turn_id":str(command.approval_turn_id),
             "task_version":version,
@@ -481,7 +476,7 @@ def confirm_user_task(connection: Connection, actor: TrustedActor,
                  task_version,source_conversation_id,source_turn_id,
                  approval_turn_id,source_quote,event_id
                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
-            (uuid4(),command.report_id,command.task_id,task["goal_id"],
+            (confirmation_id,command.report_id,command.task_id,task["goal_id"],
              actor.user_id,command.instance_id,version,command.conversation_id,
              command.evidence_turn_id,command.approval_turn_id,
              command.evidence_quote,event),
@@ -494,7 +489,8 @@ def confirm_user_task(connection: Connection, actor: TrustedActor,
         )
         return TaskCommandResult(task_id=command.task_id,version=version,
                                  event_id=event,action="USER_COMPLETION_CONFIRMED",
-                                 report_id=command.report_id)
+                                 report_id=command.report_id,
+                                 confirmation_id=confirmation_id)
     return _command(connection,actor,command,"goal.task.user.confirm.v1",apply)
 
 
