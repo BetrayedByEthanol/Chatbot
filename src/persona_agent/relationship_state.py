@@ -117,10 +117,15 @@ def _preference_update(
     old_version=previous["version"] if previous else 0
     if expected_version is not None and old_version!=expected_version:
         raise VersionConflict("relationship preference version changed")
-    if previous is not None and at<previous["source_turn_at"]:
-        if expected_version is None:
+    if previous is not None:
+        if expected_version is None and at<=previous["source_turn_at"]:
+            # At-least-once, delayed automatic ingestion has lower authority
+            # than any already committed preference revision. An auto
+            # candidate from the same source turn must not restore an
+            # explicit removal/correction that happened before delivery.
             return None
-        raise VersionConflict("older evidence cannot supersede a newer user preference")
+        if expected_version is not None and at<previous["source_turn_at"]:
+            raise VersionConflict("older evidence cannot supersede a newer user preference")
     if action=="REMOVE" and previous is None:
         raise VersionConflict("cannot remove a preference without an existing version")
     version=old_version+1
@@ -176,7 +181,12 @@ def observe_relationship_input(cur,event,source:dict) -> bool:
     )
     if cur.fetchone() is not None:
         return False
-    normalized=_exact(source["input_text"])
+    # The evidence tables cap verbatim quotes at 200 characters. Do not
+    # allow punctuation normalization to turn an oversized input into a
+    # match whose full evidence would violate a CHECK constraint. The turn
+    # still counts as an interaction with neutral feedback.
+    matchable=len(source["input_text"])<=200
+    normalized=_exact(source["input_text"]) if matchable else ""
     feedback=_FEEDBACK.get(normalized,"NONE")
     count=state["interaction_count"]+1
     previous=state["last_feedback_at"]
