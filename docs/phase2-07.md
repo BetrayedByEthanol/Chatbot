@@ -50,3 +50,12 @@ The Emotion Engine does not accept cognitive proposals as domain commands. Later
 `tests/test_phase2_affect.py` executes real PostgreSQL cases for source scope, independent owner state, cautious parser, read-only temporal decay, explicit preference and boundary CAS/idempotency, removal/revisions, selected-persona deferral/recovery, concurrent delivery idempotency, atomic rollback after writes and before ACK, historical staleness, and bounded foreground context with preference precedence.
 
 **Explicitly deferred:** calibrated affect models, LLM-based emotion inference, relationship trust/attachment assessment, automatic adoption of Cognitive Engine hypotheses, affect-based permissions, user mood as a trusted fact, unrequested proactive messages, and full P2-08 cross-component quality/latency evaluation. Thresholds and numeric updates are adjustable implementation parameters requiring later evaluation rather than silent v2.5 redesign.
+
+
+## P2-07 review corrections
+
+- Feedback and automatic communication-instruction matching requires source input of 200 characters or fewer. Longer inputs are recorded as neutral interactions; no oversized evidence quote is inserted.
+- Automatic preference ingestion does not update a preference when its source timestamp is earlier than or equal to the current revision's evidence timestamp. Explicit commands retain version checks and can remove a preference using the same source turn.
+- Context retrieves and renders the singleton communication preferences (response length, emoji use, proactive messaging) ahead of topic boundaries, preserving their query slots and their portion of the limited context budget.
+
+PostgreSQL regression tests cover long punctuation tails, subsequent valid events, delayed automatic ingestion following explicit set/remove, and five or twenty active topic boundaries.
