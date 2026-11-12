@@ -5,6 +5,7 @@ Task owns completion, and P0 owns operations. No operation dispatch here.
 """
 import hashlib
 import json
+from datetime import datetime, timezone
 from uuid import UUID, uuid4
 from psycopg import Connection
 from psycopg.rows import dict_row
@@ -20,7 +21,8 @@ from .procedure_state import (
 from .procedure_run_contracts import (
     AcknowledgeProcedureInstructionCommand, CorrectProcedureStepCommand,
     LinkProcedureThreadCommand, ProcedureRunResult, ProcedureRunStepView,
-    ProcedureRunThreadLink, ProcedureRunView, RecordProcedureStepCommand,
+    ProcedureRunThreadLink, ProcedureRunView, RenderedProcedureStep,
+    RecordProcedureStepCommand,
     SetProcedureRunStatusCommand, StartProcedureRunCommand,
 )
 from .runtime import PermissionDenied, VersionConflict
@@ -187,6 +189,11 @@ def start_procedure_run(connection: Connection, actor: TrustedActor,
             if (task["status"]!="PLANNED" or task["suspended"]
                 or task["executor"]!="USER"):
                 raise VersionConflict("task is not actionable for guided run")
+            # Use the same deadline rule as Task.list_tasks. Starting new work
+            # is distinct from admitting truthful evidence of prior work.
+            if (task["deadline"] is not None
+                and task["deadline"]<=datetime.now(timezone.utc)):
+                raise VersionConflict("task deadline expired; guided run not actionable")
             cur.execute(
                 """SELECT task_id FROM goal_tasks
                    WHERE user_id=%s AND instance_id=%s AND exclusive_only
@@ -451,7 +458,7 @@ def read_procedure_run(connection: Connection, actor: TrustedActor,
             rows=cur.fetchall()
             steps=tuple(ProcedureRunStepView(
                 step_id=row["step_id"],position=row["position"],
-                step=ProcedureStep(
+                step=RenderedProcedureStep(
                     step_id=row["step_id"],instruction=row["instruction"],
                     executor=row["executor"],success_test=row["success_test"],
                     capability=row["capability"],
