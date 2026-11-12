@@ -43,6 +43,16 @@ def authorize_agent_step(connection: Connection, actor: TrustedActor,
                          ) -> AgentStepAuthorizationResult:
     """Create exact, approved stage; do not enqueue until separately committed."""
     def apply(cur,receipt):
+        # All admission paths acquire stage -> graph -> run/step. In
+        # particular, do not lock run and then wait on a staging row:
+        # P0 enqueue/claim already locks the stage before the run.
+        cur.execute(
+            """SELECT operation_id FROM procedure_agent_operation_authorizations
+               WHERE run_id=%s AND step_id=%s AND state='AUTHORIZED'
+               FOR UPDATE""",
+            (command.run_id,command.step_id),
+        )
+        pending=cur.fetchone()
         _graph_read_lock(cur,actor,command.instance_id)
         run=_run(cur,actor,command.instance_id,command.run_id)
         if run["status"]!="ACTIVE" or run["version"]!=command.expected_run_version:
@@ -53,13 +63,6 @@ def authorize_agent_step(connection: Connection, actor: TrustedActor,
         if (step["version"]!=command.expected_step_version
             or step["executor"]!="AGENT" or step["capability"]!=SLOW_TOOL):
             raise PermissionDenied("procedure step lacks the registered read-only capability")
-        cur.execute(
-            """SELECT operation_id FROM procedure_agent_operation_authorizations
-               WHERE run_id=%s AND step_id=%s AND state='AUTHORIZED'
-               FOR UPDATE""",
-            (command.run_id,command.step_id),
-        )
-        pending=cur.fetchone()
         if pending is not None:
             cur.execute(
                 "SELECT status FROM operations WHERE operation_id=%s",
