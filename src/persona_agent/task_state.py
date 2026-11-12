@@ -224,27 +224,24 @@ def create_task(connection: Connection, actor: TrustedActor,
 
 def add_task_dependency(connection: Connection, actor: TrustedActor,
                         command: AddTaskDependencyCommand) -> TaskCommandResult:
+    """Persist a scoped prerequisite; reject cross-persona and mixed-edge cycles."""
     def apply(cur,receipt):
-        # The containing goal row serializes competing edge inserts but not
-        # unrelated goal graphs. Both task FK scopes are independently checked.
+        # A single per-persona graph transaction lock prevents write-skew
+        # across different target goals and RUN_AFTER priority changes.
+        _graph_lock(cur,actor,command.instance_id)
         task=_task(cur,actor,command.instance_id,command.task_id)
         goal=_goal(cur,actor,command.instance_id,task["goal_id"])
         if goal["version"]!=command.expected_goal_version:
             raise VersionConflict("goal graph version changed")
-        if goal["status"]!="ACTIVE" or task["status"]!="PLANNED":
-            raise VersionConflict("task/goal cannot accept dependencies")
-        cur.execute(
-            """SELECT goal_id,status FROM goal_tasks
-               WHERE task_id=%s AND user_id=%s AND instance_id=%s""",
-            (command.prerequisite_task_id,actor.user_id,command.instance_id),
-        )
-        other=cur.fetchone()
-        if other is None or other["goal_id"]!=task["goal_id"] or other["status"]=="CANCELLED":
-            raise PermissionDenied("dependency outside active scoped goal")
-        cur.execute(
-            """SELECT count(*) AS n FROM task_dependencies WHERE task_id=%s""",
-            (command.task_id,),
-        )
+        if task["status"]!="PLANNED":
+            raise VersionConflict("cannot add dependency to reported or completed work")
+        _active_goal_chain(cur,actor,command.instance_id,task["goal_id"])
+        other=_task(cur,actor,command.instance_id,command.prerequisite_task_id,lock="SHARE")
+        if other["status"]=="CANCELLED":
+            raise VersionConflict("cancelled task cannot serve as a new prerequisite")
+        _active_goal_chain(cur,actor,command.instance_id,other["goal_id"])
+        cur.execute("SELECT count(*) AS n FROM task_dependencies WHERE task_id=%s",
+                    (command.task_id,))
         if cur.fetchone()["n"]>=MAX_DEPENDENCIES_PER_TASK:
             raise VersionConflict("dependency fan-in limit")
         cur.execute(
@@ -254,22 +251,13 @@ def add_task_dependency(connection: Connection, actor: TrustedActor,
         )
         if cur.fetchone() is not None:
             raise VersionConflict("duplicate dependency")
-        # A->B means A waits for B; reject if B can already reach A.
-        cur.execute(
-            """WITH RECURSIVE reachable(id) AS (
-                 SELECT %s::uuid
-                 UNION
-                 SELECT d.prerequisite_task_id FROM task_dependencies d
-                 JOIN reachable r ON d.task_id=r.id
-               )
-               SELECT 1 FROM reachable WHERE id=%s LIMIT 1""",
-            (command.prerequisite_task_id,command.task_id),
-        )
-        if cur.fetchone() is not None:
+        if _would_cycle(cur,actor,command.instance_id,
+                        command.task_id,command.prerequisite_task_id):
             raise VersionConflict("dependency cycle")
         event=_publish(cur,actor,command.instance_id,"goal.task.dependency.added.v1",{
             "task_id":str(command.task_id),
             "prerequisite_task_id":str(command.prerequisite_task_id),
+            "approval_turn_id":str(command.approval_turn_id),
         },receipt)
         cur.execute(
             """INSERT INTO task_dependencies(
