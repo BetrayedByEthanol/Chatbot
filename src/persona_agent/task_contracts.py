@@ -11,7 +11,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, model_validator, field_validator
 
 Executor = Literal["USER", "AGENT"]
-TaskStatus = Literal["PLANNED", "USER_REPORTED_DONE", "USER_CONFIRMED", "CANCELLED"]
+TaskStatus = Literal["PLANNED", "USER_REPORTED_DONE", "USER_CONFIRMED", "NEEDS_REVIEW", "CANCELLED"]
 EvidencePolicy = Literal["USER_CONFIRMATION", "OPERATION_RESULT"]
 PriorityRule = Literal[
     "PREFER_OVER", "CLEAR_PREFERENCE", "SUSPEND", "RESUME",
@@ -84,6 +84,26 @@ class ConfirmUserTaskCommand(TaskUserCommand):
     report_id: UUID
 
 
+class CorrectTaskOutcomeCommand(TaskUserCommand):
+    """Supersede the latest report or current confirmation; do not erase evidence."""
+
+    task_id: UUID
+    expected_task_version: int = Field(ge=1)
+    superseded_report_id: UUID | None = None
+    superseded_confirmation_id: UUID | None = None
+    reason: str = Field(min_length=10, max_length=800)
+
+    @model_validator(mode="after")
+    def exactly_one_target(self):
+        if (self.superseded_report_id is None) == (
+            self.superseded_confirmation_id is None
+        ):
+            raise ValueError("correction requires exactly one report or confirmation")
+        if not self.reason.strip() or len(self.reason.strip()) < 10:
+            raise ValueError("correction requires a substantive reason")
+        return self
+
+
 class SetTaskPriorityCommand(TaskUserCommand):
     task_id: UUID
     expected_task_version: int = Field(ge=1)
@@ -108,8 +128,10 @@ class TaskCommandResult(BaseModel):
     task_id: UUID
     version: int
     event_id: UUID
-    action: Literal["TASK_CREATED", "DEPENDENCY_ADDED", "OUTCOME_REPORTED", "USER_COMPLETION_CONFIRMED", "PRIORITY_SET", "TASK_CANCELLED"]
+    action: Literal["TASK_CREATED", "DEPENDENCY_ADDED", "OUTCOME_REPORTED", "USER_COMPLETION_CONFIRMED", "OUTCOME_CORRECTED", "PRIORITY_SET", "TASK_CANCELLED"]
     report_id: UUID | None = None
+    confirmation_id: UUID | None = None
+    correction_id: UUID | None = None
     replayed: bool = False
 
 class TaskView(BaseModel):
@@ -132,7 +154,11 @@ class TaskView(BaseModel):
     run_after: tuple[UUID, ...]
     deadline: datetime | None
     exclusive_only: bool = False
+    # Includes transitive prerequisites: a corrected ancestor invalidates
+    # descendant readiness without rewriting anyone else's confirmation.
     unmet_dependencies: tuple[UUID, ...] = ()
+    effective_completion: bool = False
+    needs_reassessment: bool = False
     # Readiness does not authorize tool execution; P0 still rejects task_id.
     dispatch_authorized: Literal[False] = False
 
