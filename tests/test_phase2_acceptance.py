@@ -342,12 +342,20 @@ def test_phase2_50_turn_compression_topic_restore_and_provenance(dsn):
         text=("I adopted a rescue dog in September."
               if i==1 else f"Garden progress update {i}: planning a new routine.")
         source.append(add_turn(dsn,user,instance,conversation,text))
+    # Dialogue commands are causal: their evidence must be the latest
+    # authenticated input, not an arbitrarily old turn. Revisit the old
+    # topic explicitly before creating its new focused thread.
+    topic_reference=add_turn(
+        dsn,user,instance,conversation,
+        "Let's return to rescue dog adoption.",
+    )
     thread=uuid4()
     current=dbcall(dsn,load_active_dialogue,actor(user),conversation)
     dbcall(dsn,open_thread,actor(user),OpenThreadCommand(
         conversation_id=conversation,instance_id=instance,
         expected_generation=1,expected_revision=current.revision,
-        evidence_turn_id=source[1].turn_id,idempotency_key=str(uuid4()),
+        evidence_turn_id=topic_reference.turn_id,
+        idempotency_key=str(uuid4()),
         thread_id=thread,title="rescue dog adoption",
     ))
     generated=DeterministicSummary()
@@ -399,7 +407,7 @@ def test_phase2_50_turn_compression_topic_restore_and_provenance(dsn):
         assert conn.execute(
             "SELECT count(*) FROM conversation_turns WHERE conversation_id=%s",
             (conversation,),
-        ).fetchone()[0]==51
+        ).fetchone()[0]==52
 
 
 def test_phase2_switch_defers_other_domain_events_without_cross_persona_leak(dsn):
@@ -416,8 +424,10 @@ def test_phase2_switch_defers_other_domain_events_without_cross_persona_leak(dsn
     ))
     assert switch.generation==2
     deferred_memory,deferred_affect=apply_inputs(dsn,consumers)
-    assert deferred_memory.deferred>=3
-    assert deferred_affect.deferred>=6
+    # P0 per-stream head-of-line ordering may defer only the first
+    # delivery; later turns remain blocked behind it until reselection.
+    assert deferred_memory.deferred>=1
+    assert deferred_affect.deferred>=2
     assert dbcall(dsn,read_emotion_state,actor(user),instance).version==0
     assert dbcall(dsn,read_relationship_state,actor(user),instance).interaction_count==0
     assert dbcall(dsn,search_memories,actor(user),instance,"favorite drink")==()
