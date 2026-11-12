@@ -135,7 +135,7 @@ def _read_selected(cur,actor:TrustedActor,instance_id:UUID)->None:
     if cur.fetchone() is None:
         raise PermissionDenied("goal read outside authenticated persona scope")
     cur.execute(
-        "SELECT instance_id FROM persona_selection WHERE user_id=%s",
+        "SELECT instance_id FROM persona_selection WHERE user_id=%s FOR SHARE",
         (actor.user_id,),
     )
     selected=cur.fetchone()
@@ -476,23 +476,24 @@ def list_goals(
     _require_actor(actor)
     if not 1<=limit<=300:
         raise ValueError("invalid goal list bound")
-    with connection.cursor(row_factory=dict_row) as cur:
-        _read_selected(cur,actor,instance_id)
-        cur.execute(
-            """SELECT g.goal_id,g.parent_goal_id,g.depth,g.title,
-                      g.desired_outcome,g.success_criterion,g.horizon,
-                      g.status,g.version,
-                      (SELECT s.strategy_id FROM goal_strategy_selections s
-                       WHERE s.goal_id=g.goal_id
-                       ORDER BY s.goal_version DESC LIMIT 1)
-                         AS selected_strategy_id,
-                      (SELECT count(*) FROM goal_evidence e
-                       WHERE e.goal_id=g.goal_id) AS evidence_count
-               FROM goal_records g WHERE g.user_id=%s AND g.instance_id=%s
-               ORDER BY g.depth,g.created_at,g.goal_id LIMIT %s""",
-            (actor.user_id,instance_id,limit),
-        )
-        return tuple(GoalView.model_validate(dict(r)) for r in cur.fetchall())
+    with connection.transaction():
+        with connection.cursor(row_factory=dict_row) as cur:
+            _read_selected(cur,actor,instance_id)
+            cur.execute(
+                """SELECT g.goal_id,g.parent_goal_id,g.depth,g.title,
+                          g.desired_outcome,g.success_criterion,g.horizon,
+                          g.status,g.version,
+                          (SELECT s.strategy_id FROM goal_strategy_selections s
+                           WHERE s.goal_id=g.goal_id
+                           ORDER BY s.goal_version DESC LIMIT 1)
+                             AS selected_strategy_id,
+                          (SELECT count(*) FROM goal_evidence e
+                           WHERE e.goal_id=g.goal_id) AS evidence_count
+                   FROM goal_records g WHERE g.user_id=%s AND g.instance_id=%s
+                   ORDER BY g.depth,g.created_at,g.goal_id LIMIT %s""",
+                (actor.user_id,instance_id,limit),
+            )
+            return tuple(GoalView.model_validate(dict(r)) for r in cur.fetchall())
 
 
 def list_goal_strategies(
@@ -503,16 +504,17 @@ def list_goal_strategies(
     _require_actor(actor)
     if not 1<=limit<=100:
         raise ValueError("invalid strategy list bound")
-    with connection.cursor(row_factory=dict_row) as cur:
-        _read_selected(cur,actor,instance_id)
-        _goal(cur,actor,instance_id,goal_id,lock="SHARE")
-        cur.execute(
-            """SELECT strategy_id,goal_id,title,approach,suitability_note,status
-               FROM goal_strategies WHERE goal_id=%s AND user_id=%s AND instance_id=%s
-               ORDER BY created_at,strategy_id LIMIT %s""",
-            (goal_id,actor.user_id,instance_id,limit),
-        )
-        return tuple(StrategyView.model_validate(dict(r)) for r in cur.fetchall())
+    with connection.transaction():
+        with connection.cursor(row_factory=dict_row) as cur:
+            _read_selected(cur,actor,instance_id)
+            _goal(cur,actor,instance_id,goal_id,lock="SHARE")
+            cur.execute(
+                """SELECT strategy_id,goal_id,title,approach,suitability_note,status
+                   FROM goal_strategies WHERE goal_id=%s AND user_id=%s AND instance_id=%s
+                   ORDER BY created_at,strategy_id LIMIT %s""",
+                (goal_id,actor.user_id,instance_id,limit),
+            )
+            return tuple(StrategyView.model_validate(dict(r)) for r in cur.fetchall())
 
 
 def list_goal_evidence(
@@ -523,15 +525,16 @@ def list_goal_evidence(
     _require_actor(actor)
     if not 1<=limit<=100:
         raise ValueError("invalid evidence list bound")
-    with connection.cursor(row_factory=dict_row) as cur:
-        _read_selected(cur,actor,instance_id)
-        _goal(cur,actor,instance_id,goal_id,lock="SHARE")
-        cur.execute(
-            """SELECT evidence_id,goal_id,evidence_kind AS kind,
-                      epistemic_status,classification_status,
-                      source_turn_id,source_quote
-               FROM goal_evidence WHERE goal_id=%s AND user_id=%s AND instance_id=%s
-               ORDER BY recorded_at DESC,evidence_id DESC LIMIT %s""",
-            (goal_id,actor.user_id,instance_id,limit),
-        )
-        return tuple(EvidenceView.model_validate(dict(r)) for r in cur.fetchall())
+    with connection.transaction():
+        with connection.cursor(row_factory=dict_row) as cur:
+            _read_selected(cur,actor,instance_id)
+            _goal(cur,actor,instance_id,goal_id,lock="SHARE")
+            cur.execute(
+                """SELECT evidence_id,goal_id,evidence_kind AS kind,
+                          epistemic_status,classification_status,
+                          source_turn_id,source_quote
+                   FROM goal_evidence WHERE goal_id=%s AND user_id=%s AND instance_id=%s
+                   ORDER BY recorded_at DESC,evidence_id DESC LIMIT %s""",
+                (goal_id,actor.user_id,instance_id,limit),
+            )
+            return tuple(EvidenceView.model_validate(dict(r)) for r in cur.fetchall())
