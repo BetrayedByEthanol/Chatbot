@@ -289,17 +289,18 @@ def cancel_task(connection: Connection, actor: TrustedActor,
     exist in P3-02. Later operation admission must read task cancellation.
     """
     def apply(cur,receipt):
+        _graph_lock(cur,actor,command.instance_id)
         task=_task(cur,actor,command.instance_id,command.task_id)
         if task["version"]!=command.expected_task_version:
             raise VersionConflict("task changed")
-        if task["status"]=="CANCELLED":
-            raise VersionConflict("task already cancelled")
+        if task["status"] in ("CANCELLED","USER_CONFIRMED"):
+            raise VersionConflict("confirmed or cancelled task cannot be cancelled")
         event=_publish(cur,actor,command.instance_id,"goal.task.cancelled.v1",{
             "task_id":str(command.task_id),
             "approval_turn_id":str(command.approval_turn_id),
         },receipt)
         cur.execute(
-            """UPDATE goal_tasks SET status='CANCELLED',
+            """UPDATE goal_tasks SET status='CANCELLED',exclusive_only=false,
                  version=version+1,updated_at=clock_timestamp()
                WHERE task_id=%s RETURNING version""",
             (command.task_id,),
@@ -316,22 +317,27 @@ def report_task_outcome(connection: Connection, actor: TrustedActor,
         task=_task(cur,actor,command.instance_id,command.task_id)
         if task["version"]!=command.expected_task_version:
             raise VersionConflict("task changed")
-        if task["status"]=="CANCELLED":
-            raise VersionConflict("cancelled task cannot accept progress")
+        if task["status"] in ("CANCELLED","USER_CONFIRMED"):
+            raise VersionConflict("terminal task cannot accept progress")
         # Reporting DONE is evidence, not VERIFIED task completion.
         status="USER_REPORTED_DONE" if command.report=="DONE" else "PLANNED"
+        report_id=uuid4()
         event=_publish(cur,actor,command.instance_id,"goal.task.outcome.reported.v1",{
             "task_id":str(command.task_id),"report":command.report,
+            "report_id":str(report_id),
             "epistemic_status":"USER_REPORTED","classification_status":"UNREVIEWED",
+            "approval_turn_id":str(command.approval_turn_id),
         },receipt)
         cur.execute(
             """INSERT INTO task_outcome_reports(
                  report_id,task_id,goal_id,user_id,instance_id,report,
-                 source_conversation_id,source_turn_id,event_id
-               ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
-            (uuid4(),task["task_id"],task["goal_id"],actor.user_id,
+                 source_conversation_id,source_turn_id,source_quote,
+                 approval_turn_id,event_id
+               ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+            (report_id,task["task_id"],task["goal_id"],actor.user_id,
              command.instance_id,command.report,command.conversation_id,
-             command.evidence_turn_id,event),
+             command.evidence_turn_id,command.evidence_quote,
+             command.approval_turn_id,event),
         )
         cur.execute(
             """UPDATE goal_tasks SET status=%s,version=version+1,
@@ -340,7 +346,8 @@ def report_task_outcome(connection: Connection, actor: TrustedActor,
         )
         return TaskCommandResult(task_id=command.task_id,
                                  version=cur.fetchone()["version"],
-                                 event_id=event,action="OUTCOME_REPORTED")
+                                 event_id=event,action="OUTCOME_REPORTED",
+                                 report_id=report_id)
     return _command(connection,actor,command,"goal.task.outcome.report.v1",apply)
 
 
