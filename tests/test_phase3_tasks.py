@@ -706,8 +706,10 @@ def test_correction_authority_and_cross_persona_isolation(dsn):
         call(dsn,correct_task_outcome,actor(foreign),foreign_command)
     current=correction_command(dsn,user,instance,conv,task,2,
                                report_id=done.report_id)
+    # The stale version is independently approved: modifying the already
+    # approved payload should instead fail the intentional approval hash gate.
+    stale=correction_command(dsn,user,instance,conv,task,1,
+                             report_id=done.report_id)
     with pytest.raises(VersionConflict):
-        call(dsn,correct_task_outcome,actor(user),
-             current.model_copy(update={"expected_task_version":1,
-                                        "idempotency_key":uuid4().hex}))
+        call(dsn,correct_task_outcome,actor(user),stale)
     assert call(dsn,correct_task_outcome,actor(user),current).version==3
