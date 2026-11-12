@@ -13,6 +13,7 @@ import json
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
+from threading import Event
 from datetime import datetime,timezone
 from time import monotonic
 from uuid import uuid4
@@ -518,3 +519,72 @@ def test_phase2_foreground_selectivity_does_not_run_background_models(dsn,monkey
     # latency targets belong to hardware-specific benchmark acceptance.
     print(json.dumps({"phase2_foreground_context_ms":elapsed_ms,
                       "model_calls":0,"historical_topic_queries":0}))
+
+
+
+def test_phase2_background_inference_cannot_block_new_foreground_turn(dsn):
+    """Model inference is outside DB locks; late work remains source-fenced.
+
+    Hold a real P0-claimed cognitive operation inside its model gateway,
+    then ingest another authenticated turn while the inference is blocked.
+    The optional worker must not monopolize Conversation locks or prevent
+    the ordinary foreground path from committing and restoring that turn.
+    """
+    user,instance,_=create_identity(dsn)
+    prepare_resources(dsn)
+    conversation=uuid4()
+    initial=[
+        add_turn(dsn,user,instance,conversation,
+                 f"Garden progress update {i}.")
+        for i in range(4)
+    ]
+    scheduled=dbcall(
+        dsn,schedule_cognition,platform(user),conversation,instance,1,
+        min_closed_turns=3,max_turns=8,retain_recent=1,
+    )
+    assert scheduled is not None and scheduled.end_sequence==3
+    lease=claimed(
+        dsn,COGNITIVE_OPERATION,COGNITIVE_CAPABILITY,"p208-nonblocking",
+    )
+    assert lease.operation_id==scheduled.operation_id
+
+    entered_gateway=Event()
+    release_gateway=Event()
+    baseline=DeterministicCognition()
+
+    class BlockedInference:
+        def generate(self,messages):
+            entered_gateway.set()
+            if not release_gateway.wait(15):
+                raise AssertionError("blocking-model test was not released")
+            return baseline.generate(messages)
+
+    # In the failure path release the gateway *before* awaiting executor
+    # cleanup; otherwise a genuine lock regression could hang the suite.
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        background=pool.submit(dbcall,dsn,run_cognition,lease,BlockedInference())
+        try:
+            assert entered_gateway.wait(5)
+            foreground=pool.submit(
+                add_turn,dsn,user,instance,conversation,
+                "I'm ready to continue with a different topic.",
+            )
+            newest=foreground.result(timeout=5)
+            assert newest.turn_id not in {x.turn_id for x in initial}
+        finally:
+            release_gateway.set()
+        reflected=background.result(timeout=15)
+
+    assert reflected.end_sequence==3 and reflected.reflection_count==1
+    assert baseline.calls==1
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        row=conn.execute(
+            """SELECT cognitive_watermark,next_sequence,last_input_turn_id
+               FROM conversations WHERE conversation_id=%s""",
+            (conversation,),
+        ).fetchone()
+        assert row==(3,6,newest.turn_id)
+    restarted=dbcall(
+        dsn,prepare_text_context,actor(user),newest.turn_id,
+    )
+    assert restarted.messages[-1].content.startswith("I'm ready to continue")
