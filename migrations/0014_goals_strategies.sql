@@ -49,9 +49,11 @@ CREATE TABLE goal_evidence (
     user_id uuid NOT NULL,
     instance_id uuid NOT NULL,
     evidence_kind text NOT NULL CHECK (
-        evidence_kind IN ('PROGRESS','OBSTACLE','SUCCESS_REPORTED')),
+        evidence_kind IN ('UNCLASSIFIED','PROGRESS','OBSTACLE','SUCCESS_REPORTED')),
     epistemic_status text NOT NULL DEFAULT 'USER_REPORTED'
         CHECK(epistemic_status='USER_REPORTED'),
+    classification_status text NOT NULL DEFAULT 'UNREVIEWED'
+        CHECK(classification_status='UNREVIEWED'),
     source_conversation_id uuid NOT NULL,
     source_turn_id uuid NOT NULL,
     source_quote text NOT NULL CHECK (char_length(source_quote) BETWEEN 1 AND 300),
