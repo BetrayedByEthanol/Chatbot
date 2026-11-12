@@ -194,6 +194,17 @@ class SharedProcedureView(BaseModel):
     content_hash: str
 
 
+class PersonalizedApproachHandle(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    variant_id: UUID
+    template_id: UUID
+    template_version: int = Field(ge=1)
+    revision: int = Field(ge=1)
+    goal_id: UUID | None
+    strategy_id: UUID | None
+    title: str
+
+
 class PersonalizedApproachView(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     variant_id: UUID
