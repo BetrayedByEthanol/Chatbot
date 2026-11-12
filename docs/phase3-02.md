@@ -19,11 +19,11 @@ The user can explicitly create USER or AGENT work. A USER task requires a concre
 
 Task dependencies can refer to tasks under different goals only within the same User × Persona instance. All writes are scoped and idempotent. Dependency additions and RUN_AFTER/complete/cancel edits acquire a short **instance-scoped advisory transaction lock** to prevent write-skew in graph validation; unrelated goals and domain writes remain concurrent. The recursive reachability check traverses both prerequisite edges and RUN_AFTER constraints. Target task version CAS plus a bounded max of **32 prerequisites per task** and **64 tasks per goal** limit expansion. A cycle, self-edge, duplicate, cross-persona edge or retroactive dependency on completed work is rejected.
 
-Goal status changes never rewrite task history. A paused/abandoned ancestor makes descendant tasks ineligible at read/confirmation time. Explicit cancellation does not cascade to dependents; they remain blocked until a future replan.
+Goal status changes never rewrite task history. A paused/abandoned ancestor makes descendant tasks ineligible at read/confirmation time. Explicit cancellation does not cascade to dependents; they remain blocked until a future replan. A deadline expires task *readiness*, not the user's ability to truthfully report already completed work; a late USER confirmation preserves the deadline for later outcome evaluation.
 
 ### User priority semantics
 
-Each task supports one bounded preference and one RUN_AFTER target pending richer planning, plus SUSPEND/RESUME, SET/CLEAR_DEADLINE and exclusive ONLY/CLEAR_ONLY. `PREFER_OVER` is **not exclusive**, and does not block the less preferred task. `ONLY` makes other tasks in that instance ineligible for future admission; it is unique per instance. `RUN_AFTER` is a *user ordering constraint*, not an operation edge or evidence of completion. All changes are explicit, versioned and recorded in `task_priority_revisions`. No automatic priority-based worker dispatch is implemented.
+Each task supports one bounded preference and one RUN_AFTER target pending richer planning, plus SUSPEND/RESUME, SET/CLEAR_DEADLINE and exclusive ONLY/CLEAR_ONLY. `PREFER_OVER` is **not exclusive**, and does not block the less preferred task. `ONLY` makes other tasks in that instance ineligible for future admission; it is unique per instance. `RUN_AFTER` is a *user ordering constraint*, not an operation edge or evidence of completion. All changes are explicit, versioned and recorded in `task_priority_revisions`. Exclusive ONLY is automatically cleared when its task is cancelled or user-confirmed complete, so it cannot strand other work. No automatic priority-based worker dispatch is implemented.
 
 ### Approval and provenance
 
