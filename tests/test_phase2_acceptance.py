@@ -10,6 +10,8 @@ No model inference or speculative claims on the foreground preparation path.
 """
 
 import json
+import subprocess
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime,timezone
 from time import monotonic
@@ -399,6 +401,42 @@ def test_phase2_50_turn_compression_topic_restore_and_provenance(dsn):
     evidence=dbcall(dsn,episode_source_turn,actor(user),instance,
                     episodes[0].episode_id)
     assert evidence["user_text"]=="I adopted a rescue dog in September."
+
+    # Actually terminate the test client's Python state and reconstruct
+    # retrieval + attention in a fresh interpreter, not merely a new cursor.
+    restart_probe = r'''
+import json
+import sys
+from uuid import UUID
+import psycopg
+from persona_agent.contracts import TrustedActor
+from persona_agent.memory_retrieval import load_topic_attention
+from persona_agent.summary_memory import search_episodes
+
+dsn,user_id,instance_id,conversation_id=sys.argv[1:]
+who=TrustedActor(user_id=UUID(user_id),source_id="phase2-restart-probe")
+with psycopg.connect(dsn,autocommit=True) as conn:
+    episodes=search_episodes(conn,who,UUID(instance_id),"rescue dog")
+    topic=load_topic_attention(conn,who,UUID(conversation_id))
+print(json.dumps({
+    "source_turn_id":str(episodes[0].source_turn_id),
+    "epistemic_status":episodes[0].epistemic_status,
+    "focused_thread_id":str(topic.focus_thread_id),
+    "episodes":len(episodes),
+}))
+'''
+    child=subprocess.run(
+        [sys.executable,"-c",restart_probe,dsn,str(user),str(instance),
+         str(conversation)],
+        check=True,text=True,capture_output=True,timeout=20,
+    )
+    reconstructed=json.loads(child.stdout)
+    assert reconstructed=={
+        "source_turn_id":str(source[1].turn_id),
+        "epistemic_status":"MODEL_INTERPRETED",
+        "focused_thread_id":str(thread),
+        "episodes":1,
+    }
     with psycopg.connect(dsn,autocommit=True) as conn:
         assert conn.execute(
             "SELECT summary_watermark FROM conversations WHERE conversation_id=%s",
