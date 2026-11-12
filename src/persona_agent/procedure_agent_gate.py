@@ -40,6 +40,7 @@ def require_procedure_agent_gate(cur, operation: dict) -> dict:
     }
     if (operation["task_id"]!=stage["task_id"]
         or operation["input_versions"]!=expected
+        or operation["selection_generation"]!=stage["selection_generation"]
         or operation["operation_type"]!=PROCEDURE_AGENT_OPERATION):
         raise PermissionDenied("procedure operation does not match the approved task/run/step versions")
 
