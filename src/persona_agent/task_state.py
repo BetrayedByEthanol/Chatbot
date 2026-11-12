@@ -20,7 +20,7 @@ from .runtime import (
 )
 from .task_contracts import (
     AddTaskDependencyCommand, CancelTaskCommand, ConfirmUserTaskCommand,
-    CreateTaskCommand, ReportTaskOutcomeCommand,
+    CorrectTaskOutcomeCommand, CreateTaskCommand, ReportTaskOutcomeCommand,
     SetTaskPriorityCommand, TaskCommandResult, TaskUserCommand, TaskView,
     task_approval_phrase,
 )
@@ -127,6 +127,66 @@ def _would_cycle(cur, actor: TrustedActor, instance_id: UUID,
         (predecessor,actor.user_id,instance_id,actor.user_id,instance_id,task_id),
     )
     return cur.fetchone()["cycle"]
+
+
+def _latest_report(cur, actor: TrustedActor, instance_id: UUID,
+                   task_id: UUID) -> dict | None:
+    """Order report evidence by durable event sequence, not timestamp.
+
+    Task row locking and the persona graph lock serialize mutations.
+    The goal journal's stream_sequence is unique and increasing for reports.
+    """
+    cur.execute(
+        """SELECT r.report_id,r.report FROM task_outcome_reports r
+           JOIN events e ON e.event_id=r.event_id
+           WHERE r.task_id=%s AND r.user_id=%s AND r.instance_id=%s
+           ORDER BY e.stream_sequence DESC LIMIT 1""",
+        (task_id,actor.user_id,instance_id),
+    )
+    return cur.fetchone()
+
+
+def _unmet_prerequisites(cur, actor: TrustedActor, instance_id: UUID,
+                         task_ids: list[UUID]) -> dict[UUID, tuple[UUID, ...]]:
+    """Compute transitive effective confirmation over dependency + RUN_AFTER DAG.
+
+    A historical USER_CONFIRMED task is not a valid prerequisite if any of
+    its ancestors has since been corrected, cancelled or left unconfirmed.
+    The read projection preserves each task's historical status; it never
+    silently revokes downstream user testimony.
+    """
+    if not task_ids:
+        return {}
+    cur.execute(
+        """WITH RECURSIVE closure(root_id,node_id) AS (
+             SELECT task_id,task_id FROM goal_tasks
+             WHERE task_id=ANY(%s) AND user_id=%s AND instance_id=%s
+             UNION
+             SELECT c.root_id,edge.predecessor_id
+             FROM closure c JOIN (
+                  SELECT task_id,prerequisite_task_id AS predecessor_id,
+                         user_id,instance_id
+                  FROM task_dependencies
+                  UNION ALL
+                  SELECT task_id,run_after_task_id AS predecessor_id,
+                         user_id,instance_id
+                  FROM goal_tasks WHERE run_after_task_id IS NOT NULL
+             ) edge ON edge.task_id=c.node_id
+             WHERE edge.user_id=%s AND edge.instance_id=%s
+           )
+           SELECT c.root_id,c.node_id FROM closure c
+           JOIN goal_tasks predecessor
+             ON predecessor.task_id=c.node_id
+            AND predecessor.user_id=%s AND predecessor.instance_id=%s
+           WHERE c.root_id<>c.node_id
+             AND predecessor.status<>'USER_CONFIRMED'""",
+        (task_ids,actor.user_id,instance_id,
+         actor.user_id,instance_id,actor.user_id,instance_id),
+    )
+    result: dict[UUID,set[UUID]]={}
+    for row in cur.fetchall():
+        result.setdefault(row["root_id"],set()).add(row["node_id"])
+    return {root:tuple(sorted(ids,key=str)) for root,ids in result.items()}
 
 
 def _command(connection: Connection, actor: TrustedActor,
@@ -314,6 +374,9 @@ def cancel_task(connection: Connection, actor: TrustedActor,
 def report_task_outcome(connection: Connection, actor: TrustedActor,
                         command: ReportTaskOutcomeCommand) -> TaskCommandResult:
     def apply(cur,receipt):
+        # All evidence-driven readiness changes serialize with confirmations,
+        # graph updates and corrections within this selected persona.
+        _graph_lock(cur,actor,command.instance_id)
         task=_task(cur,actor,command.instance_id,command.task_id)
         if task["version"]!=command.expected_task_version:
             raise VersionConflict("task changed")
