@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 TIME_TOOL="clock.now.v1"
 SLOW_TOOL="text.statistics.v1"
+PROCEDURE_AGENT_OPERATION="procedure.agent.text.statistics.v1"
 RESOURCE_KEY="tool.readonly"
 
 
