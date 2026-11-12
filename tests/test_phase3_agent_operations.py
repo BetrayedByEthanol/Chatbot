@@ -1,10 +1,13 @@
 """P3-04 AGENT operation vertical slice: P0 scheduler + scoped read-only tool."""
 from uuid import uuid4
+from datetime import datetime, timedelta, timezone
 
 import pytest
 psycopg=pytest.importorskip("psycopg")
 
-from persona_agent.lifecycle import TrustedPlatformActor
+from persona_agent.lifecycle import (
+    SwitchPersonaCommand, TrustedPlatformActor, switch_persona,
+)
 from persona_agent.operation_contracts import (
     EffectClass, EnqueueOperation, Policy, Priority, StaleOperation,
 )
@@ -25,8 +28,9 @@ from persona_agent.procedure_agent_state import (
 from persona_agent.procedure_run_state import (
     read_procedure_run, start_procedure_run,
 )
-from persona_agent.runtime import PermissionDenied, VersionConflict
-from persona_agent.task_state import list_tasks
+from persona_agent.runtime import PermissionDenied, StaleSelection, VersionConflict
+from persona_agent.task_contracts import SetTaskPriorityCommand
+from persona_agent.task_state import list_tasks, set_task_priority
 from persona_agent.tool_contracts import (
     PROCEDURE_AGENT_OPERATION, SLOW_TOOL, RESOURCE_KEY,
 )
@@ -283,3 +287,79 @@ def test_task_version_revocation_during_read_only_execution_rejects_result(dsn):
     assert current[4] is None
     assert call(dsn,read_procedure_run,actor(user),instance,run
                 ).steps[0].status=="NOT_STARTED"
+
+
+def test_completed_result_reconciliation_waits_for_persona_reactivation(dsn):
+    user,instance,conv,goal,task,run=staged(dsn)
+    cmd=authorization(dsn,user,instance,conv,run)
+    call(dsn,schedule_agent_step,actor(user),cmd)
+    call(dsn,run_one_agent_step,worker_id="completed-before-switch")
+    assert operation_row(dsn,cmd.operation_id)[0]=="COMPLETED"
+    # Create another instance and switch through the real lifecycle command.
+    other_persona,other_instance=uuid4(),uuid4()
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        conn.execute(
+            "INSERT INTO persona_definitions(id,stable_key) VALUES(%s,%s)",
+            (other_persona,"agent-test-"+other_persona.hex),
+        )
+        conn.execute(
+            """INSERT INTO persona_instances(id,user_id,persona_id,label)
+               VALUES(%s,%s,%s,'Other persona')""",
+            (other_instance,user,other_persona),
+        )
+    switched=call(dsn,switch_persona,actor(user),SwitchPersonaCommand(
+        expected_instance_id=instance,target_instance_id=other_instance,
+        expected_generation=1,idempotency_key=uuid4().hex,
+    ))
+    assert switched.generation==2
+    with pytest.raises(StaleSelection,match="defer"):
+        call(dsn,reconcile_agent_step,platform(user),cmd.operation_id)
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT state FROM procedure_agent_operation_authorizations "
+            "WHERE operation_id=%s",(cmd.operation_id,),
+        ).fetchone()==("AUTHORIZED",)
+    returned=call(dsn,switch_persona,actor(user),SwitchPersonaCommand(
+        expected_instance_id=other_instance,target_instance_id=instance,
+        expected_generation=2,idempotency_key=uuid4().hex,
+    ))
+    assert returned.generation==3
+    accepted=call(dsn,reconcile_agent_step,platform(user),cmd.operation_id)
+    assert accepted.resolution=="VERIFIED"
+    assert call(dsn,read_procedure_run,actor(user),instance,run
+                ).steps[0].status=="VERIFIED"
+
+
+def test_late_reconciliation_accepts_work_completed_before_task_deadline(dsn):
+    user,instance,conv,goal,task,run=staged(dsn)
+    evidence=turn(dsn,user,instance,conv,
+                  "Give this AGENT task a deadline.")
+    rule=SetTaskPriorityCommand(
+        instance_id=instance,expected_generation=1,
+        idempotency_key=uuid4().hex,conversation_id=conv,
+        evidence_turn_id=evidence.turn_id,
+        evidence_quote="Give this AGENT task a deadline",
+        task_id=task,expected_task_version=1,
+        rule="SET_DEADLINE",
+        deadline=datetime.now(timezone.utc)+timedelta(days=1),
+    )
+    call(dsn,set_task_priority,actor(user),approve(dsn,user,instance,rule))
+    cmd=authorization(dsn,user,instance,conv,run,task_version=2)
+    call(dsn,schedule_agent_step,actor(user),cmd)
+    call(dsn,run_one_agent_step,worker_id="before-expiry")
+    assert operation_row(dsn,cmd.operation_id)[0]=="COMPLETED"
+    # The already completed operation remains valid historical evidence.
+    # Simulate the clock passing without delaying an integration suite.
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        conn.execute(
+            "UPDATE goal_tasks SET deadline=clock_timestamp()-INTERVAL '1 day'"
+            " WHERE task_id=%s",(task,),
+        )
+    assert "DEADLINE_EXPIRED" in call(
+        dsn,list_tasks,actor(user),instance,goal,
+    )[0].blockers
+    accepted=call(dsn,reconcile_agent_step,platform(user),cmd.operation_id)
+    assert accepted.resolution=="VERIFIED"
+    assert call(dsn,read_procedure_run,actor(user),instance,run
+                ).steps[0].status=="VERIFIED"
+    assert call(dsn,list_tasks,actor(user),instance,goal)[0].status=="PLANNED"
