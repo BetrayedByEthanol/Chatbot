@@ -4,7 +4,7 @@ No tool dispatch or agent-side verification. A task is never completed because
 the agent narrated a step or the user reported doing it.
 """
 import json
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
 from psycopg import Connection
@@ -19,8 +19,8 @@ from .runtime import (
     _fingerprint,
 )
 from .task_contracts import (
-    AddTaskDependencyCommand, CancelTaskCommand, CreateTaskCommand,
-    ReportTaskOutcomeCommand,
+    AddTaskDependencyCommand, CancelTaskCommand, ConfirmUserTaskCommand,
+    CreateTaskCommand, ReportTaskOutcomeCommand,
     SetTaskPriorityCommand, TaskCommandResult, TaskUserCommand, TaskView,
     task_approval_phrase,
 )
@@ -47,16 +47,86 @@ def _approval(cur, actor: TrustedActor, command: TaskUserCommand, source: dict) 
         raise PermissionDenied("task approval is not bound to the proposed action")
 
 
-def _task(cur, actor: TrustedActor, instance_id: UUID, task_id: UUID) -> dict:
+def _graph_lock(cur, actor: TrustedActor, instance_id: UUID) -> None:
+    """Serialize graph/priority and user-confirmation edits within one persona.
+
+    No lock is held across model/tool work. Independent goal creation and
+    non-graph state updates retain the existing domain-owned concurrency.
+    """
+    cur.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,0))",
+                (f"p3-task-dag:{actor.user_id}:{instance_id}",))
+
+
+def _task(cur, actor: TrustedActor, instance_id: UUID, task_id: UUID,
+          *, lock: str = "UPDATE") -> dict:
+    if lock not in ("UPDATE", "SHARE"):
+        raise ValueError("invalid task row lock")
     cur.execute(
-        """SELECT * FROM goal_tasks WHERE task_id=%s
-           AND user_id=%s AND instance_id=%s FOR UPDATE""",
+        f"""SELECT * FROM goal_tasks WHERE task_id=%s
+           AND user_id=%s AND instance_id=%s FOR {lock}""",
         (task_id, actor.user_id, instance_id),
     )
     row = cur.fetchone()
     if row is None:
         raise PermissionDenied("task outside user/persona scope")
     return row
+
+
+
+def _active_goal_chain(cur, actor: TrustedActor, instance_id: UUID,
+                       goal_id: UUID) -> None:
+    """Lock the full immutable parent chain to fence concurrent pauses.
+
+    P3-01 status edits use FOR UPDATE on a goal row. FOR SHARE on every
+    ancestor holds its ACTIVE status through this short task transaction.
+    """
+    cur.execute(
+        """WITH RECURSIVE chain AS (
+             SELECT goal_id,parent_goal_id FROM goal_records
+             WHERE goal_id=%s AND user_id=%s AND instance_id=%s
+             UNION ALL
+             SELECT g.goal_id,g.parent_goal_id FROM goal_records g
+             JOIN chain c ON g.goal_id=c.parent_goal_id
+             WHERE g.user_id=%s AND g.instance_id=%s
+           ) SELECT goal_id FROM chain""",
+        (goal_id,actor.user_id,instance_id,actor.user_id,instance_id),
+    )
+    ids=tuple(row["goal_id"] for row in cur.fetchall())
+    if not ids:
+        raise PermissionDenied("goal outside user/persona scope")
+    cur.execute(
+        """SELECT goal_id,status FROM goal_records
+           WHERE goal_id=ANY(%s) AND user_id=%s AND instance_id=%s
+           ORDER BY goal_id FOR SHARE""",
+        (list(ids),actor.user_id,instance_id),
+    )
+    chain=cur.fetchall()
+    if len(chain)!=len(ids) or any(row["status"]!="ACTIVE" for row in chain):
+        raise VersionConflict("goal or ancestor paused or abandoned")
+
+
+def _would_cycle(cur, actor: TrustedActor, instance_id: UUID,
+                 task_id: UUID, predecessor: UUID) -> bool:
+    """Test reachability across prerequisites and current RUN_AFTER edges."""
+    cur.execute(
+        """WITH RECURSIVE reachable(id) AS (
+             SELECT %s::uuid
+             UNION
+             SELECT edge.prereq FROM reachable r
+             CROSS JOIN LATERAL (
+               SELECT d.prerequisite_task_id AS prereq
+                 FROM task_dependencies d
+                 WHERE d.task_id=r.id AND d.user_id=%s AND d.instance_id=%s
+               UNION
+               SELECT t.run_after_task_id
+                 FROM goal_tasks t
+                 WHERE t.task_id=r.id AND t.user_id=%s AND t.instance_id=%s
+                   AND t.run_after_task_id IS NOT NULL
+             ) edge
+           ) SELECT EXISTS(SELECT 1 FROM reachable WHERE id=%s) AS cycle""",
+        (predecessor,actor.user_id,instance_id,actor.user_id,instance_id,task_id),
+    )
+    return cur.fetchone()["cycle"]
 
 
 def _command(connection: Connection, actor: TrustedActor,
@@ -114,8 +184,7 @@ def create_task(connection: Connection, actor: TrustedActor,
         goal=_goal(cur,actor,command.instance_id,command.goal_id)
         if goal["version"]!=command.expected_goal_version:
             raise VersionConflict("goal changed during task creation")
-        if goal["status"]!="ACTIVE":
-            raise VersionConflict("cannot add tasks to paused/abandoned goal")
+        _active_goal_chain(cur,actor,command.instance_id,command.goal_id)
         cur.execute(
             """SELECT count(*) AS n FROM goal_tasks
                WHERE user_id=%s AND instance_id=%s AND goal_id=%s""",
@@ -131,13 +200,16 @@ def create_task(connection: Connection, actor: TrustedActor,
         cur.execute(
             """INSERT INTO goal_tasks(
                  task_id,goal_id,user_id,instance_id,title,
-                 completion_criterion,evidence_requirement,executor,capability,
+                 action_description,completion_criterion,evidence_requirement,
+                 executor,evidence_policy,capability,
                  source_conversation_id,source_turn_id,approval_turn_id,event_id
-               ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+               ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
             (command.task_id,command.goal_id,actor.user_id,command.instance_id,
-             command.title.strip(),command.completion_criterion.strip(),
-             command.evidence_requirement.strip(),command.executor,command.capability,
-             command.conversation_id,command.evidence_turn_id,
+             command.title.strip(),command.action_description.strip(),
+             command.completion_criterion.strip(),
+             command.evidence_requirement.strip(),command.executor,
+             "USER_CONFIRMATION" if command.executor=="USER" else "OPERATION_RESULT",
+             command.capability,command.conversation_id,command.evidence_turn_id,
              command.approval_turn_id,event),
         )
         cur.execute(
