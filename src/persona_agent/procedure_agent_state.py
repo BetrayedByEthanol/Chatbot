@@ -189,6 +189,11 @@ def _read_authorized_execution(cur, lease):
     item=cur.fetchone()
     if item is None:
         raise VersionConflict("AGENT step input vanished")
+    # Selected-persona, goal, graph and step locks may have blocked longer
+    # than the operation's lease or timeout. The initial claim check alone
+    # is insufficient: never return work to the external executor on an
+    # already-expired attempt. No LLM/tool runs while these locks are held.
+    require_claim(cur,lease)
     return item["instruction"],stage["max_words"]
 
 
