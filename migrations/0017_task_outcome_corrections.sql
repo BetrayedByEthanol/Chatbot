@@ -16,6 +16,32 @@ ALTER TABLE task_user_confirmations
     UNIQUE(confirmation_id,task_id,goal_id,user_id,instance_id);
 CREATE UNIQUE INDEX task_user_confirmations_task_version_uq
     ON task_user_confirmations(task_id,task_version);
+ALTER TABLE task_user_confirmations
+    ADD CONSTRAINT task_user_confirmations_scoped_task_id_uq
+    UNIQUE(confirmation_id,task_id,user_id,instance_id);
+
+-- One immutable snapshot edge for each direct dependency/RUN_AFTER relation
+-- that justified a user confirmation. If a predecessor is later corrected
+-- and reconfirmed with a different confirmation ID, descendants stay invalid
+-- until independently reassessed and reconfirmed.
+CREATE TABLE task_confirmation_prerequisites (
+    confirmation_id uuid NOT NULL,
+    task_id uuid NOT NULL,
+    prerequisite_task_id uuid NOT NULL,
+    prerequisite_confirmation_id uuid NOT NULL,
+    user_id uuid NOT NULL,
+    instance_id uuid NOT NULL,
+    PRIMARY KEY(confirmation_id,prerequisite_task_id),
+    CHECK(task_id<>prerequisite_task_id),
+    FOREIGN KEY(confirmation_id,task_id,user_id,instance_id)
+        REFERENCES task_user_confirmations(
+            confirmation_id,task_id,user_id,instance_id),
+    FOREIGN KEY(prerequisite_confirmation_id,prerequisite_task_id,user_id,instance_id)
+        REFERENCES task_user_confirmations(
+            confirmation_id,task_id,user_id,instance_id)
+);
+CREATE INDEX task_confirmation_prerequisites_target_idx
+    ON task_confirmation_prerequisites(prerequisite_task_id);
 
 CREATE TABLE task_outcome_corrections (
     correction_id uuid PRIMARY KEY,
@@ -73,4 +99,7 @@ CREATE TRIGGER immutable_task_user_confirmations
     FOR EACH ROW EXECUTE FUNCTION reject_task_evidence_mutation();
 CREATE TRIGGER immutable_task_outcome_corrections
     BEFORE UPDATE OR DELETE ON task_outcome_corrections
+    FOR EACH ROW EXECUTE FUNCTION reject_task_evidence_mutation();
+CREATE TRIGGER immutable_task_confirmation_prerequisites
+    BEFORE UPDATE OR DELETE ON task_confirmation_prerequisites
     FOR EACH ROW EXECUTE FUNCTION reject_task_evidence_mutation();
