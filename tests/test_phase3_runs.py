@@ -1,5 +1,6 @@
 """P3-04 real PostgreSQL acceptance for durable method progress and dialogue."""
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
 from threading import Barrier
 from uuid import uuid4
 
@@ -14,7 +15,7 @@ from persona_agent.dialogue_contracts import OpenThreadCommand
 from persona_agent.dialogue_state import open_thread
 from persona_agent.lifecycle import SwitchPersonaCommand, switch_persona
 from persona_agent.procedure_contracts import (
-    ProcedureDefinition, ProcedureStep,
+    ParameterSpec, ProcedureDefinition, ProcedureStep,
 )
 from persona_agent.procedure_state import (
     create_personalized_approach, publish_shared_procedure,
@@ -31,13 +32,16 @@ from persona_agent.procedure_run_state import (
     record_procedure_step, set_procedure_run_status, start_procedure_run,
 )
 from persona_agent.runtime import PermissionDenied, StaleSelection, VersionConflict
-from persona_agent.task_state import list_tasks
+from persona_agent.task_contracts import SetTaskPriorityCommand
+from persona_agent.task_state import list_tasks, set_task_priority
 
 from test_phase3_procedures import (
     actor, approve, call, definition, publication, revise_command,
     seed, turn, variant_command,
 )
-from test_phase3_tasks import make_goal, make_task
+from test_phase3_tasks import (
+    approve as approve_task, make_goal, make_task, report_done,
+)
 
 
 def published(dsn,policy="STABLE",*,defined=None):
@@ -383,3 +387,109 @@ def test_step_corrections_during_pause_do_not_implicitly_resume(dsn):
     assert recovered.version==6
     assert call(dsn,read_procedure_run,actor(user),instance,
                 start.run_id).status=="ACTIVE"
+
+
+def test_rendered_step_limits_are_readable_at_maximum_snapshot_lengths(dsn):
+    """Template constraints apply before interpolation; run limits after it."""
+    long_definition=ProcedureDefinition(
+        title="Long rendered method",
+        purpose="Exercise parameterized step recovery at permitted boundaries",
+        applicability="Local test setup",
+        limitations="Test-only example",
+        policy="PARAMETERIZED",
+        preconditions=("Test parameter available",),
+        parameters=(ParameterSpec(
+            name="hostname",kind="TEXT",max_chars=256,
+        ),),
+        steps=(ProcedureStep(
+            step_id="rendered",
+            instruction="I"*690+"{hostname}{hostname}",
+            executor="USER",
+            success_test="S"*290+"{hostname}{hostname}",
+        ),),
+        success_tests=("Result can be inspected",),
+    )
+    user,persona,instance,conv,template=published(
+        dsn,defined=long_definition,
+    )
+    command=start_command(
+        dsn,user,instance,conv,template,
+        parameters={"hostname":"x"*255},
+    )
+    created=call(dsn,start_procedure_run,actor(user),command)
+    assert created.version==1
+    # 690 + 2*255 == 1200; 290 + 2*255 == 800.
+    for recovered in (
+        call(dsn,read_procedure_run,actor(user),instance,command.run_id),
+        next(r for r in call(dsn,list_procedure_runs,actor(user),instance)
+             if r.run_id==command.run_id),
+    ):
+        step=recovered.steps[0].step
+        assert len(step.instruction)==1200
+        assert len(step.success_test)==800
+        assert step.instruction.endswith("x"*255)
+        assert step.success_test.endswith("x"*255)
+        assert recovered.next_step_id=="rendered"
+    # Progress must also remain readable after projection state updates.
+    report=record(
+        dsn,user,instance,conv,command.run_id,1,
+        "rendered",1,"USER_REPORTED_DONE",
+    )
+    assert report.version==2
+    again=call(dsn,read_procedure_run,actor(user),instance,command.run_id)
+    assert again.steps[0].status=="USER_REPORTED_DONE"
+    assert len(again.steps[0].step.instruction)==1200
+
+
+def test_task_deadline_blocks_new_guided_run_but_not_late_evidence(dsn):
+    user,persona,instance,conv,template=published(dsn)
+    goal=make_goal(dsn,user,instance,conv)
+    task,_,_=make_task(dsn,user,instance,conv,goal,1)
+    source=turn(dsn,user,instance,conv,"Give this task a deadline.")
+    cmd=SetTaskPriorityCommand(
+        instance_id=instance,expected_generation=1,
+        idempotency_key=uuid4().hex,conversation_id=conv,
+        evidence_turn_id=source.turn_id,
+        evidence_quote="Give this task a deadline",
+        task_id=task,expected_task_version=1,
+        rule="SET_DEADLINE",
+        deadline=datetime.now(timezone.utc)+timedelta(days=1),
+    )
+    assert call(
+        dsn,set_task_priority,actor(user),
+        approve_task(dsn,user,instance,cmd),
+    ).version==2
+    assert call(dsn,list_tasks,actor(user),instance,goal)[0].actionable
+
+    # Simulate time passing without sleeping a day or bypassing the
+    # task-domain SET_DEADLINE validation for initial configuration.
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        conn.execute(
+            "UPDATE goal_tasks SET deadline=clock_timestamp()-INTERVAL '1 day'"
+            " WHERE task_id=%s AND user_id=%s AND instance_id=%s",
+            (task,user,instance),
+        )
+    view=call(dsn,list_tasks,actor(user),instance,goal)[0]
+    assert not view.actionable and "DEADLINE_EXPIRED" in view.blockers
+
+    start=start_command(dsn,user,instance,conv,template,task=task)
+    with pytest.raises(VersionConflict,match="deadline"):
+        call(dsn,start_procedure_run,actor(user),start)
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT count(*) FROM procedure_runs WHERE run_id=%s",
+            (start.run_id,),
+        ).fetchone()[0]==0
+        assert conn.execute(
+            """SELECT count(*) FROM command_receipts WHERE
+               command_type='procedure.run.start.v1'
+               AND idempotency_key=%s""",
+            (start.idempotency_key,),
+        ).fetchone()[0]==0
+
+    # Deadline expiry must not erase real-world work or prevent late reports.
+    reported=report_done(dsn,user,instance,conv,task,2)
+    assert reported.action=="OUTCOME_REPORTED"
+    assert call(dsn,list_tasks,actor(user),instance,goal)[0].status==(
+        "USER_REPORTED_DONE"
+    )
