@@ -82,12 +82,29 @@ def turn(dsn,user,instance,conversation,text,*,generation=1):
 
 
 def register(dsn):
+    # The real PostgreSQL suite is shared. Drain earlier tests' outbox
+    # events before registering isolated, test-only subscriber identities.
+    emotion_consumer="p207-emotion-"+uuid4().hex
+    relationship_consumer="p207-relation-"+uuid4().hex
     with psycopg.connect(dsn,autocommit=True) as conn:
-        register_affect_consumers(conn)
+        for _ in range(1000):
+            if dispatch_outbox(conn,limit=1000)==0:
+                break
+        else:
+            raise AssertionError("prior shared outbox did not drain")
+        register_affect_consumers(
+            conn,emotion_consumer_id=emotion_consumer,
+            relationship_consumer_id=relationship_consumer,
+        )
+    return (emotion_consumer,relationship_consumer)
 
 
-def tick(dsn):
-    return call(dsn,run_affect_tick,worker_id="p207-worker")
+def tick(dsn,consumers):
+    return call(
+        dsn,run_affect_tick,worker_id="p207-worker",
+        emotion_consumer_id=consumers[0],
+        relationship_consumer_id=consumers[1],
+    )
 
 
 def preference(dsn,user,instance,source,quote,*,generation=1,version=0,
@@ -120,7 +137,7 @@ def test_explicit_cues_only_not_guessed_from_ambiguous_or_sensitive_text():
 
 
 def test_evidence_linked_mood_and_relationship_are_separate_and_idempotent(dsn):
-    register(dsn)
+    consumers=register(dsn)
     user,instance,_=seed(dsn)
     conv=uuid4()
     history=[
@@ -129,7 +146,7 @@ def test_evidence_linked_mood_and_relationship_are_separate_and_idempotent(dsn):
         turn(dsn,user,instance,conv,"That was helpful."),
         turn(dsn,user,instance,conv,"That was not helpful."),
     ]
-    applied=tick(dsn)
+    applied=tick(dsn,consumers)
     assert applied.emotion_applied==4
     assert applied.relationship_recorded==4
     assert applied.processed==8
@@ -396,7 +413,7 @@ def test_concurrent_consumer_ticks_record_each_authenticated_turn_once(dsn):
     for i in range(8):
         turn(dsn,user,instance,conv,f"Routine user message {i}.")
     with ThreadPoolExecutor(max_workers=2) as pool:
-        a=pool.submit(tick,dsn)
+        a=pool.submit(tick,dsn,consumers)
         b=pool.submit(tick,dsn)
         assert a.result().retry_pending==0
         assert b.result().retry_pending==0
@@ -442,7 +459,7 @@ def test_domain_changes_roll_back_with_p0_delivery_ack(dsn,monkeypatch):
         conn.execute(
             """UPDATE event_deliveries SET lease_until=clock_timestamp()-interval '1 second'
                WHERE consumer_id=%s AND status='CLAIMED'""",
-            (EMOTION_CONSUMER,),
+            (consumers[0],),
         )
     monkeypatch.setattr(observer_module,"observe_emotion_input",original)
     call(dsn,reap_expired_claims,limit=100)
