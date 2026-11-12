@@ -534,10 +534,14 @@ def confirm_user_task(connection: Connection, actor: TrustedActor,
         # A prerequisite can be historically USER_CONFIRMED but no longer
         # effective after a correction further up the DAG. Check the complete
         # dependency closure, not only immediate predecessor status.
-        if _unmet_prerequisites(
+        unmet,effective,predecessors,current=_confirmation_state(
             cur,actor,command.instance_id,[command.task_id],
-        ).get(command.task_id):
+        )
+        if unmet.get(command.task_id):
             raise VersionConflict("prerequisite confirmation is no longer effective")
+        for predecessor in predecessors.get(command.task_id,()):
+            if not effective.get(predecessor) or predecessor not in current:
+                raise VersionConflict("prerequisite is not effectively confirmed")
         version=task["version"]+1
         confirmation_id=uuid4()
         event=_publish(cur,actor,command.instance_id,"goal.task.user_confirmed.v1",{
@@ -558,6 +562,15 @@ def confirm_user_task(connection: Connection, actor: TrustedActor,
              command.evidence_turn_id,command.approval_turn_id,
              command.evidence_quote,event),
         )
+        for predecessor in sorted(predecessors.get(command.task_id,()),key=str):
+            cur.execute(
+                """INSERT INTO task_confirmation_prerequisites(
+                     confirmation_id,task_id,prerequisite_task_id,
+                     prerequisite_confirmation_id,user_id,instance_id
+                   ) VALUES(%s,%s,%s,%s,%s,%s)""",
+                (confirmation_id,command.task_id,predecessor,
+                 current[predecessor],actor.user_id,command.instance_id),
+            )
         cur.execute(
             """UPDATE goal_tasks SET status='USER_CONFIRMED',exclusive_only=false,
                  version=%s,updated_at=clock_timestamp()
