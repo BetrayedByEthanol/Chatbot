@@ -328,3 +328,29 @@ def test_agent_steps_remain_non_executable_and_no_false_user_verification(dsn):
         run_status(dsn,user,instance,conv,cmd.run_id,1,"FINISH")
     assert call(dsn,read_procedure_run,actor(user),instance,cmd.run_id
                 ).operation_dispatch_authorized is False
+
+
+def test_unrelated_step_activity_does_not_clear_outstanding_correction(dsn):
+    user,persona,instance,conv,template=published(dsn)
+    start=start_command(dsn,user,instance,conv,template)
+    call(dsn,start_procedure_run,actor(user),start)
+    first=record(dsn,user,instance,conv,start.run_id,1,
+                 "generate",1,"USER_REPORTED_DONE")
+    confirmed=record(dsn,user,instance,conv,start.run_id,2,
+                     "generate",2,"USER_CONFIRMED")
+    fixed=call(dsn,correct_procedure_step,actor(user),correction(
+        dsn,user,instance,conv,start.run_id,3,"generate",3,
+        confirmed.step_event_id,
+    ))
+    assert fixed.version==4
+    unrelated=record(dsn,user,instance,conv,start.run_id,4,
+                     "check",1,"ATTEMPTED")
+    assert unrelated.version==5
+    view=call(dsn,read_procedure_run,actor(user),instance,start.run_id)
+    assert view.status=="NEEDS_REVIEW"
+    assert view.steps[0].status=="NEEDS_REVIEW"
+    resumed=record(dsn,user,instance,conv,start.run_id,5,
+                   "generate",4,"USER_REPORTED_DONE")
+    assert resumed.version==6
+    assert call(dsn,read_procedure_run,actor(user),instance,
+                start.run_id).status=="ACTIVE"
