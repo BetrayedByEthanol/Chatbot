@@ -37,7 +37,7 @@ from persona_agent.tool_contracts import (
 
 from test_phase3_procedures import actor, approve, turn
 from test_phase3_runs import published, run_status, start_command
-from test_phase3_tasks import make_goal, make_task, priority
+from test_phase3_tasks import approve as approve_task, make_goal, make_task, priority
 
 
 def call(dsn,fn,*args,**kwargs):
@@ -343,7 +343,7 @@ def test_late_reconciliation_accepts_work_completed_before_task_deadline(dsn):
         rule="SET_DEADLINE",
         deadline=datetime.now(timezone.utc)+timedelta(days=1),
     )
-    call(dsn,set_task_priority,actor(user),approve(dsn,user,instance,rule))
+    call(dsn,set_task_priority,actor(user),approve_task(dsn,user,instance,rule))
     cmd=authorization(dsn,user,instance,conv,run,task_version=2)
     call(dsn,schedule_agent_step,actor(user),cmd)
     call(dsn,run_one_agent_step,worker_id="before-expiry")
