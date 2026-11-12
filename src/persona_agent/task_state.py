@@ -519,12 +519,7 @@ def set_task_priority(connection: Connection, actor: TrustedActor,
 
 def list_tasks(connection: Connection, actor: TrustedActor, instance_id: UUID,
                goal_id: UUID, *, limit: int=64) -> tuple[TaskView,...]:
-    """Derive readiness; never label a user report as VERIFIED.
-
-    Reads are short and fenced with the selected-persona authority lock.
-    Goal ancestors (including paused/abandoned parents) gate readiness.
-    Agent tasks stay blocked until the capability/permission gateway is wired.
-    """
+    """Derive scoped planning readiness, never imply task operation authority."""
     require_idle(connection)
     _require_actor(actor)
     if not 1<=limit<=MAX_TASKS_PER_GOAL:
@@ -541,11 +536,10 @@ def list_tasks(connection: Connection, actor: TrustedActor, instance_id: UUID,
                      SELECT g.goal_id,g.parent_goal_id,g.status FROM goal_records g
                      JOIN ancestors a ON g.goal_id=a.parent_goal_id
                      WHERE g.user_id=%s AND g.instance_id=%s
-                   )
-                   SELECT status FROM ancestors""",
+                   ) SELECT status FROM ancestors""",
                 (goal_id,actor.user_id,instance_id,actor.user_id,instance_id),
             )
-            active=all(x["status"]=="ACTIVE" for x in cur.fetchall())
+            active=all(row["status"]=="ACTIVE" for row in cur.fetchall())
             cur.execute(
                 """SELECT * FROM goal_tasks WHERE goal_id=%s
                    AND user_id=%s AND instance_id=%s
@@ -553,58 +547,82 @@ def list_tasks(connection: Connection, actor: TrustedActor, instance_id: UUID,
                 (goal_id,actor.user_id,instance_id,limit),
             )
             rows=cur.fetchall()
-            ids=[x["task_id"] for x in rows]
+            ids=[row["task_id"] for row in rows]
             if not ids:
                 return ()
             cur.execute(
                 """SELECT task_id,prerequisite_task_id FROM task_dependencies
-                   WHERE task_id=ANY(%s)""",(ids,),
+                   WHERE task_id=ANY(%s) AND user_id=%s AND instance_id=%s""",
+                (ids,actor.user_id,instance_id),
             )
             edges={}
-            for x in cur.fetchall():
-                edges.setdefault(x["task_id"],[]).append(x["prerequisite_task_id"])
+            for row in cur.fetchall():
+                edges.setdefault(row["task_id"],set()).add(row["prerequisite_task_id"])
+            predecessors=set()
+            for task in rows:
+                predecessors.update(edges.get(task["task_id"],()))
+                if task["run_after_task_id"] is not None:
+                    predecessors.add(task["run_after_task_id"])
+            statuses={}
+            if predecessors:
+                cur.execute(
+                    """SELECT task_id,status FROM goal_tasks
+                       WHERE task_id=ANY(%s) AND user_id=%s AND instance_id=%s""",
+                    (list(predecessors),actor.user_id,instance_id),
+                )
+                statuses={row["task_id"]:row["status"] for row in cur.fetchall()}
             cur.execute(
-                """SELECT task_id,rule,other_task_id,deadline
-                   FROM task_priority_rules WHERE task_id=ANY(%s)
-                   ORDER BY created_at,priority_id""",(ids,),
+                """SELECT task_id FROM goal_tasks
+                   WHERE user_id=%s AND instance_id=%s AND exclusive_only""",
+                (actor.user_id,instance_id),
             )
-            priorities={}
-            for x in cur.fetchall():
-                priorities.setdefault(x["task_id"],[]).append(x)
-            # P3-02 has no verification authority: prerequisites cannot be
-            # satisfied by USER_REPORTED_DONE. All existing predecessors block.
+            only=cur.fetchone()
+            only_id=only["task_id"] if only else None
+            now=datetime.now(timezone.utc)
             result=[]
             for task in rows:
                 blockers=[]
-                if not active:
-                    blockers.append("GOAL_OR_ANCESTOR_INACTIVE")
-                if task["status"]=="USER_REPORTED_DONE":
-                    blockers.append("AWAITING_VERIFICATION")
                 if task["status"]=="CANCELLED":
                     blockers.append("CANCELLED")
-                dep=tuple(sorted(edges.get(task["task_id"],()),key=str))
-                if dep:
-                    blockers.append("PREREQUISITE_NOT_VERIFIED")
+                elif task["status"]=="USER_CONFIRMED":
+                    blockers.append("USER_CONFIRMED")
+                elif task["status"]=="USER_REPORTED_DONE":
+                    blockers.append("AWAITING_USER_CONFIRMATION")
+                if not active:
+                    blockers.append("GOAL_OR_ANCESTOR_INACTIVE")
+                if task["suspended"]:
+                    blockers.append("USER_SUSPENDED")
+                if only_id is not None and only_id!=task["task_id"]:
+                    blockers.append("EXCLUSIVE_OTHER")
+                prerequisites=set(edges.get(task["task_id"],()))
+                if task["run_after_task_id"] is not None:
+                    prerequisites.add(task["run_after_task_id"])
+                unmet=tuple(sorted(
+                    (p for p in prerequisites if statuses.get(p)!="USER_CONFIRMED"),
+                    key=str,
+                ))
+                if unmet:
+                    blockers.append("PREREQUISITE_NOT_CONFIRMED")
+                if task["deadline"] is not None and task["deadline"]<=now:
+                    blockers.append("DEADLINE_EXPIRED")
                 if task["executor"]=="AGENT":
                     blockers.append("CAPABILITY_AND_PERMISSION_UNCHECKED")
-                rules=priorities.get(task["task_id"],[])
-                suspension=[x["rule"] for x in rules if x["rule"] in ("SUSPEND","RESUME")]
-                if suspension and suspension[-1]=="SUSPEND":
-                    blockers.append("USER_SUSPENDED")
-                preferred=tuple(x["other_task_id"] for x in rules
-                                if x["rule"]=="PREFER_OVER")
-                deadlines=[x["deadline"] if x["rule"]=="SET_DEADLINE" else None
-                           for x in rules if x["rule"] in ("SET_DEADLINE","CLEAR_DEADLINE")]
                 result.append(TaskView(
                     task_id=task["task_id"],goal_id=goal_id,title=task["title"],
-                    executor=task["executor"],completion_criterion=task["completion_criterion"],
+                    action_description=task["action_description"],
+                    executor=task["executor"],evidence_policy=task["evidence_policy"],
+                    completion_criterion=task["completion_criterion"],
                     evidence_requirement=task["evidence_requirement"],
                     capability=task["capability"],status=task["status"],
                     version=task["version"],actionable=not blockers,
-                    blockers=tuple(blockers),prerequisite_ids=dep,
-                    preferred_over=preferred,
-                    run_after=tuple(x["other_task_id"] for x in rules
-                                    if x["rule"]=="RUN_AFTER"),
-                    deadline=deadlines[-1] if deadlines else None,
+                    blockers=tuple(blockers),
+                    prerequisite_ids=tuple(sorted(edges.get(task["task_id"],()),key=str)),
+                    preferred_over=(task["preferred_over_task_id"],)
+                        if task["preferred_over_task_id"] else (),
+                    run_after=(task["run_after_task_id"],)
+                        if task["run_after_task_id"] else (),
+                    deadline=task["deadline"],
+                    exclusive_only=task["exclusive_only"],
+                    unmet_dependencies=unmet,
                 ))
             return tuple(result)
