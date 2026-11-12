@@ -11,6 +11,7 @@ CREATE TABLE procedure_agent_operation_authorizations (
     run_version bigint NOT NULL CHECK(run_version>=1),
     step_version bigint NOT NULL CHECK(step_version>=1),
     task_version bigint NOT NULL CHECK(task_version>=1),
+    selection_generation bigint NOT NULL CHECK(selection_generation>=1),
     capability text NOT NULL CHECK(capability='text.statistics.v1'),
     max_words integer NOT NULL CHECK(max_words BETWEEN 1 AND 20),
     state text NOT NULL DEFAULT 'AUTHORIZED'
