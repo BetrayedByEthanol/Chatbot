@@ -9,6 +9,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from psycopg import Connection
 from psycopg.pq import TransactionStatus
 
+from .tool_contracts import PROCEDURE_AGENT_OPERATION, SLOW_TOOL, RESOURCE_KEY
+
 
 class Priority(str, Enum):
     P0 = "P0"
@@ -72,8 +74,31 @@ class EnqueueOperation(BaseModel):
 
     @model_validator(mode="after")
     def validate_operation(self):
-        if self.task_id is not None:
-            raise ValueError("task-owned operations require a future versioned task gate")
+        agent_step=self.operation_type==PROCEDURE_AGENT_OPERATION
+        if self.task_id is not None and not agent_step:
+            raise ValueError("task-owned operations require the registered procedure gate")
+        if agent_step:
+            # This is NOT a generic executable task gateway: only the exact
+            # already-registered, read-only tool may be admitted through a
+            # durable user-approved ProcedureRun/Task/Step authorization.
+            if (
+                self.task_id is None
+                or self.origin is not Origin.USER
+                or self.execution_policy is not Policy.FOREGROUND_ASYNC
+                or self.priority_class is not Priority.P1
+                or self.effect_class is not EffectClass.READ_ONLY
+                or self.capabilities!=(SLOW_TOOL,)
+                or self.resources!={RESOURCE_KEY:1}
+                or self.dependencies or self.eligible_at is not None
+                or self.deadline is not None
+                or self.timeout_seconds!=300 or self.max_attempts!=3
+                or self.concurrency_group!=f"procedure.agent:{self.operation_id}"
+                or self.idempotency_key!=f"procedure-agent:{self.operation_id}"
+                or set(self.input_versions)
+                    !={"task","procedure_run","procedure_step"}
+                or any(v<1 for v in self.input_versions.values())
+            ):
+                raise ValueError("procedure AGENT operation does not match the restricted tool gate")
         if self.execution_policy == Policy.BACKGROUND_EPHEMERAL and self.priority_class != Priority.P1:
             raise ValueError("Background ephemeral operation must use P1")
         if self.execution_policy == Policy.BACKGROUND_RESUMABLE and self.priority_class != Priority.P2:
@@ -95,8 +120,12 @@ class EnqueueOperation(BaseModel):
             raise ValueError("duplicate capabilities")
         if any(v < 0 for v in self.input_versions.values()):
             raise ValueError("negative dependency version")
-        if set(self.input_versions) - {"persona_instance"}:
-            raise ValueError("unknown input version owner; only persona_instance is supported")
+        permitted_versions=(
+            {"task","procedure_run","procedure_step"}
+            if agent_step else {"persona_instance"}
+        )
+        if set(self.input_versions) - permitted_versions:
+            raise ValueError("unknown input version owner")
         for dt in (self.eligible_at, self.deadline):
             if dt is not None and (dt.tzinfo is None or dt.utcoffset() is None):
                 raise ValueError("timestamps must be timezone-aware")
