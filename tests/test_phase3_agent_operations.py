@@ -50,6 +50,28 @@ def call(dsn,fn,*args,**kwargs):
         return fn(conn,*args,**kwargs)
 
 
+@pytest.fixture(autouse=True)
+def isolate_older_queued_agent_jobs(dsn):
+    """Keep this module's claims independent of earlier queued test jobs.
+
+    P0 is a global priority queue: a valid older registered AGENT operation
+    can be claimed before this test's own job. Use the *real* cancellation
+    contract instead of changing statuses behind P0's back. In-flight jobs
+    are not touched; only QUEUED/RETRY_WAIT entries are runnable candidates.
+    """
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        previous=conn.execute(
+            """SELECT operation_id,user_id,version FROM operations
+               WHERE operation_type=%s AND status IN ('QUEUED','RETRY_WAIT')""",
+            (PROCEDURE_AGENT_OPERATION,),
+        ).fetchall()
+    for operation_id,user_id,version in previous:
+        call(dsn,cancel_operation,actor(user_id),CancelOperationCommand(
+            operation_id=operation_id,expected_version=version,
+            idempotency_key=uuid4().hex,
+        ))
+
+
 def configured_pool(dsn):
     call(dsn,configure_resource_pool,RESOURCE_KEY,
          capacity_units=8,p0_reserved_units=0)
