@@ -370,11 +370,13 @@ def list_tasks(connection: Connection, actor: TrustedActor, instance_id: UUID,
                 if task["executor"]=="AGENT":
                     blockers.append("CAPABILITY_AND_PERMISSION_UNCHECKED")
                 rules=priorities.get(task["task_id"],[])
-                if any(x["rule"]=="SUSPEND" for x in rules):
+                suspension=[x["rule"] for x in rules if x["rule"] in ("SUSPEND","RESUME")]
+                if suspension and suspension[-1]=="SUSPEND":
                     blockers.append("USER_SUSPENDED")
                 preferred=tuple(x["other_task_id"] for x in rules
                                 if x["rule"]=="PREFER_OVER")
-                deadlines=[x["deadline"] for x in rules if x["rule"]=="SET_DEADLINE"]
+                deadlines=[x["deadline"] if x["rule"]=="SET_DEADLINE" else None
+                           for x in rules if x["rule"] in ("SET_DEADLINE","CLEAR_DEADLINE")]
                 result.append(TaskView(
                     task_id=task["task_id"],goal_id=goal_id,title=task["title"],
                     executor=task["executor"],completion_criterion=task["completion_criterion"],
@@ -383,6 +385,8 @@ def list_tasks(connection: Connection, actor: TrustedActor, instance_id: UUID,
                     version=task["version"],actionable=not blockers,
                     blockers=tuple(blockers),prerequisite_ids=dep,
                     preferred_over=preferred,
+                    run_after=tuple(x["other_task_id"] for x in rules
+                                    if x["rule"]=="RUN_AFTER"),
                     deadline=deadlines[-1] if deadlines else None,
                 ))
             return tuple(result)
