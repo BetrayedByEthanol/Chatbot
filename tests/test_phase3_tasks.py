@@ -13,11 +13,13 @@ from persona_agent.goal_state import create_goal
 from persona_agent.lifecycle import SwitchPersonaCommand, switch_persona
 from persona_agent.runtime import PermissionDenied, StaleSelection, VersionConflict
 from persona_agent.task_contracts import (
-    CreateTaskCommand, AddTaskDependencyCommand, CancelTaskCommand, ConfirmUserTaskCommand, ReportTaskOutcomeCommand,
+    CreateTaskCommand, AddTaskDependencyCommand, CancelTaskCommand, ConfirmUserTaskCommand,
+    CorrectTaskOutcomeCommand, ReportTaskOutcomeCommand,
     SetTaskPriorityCommand, task_approval_phrase,
 )
 from persona_agent.task_state import (
-    create_task, add_task_dependency, cancel_task, confirm_user_task, report_task_outcome,
+    create_task, add_task_dependency, cancel_task, confirm_user_task,
+    correct_task_outcome, report_task_outcome,
     set_task_priority, list_tasks,
 )
 
@@ -489,3 +491,223 @@ def test_concurrent_reverse_run_after_edges_cannot_form_cycle(dsn):
     assert sum(item is not None for item in results)==1
     items={x.task_id:x for x in call(dsn,list_tasks,actor(uid),instance,goal)}
     assert sum(bool(x.run_after) for x in items.values())==1
+
+
+def correction_command(dsn,uid,instance,conv,task_id,version,*,
+                       report_id=None,confirmation_id=None):
+    message=turn(dsn,uid,instance,conv,
+                 "Actually I was mistaken about the task; the result needs correction.")
+    cmd=CorrectTaskOutcomeCommand(
+        instance_id=instance,expected_generation=1,
+        idempotency_key=uuid4().hex,conversation_id=conv,
+        evidence_turn_id=message.turn_id,
+        evidence_quote="Actually I was mistaken about the task",
+        task_id=task_id,expected_task_version=version,
+        superseded_report_id=report_id,
+        superseded_confirmation_id=confirmation_id,
+        reason="The previous result was inaccurate and must be reassessed",
+    )
+    return approve(dsn,uid,instance,cmd)
+
+
+def report_obstacle(dsn,uid,instance,conv,task_id,version):
+    message=turn(dsn,uid,instance,conv,"I encountered an unexpected obstacle.")
+    cmd=ReportTaskOutcomeCommand(
+        instance_id=instance,expected_generation=1,
+        idempotency_key=uuid4().hex,conversation_id=conv,
+        evidence_turn_id=message.turn_id,
+        evidence_quote="I encountered an unexpected obstacle",
+        task_id=task_id,expected_task_version=version,report="OBSTACLE",
+    )
+    return call(dsn,report_task_outcome,actor(uid),approve(dsn,uid,instance,cmd))
+
+
+def test_only_latest_done_report_can_be_confirmed(dsn):
+    uid,instance,_=seed(dsn)
+    conv=uuid4()
+    goal=make_goal(dsn,uid,instance,conv)
+    task,_,_=make_task(dsn,uid,instance,conv,goal,1)
+    old=report_done(dsn,uid,instance,conv,task,1)
+    newer=report_done(dsn,uid,instance,conv,task,2)
+    with pytest.raises(VersionConflict,match="superseded"):
+        confirm_done(dsn,uid,instance,conv,task,3,old.report_id)
+    confirmed=confirm_done(dsn,uid,instance,conv,task,3,newer.report_id)
+    assert confirmed.confirmation_id is not None
+    assert confirmed.version==4 and confirmed.report_id==newer.report_id
+    assert call(dsn,list_tasks,actor(uid),instance,goal)[0].effective_completion
+
+
+def test_obstacle_and_correction_reject_stale_evidence(dsn):
+    uid,instance,_=seed(dsn)
+    conv=uuid4()
+    goal=make_goal(dsn,uid,instance,conv)
+    task,_,_=make_task(dsn,uid,instance,conv,goal,1)
+    old=report_done(dsn,uid,instance,conv,task,1)
+    obstacle=report_obstacle(dsn,uid,instance,conv,task,2)
+    assert obstacle.version==3
+    newer=report_done(dsn,uid,instance,conv,task,3)
+    with pytest.raises(VersionConflict,match="superseded"):
+        confirm_done(dsn,uid,instance,conv,task,4,old.report_id)
+    with pytest.raises(VersionConflict,match="newer evidence"):
+        call(dsn,correct_task_outcome,actor(uid),
+             correction_command(dsn,uid,instance,conv,task,4,
+                                report_id=old.report_id))
+    cmd=correction_command(dsn,uid,instance,conv,task,4,
+                           report_id=newer.report_id)
+    corrected=call(dsn,correct_task_outcome,actor(uid),cmd)
+    assert corrected.action=="OUTCOME_CORRECTED" and corrected.version==5
+    assert corrected.correction_id is not None
+    assert call(dsn,correct_task_outcome,actor(uid),cmd).replayed
+    view=call(dsn,list_tasks,actor(uid),instance,goal)[0]
+    assert view.status=="NEEDS_REVIEW" and view.needs_reassessment
+    assert not view.actionable and not view.effective_completion
+    assert "NEEDS_REVIEW" in view.blockers
+    with pytest.raises(VersionConflict,match="outstanding DONE"):
+        confirm_done(dsn,uid,instance,conv,task,5,newer.report_id)
+    assert report_obstacle(dsn,uid,instance,conv,task,5).version==6
+    assert call(dsn,list_tasks,actor(uid),instance,goal)[0].status=="PLANNED"
+
+
+def test_user_confirmation_can_be_corrected_and_later_reconfirmed(dsn):
+    uid,instance,_=seed(dsn)
+    conv=uuid4()
+    goal=make_goal(dsn,uid,instance,conv)
+    task,_,_=make_task(dsn,uid,instance,conv,goal,1)
+    first_report=report_done(dsn,uid,instance,conv,task,1)
+    first=confirm_done(dsn,uid,instance,conv,task,2,first_report.report_id)
+    assert first.confirmation_id is not None
+    cmd=correction_command(dsn,uid,instance,conv,task,3,
+                           confirmation_id=first.confirmation_id)
+    with pytest.raises(PermissionDenied,match="bound"):
+        call(dsn,correct_task_outcome,actor(uid),
+             cmd.model_copy(update={
+                 "idempotency_key":uuid4().hex,
+                 "reason":"A different, unapproved correction reason",
+             }))
+    corrected=call(dsn,correct_task_outcome,actor(uid),cmd)
+    assert corrected.version==4
+    second_report=report_done(dsn,uid,instance,conv,task,4)
+    second=confirm_done(dsn,uid,instance,conv,task,5,second_report.report_id)
+    assert second.version==6 and second.confirmation_id!=first.confirmation_id
+    with pytest.raises(VersionConflict,match="latest effective"):
+        call(dsn,correct_task_outcome,actor(uid),
+             correction_command(dsn,uid,instance,conv,task,6,
+                                confirmation_id=first.confirmation_id))
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT count(*) FROM task_user_confirmations WHERE task_id=%s",
+            (task,),
+        ).fetchone()[0]==2
+        assert conn.execute(
+            """SELECT superseded_confirmation_id,old_status,new_status
+               FROM task_outcome_corrections WHERE task_id=%s""",
+            (task,),
+        ).fetchone()==(first.confirmation_id,"USER_CONFIRMED","NEEDS_REVIEW")
+        assert conn.execute(
+            "SELECT status FROM goal_records WHERE goal_id=%s",(goal,),
+        ).fetchone()==("ACTIVE",)
+        with pytest.raises(psycopg.errors.RaiseException,match="immutable"):
+            conn.execute(
+                "DELETE FROM task_user_confirmations WHERE task_id=%s",(task,),
+            )
+        with pytest.raises(psycopg.errors.RaiseException,match="immutable"):
+            conn.execute(
+                "UPDATE task_outcome_corrections SET reason='tampered' "
+                "WHERE task_id=%s",(task,),
+            )
+
+
+def test_correction_pins_transitive_confirmation_lineage(dsn):
+    uid,instance,_=seed(dsn)
+    conv=uuid4()
+    goal=make_goal(dsn,uid,instance,conv)
+    first,_,_=make_task(dsn,uid,instance,conv,goal,1,title="First")
+    second,_,_=make_task(dsn,uid,instance,conv,goal,2,title="Second")
+    third,_,_=make_task(dsn,uid,instance,conv,goal,3,title="Third")
+    edge(dsn,uid,instance,conv,second,first,4)
+    edge(dsn,uid,instance,conv,third,second,5)
+    first_report=report_done(dsn,uid,instance,conv,first,1)
+    first_done=confirm_done(dsn,uid,instance,conv,first,2,first_report.report_id)
+    second_report=report_done(dsn,uid,instance,conv,second,2)
+    second_done=confirm_done(dsn,uid,instance,conv,second,3,second_report.report_id)
+    before={x.task_id:x for x in call(dsn,list_tasks,actor(uid),instance,goal)}
+    assert before[second].effective_completion
+    assert before[third].actionable
+    assert first_done.confirmation_id is not None
+    assert second_done.confirmation_id is not None
+
+    corrected=call(dsn,correct_task_outcome,actor(uid),
+        correction_command(dsn,uid,instance,conv,first,3,
+                           confirmation_id=first_done.confirmation_id))
+    assert corrected.version==4
+    after={x.task_id:x for x in call(dsn,list_tasks,actor(uid),instance,goal)}
+    assert after[second].status=="USER_CONFIRMED"  # Historical testimony preserved
+    assert not after[second].effective_completion
+    assert after[second].needs_reassessment
+    assert first in after[second].unmet_dependencies
+    assert not after[third].actionable
+    assert second in after[third].unmet_dependencies
+    third_report=report_done(dsn,uid,instance,conv,third,2)
+    with pytest.raises(VersionConflict,match="prerequisite"):
+        confirm_done(dsn,uid,instance,conv,third,3,third_report.report_id)
+
+    # Even after reconfirming the upstream task, the second task's previous
+    # confirmation remains invalid: it was based on a DIFFERENT confirmation.
+    first_new=report_done(dsn,uid,instance,conv,first,4)
+    first_reconfirmed=confirm_done(dsn,uid,instance,conv,first,5,
+                                   first_new.report_id)
+    assert first_reconfirmed.confirmation_id!=first_done.confirmation_id
+    still={x.task_id:x for x in call(dsn,list_tasks,actor(uid),instance,goal)}
+    assert not still[second].effective_completion
+    assert not still[third].actionable
+
+    call(dsn,correct_task_outcome,actor(uid),
+         correction_command(dsn,uid,instance,conv,second,4,
+                            confirmation_id=second_done.confirmation_id))
+    second_new=report_done(dsn,uid,instance,conv,second,5)
+    second_reconfirmed=confirm_done(dsn,uid,instance,conv,second,6,
+                                    second_new.report_id)
+    assert second_reconfirmed.confirmation_id!=second_done.confirmation_id
+    current={x.task_id:x for x in call(dsn,list_tasks,actor(uid),instance,goal)}
+    assert current[second].effective_completion
+    assert current[third].status=="USER_REPORTED_DONE"
+    confirmed_third=confirm_done(dsn,uid,instance,conv,third,3,third_report.report_id)
+    assert confirmed_third.confirmation_id is not None
+    assert all(x.effective_completion for x in
+               call(dsn,list_tasks,actor(uid),instance,goal))
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        predecessor_rows=conn.execute(
+            """SELECT prerequisite_confirmation_id FROM task_confirmation_prerequisites
+               WHERE confirmation_id=%s AND prerequisite_task_id=%s""",
+            (second_done.confirmation_id,first),
+        ).fetchall()
+        assert predecessor_rows==[(first_done.confirmation_id,)]
+        newer_rows=conn.execute(
+            """SELECT prerequisite_confirmation_id FROM task_confirmation_prerequisites
+               WHERE confirmation_id=%s AND prerequisite_task_id=%s""",
+            (second_reconfirmed.confirmation_id,first),
+        ).fetchall()
+        assert newer_rows==[(first_reconfirmed.confirmation_id,)]
+
+
+def test_correction_authority_and_cross_persona_isolation(dsn):
+    user,instance,_=seed(dsn)
+    conv=uuid4()
+    goal=make_goal(dsn,user,instance,conv)
+    task,_,_=make_task(dsn,user,instance,conv,goal,1)
+    done=report_done(dsn,user,instance,conv,task,1)
+    foreign,foreign_instance,_=seed(dsn)
+    foreign_conv=uuid4()
+    foreign_command=correction_command(
+        dsn,foreign,foreign_instance,foreign_conv,task,2,
+        report_id=done.report_id,
+    )
+    with pytest.raises(PermissionDenied):
+        call(dsn,correct_task_outcome,actor(foreign),foreign_command)
+    current=correction_command(dsn,user,instance,conv,task,2,
+                               report_id=done.report_id)
+    with pytest.raises(VersionConflict):
+        call(dsn,correct_task_outcome,actor(user),
+             current.model_copy(update={"expected_task_version":1,
+                                        "idempotency_key":uuid4().hex}))
+    assert call(dsn,correct_task_outcome,actor(user),current).version==3
