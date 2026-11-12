@@ -103,7 +103,9 @@ def _evidence_step_event(cur, actor: TrustedActor, cmd, run: dict,
     # NOT clear the review gate while any step still needs reassessment.
     status=run["status"]
     if kind=="CORRECTED":
-        status="NEEDS_REVIEW"
+        # An evidence correction never resumes or uncancels a run.
+        status=(run["status"] if run["status"] in ("PAUSED","CANCELLED")
+                else "NEEDS_REVIEW")
     elif run["status"]=="NEEDS_REVIEW":
         cur.execute(
             """SELECT EXISTS(
@@ -128,14 +130,15 @@ def _evidence_step_event(cur, actor: TrustedActor, cmd, run: dict,
     )
 
 
-def _step_admission(cur, actor, cmd, *, allow_finished: bool=False):
+def _step_admission(cur, actor, cmd, *, allow_finished: bool=False,
+                    allow_inactive_correction: bool=False):
     run=_run(cur,actor,cmd.instance_id,cmd.run_id)
     _expected(run,cmd.expected_run_version)
-    if run["status"]=="CANCELLED" or (
+    if (run["status"]=="CANCELLED" and not allow_inactive_correction) or (
         run["status"]=="USER_CONFIRMED" and not allow_finished
     ):
         raise VersionConflict("procedure run is terminal")
-    if run["status"]=="PAUSED":
+    if run["status"]=="PAUSED" and not allow_inactive_correction:
         raise VersionConflict("resume procedure before recording new step progress")
     step=_step(cur,cmd.run_id,cmd.step_id)
     if step["version"]!=cmd.expected_step_version:
@@ -310,7 +313,10 @@ def correct_procedure_step(connection: Connection, actor: TrustedActor,
                            command: CorrectProcedureStepCommand) -> ProcedureRunResult:
     """Amend effective progress, preserving every old report/event."""
     def apply(cur,receipt):
-        run,step=_step_admission(cur,actor,command,allow_finished=True)
+        run,step=_step_admission(
+            cur,actor,command,allow_finished=True,
+            allow_inactive_correction=True,
+        )
         if step["status"] in ("NOT_STARTED","NEEDS_REVIEW"):
             raise VersionConflict("step has no current claim to correct")
         if step["last_step_event_id"]!=command.superseded_step_event_id:
@@ -391,17 +397,21 @@ def set_procedure_run_status(connection: Connection, actor: TrustedActor,
         new,eligible=statuses[command.action]
         if old not in eligible:
             raise VersionConflict("invalid procedure run status transition")
-        if command.action=="FINISH":
+        if command.action in ("FINISH","RESUME"):
             cur.execute(
                 """SELECT status,executor FROM procedure_run_steps WHERE run_id=%s""",
                 (command.run_id,),
             )
             steps=cur.fetchall()
-            if not steps or any(
+            if command.action=="FINISH" and (not steps or any(
                 step["executor"]!="USER" or step["status"]!="USER_CONFIRMED"
                 for step in steps
-            ):
+            )):
                 raise VersionConflict("all user steps require explicit confirmation")
+            if command.action=="RESUME" and any(
+                step["status"]=="NEEDS_REVIEW" for step in steps
+            ):
+                new="NEEDS_REVIEW"
         event=_publish(cur,actor,command.instance_id,"procedure.run.status.v1",{
             "run_id":str(command.run_id),"old_status":old,
             "new_status":new,"action":command.action,
