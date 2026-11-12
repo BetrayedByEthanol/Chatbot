@@ -351,6 +351,90 @@ def report_task_outcome(connection: Connection, actor: TrustedActor,
     return _command(connection,actor,command,"goal.task.outcome.report.v1",apply)
 
 
+def confirm_user_task(connection: Connection, actor: TrustedActor,
+                      command: ConfirmUserTaskCommand) -> TaskCommandResult:
+    """Convert a reported action into explicit USER_CONFIRMED, never VERIFIED.
+
+    A separate action-bound user confirmation permits dependent USER work to
+    proceed. AGENT tasks need a future operation-result verification gate.
+    Goal/ancestor statuses are SHARE-locked through commit (Codex #19 race).
+    """
+    def apply(cur,receipt):
+        _graph_lock(cur,actor,command.instance_id)
+        task=_task(cur,actor,command.instance_id,command.task_id)
+        if task["version"]!=command.expected_task_version:
+            raise VersionConflict("task changed")
+        if task["executor"]!="USER" or task["evidence_policy"]!="USER_CONFIRMATION":
+            raise PermissionDenied("only user-executed work accepts user confirmation")
+        if task["status"]!="USER_REPORTED_DONE":
+            raise VersionConflict("user completion needs an outstanding DONE report")
+        cur.execute(
+            """SELECT report_id FROM task_outcome_reports
+               WHERE report_id=%s AND task_id=%s AND goal_id=%s
+                 AND user_id=%s AND instance_id=%s AND report='DONE'""",
+            (command.report_id,command.task_id,task["goal_id"],
+             actor.user_id,command.instance_id),
+        )
+        if cur.fetchone() is None:
+            raise PermissionDenied("task report does not belong to this action")
+        _active_goal_chain(cur,actor,command.instance_id,task["goal_id"])
+        if task["suspended"]:
+            raise VersionConflict("user-suspended task cannot be confirmed actionable")
+        cur.execute(
+            """SELECT 1 FROM goal_tasks WHERE user_id=%s AND instance_id=%s
+                 AND exclusive_only AND task_id<>%s LIMIT 1""",
+            (actor.user_id,command.instance_id,command.task_id),
+        )
+        if cur.fetchone() is not None:
+            raise VersionConflict("another task has exclusive priority")
+        cur.execute(
+            """SELECT 1 FROM task_dependencies d
+               JOIN goal_tasks prerequisite ON prerequisite.task_id=d.prerequisite_task_id
+               WHERE d.task_id=%s AND d.user_id=%s AND d.instance_id=%s
+                 AND prerequisite.status<>'USER_CONFIRMED' LIMIT 1""",
+            (command.task_id,actor.user_id,command.instance_id),
+        )
+        if cur.fetchone() is not None:
+            raise VersionConflict("prerequisite has not been user-confirmed")
+        if task["run_after_task_id"] is not None:
+            cur.execute(
+                """SELECT status FROM goal_tasks
+                   WHERE task_id=%s AND user_id=%s AND instance_id=%s""",
+                (task["run_after_task_id"],actor.user_id,command.instance_id),
+            )
+            predecessor=cur.fetchone()
+            if predecessor is None or predecessor["status"]!="USER_CONFIRMED":
+                raise VersionConflict("RUN_AFTER prerequisite is not confirmed")
+        version=task["version"]+1
+        event=_publish(cur,actor,command.instance_id,"goal.task.user_confirmed.v1",{
+            "task_id":str(command.task_id),"report_id":str(command.report_id),
+            "epistemic_status":"USER_CONFIRMED","independently_verified":False,
+            "approval_turn_id":str(command.approval_turn_id),
+            "task_version":version,
+        },receipt)
+        cur.execute(
+            """INSERT INTO task_user_confirmations(
+                 confirmation_id,report_id,task_id,goal_id,user_id,instance_id,
+                 task_version,source_conversation_id,source_turn_id,
+                 approval_turn_id,source_quote,event_id
+               ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+            (uuid4(),command.report_id,command.task_id,task["goal_id"],
+             actor.user_id,command.instance_id,version,command.conversation_id,
+             command.evidence_turn_id,command.approval_turn_id,
+             command.evidence_quote,event),
+        )
+        cur.execute(
+            """UPDATE goal_tasks SET status='USER_CONFIRMED',exclusive_only=false,
+                 version=%s,updated_at=clock_timestamp()
+               WHERE task_id=%s AND user_id=%s AND instance_id=%s""",
+            (version,command.task_id,actor.user_id,command.instance_id),
+        )
+        return TaskCommandResult(task_id=command.task_id,version=version,
+                                 event_id=event,action="USER_COMPLETION_CONFIRMED",
+                                 report_id=command.report_id)
+    return _command(connection,actor,command,"goal.task.user.confirm.v1",apply)
+
+
 def set_task_priority(connection: Connection, actor: TrustedActor,
                       command: SetTaskPriorityCommand) -> TaskCommandResult:
     def apply(cur,receipt):
