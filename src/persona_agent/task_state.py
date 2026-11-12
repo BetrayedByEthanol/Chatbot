@@ -289,7 +289,7 @@ def _state_snapshot(cur, actor: TrustedActor, instance_id: UUID):
     dependencies = defaultdict(set)
     for edge in cur.fetchall():
         dependencies[edge["task_id"]].add(edge["depends_on_id"])
-    exclusive = {tid for tid,t in tasks.items() if t["exclusive_only"]}
+    exclusive = {tid for tid,t in tasks.items() if t["exclusive_only"] and t["status"] == "OPEN"}
     return goals,tasks,dependencies,exclusive
 
 
@@ -339,7 +339,7 @@ def confirm_user_task(
         actionability,_ = _readiness(
             row,goals,tasks,deps,exclusive,datetime.now(timezone.utc),
         )
-        if actionability != "READY":
+        if actionability not in ("READY", "DEADLINE_EXPIRED"):
             raise VersionConflict("task not actionable for user confirmation: "+actionability)
         new_version = row["version"]+1
         event_id = _publish(cur,who,c.instance_id,"task.user_completion.reported.v1",{
@@ -360,7 +360,7 @@ def confirm_user_task(
         )
         cur.execute(
             """UPDATE task_records SET status='USER_CONFIRMED',
-                 version=%s,updated_at=clock_timestamp()
+                 exclusive_only=false,version=%s,updated_at=clock_timestamp()
                WHERE task_id=%s AND user_id=%s AND instance_id=%s""",
             (new_version,c.task_id,who.user_id,c.instance_id),
         )
@@ -387,8 +387,8 @@ def cancel_task(
             "approval_turn_id":str(c.approval_turn_id),
         },receipt)
         cur.execute(
-            """UPDATE task_records SET status='CANCELLED',version=%s,
-                 updated_at=clock_timestamp() WHERE task_id=%s
+            """UPDATE task_records SET status='CANCELLED',exclusive_only=false,
+                 version=%s,updated_at=clock_timestamp() WHERE task_id=%s
                    AND user_id=%s AND instance_id=%s""",
             (version,c.task_id,who.user_id,c.instance_id),
         )
