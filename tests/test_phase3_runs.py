@@ -376,7 +376,7 @@ def test_step_corrections_during_pause_do_not_implicitly_resume(dsn):
     assert resumed.version==5
     assert call(dsn,read_procedure_run,actor(user),instance,
                 start.run_id).status=="NEEDS_REVIEW"
-    with pytest.raises(VersionConflict,match="all user steps"):
+    with pytest.raises(VersionConflict,match="invalid procedure run status"):
         run_status(dsn,user,instance,conv,start.run_id,5,"FINISH")
     recovered=record(dsn,user,instance,conv,start.run_id,5,
                      "generate",3,"USER_REPORTED_DONE")
