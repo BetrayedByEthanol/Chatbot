@@ -11,8 +11,13 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, model_validator, field_validator
 
 Executor = Literal["USER", "AGENT"]
-TaskStatus = Literal["PLANNED", "USER_REPORTED_DONE", "CANCELLED"]
-PriorityRule = Literal["PREFER_OVER", "SUSPEND", "RESUME", "SET_DEADLINE", "CLEAR_DEADLINE", "RUN_AFTER"]
+TaskStatus = Literal["PLANNED", "USER_REPORTED_DONE", "USER_CONFIRMED", "CANCELLED"]
+EvidencePolicy = Literal["USER_CONFIRMATION", "OPERATION_RESULT"]
+PriorityRule = Literal[
+    "PREFER_OVER", "CLEAR_PREFERENCE", "SUSPEND", "RESUME",
+    "SET_DEADLINE", "CLEAR_DEADLINE", "RUN_AFTER", "CLEAR_RUN_AFTER",
+    "ONLY", "CLEAR_ONLY",
+]
 
 class TaskUserCommand(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -36,6 +41,7 @@ class CreateTaskCommand(TaskUserCommand):
     goal_id: UUID
     expected_goal_version: int = Field(ge=1)
     title: str = Field(min_length=1, max_length=160)
+    action_description: str = Field(min_length=1, max_length=800)
     completion_criterion: str = Field(min_length=1, max_length=800)
     evidence_requirement: str = Field(min_length=1, max_length=800)
     executor: Executor
@@ -43,7 +49,7 @@ class CreateTaskCommand(TaskUserCommand):
 
     @model_validator(mode="after")
     def validate_task(self):
-        if not all(x.strip() for x in (self.title, self.completion_criterion, self.evidence_requirement)):
+        if not all(x.strip() for x in (self.title, self.action_description, self.completion_criterion, self.evidence_requirement)):
             raise ValueError("task descriptions must not be blank")
         if self.executor == "AGENT" and not self.capability:
             raise ValueError("agent task needs a declared capability")
@@ -72,6 +78,12 @@ class ReportTaskOutcomeCommand(TaskUserCommand):
     expected_task_version: int = Field(ge=1)
     report: Literal["DONE", "OBSTACLE"]
 
+class ConfirmUserTaskCommand(TaskUserCommand):
+    task_id: UUID
+    expected_task_version: int = Field(ge=1)
+    report_id: UUID
+
+
 class SetTaskPriorityCommand(TaskUserCommand):
     task_id: UUID
     expected_task_version: int = Field(ge=1)
@@ -96,7 +108,8 @@ class TaskCommandResult(BaseModel):
     task_id: UUID
     version: int
     event_id: UUID
-    action: Literal["TASK_CREATED", "DEPENDENCY_ADDED", "OUTCOME_REPORTED", "PRIORITY_SET", "TASK_CANCELLED"]
+    action: Literal["TASK_CREATED", "DEPENDENCY_ADDED", "OUTCOME_REPORTED", "USER_COMPLETION_CONFIRMED", "PRIORITY_SET", "TASK_CANCELLED"]
+    report_id: UUID | None = None
     replayed: bool = False
 
 class TaskView(BaseModel):
@@ -104,7 +117,9 @@ class TaskView(BaseModel):
     task_id: UUID
     goal_id: UUID
     title: str
+    action_description: str
     executor: Executor
+    evidence_policy: EvidencePolicy
     completion_criterion: str
     evidence_requirement: str
     capability: str | None
@@ -116,6 +131,10 @@ class TaskView(BaseModel):
     preferred_over: tuple[UUID, ...]
     run_after: tuple[UUID, ...]
     deadline: datetime | None
+    exclusive_only: bool = False
+    unmet_dependencies: tuple[UUID, ...] = ()
+    # Readiness does not authorize tool execution; P0 still rejects task_id.
+    dispatch_authorized: Literal[False] = False
 
 def task_approval_phrase(command: TaskUserCommand) -> str:
     """A separate user turn confirms this exact action-specific payload."""
