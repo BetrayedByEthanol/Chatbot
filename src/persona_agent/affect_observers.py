@@ -41,10 +41,15 @@ class AffectTick:
     retry_pending:int
 
 
-def register_affect_consumers(connection:Connection)->None:
-    """Register both P0 subscriptions before initial outbox dispatch."""
-    subscribe(connection,EMOTION_CONSUMER,_INPUT_EVENT)
-    subscribe(connection,RELATIONSHIP_CONSUMER,_INPUT_EVENT)
+def register_affect_consumers(
+    connection:Connection,*,emotion_consumer_id:str=EMOTION_CONSUMER,
+    relationship_consumer_id:str=RELATIONSHIP_CONSUMER,
+)->None:
+    """Register independent P0 subscriptions before initial outbox dispatch."""
+    if emotion_consumer_id==relationship_consumer_id:
+        raise ValueError("Emotion and Relationship require distinct consumers")
+    subscribe(connection,emotion_consumer_id,_INPUT_EVENT)
+    subscribe(connection,relationship_consumer_id,_INPUT_EVENT)
 
 
 def _source(cur,event):
@@ -116,11 +121,15 @@ def _resume_selected(connection:Connection,consumer:str,limit:int)->None:
 def run_affect_tick(
     connection:Connection,*,worker_id:str,
     max_deliveries_per_domain:int=64,dispatch_batches:int=16,
+    emotion_consumer_id:str=EMOTION_CONSUMER,
+    relationship_consumer_id:str=RELATIONSHIP_CONSUMER,
 ) -> AffectTick:
     """Bounded SQL-only P0 cycle. ACK and domain effects are atomic."""
     require_idle(connection)
     if not 1<=max_deliveries_per_domain<=500 or not 1<=dispatch_batches<=100:
         raise ValueError("invalid affect worker bounds")
+    if emotion_consumer_id==relationship_consumer_id:
+        raise ValueError("Emotion and Relationship require distinct consumers")
     dispatched=processed=deferred=emotion=relationship=retries=0
     for _ in range(dispatch_batches):
         n=dispatch_outbox(connection,limit=100)
@@ -128,7 +137,10 @@ def run_affect_tick(
         if n==0:
             break
     reap_expired_claims(connection,limit=100)
-    for consumer in (EMOTION_CONSUMER,RELATIONSHIP_CONSUMER):
+    for consumer,domain in (
+        (emotion_consumer_id,EMOTION_CONSUMER),
+        (relationship_consumer_id,RELATIONSHIP_CONSUMER),
+    ):
         _resume_selected(connection,consumer,max_deliveries_per_domain)
         for _ in range(max_deliveries_per_domain):
             lease=claim_delivery(
@@ -141,7 +153,7 @@ def run_affect_tick(
             try:
                 process_delivery(
                     connection,lease,
-                    lambda cur,event: _handler(cur,event,consumer,decisions),
+                    lambda cur,event: _handler(cur,event,domain,decisions),
                 )
                 processed+=1
                 emotion+=decisions.count("EMOTION")
