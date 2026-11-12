@@ -4,6 +4,7 @@ on:
     paths:
       - "src/persona_agent/**"
       - "tests/test_phase1_integrated_acceptance.py"
+      - "tests/test_phase2_acceptance.py"
       - "scripts/phase1_live_acceptance.py"
       - ".github/workflows/phase1-acceptance.yml"
   workflow_dispatch:
