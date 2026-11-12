@@ -763,6 +763,7 @@ def list_tasks(connection: Connection, actor: TrustedActor, instance_id: UUID,
     with connection.transaction():
         with connection.cursor(row_factory=dict_row) as cur:
             _read_selected(cur,actor,instance_id)
+            _graph_read_lock(cur,actor,instance_id)
             _goal(cur,actor,instance_id,goal_id,lock="SHARE")
             cur.execute(
                 """WITH RECURSIVE ancestors AS (
@@ -797,7 +798,9 @@ def list_tasks(connection: Connection, actor: TrustedActor, instance_id: UUID,
             # Check the complete prerequisite closure (including RUN_AFTER),
             # so a corrected ancestor invalidates downstream readiness even
             # when intermediate tasks remain historically USER_CONFIRMED.
-            unmet_by_task=_unmet_prerequisites(cur,actor,instance_id,ids)
+            unmet_by_task,effective_by_task,_,_=_confirmation_state(
+                cur,actor,instance_id,ids,
+            )
             cur.execute(
                 """SELECT task_id FROM goal_tasks
                    WHERE user_id=%s AND instance_id=%s AND exclusive_only""",
@@ -849,12 +852,13 @@ def list_tasks(connection: Connection, actor: TrustedActor, instance_id: UUID,
                     deadline=task["deadline"],
                     exclusive_only=task["exclusive_only"],
                     unmet_dependencies=unmet,
-                    effective_completion=(
-                        task["status"]=="USER_CONFIRMED" and not unmet
+                    effective_completion=effective_by_task.get(
+                        task["task_id"],False,
                     ),
                     needs_reassessment=(
                         task["status"]=="NEEDS_REVIEW"
-                        or (task["status"]=="USER_CONFIRMED" and bool(unmet))
+                        or (task["status"]=="USER_CONFIRMED"
+                            and not effective_by_task.get(task["task_id"],False))
                     ),
                 ))
             return tuple(result)
