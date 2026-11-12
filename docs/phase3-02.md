@@ -23,7 +23,7 @@ This is a **contract-first vertical slice** of the existing Goal & Task domain, 
 
 ## Deliberate deferrals
 
-P3-02 doesn't initiate autonomous tasks, issue tools, guarantee agent capabilities, synthesize procedures, or mark results VERIFIED. `RUN_AFTER` and `PREFER_OVER` are recorded constraints for a later priority-aware scheduler, not claims that an executor already enforces them. No automatic recurring-goal decomposition or model-inferred user approval is introduced. The current read model exposes preferred-over and deadline policy; other constraints are recorded durably and will require a richer scheduler-facing view before dispatch.
+P3-02 doesn't initiate autonomous tasks, issue tools, guarantee agent capabilities, synthesize procedures, or mark results VERIFIED. `RUN_AFTER` and `PREFER_OVER` are recorded constraints for a later priority-aware scheduler, not claims that an executor already enforces them. No automatic recurring-goal decomposition or model-inferred user approval is introduced. The current read model exposes preferred-over, run-after, current suspension and deadline policy; other constraints are recorded durably and will require a richer scheduler-facing view before dispatch.
 
 ## Acceptance
 
