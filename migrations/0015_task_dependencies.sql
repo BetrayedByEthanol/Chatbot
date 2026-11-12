@@ -84,6 +84,7 @@ CREATE TABLE task_outcome_reports (
     event_id uuid NOT NULL,
     recorded_at timestamptz NOT NULL DEFAULT clock_timestamp(),
     UNIQUE(task_id,source_turn_id,report),
+    UNIQUE(report_id,task_id,goal_id,user_id,instance_id),
     FOREIGN KEY(task_id,goal_id,user_id,instance_id)
         REFERENCES goal_tasks(task_id,goal_id,user_id,instance_id),
     FOREIGN KEY(source_conversation_id,source_turn_id,user_id,instance_id)
@@ -96,7 +97,7 @@ CREATE TABLE task_outcome_reports (
 -- User-confirmed is separate from an unreviewed report and never independent verification.
 CREATE TABLE task_user_confirmations (
     confirmation_id uuid PRIMARY KEY,
-    report_id uuid NOT NULL UNIQUE REFERENCES task_outcome_reports(report_id),
+    report_id uuid NOT NULL UNIQUE,
     task_id uuid NOT NULL UNIQUE,
     goal_id uuid NOT NULL,
     user_id uuid NOT NULL,
@@ -112,6 +113,8 @@ CREATE TABLE task_user_confirmations (
     recorded_at timestamptz NOT NULL DEFAULT clock_timestamp(),
     FOREIGN KEY(task_id,goal_id,user_id,instance_id)
         REFERENCES goal_tasks(task_id,goal_id,user_id,instance_id),
+    FOREIGN KEY(report_id,task_id,goal_id,user_id,instance_id)
+        REFERENCES task_outcome_reports(report_id,task_id,goal_id,user_id,instance_id),
     FOREIGN KEY(source_conversation_id,source_turn_id,user_id,instance_id)
         REFERENCES conversation_turns(conversation_id,turn_id,user_id,instance_id),
     FOREIGN KEY(source_conversation_id,approval_turn_id,user_id,instance_id)
