@@ -1,5 +1,6 @@
 """P3-03 acceptance: real PostgreSQL versions, authorization and private variants."""
 from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 from uuid import uuid4
 
 import pytest
@@ -430,3 +431,65 @@ def test_scoped_library_discovery(dsn):
     with psycopg.connect(dsn,autocommit=True) as conn:
         with pytest.raises(ValueError):
             list_shared_procedures(conn,actor(user),instance,limit=0)
+
+
+def test_concurrent_first_template_publication_is_version_conflict(dsn):
+    """Missing-row publication races must fail with domain CAS, not UniqueViolation.
+
+    Use distinct authenticated publishers sharing a persona definition: their
+    procedure event streams are different, so stream locks cannot mask the
+    initial template creation race.
+    """
+    first_user,persona,first_instance=seed(dsn,grant=True)
+    second_user,_,second_instance=seed(dsn,persona_id=persona,grant=True)
+    template=uuid4()
+    first=publication(
+        dsn,first_user,persona,first_instance,uuid4(),template,0,
+        definition(suffix=" publisher A"),
+    )
+    second=publication(
+        dsn,second_user,persona,second_instance,uuid4(),template,0,
+        definition(suffix=" publisher B"),
+    )
+    start=Barrier(2)
+
+    def publish(user,command):
+        start.wait(timeout=15)
+        try:
+            return call(dsn,publish_shared_procedure,actor(user),command)
+        except VersionConflict:
+            return "VERSION_CONFLICT"
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures=[
+            pool.submit(publish,first_user,first),
+            pool.submit(publish,second_user,second),
+        ]
+        results=[f.result(timeout=20) for f in futures]
+
+    winners=[r for r in results if r!="VERSION_CONFLICT"]
+    assert len(winners)==1
+    assert results.count("VERSION_CONFLICT")==1
+    assert winners[0].revision==1
+
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT current_version FROM procedure_templates WHERE template_id=%s",
+            (template,),
+        ).fetchone()==(1,)
+        assert conn.execute(
+            "SELECT count(*) FROM procedure_template_versions WHERE template_id=%s",
+            (template,),
+        ).fetchone()[0]==1
+        assert conn.execute(
+            """SELECT count(*) FROM events
+               WHERE event_type='procedure.template.published.v1'
+                 AND payload->>'template_id'=%s""",
+            (str(template),),
+        ).fetchone()[0]==1
+        assert conn.execute(
+            """SELECT count(*) FROM command_receipts
+               WHERE command_type='procedure.template.publish.v1'
+                 AND user_id IN (%s,%s)""",
+            (first_user,second_user),
+        ).fetchone()[0]==1
