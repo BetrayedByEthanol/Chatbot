@@ -99,11 +99,21 @@ def _evidence_step_event(cur, actor: TrustedActor, cmd, run: dict,
            WHERE run_id=%s AND step_id=%s""",
         (after,next_step,event_uuid,run["run_id"],step["step_id"]),
     )
-    # Corrections reopen a finished run as NEEDS_REVIEW. New user activity
-    # leaves a corrected run ACTIVE but never auto-finalizes it.
-    status=("NEEDS_REVIEW" if kind=="CORRECTED"
-            else "ACTIVE" if run["status"]=="NEEDS_REVIEW"
-            else run["status"])
+    # Corrections reopen a finished run. A different step's progress must
+    # NOT clear the review gate while any step still needs reassessment.
+    status=run["status"]
+    if kind=="CORRECTED":
+        status="NEEDS_REVIEW"
+    elif run["status"]=="NEEDS_REVIEW":
+        cur.execute(
+            """SELECT EXISTS(
+                 SELECT 1 FROM procedure_run_steps
+                 WHERE run_id=%s AND status='NEEDS_REVIEW'
+               ) AS unresolved""",
+            (run["run_id"],),
+        )
+        if not cur.fetchone()["unresolved"]:
+            status="ACTIVE"
     cur.execute(
         """UPDATE procedure_runs SET version=%s,status=%s,
              updated_at=clock_timestamp() WHERE run_id=%s""",
