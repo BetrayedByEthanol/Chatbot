@@ -78,7 +78,7 @@ CREATE TABLE task_priority_rules (
     goal_id uuid NOT NULL,
     user_id uuid NOT NULL,
     instance_id uuid NOT NULL,
-    rule text NOT NULL CHECK(rule IN ('PREFER_OVER','SUSPEND','SET_DEADLINE','RUN_AFTER')),
+    rule text NOT NULL CHECK(rule IN ('PREFER_OVER','SUSPEND','RESUME','SET_DEADLINE','CLEAR_DEADLINE','RUN_AFTER')),
     other_task_id uuid,
     deadline timestamptz,
     task_version bigint NOT NULL,
@@ -89,7 +89,7 @@ CREATE TABLE task_priority_rules (
     created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
     CHECK ((rule IN ('PREFER_OVER','RUN_AFTER') AND other_task_id IS NOT NULL AND deadline IS NULL AND other_task_id<>task_id)
         OR (rule='SET_DEADLINE' AND deadline IS NOT NULL AND other_task_id IS NULL)
-        OR (rule='SUSPEND' AND other_task_id IS NULL AND deadline IS NULL)),
+        OR (rule IN ('SUSPEND','RESUME','CLEAR_DEADLINE') AND other_task_id IS NULL AND deadline IS NULL)),
     FOREIGN KEY(task_id,goal_id,user_id,instance_id) REFERENCES goal_tasks(task_id,goal_id,user_id,instance_id),
     FOREIGN KEY(other_task_id,goal_id,user_id,instance_id) REFERENCES goal_tasks(task_id,goal_id,user_id,instance_id),
     FOREIGN KEY(source_conversation_id,source_turn_id,user_id,instance_id)
