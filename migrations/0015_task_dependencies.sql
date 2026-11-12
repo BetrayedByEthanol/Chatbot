@@ -132,6 +132,7 @@ CREATE TABLE task_priority_rules (
     task_version bigint NOT NULL,
     source_conversation_id uuid NOT NULL,
     source_turn_id uuid NOT NULL,
+    source_quote text NOT NULL CHECK (char_length(source_quote) BETWEEN 1 AND 300),
     approval_turn_id uuid NOT NULL,
     event_id uuid NOT NULL,
     created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
