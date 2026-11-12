@@ -211,6 +211,15 @@ def publish_shared_procedure(connection: Connection, actor: TrustedActor,
         )
         if cur.fetchone() is None:
             raise PermissionDenied("no approved procedure publishing grant")
+        # FOR UPDATE cannot lock a missing template. Serialize by template
+        # identity before looking up version zero, including across publishers
+        # with different users/instances and therefore different event streams.
+        # Hash collisions only cause unnecessary serialization, not conflicts.
+        # pg_advisory_xact_lock releases automatically on commit/rollback.
+        cur.execute(
+            "SELECT pg_advisory_xact_lock(hashtextextended(%s,0))",
+            (f"persona-agent/procedure-template/{command.template_id}",),
+        )
         cur.execute(
             "SELECT current_version FROM procedure_templates WHERE template_id=%s FOR UPDATE",
             (command.template_id,),
