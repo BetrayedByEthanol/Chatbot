@@ -293,7 +293,8 @@ def test_cross_persona_scope_and_generation_fencing(dsn):
     gid,first,command=root(dsn,user,instance,conv,source)
     with pytest.raises(PermissionDenied):
         call(dsn,list_goals,actor(foreign),instance)
-    assert call(dsn,list_goals,actor(user),other)==()
+    with pytest.raises(StaleSelection):
+        call(dsn,list_goals,actor(user),other)
     assert call(dsn,list_goals,actor(foreign),foreign_instance)==()
     with pytest.raises(PermissionDenied):
         call(dsn,create_goal,actor(foreign),
