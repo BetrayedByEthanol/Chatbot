@@ -22,6 +22,7 @@ from persona_agent.procedure_contracts import (
 from persona_agent.procedure_state import (
     create_personalized_approach, publish_shared_procedure,
     read_personalized_approach, read_shared_procedure, revise_personalized_approach,
+    list_shared_procedures, list_personalized_approaches,
 )
 from persona_agent.runtime import PermissionDenied, StaleSelection, VersionConflict
 
@@ -395,3 +396,23 @@ def test_wrong_confirmation_generation_and_strategy_binding(dsn):
     with pytest.raises(PermissionDenied):
         call(dsn,read_personalized_approach,actor(second_user),
              second_instance,linked.variant_id)
+
+
+def test_scoped_library_discovery(dsn):
+    user,persona,instance=seed(dsn,grant=True)
+    conv=uuid4()
+    template=uuid4()
+    call(dsn,publish_shared_procedure,actor(user),
+         publication(dsn,user,persona,instance,conv,template,0,definition()))
+    local=variant_command(dsn,user,instance,conv,template,1)
+    call(dsn,create_personalized_approach,actor(user),local)
+    public=call(dsn,list_shared_procedures,actor(user),instance)
+    personal=call(dsn,list_personalized_approaches,actor(user),instance)
+    assert any(x.template_id==template and x.version==1 for x in public)
+    assert any(x.variant_id==local.variant_id and x.revision==1 for x in personal)
+    outsider,_,outsider_instance=seed(dsn,persona_id=persona)
+    assert any(x.template_id==template for x in
+               call(dsn,list_shared_procedures,actor(outsider),outsider_instance))
+    assert call(dsn,list_personalized_approaches,actor(outsider),outsider_instance)==()
+    with pytest.raises(ValueError):
+        call(dsn,list_shared_procedures,actor(user),instance,limit=0)
