@@ -494,6 +494,93 @@ def confirm_user_task(connection: Connection, actor: TrustedActor,
     return _command(connection,actor,command,"goal.task.user.confirm.v1",apply)
 
 
+def correct_task_outcome(connection: Connection, actor: TrustedActor,
+                         command: CorrectTaskOutcomeCommand) -> TaskCommandResult:
+    """Record a correction and move only this task into NEEDS_REVIEW.
+
+    Earlier reports/confirmations remain immutable. Downstream task evidence
+    is not silently rewritten: read/confirmation admission computes effective
+    prerequisite validity transitively. Corrections remain admissible even
+    when the associated goal is paused or the task was user-suspended.
+    """
+    def apply(cur,receipt):
+        _graph_lock(cur,actor,command.instance_id)
+        task=_task(cur,actor,command.instance_id,command.task_id)
+        if task["version"]!=command.expected_task_version:
+            raise VersionConflict("task changed before its correction")
+        if task["status"] in ("CANCELLED","NEEDS_REVIEW"):
+            raise VersionConflict("task has no current completion claim to correct")
+
+        if command.superseded_report_id is not None:
+            if task["status"] not in ("PLANNED","USER_REPORTED_DONE"):
+                raise VersionConflict("confirmed task must correct its confirmation")
+            cur.execute(
+                """SELECT 1 FROM task_outcome_reports
+                   WHERE report_id=%s AND task_id=%s AND goal_id=%s
+                     AND user_id=%s AND instance_id=%s""",
+                (command.superseded_report_id,command.task_id,task["goal_id"],
+                 actor.user_id,command.instance_id),
+            )
+            if cur.fetchone() is None:
+                raise PermissionDenied("report not owned by this task")
+            latest=_latest_report(cur,actor,command.instance_id,command.task_id)
+            if latest is None or latest["report_id"]!=command.superseded_report_id:
+                raise VersionConflict("report already superseded by newer evidence")
+        else:
+            if task["status"]!="USER_CONFIRMED":
+                raise VersionConflict("task has no effective user confirmation")
+            cur.execute(
+                """SELECT confirmation_id FROM task_user_confirmations
+                   WHERE task_id=%s AND user_id=%s AND instance_id=%s
+                   ORDER BY task_version DESC LIMIT 1""",
+                (command.task_id,actor.user_id,command.instance_id),
+            )
+            latest=cur.fetchone()
+            if (latest is None or
+                latest["confirmation_id"]!=command.superseded_confirmation_id):
+                raise VersionConflict("confirmation is not the latest effective one")
+
+        correction_id=uuid4()
+        version=task["version"]+1
+        event=_publish(cur,actor,command.instance_id,"goal.task.outcome.corrected.v1",{
+            "task_id":str(command.task_id),"correction_id":str(correction_id),
+            "superseded_report_id":(
+                str(command.superseded_report_id)
+                if command.superseded_report_id else None),
+            "superseded_confirmation_id":(
+                str(command.superseded_confirmation_id)
+                if command.superseded_confirmation_id else None),
+            "old_status":task["status"],"new_status":"NEEDS_REVIEW",
+            "reason":command.reason.strip(),"task_version":version,
+            "source_turn_id":str(command.evidence_turn_id),
+            "approval_turn_id":str(command.approval_turn_id),
+        },receipt)
+        cur.execute(
+            """INSERT INTO task_outcome_corrections(
+                 correction_id,task_id,goal_id,user_id,instance_id,task_version,
+                 superseded_report_id,superseded_confirmation_id,
+                 old_status,reason,source_conversation_id,source_turn_id,
+                 source_quote,approval_turn_id,event_id
+               ) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+            (correction_id,command.task_id,task["goal_id"],actor.user_id,
+             command.instance_id,version,command.superseded_report_id,
+             command.superseded_confirmation_id,task["status"],
+             command.reason.strip(),command.conversation_id,
+             command.evidence_turn_id,command.evidence_quote,
+             command.approval_turn_id,event),
+        )
+        cur.execute(
+            """UPDATE goal_tasks SET status='NEEDS_REVIEW',version=%s,
+                 updated_at=clock_timestamp()
+               WHERE task_id=%s AND user_id=%s AND instance_id=%s""",
+            (version,command.task_id,actor.user_id,command.instance_id),
+        )
+        return TaskCommandResult(task_id=command.task_id,version=version,
+                                 event_id=event,action="OUTCOME_CORRECTED",
+                                 correction_id=correction_id)
+    return _command(connection,actor,command,"goal.task.outcome.correct.v1",apply)
+
+
 def set_task_priority(connection: Connection, actor: TrustedActor,
                       command: SetTaskPriorityCommand) -> TaskCommandResult:
     """Version, enforce and record separate durable user priority constraints."""
