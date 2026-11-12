@@ -146,17 +146,17 @@ def _latest_report(cur, actor: TrustedActor, instance_id: UUID,
     return cur.fetchone()
 
 
-def _unmet_prerequisites(cur, actor: TrustedActor, instance_id: UUID,
-                         task_ids: list[UUID]) -> dict[UUID, tuple[UUID, ...]]:
-    """Compute transitive effective confirmation over dependency + RUN_AFTER DAG.
+def _confirmation_state(cur, actor: TrustedActor, instance_id: UUID,
+                        task_ids: list[UUID]):
+    """Compute effective completion and pinned direct prerequisites.
 
-    A historical USER_CONFIRMED task is not a valid prerequisite if any of
-    its ancestors has since been corrected, cancelled or left unconfirmed.
-    The read projection preserves each task's historical status; it never
-    silently revokes downstream user testimony.
+    The transitive DAG closure checks that every user confirmation is still
+    valid for the *same* prerequisite confirmation IDs it observed. A newer
+    confirmation does not silently rehabilitate an older dependent completion.
+    Returns (unmet_by_root, effective_by_task, edges_by_task, latest_ids).
     """
     if not task_ids:
-        return {}
+        return {}, {}, {}, {}
     cur.execute(
         """WITH RECURSIVE closure(root_id,node_id) AS (
              SELECT task_id,task_id FROM goal_tasks
@@ -165,28 +165,105 @@ def _unmet_prerequisites(cur, actor: TrustedActor, instance_id: UUID,
              SELECT c.root_id,edge.predecessor_id
              FROM closure c JOIN (
                   SELECT task_id,prerequisite_task_id AS predecessor_id,
-                         user_id,instance_id
-                  FROM task_dependencies
+                         user_id,instance_id FROM task_dependencies
                   UNION ALL
                   SELECT task_id,run_after_task_id AS predecessor_id,
                          user_id,instance_id
                   FROM goal_tasks WHERE run_after_task_id IS NOT NULL
              ) edge ON edge.task_id=c.node_id
              WHERE edge.user_id=%s AND edge.instance_id=%s
-           )
-           SELECT c.root_id,c.node_id FROM closure c
-           JOIN goal_tasks predecessor
-             ON predecessor.task_id=c.node_id
-            AND predecessor.user_id=%s AND predecessor.instance_id=%s
-           WHERE c.root_id<>c.node_id
-             AND predecessor.status<>'USER_CONFIRMED'""",
-        (task_ids,actor.user_id,instance_id,
-         actor.user_id,instance_id,actor.user_id,instance_id),
+           ) SELECT root_id,node_id FROM closure""",
+        (task_ids,actor.user_id,instance_id,actor.user_id,instance_id),
     )
-    result: dict[UUID,set[UUID]]={}
+    closure: dict[UUID,set[UUID]]={}
     for row in cur.fetchall():
-        result.setdefault(row["root_id"],set()).add(row["node_id"])
-    return {root:tuple(sorted(ids,key=str)) for root,ids in result.items()}
+        closure.setdefault(row["root_id"],set()).add(row["node_id"])
+    nodes=set().union(*closure.values()) if closure else set()
+    if len(nodes)>4096:
+        raise VersionConflict("task dependency closure exceeds bounded evaluation")
+    node_ids=list(nodes)
+    cur.execute(
+        """SELECT task_id,status,run_after_task_id FROM goal_tasks
+           WHERE task_id=ANY(%s) AND user_id=%s AND instance_id=%s""",
+        (node_ids,actor.user_id,instance_id),
+    )
+    node_rows=cur.fetchall()
+    statuses={row["task_id"]:row["status"] for row in node_rows}
+    direct: dict[UUID,set[UUID]]={}
+    for row in node_rows:
+        if row["run_after_task_id"] is not None:
+            direct.setdefault(row["task_id"],set()).add(row["run_after_task_id"])
+    cur.execute(
+        """SELECT task_id,prerequisite_task_id FROM task_dependencies
+           WHERE task_id=ANY(%s) AND user_id=%s AND instance_id=%s""",
+        (node_ids,actor.user_id,instance_id),
+    )
+    for row in cur.fetchall():
+        direct.setdefault(row["task_id"],set()).add(row["prerequisite_task_id"])
+    cur.execute(
+        """SELECT DISTINCT ON (task_id) task_id,confirmation_id
+           FROM task_user_confirmations
+           WHERE task_id=ANY(%s) AND user_id=%s AND instance_id=%s
+           ORDER BY task_id,task_version DESC""",
+        (node_ids,actor.user_id,instance_id),
+    )
+    confirmations={row["task_id"]:row["confirmation_id"] for row in cur.fetchall()}
+    snapshots: dict[UUID,dict[UUID,UUID]]={}
+    if confirmations:
+        cur.execute(
+            """SELECT confirmation_id,prerequisite_task_id,
+                      prerequisite_confirmation_id
+               FROM task_confirmation_prerequisites
+               WHERE confirmation_id=ANY(%s) AND user_id=%s AND instance_id=%s""",
+            (list(confirmations.values()),actor.user_id,instance_id),
+        )
+        for row in cur.fetchall():
+            snapshots.setdefault(row["confirmation_id"],{})[
+                row["prerequisite_task_id"]
+            ]=row["prerequisite_confirmation_id"]
+    effective: dict[UUID,bool]={}
+    visiting: set[UUID]=set()
+
+    def valid(node_id: UUID) -> bool:
+        if node_id in effective:
+            return effective[node_id]
+        if node_id in visiting:
+            raise VersionConflict("task dependency cycle detected during evaluation")
+        if statuses.get(node_id)!="USER_CONFIRMED":
+            effective[node_id]=False
+            return False
+        visiting.add(node_id)
+        confirmation_id=confirmations.get(node_id)
+        pinned=snapshots.get(confirmation_id,{})
+        ok=confirmation_id is not None
+        for predecessor in direct.get(node_id,()):
+            if (not valid(predecessor)
+                or pinned.get(predecessor)!=confirmations.get(predecessor)):
+                ok=False
+        visiting.remove(node_id)
+        effective[node_id]=ok
+        return ok
+
+    unmet: dict[UUID,tuple[UUID,...]]={}
+    for root,ancestors in closure.items():
+        invalid=set()
+        for node in ancestors:
+            if node!=root and not valid(node):
+                invalid.add(node)
+            if statuses.get(node)=="USER_CONFIRMED":
+                pinned=snapshots.get(confirmations.get(node),{})
+                for predecessor in direct.get(node,()):
+                    if pinned.get(predecessor)!=confirmations.get(predecessor):
+                        invalid.add(predecessor)
+        unmet[root]=tuple(sorted(invalid,key=str))
+        valid(root)
+    return unmet,effective,direct,confirmations
+
+
+def _graph_read_lock(cur, actor: TrustedActor, instance_id: UUID) -> None:
+    """Keep multi-query DAG projections consistent with graph/status writes."""
+    cur.execute("SELECT pg_advisory_xact_lock_shared(hashtextextended(%s,0))",
+                (f"p3-task-dag:{actor.user_id}:{instance_id}",))
 
 
 def _command(connection: Connection, actor: TrustedActor,
