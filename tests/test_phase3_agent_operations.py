@@ -363,3 +363,29 @@ def test_late_reconciliation_accepts_work_completed_before_task_deadline(dsn):
     assert call(dsn,read_procedure_run,actor(user),instance,run
                 ).steps[0].status=="VERIFIED"
     assert call(dsn,list_tasks,actor(user),instance,goal)[0].status=="PLANNED"
+
+
+def test_orphaned_staging_can_be_superseded_with_new_explicit_approval(dsn):
+    user,instance,conv,goal,task,run=staged(dsn)
+    first=authorization(dsn,user,instance,conv,run)
+    granted=call(dsn,authorize_agent_step,actor(user),first)
+    assert granted.operation_id==first.operation_id
+    assert operation_row(dsn,first.operation_id) is None
+    # The first process crashed after Procedure staging, before P0 enqueue.
+    # Reauthorization, NOT silent reuse, replaces the orphaned grant.
+    second=authorization(dsn,user,instance,conv,run)
+    queued=call(dsn,schedule_agent_step,actor(user),second)
+    assert queued.status.value=="QUEUED"
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        rows=conn.execute(
+            """SELECT operation_id,state FROM procedure_agent_operation_authorizations
+               WHERE run_id=%s ORDER BY created_at,operation_id""",
+            (run,),
+        ).fetchall()
+        assert len(rows)==2
+        assert dict(rows)[first.operation_id]=="INVALIDATED"
+        assert dict(rows)[second.operation_id]=="AUTHORIZED"
+    with pytest.raises(PermissionDenied,match="authorization"):
+        call(dsn,schedule_agent_step,actor(user),first)
+    assert operation_row(dsn,first.operation_id) is None
+    assert operation_row(dsn,second.operation_id)[0]=="QUEUED"
