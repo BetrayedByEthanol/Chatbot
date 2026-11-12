@@ -1,9 +1,13 @@
 """P3-04 AGENT operation vertical slice: P0 scheduler + scoped read-only tool."""
 from uuid import uuid4
 from datetime import datetime, timedelta, timezone
+from concurrent.futures import ThreadPoolExecutor
+from queue import Queue
+import time
 
 import pytest
 psycopg=pytest.importorskip("psycopg")
+from psycopg.rows import dict_row
 
 from persona_agent.lifecycle import (
     SwitchPersonaCommand, TrustedPlatformActor, switch_persona,
@@ -15,15 +19,16 @@ from persona_agent.operation_scheduler import (
     claim_operation, configure_resource_pool, enqueue_operation,
 )
 from persona_agent.operation_control import (
-    CancelOperationCommand, cancel_operation,
+    CancelOperationCommand, acknowledge_cancel, cancel_operation,
+    complete_operation, reap_stale_operations,
 )
 from persona_agent.procedure_contracts import (
     ProcedureDefinition, ProcedureStep,
 )
 from persona_agent.procedure_agent_contracts import AuthorizeAgentStepCommand
 from persona_agent.procedure_agent_state import (
-    authorize_agent_step, reconcile_agent_step, run_one_agent_step,
-    schedule_agent_step,
+    _read_authorized_execution, authorize_agent_step, reconcile_agent_step,
+    run_one_agent_step, schedule_agent_step,
 )
 from persona_agent.procedure_run_state import (
     read_procedure_run, start_procedure_run,
@@ -389,3 +394,164 @@ def test_orphaned_staging_can_be_superseded_with_new_explicit_approval(dsn):
         call(dsn,schedule_agent_step,actor(user),first)
     assert operation_row(dsn,first.operation_id) is None
     assert operation_row(dsn,second.operation_id)[0]=="QUEUED"
+
+
+def _wait_until_db_lock(dsn, pid: int, *, max_wait: float=8.0) -> None:
+    """Ensure the worker passed its initial fence and is actually blocked.
+
+    Poll the PostgreSQL worker's wait state instead of assuming that a
+    thread's start or an arbitrary sleep proves the intended lock race.
+    """
+    end=time.monotonic()+max_wait
+    with psycopg.connect(dsn,autocommit=True) as monitor:
+        while time.monotonic()<end:
+            row=monitor.execute(
+                "SELECT wait_event_type FROM pg_stat_activity WHERE pid=%s",
+                (pid,),
+            ).fetchone()
+            if row is not None and row[0]=="Lock":
+                return
+            time.sleep(.025)
+    raise AssertionError("worker never blocked on the intended database lock")
+
+
+def _wait_past_postgres_timestamp(dsn, query: str, params=(), *,
+                                  max_wait: float=12.0) -> None:
+    """Wait for a database-clock boundary without mutating locked rows."""
+    end=time.monotonic()+max_wait
+    with psycopg.connect(dsn,autocommit=True) as monitor:
+        while time.monotonic()<end:
+            row=monitor.execute(query,params).fetchone()
+            if row is not None and row[0]:
+                return
+            time.sleep(.035)
+    raise AssertionError("deadline/lease did not expire within test bound")
+
+
+def test_task_deadline_fenced_after_resource_pool_lock_wait(dsn):
+    """The Task deadline must be live in P0's FINAL completion UPDATE.
+
+    A task deadline can expire after the first admission check, while the
+    completion transaction is blocked releasing a resource reservation.
+    """
+    user,instance,conv,goal,task,run=staged(dsn)
+    cmd=authorization(dsn,user,instance,conv,run)
+    call(dsn,schedule_agent_step,actor(user),cmd)
+    lease=call(
+        dsn,claim_operation,worker_id="deadline-race",
+        capabilities=(SLOW_TOOL,),operation_types=(PROCEDURE_AGENT_OPERATION,),
+        lease_seconds=30,
+    )
+    assert lease and lease.operation_id==cmd.operation_id
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        conn.execute(
+            """UPDATE goal_tasks
+               SET deadline=clock_timestamp()+INTERVAL '5 seconds'
+               WHERE task_id=%s AND user_id=%s AND instance_id=%s""",
+            (task,user,instance),
+        )
+        assert conn.execute(
+            "SELECT deadline>clock_timestamp() FROM goal_tasks WHERE task_id=%s",
+            (task,),
+        ).fetchone()==(True,)
+
+    pid_queue=Queue()
+
+    def complete_after_lock():
+        with psycopg.connect(dsn,autocommit=True) as conn:
+            pid_queue.put(conn.info.backend_pid)
+            complete_operation(conn,lease,result_ref="untrusted-after-deadline")
+
+    with psycopg.connect(dsn,autocommit=True) as locker:
+        with locker.transaction():
+            locker.execute(
+                "SELECT resource_key FROM execution_resource_pools "
+                "WHERE resource_key=%s FOR UPDATE",
+                (RESOURCE_KEY,),
+            ).fetchone()
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                future=pool.submit(complete_after_lock)
+                backend_pid=pid_queue.get(timeout=5)
+                _wait_until_db_lock(dsn,backend_pid)
+                # We have established the first gate completed and the
+                # transaction is now WAITING to release its resource.
+                _wait_past_postgres_timestamp(
+                    dsn,
+                    "SELECT deadline<=clock_timestamp() "
+                    "FROM goal_tasks WHERE task_id=%s",
+                    (task,),
+                )
+        # The lock is released on commit; P0's final SQL fence must fail.
+        with pytest.raises(StaleOperation,match="completion fence"):
+            future.result(timeout=10)
+
+    row=operation_row(dsn,cmd.operation_id)
+    assert row[0]=="RUNNING" and row[4] is None
+    assert call(dsn,read_procedure_run,actor(user),instance,run
+                ).steps[0].status=="NOT_STARTED"
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT active_units FROM execution_resource_pools WHERE resource_key=%s",
+            (RESOURCE_KEY,),
+        ).fetchone()[0]>=1  # release_resources was rolled back
+    cancelled=call(dsn,cancel_operation,actor(user),CancelOperationCommand(
+        operation_id=cmd.operation_id,expected_version=row[5],
+        idempotency_key=uuid4().hex,
+    ))
+    assert cancelled.value=="CANCEL_REQUESTED"
+    call(dsn,acknowledge_cancel,lease)
+
+
+def test_claim_revalidated_after_goal_lock_wait_before_tool_dispatch(dsn):
+    """An expired claim cannot invoke an AGENT tool after a slow authority read."""
+    user,instance,conv,goal,task,run=staged(dsn)
+    cmd=authorization(dsn,user,instance,conv,run)
+    call(dsn,schedule_agent_step,actor(user),cmd)
+    lease=call(
+        dsn,claim_operation,worker_id="goal-lock-lease-race",
+        capabilities=(SLOW_TOOL,),operation_types=(PROCEDURE_AGENT_OPERATION,),
+        lease_seconds=3,
+    )
+    assert lease and lease.operation_id==cmd.operation_id
+    pid_queue=Queue()
+    executed=[]
+
+    def prepare_then_dispatch():
+        with psycopg.connect(dsn,autocommit=True) as conn:
+            pid_queue.put(conn.info.backend_pid)
+            with conn.transaction():
+                with conn.cursor(row_factory=dict_row) as cur:
+                    instruction,max_words=_read_authorized_execution(cur,lease)
+            # Only reached if the pre-dispatch lease remains valid.
+            executed.append((instruction,max_words))
+
+    with psycopg.connect(dsn,autocommit=True) as locker:
+        with locker.transaction():
+            locker.execute(
+                "SELECT goal_id FROM goal_records WHERE goal_id=%s FOR UPDATE",
+                (goal,),
+            ).fetchone()
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                future=pool.submit(prepare_then_dispatch)
+                backend_pid=pid_queue.get(timeout=5)
+                _wait_until_db_lock(dsn,backend_pid)
+                # This is a goal ancestor lock that begins *after* the
+                # P0 lease check, so it cannot be detected by that check.
+                _wait_past_postgres_timestamp(
+                    dsn,"SELECT clock_timestamp()>=%s::timestamptz",
+                    (lease.lease_until,),
+                )
+        with pytest.raises(StaleOperation,match="attempt is no longer valid"):
+            future.result(timeout=10)
+
+    assert executed==[]
+    row=operation_row(dsn,cmd.operation_id)
+    assert row[0]=="RUNNING" and row[4] is None
+    call(dsn,reap_stale_operations,limit=100)
+    recovered=operation_row(dsn,cmd.operation_id)
+    assert recovered[0] in ("RETRY_WAIT","FAILED","BLOCKED","SUSPENDED")
+    if recovered[0]=="RETRY_WAIT":
+        call(dsn,cancel_operation,actor(user),CancelOperationCommand(
+            operation_id=cmd.operation_id,expected_version=recovered[5],
+            idempotency_key=uuid4().hex,
+        ))
