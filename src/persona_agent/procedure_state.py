@@ -78,7 +78,8 @@ def _approval(cur, actor: TrustedActor, command: ProcedureUserCommand, source: d
 
 
 def _command(connection: Connection, actor: TrustedActor, command: ProcedureUserCommand,
-             command_type: str, apply) -> ProcedureChangeResult:
+             command_type: str, apply, *, result_type=ProcedureChangeResult,
+             requires_approval: bool=True):
     require_idle(connection)
     _require_actor(actor)
     receipt_id=uuid4()
@@ -111,12 +112,13 @@ def _command(connection: Connection, actor: TrustedActor, command: ProcedureUser
                 prior=cur.fetchone()
                 if prior is None or prior["request_fingerprint"]!=fingerprint or prior["result_json"] is None:
                     raise IdempotencyConflict("procedure idempotency key reused differently")
-                return ProcedureChangeResult.model_validate(prior["result_json"]).model_copy(
+                return result_type.model_validate(prior["result_json"]).model_copy(
                     update={"replayed":True},
                 )
             _selected(cur,actor,command)
             source=_source(cur,actor,command)
-            _approval(cur,actor,command,source)
+            if requires_approval:
+                _approval(cur,actor,command,source)
             result=apply(cur,receipt_id)
             cur.execute(
                 """UPDATE command_receipts SET event_id=%s,result_json=%s::jsonb
