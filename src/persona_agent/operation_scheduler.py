@@ -469,18 +469,11 @@ def claim_operation(
                     op=cur.fetchone()
                     if op is None:
                         continue
-                    if op["operation_type"]==PROCEDURE_AGENT_OPERATION:
-                        # Generic workers cannot accidentally claim this type.
-                        if allowed_types is None or PROCEDURE_AGENT_OPERATION not in allowed_types:
-                            continue
-                        try:
-                            require_procedure_agent_gate(cur,op)
-                        except (PermissionDenied,VersionConflict):
-                            # Revoked/version-stale work cannot execute; a
-                            # scoped reconciler can quarantine or cancel it.
-                            continue
-                    elif op["task_id"] is not None:
-                        # No other task-owned operations are enabled.
+                    if op["task_id"] is not None and op["operation_type"]!=PROCEDURE_AGENT_OPERATION:
+                        continue
+                    if op["operation_type"]==PROCEDURE_AGENT_OPERATION and (
+                        allowed_types is None or PROCEDURE_AGENT_OPERATION not in allowed_types
+                    ):
                         continue
                     cur.execute(
                         "SELECT capability FROM operation_capabilities WHERE operation_id=%s",
@@ -509,6 +502,12 @@ def claim_operation(
                     selected=cur.fetchone()
                     if not _eligible_for_policy(cur,op,selected):
                         continue
+                    if op["operation_type"]==PROCEDURE_AGENT_OPERATION:
+                        try:
+                            require_procedure_agent_gate(cur,op)
+                        except (PermissionDenied,VersionConflict):
+                            # Stale/cancelled work cannot be claimed.
+                            continue
                     if "persona_instance" in op["input_versions"]:
                         cur.execute(
                             "SELECT version FROM persona_instances "
