@@ -124,6 +124,10 @@ def variant_command(dsn,user,instance,conv,template_id,version,*,params=None,
         evidence_quote="Use this procedure as my personal method",
         variant_id=uuid4(),template_id=template_id,template_version=version,
         goal_id=goal,strategy_id=strategy,
+        intended_contribution=(
+            "Supports the selected approach without changing its approved outcome"
+            if goal is not None else None
+        ),
         parameters=params or {},step_text_overrides=overrides or {},
         adaptation_reason=reason,
     )
@@ -391,6 +395,15 @@ def test_wrong_confirmation_generation_and_strategy_binding(dsn):
     choose=choose.model_copy(update={"approval_turn_id":conf.turn_id})
     call(dsn,select_goal_strategy,actor(user),choose)
     assert call(dsn,create_personalized_approach,actor(user),linked).revision==1
+    linked_view=call(dsn,read_personalized_approach,actor(user),instance,
+                     linked.variant_id)
+    assert linked_view.suitability_status=="UNREVIEWED"
+    assert "approved outcome" in linked_view.intended_contribution
+    with pytest.raises(ValueError,match="intended contribution"):
+        CreatePersonalizedApproachCommand(
+            **linked.model_dump(exclude={"intended_contribution"}),
+            intended_contribution=None,
+        )
 
     second_user,_,second_instance=seed(dsn,persona_id=persona)
     with pytest.raises(PermissionDenied):
