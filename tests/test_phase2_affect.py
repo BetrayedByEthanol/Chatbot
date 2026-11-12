@@ -498,3 +498,149 @@ def test_stale_emotion_evidence_cannot_reverse_newer_mood(dsn):
             """SELECT applied FROM emotion_appraisals WHERE source_turn_id=%s""",
             (extra.turn_id,),
         ).fetchone()[0] is False
+
+
+
+@pytest.mark.parametrize("oversized_text",[
+    "Thanks"+"!"*201,
+    "Please keep replies short"+"!"*201,
+])
+def test_oversized_normalized_relationship_match_is_neutral_and_safe(
+    dsn,oversized_text,
+):
+    """P1: normalization cannot turn unbounded evidence into a DB violation.
+
+    Long punctuation tails must still count as a neutral interaction without
+    feedback or a persisted preference, then the next delivery must succeed.
+    """
+    consumers=register(dsn)
+    user,instance,_=seed(dsn)
+    conversation=uuid4()
+    invalid=turn(dsn,user,instance,conversation,oversized_text)
+    outcome=tick(dsn,consumers)
+    assert outcome.relationship_recorded==1
+    assert outcome.retry_pending==0
+
+    state=call(dsn,read_relationship_state,actor(user),instance)
+    assert state.interaction_count==1
+    assert state.rapport==0
+    assert state.preferences==()
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            """SELECT feedback,source_quote FROM relationship_observations
+               WHERE user_id=%s AND source_turn_id=%s""",
+            (user,invalid.turn_id),
+        ).fetchone()==("NONE",None)
+        assert conn.execute(
+            """SELECT count(*) FROM relationship_preference_revisions
+               WHERE user_id=%s""",(user,),
+        ).fetchone()[0]==0
+
+    valid=turn(dsn,user,instance,conversation,"Thanks.")
+    assert tick(dsn,consumers).relationship_recorded==1
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            """SELECT feedback,source_quote FROM relationship_observations
+               WHERE user_id=%s AND source_turn_id=%s""",
+            (user,valid.turn_id),
+        ).fetchone()==("POSITIVE","Thanks.")
+    assert call(dsn,read_relationship_state,actor(user),instance).rapport>0
+
+
+def test_delayed_auto_preference_cannot_restore_explicit_same_turn_removal(dsn):
+    """P2: same source timestamp is stale to auto-ingestion after revision.
+
+    An explicit user command can SET and REMOVE with the same authenticated
+    source turn before the subscribed worker receives the original input.
+    The worker must still record the interaction but not undo the removal.
+    """
+    consumers=register(dsn)
+    user,instance,_=seed(dsn)
+    conversation=uuid4()
+    source=turn(dsn,user,instance,conversation,"Please keep replies short.")
+    command_quote="Please keep replies short"
+    added=preference(
+        dsn,user,instance,source,command_quote,
+        key="RESPONSE_LENGTH",value="SHORT",version=0,
+    )
+    removed=preference(
+        dsn,user,instance,source,command_quote,
+        key="RESPONSE_LENGTH",value="SHORT",version=1,action="REMOVE",
+    )
+    assert (added.version,removed.version)==(1,2)
+    assert tick(dsn,consumers).relationship_recorded==1
+    state=call(dsn,read_relationship_state,actor(user),instance)
+    assert state.interaction_count==1
+    assert len(state.preferences)==1
+    assert state.preferences[0].preference_key=="RESPONSE_LENGTH"
+    assert state.preferences[0].status=="REMOVED"
+    assert state.preferences[0].version==2
+    assert tick(dsn,consumers).relationship_recorded==0
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        revisions=conn.execute(
+            """SELECT version,status,source_turn_id
+               FROM relationship_preference_revisions
+               WHERE user_id=%s AND instance_id=%s
+                 AND preference_key='RESPONSE_LENGTH'
+               ORDER BY version""",
+            (user,instance),
+        ).fetchall()
+        assert revisions==[
+            (1,"ACTIVE",source.turn_id),(2,"REMOVED",source.turn_id),
+        ]
+        assert conn.execute(
+            """SELECT count(*) FROM events
+               WHERE user_id=%s AND instance_id=%s
+                 AND event_type='relationship.preference.changed.v1'""",
+            (user,instance),
+        ).fetchone()[0]==2
+
+
+@pytest.mark.parametrize("boundary_count",[5,20])
+def test_global_preferences_survive_many_topic_boundaries_in_context(
+    dsn,boundary_count,
+):
+    """P2: finite SQL slots and context budget reserve global preferences."""
+    user,instance,_=seed(dsn)
+    conversation=uuid4()
+    source=turn(
+        dsn,user,instance,conversation,
+        "Please keep replies short. Please don't use emojis. "
+        "Please don't send proactive messages.",
+    )
+    for key,value,quote in (
+        ("RESPONSE_LENGTH","SHORT","Please keep replies short"),
+        ("EMOJI_USE","OFF","Please don't use emojis"),
+        ("PROACTIVE_MESSAGES","DISALLOW",
+         "Please don't send proactive messages"),
+    ):
+        written=preference(
+            dsn,user,instance,source,quote,
+            key=key,value=value,version=0,
+        )
+        assert written.version==1
+    for i in range(boundary_count):
+        topic=f"topic{i}"
+        evidence=turn(
+            dsn,user,instance,conversation,
+            f"Please don't proactively discuss {topic}.",
+        )
+        preference(
+            dsn,user,instance,evidence,
+            f"Please don't proactively discuss {topic}",
+            key="AVOID_PROACTIVE_TOPIC",scope=topic,
+            value="AVOID",version=0,
+        )
+
+    recorded=call(dsn,read_relationship_state,actor(user),instance)
+    assert len(recorded.preferences)==boundary_count+3
+    pending=turn(dsn,user,instance,conversation,"What should I try next?")
+    context=call(dsn,prepare_text_context,actor(user),pending.turn_id)
+    system=context.messages[0].content
+    assert "Explicit user preference: response length short." in system
+    assert "Explicit user preference: do not use emojis." in system
+    assert "Explicit user boundary: no unsolicited proactive messages." in system
+    assert "do not proactively introduce topic" in system
+    assert "topic0" in system
+    assert context.messages[-1].content=="What should I try next?"
+    assert sum(len(msg.content) for msg in context.messages)<=12000
