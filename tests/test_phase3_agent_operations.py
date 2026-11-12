@@ -31,9 +31,14 @@ from persona_agent.tool_contracts import (
     PROCEDURE_AGENT_OPERATION, SLOW_TOOL, RESOURCE_KEY,
 )
 
-from test_phase3_procedures import actor, approve, call, turn
+from test_phase3_procedures import actor, approve, turn
 from test_phase3_runs import published, run_status, start_command
 from test_phase3_tasks import make_goal, make_task, priority
+
+
+def call(dsn,fn,*args,**kwargs):
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        return fn(conn,*args,**kwargs)
 
 
 def configured_pool(dsn):
