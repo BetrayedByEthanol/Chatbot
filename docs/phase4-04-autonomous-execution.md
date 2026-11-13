@@ -29,8 +29,10 @@ distinct and cannot be promoted to P2.
    pinned Task/Run/Step versions and operation ID, and the existing user-
    approved stage. It retains P0 idempotency, event/outbox, P0/P1 reserves,
    resource/group locks, work claiming and lease handling. A per-persona
-   transaction advisory lock serializes the **maximum two active P2**
-   admissions per epoch; one step is selected per producer tick.
+   transaction advisory lock serializes the **maximum two currently valid P2**
+   admissions per epoch; one step is selected per producer tick. Persistent
+   polling timestamps rotate among READY personas and a per-epoch cursor
+   prevents an expired grant from starving later approved steps.
 4. The existing Procedure-owned `run_one_agent_step` invokes the registered
    read-only tool **outside any database transaction**, revalidating P0 claim,
    current epoch, certificate, Goal ancestry, Task, Run, Step and permission
@@ -56,8 +58,19 @@ reachable; resource pools must be provisioned by the trusted operator.
   task/run/step/approval does not execute; unapproved tasks and model
   proposals have no operation admission API.
 - Crash after user approval but before P0 enqueue leaves a durable grant; the
-  next producer poll resumes admission idempotently. P0 leases and recovery
-  remain authoritative. No network or model inference occurs under locks.
+  next producer poll resumes admission idempotently. The P0-owned
+  `reap_invalid_background_queue` journals `BLOCKED` for stale queued/retry
+  operations whose Task/Run/Step/epoch authority is permanently revoked.
+  Its authoritative slot-budget query excludes such dead queued reservations
+  but continues counting RUNNING/CANCEL_REQUESTED/SUSPEND_REQUESTED claims.
+  Fresh explicit user approval can supersede a previously blocked Background
+  grant; historical completed results must be reconciled first.
+- Crash after a P0-confirmed read-only completion but before Procedure result
+  reconciliation is repaired by a bounded terminal-result scan. That
+  historical `COMPLETED` proof may be accepted after Foreground return while
+  the exact owner Task/Run/Step versions remain valid, without restoring
+  Background dispatch permission. No network or model inference occurs
+  under locks.
 - `BACKGROUND_RESUMABLE` does not automatically mean an approved action may
   execute in a future epoch. The currently implemented Background grant is
   always **single-epoch**. P4-05 will handle explicit renewed authorization,
