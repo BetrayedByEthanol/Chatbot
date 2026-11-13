@@ -61,7 +61,8 @@ def authorize_agent_step(connection: Connection, actor: TrustedActor,
         # particular, do not lock run and then wait on a staging row:
         # P0 enqueue/claim already locks the stage before the run.
         cur.execute(
-            """SELECT operation_id FROM procedure_agent_operation_authorizations
+            """SELECT operation_id,approved_background_epoch
+               FROM procedure_agent_operation_authorizations
                WHERE run_id=%s AND step_id=%s AND state='AUTHORIZED'
                FOR UPDATE""",
             (command.run_id,command.step_id),
@@ -83,10 +84,17 @@ def authorize_agent_step(connection: Connection, actor: TrustedActor,
                 (pending["operation_id"],),
             )
             old_operation=cur.fetchone()
-            if old_operation is not None:
+            if old_operation is not None and not (
+                background
+                and pending["approved_background_epoch"] is not None
+                and old_operation["status"]=="BLOCKED"
+            ):
                 raise VersionConflict(
                     "step has an admitted operation; cancel/reconcile it before replacing"
                 )
+            # A P0-blocked, never-executed Background operation can be
+            # replaced only through NEW authenticated user source/approval.
+            # Completed results must be reconciled instead of overwritten.
             # Stage-before-enqueue may crash or encounter a newly revoked
             # Task/Run authorization. A NEW separately approved user command
             # may supersede its orphaned, nonexecutable stage atomically.
