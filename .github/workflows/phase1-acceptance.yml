@@ -80,7 +80,7 @@ jobs:
               conn.execute("CREATE DATABASE phase4cross")
           PY
           python -m pytest -q tests/test_phase4_integrated_acceptance.py \
-            --junitxml=phase4-integrated-acceptance.xml
+            --junitxml=phase4-integrated-acceptance.xml -o junit_family=xunit1
       - name: Archive Phase 4 acceptance timings and tests
         if: always()
         uses: actions/upload-artifact@v4
