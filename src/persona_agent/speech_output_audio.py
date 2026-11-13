@@ -7,7 +7,7 @@ sample/token streaming from the TTS engine.
 
 import hashlib
 import io
-import re
+import unicodedata
 import wave
 from dataclasses import dataclass
 
@@ -28,29 +28,88 @@ class AudioInfo:
 
 
 def split_speech_text(text: str, *, max_chars: int = MAX_CHARS) -> tuple[str, ...]:
-    """Bounded, deterministic sentence-aware splitting. Never invent content."""
+    """Deterministic multilingual sentence-first clipping with bounded fallback.
+
+    Prefer punctuation from both spaced and unspaced writing systems. Preserve
+    text except for the existing whitespace normalization; never insert spaces
+    between Chinese/Japanese characters at a forced clip boundary.
+    """
     if not 40 <= max_chars <= 500 or not text or len(text) > 12000:
         raise ValueError("invalid speech response length or clip bound")
-    tokens = re.findall(r"\S+", text)
-    if not tokens:
+    normalized = " ".join(text.split())
+    if not normalized:
         raise ValueError("speech response must have words")
+    if len(normalized) > MAX_CLIPS * max_chars:
+        raise ValueError("speech response exceeds maximum clip capacity")
+
+    stops = frozenset(".!?。！？؟")
+    closers = frozenset("\\"'”’」』）】》〉)]}")
+    clauses = frozenset("、，,;；：:")
     parts: list[str] = []
-    current = ""
-    for token in tokens:
-        if len(token) > max_chars:
-            raise ValueError("unbreakable speech token exceeds clip limit")
-        if current and len(current) + len(token) + 1 > max_chars:
-            parts.append(current)
-            current = ""
-        current = (current + " " + token).strip()
-        # Prefer sentence edges once a moderate chunk has accumulated.
-        if re.search(r"[.!?][\"']?$", token):
-            parts.append(current)
-            current = ""
-    if current:
-        parts.append(current)
-    if len(parts) > MAX_CLIPS:
-        raise ValueError("speech response exceeds maximum clip count")
+    start = 0
+    # Short sentences can remain distinct, but very long responses must pack
+    # sentences to avoid exceeding the 64-clip delivery contract.
+    minimum = max(1, (len(normalized) + MAX_CLIPS - 1) // MAX_CLIPS)
+    while start < len(normalized):
+        end = min(start + max_chars, len(normalized))
+        sentence_end = None
+        clause_end = None
+        for pos in range(start, end):
+            char = normalized[pos]
+            # Do not treat decimal points or Latin word-internal dots as
+            # sentence boundaries (3.14, example.com).
+            if char == "." and 0 < pos < len(normalized) - 1 and (
+                (normalized[pos - 1].isdigit() and normalized[pos + 1].isdigit())
+                or (
+                    normalized[pos - 1].isascii()
+                    and normalized[pos - 1].isalpha()
+                    and normalized[pos + 1].isascii()
+                    and normalized[pos + 1].isalpha()
+                )
+            ):
+                continue
+            if char in stops:
+                boundary = pos + 1
+                while boundary < end and normalized[boundary] in closers:
+                    boundary += 1
+                if boundary - start >= minimum:
+                    sentence_end = boundary
+                    break
+            elif char in clauses:
+                clause_end = pos + 1
+
+        if sentence_end is not None:
+            end = sentence_end
+        elif end < len(normalized):
+            # Prefer a word or clause boundary; otherwise use a hard length
+            # limit so paragraphs without whitespace remain speakable.
+            lower = start + minimum
+            last_space = normalized.rfind(" ", lower, end + 1)
+            if last_space > start:
+                end = last_space
+            elif clause_end is not None and clause_end >= lower:
+                end = clause_end
+            else:
+                # Keep combining accents, variation selectors and ZWJ
+                # sequences attached to their preceding base characters.
+                while end > start and (
+                    unicodedata.combining(normalized[end])
+                    or normalized[end] in "\\ufe0e\\ufe0f\\u200d"
+                    or normalized[end - 1] == "\\u200d"
+                ):
+                    end -= 1
+                if end == start:
+                    raise ValueError("speech grapheme exceeds clip size")
+
+        clip = normalized[start:end].strip()
+        if not clip:
+            raise ValueError("speech clipping produced empty text")
+        parts.append(clip)
+        if len(parts) > MAX_CLIPS:
+            raise ValueError("speech response exceeds maximum clip count")
+        start = end
+        while start < len(normalized) and normalized[start] == " ":
+            start += 1
     return tuple(parts)
 
 
