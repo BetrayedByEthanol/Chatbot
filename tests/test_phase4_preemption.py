@@ -25,6 +25,22 @@ from test_phase4_preparation import call,check,user_actor,_close_fixture_turns
 
 
 def _admitted(dsn,monkeypatch):
+    # PostgreSQL acceptance intentionally shares one session database.
+    # Older tests may leave a registered step in RETRY_WAIT (including a
+    # previously expired claim). The global P0 worker can otherwise claim
+    # that older eligible step instead of the one this test just admitted.
+    # Retire only unclaimed test steps through the real authenticated API.
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        pending=conn.execute(
+            """SELECT operation_id,user_id,version FROM operations
+               WHERE operation_type=%s AND status IN ('QUEUED','RETRY_WAIT')""",
+            (PROCEDURE_AGENT_OPERATION,),
+        ).fetchall()
+    for operation_id,prior_user,version in pending:
+        call(dsn,cancel_operation,user_actor(prior_user),CancelOperationCommand(
+            operation_id=operation_id,expected_version=version,
+            idempotency_key=uuid4().hex,
+        ))
     _close_fixture_turns(dsn,monkeypatch)
     user,instance,conv,goal,task,run=staged(dsn)
     approval=prepare_approval(dsn,user,instance,conv,run)
@@ -246,7 +262,7 @@ def test_cancellation_race_after_suspension_read_gets_acknowledged(dsn,monkeypat
 
     lease=call(dsn,run_one_agent_step,worker_id="p405-ack-race",
                executor=return_during_execution)
-    assert lease is not None and intervened[0]
+    assert lease is not None and lease.operation_id==op and intervened[0]
     assert check(dsn,"SELECT status FROM operations WHERE operation_id=%s",(op,))==[("CANCELLED",)]
     assert check(dsn,
         "SELECT count(*) FROM operation_resource_reservations WHERE operation_id=%s",
@@ -278,7 +294,7 @@ def test_failure_reporting_losing_preemption_race_settles_live_claim(dsn,monkeyp
 
     lease=call(dsn,run_one_agent_step,worker_id="p405-failure-race",
                executor=broken_tool)
-    assert lease is not None and intervened[0]
+    assert lease is not None and lease.operation_id==op and intervened[0]
     assert check(dsn,
         "SELECT status FROM operations WHERE operation_id=%s",(op,),
     )==[("SUSPENDED",)]
