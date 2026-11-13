@@ -232,6 +232,14 @@ def enqueue_operation(
                 if is_background_agent_admission:
                     if selected["mode"]!="BACKGROUND":
                         raise PermissionDenied("P2 needs selected Background authority")
+                    # Serialize P2 admission budgets for a selected persona.
+                    # A shared selection lock alone permits multiple enqueues
+                    # to both observe a free slot before either inserts.
+                    cur.execute(
+                        """SELECT pg_advisory_xact_lock(
+                             hashtextextended(%s::text||':'||%s::text,41))""",
+                        (actor.user_id,command.instance_id),
+                    )
                     # Fixed epoch, immutable step consent and task-specific
                     # ALIGN-01 proof: generic trusted platform cannot forge P2.
                     cur.execute(
