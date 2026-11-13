@@ -122,5 +122,8 @@ def test_manual_stop_does_not_cancel_microphone_or_other_tasks():
     c.stop()
     assert c.cancellation.is_set()
     assert c.session.status is StreamStatus.LISTENING
+    for n in range(3):
+        assert c.accept_microphone_frame(frame(n)).suppressed_echo_risk
+    assert c.session.status is StreamStatus.LISTENING
     with pytest.raises(RuntimeError,match="no accepted speech"):
         c.interrupt_command()
