@@ -44,7 +44,7 @@ def split_speech_text(text: str, *, max_chars: int = MAX_CHARS) -> tuple[str, ..
             current = ""
         current = (current + " " + token).strip()
         # Prefer sentence edges once a moderate chunk has accumulated.
-        if len(current) >= max_chars // 2 and re.search(r"[.!?][\"']?$", token):
+        if re.search(r"[.!?][\"']?$", token):
             parts.append(current)
             current = ""
     if current:
