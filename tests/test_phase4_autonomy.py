@@ -314,3 +314,53 @@ def test_background_admission_budget_two_and_recovers_after_completed_work(dsn,m
             break
     assert third is not None
     assert third.operation_id not in {first.operation_id,second.operation_id}
+    # A queued Task deadline can expire before resource admission.
+    # P0, not the Goal/Procedure domain, durably blocks that stale operation.
+    from persona_agent.operation_control import reap_invalid_background_queue
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        conn.execute(
+            """UPDATE goal_tasks SET deadline=clock_timestamp()-interval '1 second'
+               WHERE task_id=(SELECT task_id FROM operations WHERE operation_id=%s)""",
+            (third.operation_id,),
+        )
+    assert call(dsn,reap_invalid_background_queue)>=1
+    assert check(dsn,
+        "SELECT status FROM operations WHERE operation_id=%s",
+        (third.operation_id,),
+    )==[("BLOCKED",)]
+
+
+def test_durable_completed_p2_result_reconciles_after_user_returns(dsn,monkeypatch):
+    _close_fixture_turns(dsn,monkeypatch)
+    from persona_agent.background_autonomous_worker import (
+        reconcile_pending_background_results,
+    )
+    user,instance,conv,_,task,run=staged(dsn)
+    command=prepare_approval(dsn,user,instance,conv,run)
+    call(dsn,authorize_background_agent_step,user_actor(user),command)
+    ready(dsn,user,instance)
+    call(dsn,dispatch_one_background_step,producer(user),instance,1)
+    lease=call(dsn,run_one_agent_step,worker_id="p4-durable-before-reconcile")
+    assert lease.operation_id==command.operation_id
+    assert check(dsn,
+        "SELECT status FROM operations WHERE operation_id=%s",
+        (command.operation_id,),
+    )==[("COMPLETED",)]
+    assert check(dsn,
+        "SELECT status FROM procedure_run_steps WHERE run_id=%s AND step_id='inspect'",
+        (run,),
+    )==[("NOT_STARTED",)]
+    # Crash/restart boundary: P0 completion happened in a valid Background
+    # epoch, but the Procedure owner had not reconciled it yet.
+    call(dsn,record_primary_activity,user_actor(user),PrimaryActivityCommand(
+        instance_id=instance,expected_generation=1,idempotency_key=uuid4().hex,
+    ))
+    assert call(dsn,reconcile_pending_background_results)>=1
+    assert check(dsn,
+        "SELECT status FROM procedure_run_steps WHERE run_id=%s AND step_id='inspect'",
+        (run,),
+    )==[("VERIFIED",)]
+    assert check(dsn,
+        "SELECT status FROM goal_tasks WHERE task_id=%s",(task,),
+    )==[("PLANNED",)]
+    assert call(dsn,reconcile_pending_background_results)==0
