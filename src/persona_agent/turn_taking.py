@@ -87,6 +87,8 @@ class TurnTakingController:
         with self._lock:
             if active and self._barge_in_detected:
                 raise RuntimeError("interrupted response must never restart playback")
+            if active and self.cancellation.is_set():
+                raise RuntimeError("stopped response must never restart playback")
             if active and self.session.status in {
                 StreamStatus.RECORDING, StreamStatus.FINAL_PENDING,
                 StreamStatus.COMMITTED,
