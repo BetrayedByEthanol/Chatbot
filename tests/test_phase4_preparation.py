@@ -847,7 +847,28 @@ def test_full_tail_earlier_epoch_does_not_revive_after_reenter_background(dsn):
              SummaryDraft(summary="An obsolete summary.",episodes=()),
              "fenced-summary")
     _assert_no_handover_writes(dsn,conversation)
+
+    # The new epoch must not inherit the obsolete admission slot. Its
+    # coordinator stages a NEW durable job rather than awaiting the old lease
+    # indefinitely (the latter is cancelled below to release its resources).
+    fresh=tick(dsn,user,instance,epoch=3)
+    assert (fresh.stage,fresh.state)==("SUMMARIZE","ENQUEUED")
+    assert fresh.operation_id != original.operation_id
+    assert tick(dsn,user,instance,epoch=3).state=="WAITING_OPERATION"
+    assert check(dsn,
+        """SELECT admission_attempt,background_handover_epoch
+           FROM conversation_summary_jobs WHERE conversation_id=%s
+           ORDER BY admission_attempt""",(conversation,),
+    )==[(1,1),(2,3)]
+
     _cancel_handover_claim(dsn,user,lease)
+    newlease=claim(dsn,SUMMARY_OPERATION)
+    assert newlease.operation_id==fresh.operation_id
+    call(dsn,run_summary,newlease,SummaryModel())
+    assert check(dsn,
+        "SELECT summary_watermark FROM conversations WHERE conversation_id=%s",
+        (conversation,),
+    )==[(1,)]
 
 
 def test_full_tail_requires_pending_handover_status_even_in_background(dsn):
