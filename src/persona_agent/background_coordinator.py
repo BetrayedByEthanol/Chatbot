@@ -101,16 +101,27 @@ def _change_stage(cursor, epoch: dict, target: str, *, reason: str | None = None
 
 
 def _job_status(cursor, conversation_id: UUID, expected_generation: int,
-                start_sequence: int, *, summary: bool) -> tuple[UUID | None, str | None]:
+                start_sequence: int, *, summary: bool,
+                background_epoch: int | None = None) -> tuple[UUID | None, str | None]:
     table = "conversation_summary_jobs" if summary else "cognitive_jobs"
+    # Only a full-tail job from THIS epoch may hold its admission slot.
+    # Earlier Background epochs are unconditionally revoked when a user
+    # returns, even if the selection generation has not changed.
+    extra = ("AND (j.background_handover_epoch IS NULL "
+             "OR j.background_handover_epoch=%s)") if summary else ""
+    params=(conversation_id,start_sequence,expected_generation)
+    if summary:
+        if background_epoch is None:
+            raise ValueError("summary lookup requires the current Background epoch")
+        params=(*params,background_epoch)
     cursor.execute(
         f"""SELECT j.operation_id,o.status
             FROM {table} j
             LEFT JOIN operations o ON o.operation_id=j.operation_id
             WHERE j.conversation_id=%s AND j.start_sequence=%s
-              AND j.expected_generation=%s
+              AND j.expected_generation=%s {extra}
             ORDER BY j.admission_attempt DESC LIMIT 1""",
-        (conversation_id,start_sequence,expected_generation),
+        params,
     )
     row = cursor.fetchone()
     return ((row["operation_id"],row["status"]) if row else (None,None))
@@ -203,6 +214,7 @@ def advance_background_preparation(
                     operation_id,status=_job_status(
                         cur,pending["conversation_id"],selected["generation"],
                         pending[watermark_key]+1,summary=summary,
+                        background_epoch=background_epoch if summary else None,
                     )
                     if status in _TERMINAL or status == "COMPLETED":
                         # READ COMMITTED: the worker may commit its watermark
