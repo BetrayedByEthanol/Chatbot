@@ -50,7 +50,8 @@ def dispatch_one_background_step(connection: Connection,
                 or selected["background_epoch"]!=background_epoch):
                 raise StaleSelection("Background epoch no longer selected")
             cur.execute(
-                """SELECT 1 FROM background_preparation_epochs e
+                """SELECT e.autonomous_cursor_position
+                   FROM background_preparation_epochs e
                    JOIN background_alignment_certificates cert
                      ON cert.user_id=e.user_id AND cert.instance_id=e.instance_id
                     AND cert.background_epoch=e.background_epoch
@@ -61,11 +62,21 @@ def dispatch_one_background_step(connection: Connection,
                      AND e.background_epoch=%s
                      AND e.selection_generation=%s
                      AND e.status='PENDING' AND e.preparation_stage='READY'
-                   FOR SHARE OF e""",
+                   FOR UPDATE OF e""",
                 (actor.user_id,instance_id,background_epoch,selected["generation"]),
             )
-            if cur.fetchone() is None:
+            epoch_state=cur.fetchone()
+            if epoch_state is None:
                 return None
+            # Persist an updated polling timestamp even with no runnable
+            # grants or available P2 slots; a fixed READY prefix must never
+            # starve other personas.
+            cur.execute(
+                """UPDATE background_preparation_epochs
+                   SET autonomous_polled_at=clock_timestamp()
+                   WHERE user_id=%s AND instance_id=%s AND background_epoch=%s""",
+                (actor.user_id,instance_id,background_epoch),
+            )
             # At most two active P2 operations per persona/epoch; P0 checks
             # this budget AGAIN transactionally when enqueuing.
             cur.execute(
@@ -91,6 +102,11 @@ def dispatch_one_background_step(connection: Connection,
                    JOIN goal_tasks task ON task.task_id=stage.task_id
                      AND task.user_id=stage.user_id
                      AND task.instance_id=stage.instance_id
+                   JOIN procedure_runs run ON run.run_id=stage.run_id
+                     AND run.user_id=stage.user_id AND run.instance_id=stage.instance_id
+                   JOIN procedure_run_steps step ON step.run_id=stage.run_id
+                     AND step.step_id=stage.step_id
+                     AND step.user_id=stage.user_id AND step.instance_id=stage.instance_id
                    LEFT JOIN operations existing
                      ON existing.operation_id=stage.operation_id
                    WHERE stage.user_id=%s AND stage.instance_id=%s
@@ -100,6 +116,12 @@ def dispatch_one_background_step(connection: Connection,
                      AND checked.decision='ELIGIBLE'
                      AND checked.task_version=stage.task_version
                      AND task.status='PLANNED' AND NOT task.suspended
+                     AND checked.task_version=task.version
+                     AND (task.deadline IS NULL OR task.deadline>clock_timestamp())
+                     AND run.status='ACTIVE' AND run.version=stage.run_version
+                     AND step.executor='AGENT' AND step.capability=%s
+                     AND step.version=stage.step_version
+                     AND step.status IN ('NOT_STARTED','FAILED','BLOCKED')
                      AND existing.operation_id IS NULL
                      AND NOT EXISTS (
                        SELECT 1 FROM operations running
@@ -109,12 +131,26 @@ def dispatch_one_background_step(connection: Connection,
                          AND running.status IN ('QUEUED','RUNNING','RETRY_WAIT',
                                                 'CANCEL_REQUESTED','SUSPEND_REQUESTED')
                      )
-                   ORDER BY checked.priority_rank,task.deadline NULLS LAST,
-                            stage.task_id,stage.operation_id
-                   LIMIT 1""",
-                (actor.user_id,instance_id,selected["generation"],background_epoch),
+                   ORDER BY checked.priority_rank,
+                            (SELECT count(*) FROM goal_tasks preferred
+                             WHERE preferred.user_id=task.user_id
+                               AND preferred.instance_id=task.instance_id
+                               AND preferred.preferred_over_task_id=task.task_id
+                               AND preferred.status='PLANNED'
+                               AND NOT preferred.suspended),
+                            task.deadline NULLS LAST,stage.task_id,stage.operation_id
+                   LIMIT 1 OFFSET %s""",
+                (actor.user_id,instance_id,selected["generation"],
+                 background_epoch,SLOW_TOOL,epoch_state["autonomous_cursor_position"]),
             )
             stage=cur.fetchone()
+            cur.execute(
+                """UPDATE background_preparation_epochs
+                   SET autonomous_cursor_position=%s
+                   WHERE user_id=%s AND instance_id=%s AND background_epoch=%s""",
+                (epoch_state["autonomous_cursor_position"]+1 if stage else 0,
+                 actor.user_id,instance_id,background_epoch),
+            )
     if stage is None:
         return None
     command=EnqueueOperation(
@@ -152,7 +188,8 @@ def run_autonomous_scan(connection: Connection, *, limit: int=32) -> tuple:
                  AND ready.instance_id=e.instance_id AND ready.background_epoch=e.background_epoch
                WHERE s.mode='BACKGROUND' AND e.status='PENDING'
                  AND e.preparation_stage='READY'
-               ORDER BY ready.ready_at,s.user_id
+               ORDER BY e.autonomous_polled_at NULLS FIRST,
+                        ready.ready_at,s.user_id
                LIMIT %s""",(limit,),
         )
         ready=tuple(cur.fetchall())
