@@ -231,7 +231,9 @@ def test_delivery_ack_requires_delivered_exact_instruction_not_generated_text(ds
     assert view.steps[0].independently_verified is False
     with psycopg.connect(dsn,autocommit=True) as conn:
         assert conn.execute(
-            "SELECT count(*) FROM task_outcome_reports",
+            """SELECT count(*) FROM task_outcome_reports
+               WHERE user_id=%s AND instance_id=%s""",
+            (user,instance),
         ).fetchone()[0]==0
 
 
