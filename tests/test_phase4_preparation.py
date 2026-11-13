@@ -946,3 +946,180 @@ def test_revoked_full_tail_does_not_suppress_ordinary_auto_summary(dsn):
         "SELECT summary_watermark FROM conversations WHERE conversation_id=%s",
         (conversation,),
     )==[(3,)]
+
+
+# P4-03 — ALIGN-01 and atomic P0 readiness ----------------------------
+
+from persona_agent.operation_scheduler import _eligible_for_policy
+
+
+def advance_to_readiness(dsn,user,instance,epoch=1,limit=32):
+    for _ in range(limit):
+        step=tick(dsn,user,instance,epoch)
+        if step.stage in ("READY","BLOCKED"):
+            return step
+        assert step.stage=="ALIGNMENT_PENDING",step
+    pytest.fail("ALIGN-01 did not complete within bounded scan")
+
+
+def test_align01_certifies_no_history_but_does_not_authorize_generic_p2(dsn):
+    user,instance,_=seed(dsn)
+    enter(dsn,user,instance)
+    assert tick(dsn,user,instance).stage=="CRITICAL_PENDING"
+    assert tick(dsn,user,instance).stage=="ALIGNMENT_PENDING"
+    certified=advance_to_readiness(dsn,user,instance)
+    assert (certified.stage,certified.state)==("READY","READY")
+    assert advance_to_readiness(dsn,user,instance).state=="READY"
+    assert check(dsn,
+        """SELECT checked_tasks,eligible_tasks,blocked_tasks,review_tasks
+           FROM background_alignment_certificates WHERE user_id=%s""",(user,),
+    )==[(0,0,0,0)]
+    assert check(dsn,
+        "SELECT count(*) FROM background_ready_epochs WHERE user_id=%s",(user,),
+    )==[(1,)]
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        from psycopg.rows import dict_row
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute("SELECT * FROM persona_selection WHERE user_id=%s",(user,))
+            selected=cur.fetchone()
+            # A taskless GOAL-origin operation cannot exploit a READY row.
+            assert not _eligible_for_policy(cur,{
+                "instance_id":instance,"selection_generation":1,
+                "execution_policy":"BACKGROUND_RESUMABLE",
+                "background_epoch":selected["background_epoch"],
+                "user_id":user,"task_id":None,"input_versions":{},
+            },selected)
+
+
+def _complete_all_unanswered(dsn,user,instance,conversation):
+    turns=check(dsn,
+        """SELECT turn_id FROM conversation_turns
+           WHERE user_id=%s AND instance_id=%s AND conversation_id=%s
+           ORDER BY sequence""",(user,instance,conversation),
+    )
+    for (turn_id,) in turns:
+        response=call(dsn,respond_to_text,user_actor(user),turn_id,FastResponse())
+        call(dsn,acknowledge_text_delivery,user_actor(user),response.response_id)
+
+
+def test_align01_unaffected_approved_agent_task_is_eligible_other_needs_review(dsn):
+    # Real P3 authorized records, not fabricated agent permissions.
+    from test_phase3_agent_operations import staged
+    from test_phase3_tasks import make_task
+    from persona_agent.operation_contracts import Policy
+
+    user,instance,conv,goal,task,run=staged(dsn,configured=False)
+    # Creating a second task under the same goal does not invalidate the
+    # first's purpose, but the second has no approved procedure run.
+    extra,_,_=make_task(
+        dsn,user,instance,conv,goal,2,
+        executor="AGENT",capability="text.statistics.v1",
+    )
+    _complete_all_unanswered(dsn,user,instance,conv)
+    entered=call(dsn,enter_background,user_actor(user),EnterBackgroundCommand(
+        instance_id=instance,expected_generation=1,expected_presence_revision=0,
+        reason=BackgroundReason.EXPLICIT_DEPARTURE,idempotency_key=str(uuid4()),
+    ))
+    assert entered.background_epoch==1
+    drive_to_critical(dsn,user,instance,limit=72)
+    assert drive_critical(dsn,user,instance,limit=40).stage=="ALIGNMENT_PENDING"
+    done=advance_to_readiness(dsn,user,instance)
+    assert done.stage=="READY"
+    results=check(dsn,
+        """SELECT task_id,decision,reason FROM background_alignment_task_checks
+           WHERE user_id=%s AND background_epoch=1 ORDER BY task_id""",(user,),
+    )
+    assert {x[0]:(x[1],x[2]) for x in results}=={
+        task:("ELIGIBLE","VALIDATED"),
+        extra:("REVIEW","MISSING_APPROVED_RUN"),
+    }
+    assert check(dsn,
+        """SELECT checked_tasks,eligible_tasks,blocked_tasks,review_tasks
+           FROM background_alignment_certificates WHERE user_id=%s""",(user,),
+    )==[(2,1,0,1)]
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        from psycopg.rows import dict_row
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute("SELECT * FROM persona_selection WHERE user_id=%s",(user,))
+            selection=cur.fetchone()
+            base={
+                "instance_id":instance,"selection_generation":1,
+                "execution_policy":Policy.BACKGROUND_RESUMABLE.value,
+                "background_epoch":None,"user_id":user,
+                "input_versions":{"task":1},
+            }
+            assert _eligible_for_policy(cur,{**base,"task_id":task},selection)
+            assert not _eligible_for_policy(cur,{**base,"task_id":extra},selection)
+            assert not _eligible_for_policy(cur,{**base,"task_id":task,
+                "input_versions":{"task":999}},selection)
+
+
+def test_align01_return_mid_scan_revokes_epoch_before_ready(dsn):
+    from test_phase3_tasks import make_goal,make_task
+    user,instance,_=seed(dsn)
+    conv=uuid4()
+    goal=make_goal(dsn,user,instance,conv)
+    task,_,_=make_task(
+        dsn,user,instance,conv,goal,1,
+        executor="AGENT",capability="text.statistics.v1",
+    )
+    _complete_all_unanswered(dsn,user,instance,conv)
+    enter(dsn,user,instance)
+    drive_to_critical(dsn,user,instance)
+    assert drive_critical(dsn,user,instance).stage=="ALIGNMENT_PENDING"
+    assert tick(dsn,user,instance).state=="SCANNING_ALIGNMENT"
+    call(dsn,record_primary_activity,user_actor(user),PrimaryActivityCommand(
+        instance_id=instance,expected_generation=1,idempotency_key=str(uuid4()),
+    ))
+    with pytest.raises(StaleBackgroundPreparation):
+        tick(dsn,user,instance)
+    assert check(dsn,
+        "SELECT count(*) FROM background_alignment_certificates WHERE user_id=%s",
+        (user,),
+    )==[(0,)]
+    assert check(dsn,
+        "SELECT count(*) FROM background_ready_epochs WHERE user_id=%s",
+        (user,),
+    )==[(0,)]
+
+
+def test_align01_stale_owner_version_blocks_certificate(dsn):
+    from test_phase3_tasks import make_goal,make_task
+    user,instance,_=seed(dsn)
+    conv=uuid4()
+    goal=make_goal(dsn,user,instance,conv)
+    task,_,_=make_task(
+        dsn,user,instance,conv,goal,1,
+        executor="AGENT",capability="text.statistics.v1",
+    )
+    _complete_all_unanswered(dsn,user,instance,conv)
+    enter(dsn,user,instance)
+    drive_to_critical(dsn,user,instance)
+    assert drive_critical(dsn,user,instance).stage=="ALIGNMENT_PENDING"
+    assert tick(dsn,user,instance).state=="SCANNING_ALIGNMENT"
+    # Simulate a concurrently committed owner revision without bypassing the
+    # coordinator's selection/epoch gate, testing stale projection fencing.
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        conn.execute(
+            "UPDATE goal_tasks SET version=version+1 WHERE task_id=%s",(task,),
+        )
+    result=tick(dsn,user,instance)
+    assert (result.stage,result.state)==("BLOCKED","REQUIRES_OPERATOR")
+    assert check(dsn,
+        "SELECT count(*) FROM background_ready_epochs WHERE user_id=%s",
+        (user,),
+    )==[(0,)]
+
+
+def test_align01_pending_instruction_never_certifies_ready(dsn):
+    user,instance,_=seed(dsn)
+    conv=uuid4()
+    add_closed_turn(dsn,user,instance,conv,
+                    "Do not run autonomous background tasks.")
+    enter(dsn,user,instance)
+    drive_to_critical(dsn,user,instance)
+    assert drive_critical(dsn,user,instance).state=="WAITING_OWNER"
+    assert check(dsn,
+        "SELECT count(*) FROM background_alignment_certificates WHERE user_id=%s",
+        (user,),
+    )==[(0,)]
