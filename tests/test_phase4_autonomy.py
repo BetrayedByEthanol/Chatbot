@@ -258,3 +258,59 @@ def test_ready_epoch_scanner_does_not_starve_later_personas(dsn):
                  AND instance_id=%s AND background_epoch=1""",
             (user,instance),
         )==[(True,)]
+
+
+def test_background_admission_budget_two_and_recovers_after_completed_work(dsn,monkeypatch):
+    _close_fixture_turns(dsn,monkeypatch)
+    from test_phase3_tasks import make_task
+    from test_phase3_runs import start_command
+    from persona_agent.procedure_run_state import start_procedure_run
+
+    user,instance,conv,goal,first_task,first_run=staged(dsn)
+    template=check(dsn,
+        "SELECT template_id FROM procedure_runs WHERE run_id=%s",
+        (first_run,),
+    )[0][0]
+    runs=[first_run]
+    for goal_version in (2,3):
+        extra,_,_=make_task(
+            dsn,user,instance,conv,goal,goal_version,
+            executor="AGENT",capability=SLOW_TOOL,
+        )
+        command=start_command(dsn,user,instance,conv,template,task=extra)
+        call(dsn,start_procedure_run,user_actor(user),command)
+        runs.append(command.run_id)
+    for run in runs:
+        grant=prepare_approval(dsn,user,instance,conv,run)
+        call(dsn,authorize_background_agent_step,user_actor(user),grant)
+    ready(dsn,user,instance)
+    assert check(dsn,
+        """SELECT count(*) FROM background_alignment_task_checks
+           WHERE user_id=%s AND background_epoch=1
+             AND decision='ELIGIBLE'""",(user,),
+    )==[(3,)]
+
+    first=call(dsn,dispatch_one_background_step,producer(user),instance,1)
+    assert first is not None
+    second=call(dsn,dispatch_one_background_step,producer(user),instance,1)
+    assert second is not None and first.operation_id!=second.operation_id
+    assert call(dsn,dispatch_one_background_step,producer(user),instance,1) is None
+    assert check(dsn,
+        """SELECT count(*) FROM operations
+           WHERE user_id=%s AND instance_id=%s AND priority_class='P2'
+             AND status='QUEUED'""",(user,instance),
+    )==[(2,)]
+
+    lease=call(dsn,run_one_agent_step,worker_id="p4-04-budget")
+    assert lease.operation_id in {first.operation_id,second.operation_id}
+    assert check(dsn,
+        "SELECT status FROM operations WHERE operation_id=%s",
+        (lease.operation_id,),
+    )==[("COMPLETED",)]
+    third=None
+    for _ in range(6):
+        third=call(dsn,dispatch_one_background_step,producer(user),instance,1)
+        if third is not None:
+            break
+    assert third is not None
+    assert third.operation_id not in {first.operation_id,second.operation_id}
