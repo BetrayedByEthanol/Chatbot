@@ -125,8 +125,19 @@ def test_authorized_background_readonly_step_executes_with_p0_and_preserves_task
 def test_no_background_permission_cannot_dispatch_foreground_p1_approval(dsn,monkeypatch):
     _close_fixture_turns(dsn,monkeypatch)
     user,instance,conv,_,task,run=staged(dsn)
-    from test_phase3_agent_operations import authorization
-    p1=authorization(dsn,user,instance,conv,run)
+    from persona_agent.procedure_agent_contracts import AuthorizeAgentStepCommand
+    src=procedure_fixtures.turn(
+        dsn,user,instance,conv,"Run the read-only AGENT step in this conversation.",
+    )
+    p1=AuthorizeAgentStepCommand(
+        instance_id=instance,expected_generation=1,idempotency_key=uuid4().hex,
+        conversation_id=conv,evidence_turn_id=src.turn_id,
+        evidence_quote="Run the read-only AGENT step",
+        operation_id=uuid4(),run_id=run,step_id="inspect",
+        expected_run_version=1,expected_step_version=1,expected_task_version=1,
+        max_words=5,
+    )
+    p1=procedure_fixtures.approve(dsn,user,instance,p1)
     # P3-approved Foreground steps never authorize P4 P2.
     from persona_agent.procedure_agent_state import authorize_agent_step
     call(dsn,authorize_agent_step,user_actor(user),p1)
@@ -153,14 +164,15 @@ def test_rejects_cross_epoch_and_unstaged_goal_admission(dsn,monkeypatch):
     grant=prepare_approval(dsn,user,instance,conv,run)
     call(dsn,authorize_background_agent_step,user_actor(user),grant)
     ready(dsn,user,instance)
+    forged_id=uuid4()
     forged=EnqueueOperation(
-        operation_id=uuid4(),instance_id=instance,expected_generation=1,
-        idempotency_key="procedure-agent:"+str(uuid4()), # deliberately mismatched ID
+        operation_id=forged_id,instance_id=instance,expected_generation=1,
+        idempotency_key="procedure-agent:"+str(forged_id),
         operation_type=PROCEDURE_AGENT_OPERATION,
         origin=Origin.GOAL,execution_policy=Policy.BACKGROUND_RESUMABLE,
         priority_class=Priority.P2,effect_class=EffectClass.READ_ONLY,
         resources={RESOURCE_KEY:1},capabilities=(SLOW_TOOL,),
-        concurrency_group="procedure.agent:forged",
+        concurrency_group="procedure.agent:"+str(forged_id),
         input_versions={"task":1,"procedure_run":1,"procedure_step":1},
         task_id=task,
     )
@@ -168,6 +180,8 @@ def test_rejects_cross_epoch_and_unstaged_goal_admission(dsn,monkeypatch):
     with pytest.raises(PermissionDenied):
         call(dsn,enqueue_operation,
              TrustedPlatformActor(user_id=user,source_id="arbitrary.platform"),forged)
+    with pytest.raises(PermissionDenied,match="approved authorization"):
+        call(dsn,enqueue_operation,producer(user),forged)
     admitted=call(dsn,dispatch_one_background_step,producer(user),instance,1)
     assert admitted.operation_id==grant.operation_id
     call(dsn,record_primary_activity,user_actor(user),PrimaryActivityCommand(
