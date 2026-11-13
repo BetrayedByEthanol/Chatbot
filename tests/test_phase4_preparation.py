@@ -1133,3 +1133,55 @@ def test_align01_pending_instruction_never_certifies_ready(dsn):
         "SELECT count(*) FROM background_alignment_certificates WHERE user_id=%s",
         (user,),
     )==[(0,)]
+
+
+def test_align01_changed_goal_strategy_needs_new_method_approval(dsn,monkeypatch):
+    _close_fixture_turns(dsn,monkeypatch)
+    from test_phase3_agent_operations import staged
+    from test_phase3_procedures import turn as explicit_turn
+    from persona_agent.goal_contracts import (
+        ProposeGoalStrategyCommand,SelectGoalStrategyCommand,
+    )
+    from persona_agent.goal_state import propose_goal_strategy,select_goal_strategy
+
+    user,instance,conv,goal,task,run=staged(dsn,configured=False)
+    candidate=uuid4()
+    source=explicit_turn(dsn,user,instance,conv,
+                         "Consider a different way to prepare my meals.")
+    proposed=ProposeGoalStrategyCommand(
+        instance_id=instance,expected_generation=1,idempotency_key=str(uuid4()),
+        conversation_id=conv,evidence_turn_id=source.turn_id,
+        evidence_quote="Consider a different way to prepare my meals.",
+        goal_id=goal,strategy_id=candidate,
+        title="Alternative meal preparation",
+        approach="Use ingredients prepared on weekends for weeknight meals",
+        suitability_note="May better fit the user's available time",
+    )
+    call(dsn,propose_goal_strategy,user_actor(user),proposed)
+    request=explicit_turn(dsn,user,instance,conv,
+                          "Select the new strategy for my goal.")
+    selected=SelectGoalStrategyCommand(
+        instance_id=instance,expected_generation=1,idempotency_key=str(uuid4()),
+        conversation_id=conv,evidence_turn_id=request.turn_id,
+        evidence_quote="Select the new strategy for my goal.",
+        goal_id=goal,strategy_id=candidate,expected_goal_version=2,
+    )
+    approval=explicit_turn(dsn,user,instance,conv,
+                           goal_action_approval_phrase(selected))
+    call(dsn,select_goal_strategy,user_actor(user),
+         selected.model_copy(update={"approval_turn_id":approval.turn_id}))
+    call(dsn,enter_background,user_actor(user),EnterBackgroundCommand(
+        instance_id=instance,expected_generation=1,expected_presence_revision=0,
+        reason=BackgroundReason.EXPLICIT_DEPARTURE,idempotency_key=str(uuid4()),
+    ))
+    drive_to_critical(dsn,user,instance,limit=72)
+    assert drive_critical(dsn,user,instance,limit=40).stage=="ALIGNMENT_PENDING"
+    assert advance_to_readiness(dsn,user,instance).stage=="READY"
+    assert check(dsn,
+        """SELECT decision,reason FROM background_alignment_task_checks
+           WHERE user_id=%s AND task_id=%s""",(user,task),
+    )==[("REVIEW","STRATEGY_CHANGED")]
+    assert check(dsn,
+        "SELECT eligible_tasks,review_tasks FROM background_alignment_certificates WHERE user_id=%s",
+        (user,),
+    )==[(0,1)]
