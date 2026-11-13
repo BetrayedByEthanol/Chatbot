@@ -364,3 +364,43 @@ def test_durable_completed_p2_result_reconciles_after_user_returns(dsn,monkeypat
         "SELECT status FROM goal_tasks WHERE task_id=%s",(task,),
     )==[("PLANNED",)]
     assert call(dsn,reconcile_pending_background_results)==0
+
+
+def test_generic_reaper_suspended_never_claimed_p2_can_be_safely_retired(dsn,monkeypatch):
+    _close_fixture_turns(dsn,monkeypatch)
+    from persona_agent.operation_control import (
+        reap_stale_operations,reap_invalid_background_queue,
+    )
+    user,instance,conv,_,_,run=staged(dsn)
+    old=prepare_approval(dsn,user,instance,conv,run)
+    call(dsn,authorize_background_agent_step,user_actor(user),old)
+    ready(dsn,user,instance)
+    call(dsn,dispatch_one_background_step,producer(user),instance,1)
+    assert check(dsn,
+        "SELECT status,attempt_count FROM operations WHERE operation_id=%s",
+        (old.operation_id,),
+    )==[("QUEUED",0)]
+    call(dsn,record_primary_activity,user_actor(user),PrimaryActivityCommand(
+        instance_id=instance,expected_generation=1,idempotency_key=uuid4().hex,
+    ))
+    # Simulate another P0 recovery worker winning the race before the P4
+    # worker reaches the stale QUEUED attempt.
+    assert call(dsn,reap_stale_operations)>=1
+    assert check(dsn,
+        "SELECT status,attempt_count FROM operations WHERE operation_id=%s",
+        (old.operation_id,),
+    )==[("SUSPENDED",0)]
+    assert call(dsn,reap_invalid_background_queue)>=1
+    assert check(dsn,
+        "SELECT status FROM operations WHERE operation_id=%s",
+        (old.operation_id,),
+    )==[("BLOCKED",)]
+    fresh=prepare_approval(dsn,user,instance,conv,run,epoch=3)
+    call(dsn,authorize_background_agent_step,user_actor(user),fresh)
+    assert check(dsn,
+        """SELECT operation_id,state,approved_background_epoch
+           FROM procedure_agent_operation_authorizations
+           WHERE operation_id IN (%s,%s) ORDER BY approved_background_epoch""",
+        (old.operation_id,fresh.operation_id),
+    )==[(old.operation_id,"INVALIDATED",1),
+        (fresh.operation_id,"AUTHORIZED",3)]
