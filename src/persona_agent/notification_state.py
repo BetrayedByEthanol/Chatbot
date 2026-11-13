@@ -159,10 +159,16 @@ def update_notification_policy(
                    SET enabled=EXCLUDED.enabled,timezone=EXCLUDED.timezone,
                        quiet_start_min=EXCLUDED.quiet_start_min,
                        quiet_end_min=EXCLUDED.quiet_end_min,version=EXCLUDED.version,
-                       updated_at=clock_timestamp()""",
+                       updated_at=clock_timestamp()
+                   WHERE notification_policies.version=%s
+                   RETURNING version""",
                 (actor.user_id,command.enabled,command.timezone,
-                 command.quiet_start_min,command.quiet_end_min,version),
+                 command.quiet_start_min,command.quiet_end_min,version,current),
             )
+            if cur.fetchone() is None:
+                # Concurrent first-time policy creation must not silently
+                # replace another user's newer preference revision.
+                raise VersionConflict("notification policy revision changed concurrently")
             event=_event(cur,actor.user_id,command.instance_id,
                          "notification.policy.changed.v1",{
                 "enabled":command.enabled,"version":version,
