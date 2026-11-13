@@ -54,8 +54,10 @@ is invoked. The authenticated frontend consumes the inbox API separately.
 ## Failure behavior
 
 - Existing PostgreSQL transactions, stream events and transactional outbox
-  preserve intent, occurrence, policy and action state. Duplicate scheduler
-  ticks use row locks and unique per-intent scheduled occurrence keys;
+  preserve intent, occurrence, policy and action state. Due intents and
+  expired snoozes share one globally ordered, quiet-hour-filtered due queue,
+  preventing either class from starving earlier eligible work. Duplicate ticks
+  use row locks and unique per-intent scheduled occurrence keys;
   duplicate user commands replay only when exact command payload matches.
 - No network/provider call exists. The only possible delivery effect is a
   single durable in-app occurrence. No "exactly once" promise for future push
