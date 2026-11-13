@@ -395,6 +395,24 @@ def _eligible_for_policy(cursor, operation: dict, selected: dict | None) -> bool
              AND checked.task_version=task.version
              AND checked.task_version=%s
              AND task.status='PLANNED' AND NOT task.suspended
+             AND NOT EXISTS (
+                 SELECT 1 FROM jsonb_each_text(checked.goal_versions)
+                   AS pin(id,ver)
+                 LEFT JOIN goal_records goal
+                   ON goal.goal_id=pin.id::uuid
+                  AND goal.user_id=checked.user_id
+                  AND goal.instance_id=checked.instance_id
+                 WHERE goal.goal_id IS NULL
+                    OR goal.version<>pin.ver::bigint OR goal.status<>'ACTIVE'
+             )
+             AND EXISTS (
+                 SELECT 1 FROM procedure_runs run
+                 WHERE run.run_id=checked.procedure_run_id
+                   AND run.user_id=checked.user_id
+                   AND run.instance_id=checked.instance_id
+                   AND run.version=checked.procedure_run_version
+                   AND run.status='ACTIVE'
+             )
            LIMIT 1""",
         (operation["task_id"],operation["user_id"],operation["instance_id"],
          selected["background_epoch"],selected["generation"],
