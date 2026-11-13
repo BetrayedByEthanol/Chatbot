@@ -236,6 +236,11 @@ def test_live_barge_in_produces_one_user_turn_without_marking_tts_heard(dsn):
     with psycopg.connect(dsn,autocommit=True) as conn:
         done=session.apply_decode(conn,result.decode_request,"I have another question")
     assert done.disposition=="COMMITTED"
+    # The original stop ACK may arrive late, after FINAL advanced dialogue.
+    replayed=call(dsn,interrupt_speech_response,actor(user),control.interrupt_command())
+    assert replayed.replayed
+    assert replayed.interruption_id==stopped.interruption_id
+    assert replayed.interrupted_clips==1
     context=call(dsn,prepare_text_context,actor(user),done.committed.turn_id)
     roles=[(m.role,m.content) for m in context.messages]
     assert ("user","I have another question") in roles
