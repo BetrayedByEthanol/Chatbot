@@ -123,13 +123,13 @@ def test_speech_clips_mark_response_delivered_only_after_all_played(dsn):
         ).fetchone()[0]==1
         assert conn.execute(
             """SELECT count(*) FROM events WHERE event_type LIKE
-               'communication.speech_clip.%' AND payload->>'response_id'=%s""",
+               'communication.speech_clip.%%' AND payload->>'response_id'=%s""",
             (str(reply.response_id),),
         ).fetchone()[0]==8
         assert conn.execute(
             """SELECT count(*) FROM outbox o JOIN events e USING(event_id)
                WHERE e.payload->>'response_id'=%s
-                 AND e.event_type LIKE 'communication.speech_clip.%'""",
+                 AND e.event_type LIKE 'communication.speech_clip.%%'""",
             (str(reply.response_id),),
         ).fetchone()[0]==8
     # The existing context builder now includes the fully-played reply.
