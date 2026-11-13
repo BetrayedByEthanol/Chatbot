@@ -377,3 +377,156 @@ def test_completed_job_watermark_race_does_not_block_epoch(dsn,monkeypatch):
         """SELECT 1 FROM background_ready_epochs WHERE user_id=%s""",
         (user,),
     )==[]
+
+
+# P4-02b source-linked critical update integration tests ---------------------
+
+from persona_agent.background_critical_updates import list_critical_updates
+from persona_agent.goal_contracts import (
+    CreateGoalCommand,SetGoalStatusCommand,goal_action_approval_phrase,
+)
+from persona_agent.goal_state import create_goal,set_goal_status
+from persona_agent.memory_extraction import (
+    register_extraction_consumer,run_extraction_tick,
+)
+
+
+def drive_to_critical(dsn,user,instance,limit=36):
+    """Run actual P0 model-operation handover, not a fabricated watermark."""
+    for _ in range(limit):
+        progress=tick(dsn,user,instance)
+        if progress.stage=="CRITICAL_PENDING":
+            return progress
+        assert progress.state=="ENQUEUED",progress
+        if progress.stage=="SUMMARIZE":
+            call(dsn,run_summary,claim(dsn,SUMMARY_OPERATION),SummaryModel())
+        else:
+            assert progress.stage=="EVALUATE"
+            call(dsn,run_cognition,claim(dsn,COGNITIVE_OPERATION),CognitiveModel())
+    pytest.fail("summary/cognitive handover never finished")
+
+
+def drive_critical(dsn,user,instance,limit=16):
+    for _ in range(limit):
+        result=tick(dsn,user,instance)
+        if result.state in ("WAITING_OWNER","AWAITING_ALIGNMENT","REQUIRES_OPERATOR"):
+            return result
+        assert result.stage=="CRITICAL_PENDING",result
+    pytest.fail("critical consolidation did not reach a stable result")
+
+
+def test_critical_scan_reaches_alignment_only_after_source_watermark(dsn):
+    user,instance,_=seed(dsn)
+    conversation=uuid4()
+    add_closed_turn(dsn,user,instance,conversation,"We discussed caring for plants.")
+    add_closed_turn(dsn,user,instance,conversation,"I'm learning to make soup.")
+    enter(dsn,user,instance)
+    drive_to_critical(dsn,user,instance)
+    done=drive_critical(dsn,user,instance)
+    assert done.stage=="ALIGNMENT_PENDING"
+    assert done.state=="AWAITING_ALIGNMENT"
+    assert call(dsn,list_critical_updates,user_actor(user),instance,1)==()
+    assert check(dsn,
+        """SELECT critical_committed_watermark FROM conversations
+           WHERE conversation_id=%s""",(conversation,),
+    )==[(2,)]
+    assert check(dsn,
+        "SELECT count(*) FROM background_ready_epochs WHERE user_id=%s",(user,),
+    )==[(0,)]
+
+
+def test_action_restriction_is_durable_unresolved_and_not_silently_applied(dsn):
+    user,instance,_=seed(dsn)
+    conversation=uuid4()
+    source=add_closed_turn(dsn,user,instance,conversation,
+                           "Do not run autonomous background tasks.")
+    enter(dsn,user,instance)
+    drive_to_critical(dsn,user,instance)
+    waiting=drive_critical(dsn,user,instance)
+    assert (waiting.stage,waiting.state)==("CRITICAL_PENDING","WAITING_OWNER")
+    items=call(dsn,list_critical_updates,user_actor(user),instance,1)
+    assert len(items)==1
+    assert (items[0]["domain"],items[0]["status"],items[0]["source_turn_id"])==(
+        "INSTRUCTION","PENDING",source.turn_id,
+    )
+    assert check(dsn,
+        "SELECT critical_committed_watermark FROM conversations WHERE conversation_id=%s",
+        (conversation,),
+    )==[(0,)]
+    assert check(dsn,
+        "SELECT count(*) FROM background_ready_epochs WHERE user_id=%s",(user,),
+    )==[(0,)]
+
+
+def test_goal_status_requires_actual_owner_command_and_source_turn(dsn):
+    user,instance,_=seed(dsn)
+    conversation=uuid4()
+    goal_id=uuid4()
+    initial=add_closed_turn(dsn,user,instance,conversation,
+                            "I want to make healthy dinners.")
+    proposed=CreateGoalCommand(
+        instance_id=instance,expected_generation=1,idempotency_key=str(uuid4()),
+        conversation_id=conversation,evidence_turn_id=initial.turn_id,
+        evidence_quote="I want to make healthy dinners.",goal_id=goal_id,
+        title="Cook",desired_outcome="Prepare healthy dinners",
+        success_criterion="Three dinners each week",horizon="SHORT",
+    )
+    approved=add_closed_turn(dsn,user,instance,conversation,
+                             goal_action_approval_phrase(proposed))
+    call(dsn,create_goal,user_actor(user),
+         proposed.model_copy(update={"approval_turn_id":approved.turn_id}))
+    instruction=add_closed_turn(dsn,user,instance,conversation,"Pause my goal.")
+    status=SetGoalStatusCommand(
+        instance_id=instance,expected_generation=1,idempotency_key=str(uuid4()),
+        conversation_id=conversation,evidence_turn_id=instruction.turn_id,
+        evidence_quote="Pause my goal.",goal_id=goal_id,
+        expected_goal_version=1,new_status="PAUSED",
+    )
+    approved_status=add_closed_turn(dsn,user,instance,conversation,
+                                   goal_action_approval_phrase(status))
+    accepted=call(dsn,set_goal_status,user_actor(user),
+                  status.model_copy(update={"approval_turn_id":approved_status.turn_id}))
+    enter(dsn,user,instance)
+    drive_to_critical(dsn,user,instance)
+    verified=drive_critical(dsn,user,instance)
+    assert verified.stage=="ALIGNMENT_PENDING"
+    items=call(dsn,list_critical_updates,user_actor(user),instance,1)
+    assert len(items)==1
+    assert (items[0]["domain"],items[0]["status"],items[0]["owner_ref"])==(
+        "GOAL","VERIFIED",accepted.event_id,
+    )
+    assert check(dsn,"SELECT status FROM goal_records WHERE goal_id=%s",
+                 (goal_id,))==[("PAUSED",)]
+
+
+def test_memory_conflict_cannot_be_promoted_without_memory_owner(dsn):
+    user,instance,_=seed(dsn)
+    conversation=uuid4()
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        register_extraction_consumer(conn)
+    first=add_closed_turn(dsn,user,instance,conversation,
+                          "My favorite drink is tea.")
+    # The existing Memory domain admits only a safe explicit claim; this
+    # consumer does not change persona selection or infer a goal.
+    call(dsn,run_extraction_tick,worker_id=f"p4-mem-{uuid4()}",
+         max_deliveries=1000)
+    second=add_closed_turn(dsn,user,instance,conversation,
+                           "My favorite drink is coffee.")
+    call(dsn,run_extraction_tick,worker_id=f"p4-mem-{uuid4()}",
+         max_deliveries=1000)
+    statuses=check(dsn,
+        """SELECT source_turn_id,status FROM memory_extraction_candidates
+           WHERE user_id=%s AND instance_id=%s""",(user,instance),
+    )
+    assert dict(statuses)=={first.turn_id:"ADMITTED",second.turn_id:"CONFLICT"}
+    enter(dsn,user,instance)
+    drive_to_critical(dsn,user,instance)
+    pending=drive_critical(dsn,user,instance)
+    assert (pending.stage,pending.state)==("CRITICAL_PENDING","WAITING_OWNER")
+    items=call(dsn,list_critical_updates,user_actor(user),instance,1)
+    assert {v["source_turn_id"]:v["status"] for v in items}=={
+        first.turn_id:"VERIFIED",second.turn_id:"PENDING",
+    }
+    assert check(dsn,
+        "SELECT count(*) FROM background_ready_epochs WHERE user_id=%s",(user,),
+    )==[(0,)]
