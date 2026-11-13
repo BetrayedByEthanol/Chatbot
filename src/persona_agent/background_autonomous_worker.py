@@ -55,7 +55,11 @@ def reconcile_pending_background_results(connection, *, limit: int=32) -> int:
 
 def run_autonomous_tick(connection, *, worker_id: str="background-agent"):
     """P0 queue hygiene, bounded dispatch, one claim and durable recovery."""
+    # P4 queue fences must run before the generic reaper can SUSPEND
+    # never-claimed stale P2. The P4 reaper also handles a historical
+    # zero-attempt SUSPENDED record should another worker have won the race.
     reap_invalid_background_queue(connection,limit=32)
+    reap_stale_operations(connection,limit=100)
     admitted=run_autonomous_scan(connection,limit=32)
     lease=run_one_agent_step(connection,worker_id=worker_id)
     if lease is not None:
@@ -81,7 +85,6 @@ def run_autonomous_worker(dsn: str, *, stop: threading.Event | None=None,
     stopping=stop or threading.Event()
     while not stopping.is_set():
         with psycopg.connect(dsn,autocommit=True) as conn:
-            reap_stale_operations(conn,limit=100)
             result,lease=run_autonomous_tick(conn,worker_id=worker_id)
         if not result and lease is None:
             stopping.wait(poll_seconds)
