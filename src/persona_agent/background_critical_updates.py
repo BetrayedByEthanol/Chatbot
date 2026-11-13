@@ -73,7 +73,26 @@ def _owner_reference(cur, row: dict) -> UUID | None:
             "ADMITTED","CORROBORATED","STALE","APPROVED"
         ):
             return candidate["candidate_id"]
-        return None
+        # A user can also have explicitly committed the same source through
+        # Memory's existing validated admit/amend commands, which do not
+        # require a separate automatic-extraction candidate. Only a real
+        # Memory-owned revision and its authenticated event count.
+        cur.execute(
+            """SELECT rev.event_id FROM memory_revisions rev
+               JOIN events e ON e.event_id=rev.event_id
+                AND e.user_id=rev.user_id AND e.instance_id=rev.instance_id
+               WHERE rev.user_id=%s AND rev.instance_id=%s
+                 AND rev.source_conversation_id=%s AND rev.source_turn_id=%s
+                 AND e.trust_level='AUTHENTICATED_USER'
+                 AND e.event_type IN (
+                   'memory.record.admitted.v1',
+                   'memory.record.corrected.v1',
+                   'memory.record.retracted.v1'
+                 )
+               ORDER BY rev.version DESC LIMIT 1""",params,
+        )
+        explicit=cur.fetchone()
+        return explicit["event_id"] if explicit else None
     if row["domain"]=="GOAL":
         cur.execute(
             """SELECT proof.event_id FROM (
