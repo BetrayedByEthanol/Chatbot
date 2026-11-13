@@ -71,7 +71,7 @@ def interrupt_speech_response(
                 return SpeechInterruptResult(
                     interruption_id=prior["interruption_id"],
                     response_id=command.response_id,
-                    interrupted_clips=0,replayed=True,
+                    interrupted_clips=prior["interrupted_clips"],replayed=True,
                 )
             cur.execute(
                 "SELECT DISTINCT channel_id FROM speech_clips WHERE response_id=%s",
@@ -102,6 +102,11 @@ def interrupt_speech_response(
                 (command.response_id,),
             )
             interrupted=sorted(cur.fetchall(),key=lambda row:row["clip_index"])
+            cur.execute(
+                "UPDATE speech_output_interruptions SET interrupted_clips=%s "
+                "WHERE interruption_id=%s",
+                (len(interrupted), interruption_id),
+            )
             for clip in interrupted:
                 _clip_event(cur,response,clip,status="INTERRUPTED",
                             source_id=actor.source_id,trust="AUTHENTICATED_USER")
