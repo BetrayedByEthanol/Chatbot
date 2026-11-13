@@ -991,18 +991,29 @@ def test_align01_certifies_no_history_but_does_not_authorize_generic_p2(dsn):
             },selected)
 
 
-def _complete_all_unanswered(dsn,user,instance,conversation):
-    turns=check(dsn,
-        """SELECT turn_id FROM conversation_turns
-           WHERE user_id=%s AND instance_id=%s AND conversation_id=%s
-           ORDER BY sequence""",(user,instance,conversation),
-    )
-    for (turn_id,) in turns:
-        response=call(dsn,respond_to_text,user_actor(user),turn_id,FastResponse())
-        call(dsn,acknowledge_text_delivery,user_actor(user),response.response_id)
+def _close_fixture_turns(dsn,monkeypatch):
+    """Keep P3's genuine approved commands and deliver each response in order.
+
+    Replaying old unanswered turns after a newer turn is intentionally denied
+    by Conversation; wrap the test factories instead of bypassing that guard.
+    """
+    import test_phase3_procedures as procedures
+    import test_phase3_runs as runs
+    import test_phase3_tasks as tasks
+    for module in (procedures,runs,tasks):
+        original=module.turn
+        def close_turn(*args,_original=original,**kwargs):
+            result=_original(*args,**kwargs)
+            response=call(
+                dsn,respond_to_text,user_actor(args[1]),result.turn_id,FastResponse(),
+            )
+            call(dsn,acknowledge_text_delivery,user_actor(args[1]),response.response_id)
+            return result
+        monkeypatch.setattr(module,"turn",close_turn)
 
 
-def test_align01_unaffected_approved_agent_task_is_eligible_other_needs_review(dsn):
+def test_align01_unaffected_approved_agent_task_is_eligible_other_needs_review(dsn,monkeypatch):
+    _close_fixture_turns(dsn,monkeypatch)
     # Real P3 authorized records, not fabricated agent permissions.
     from test_phase3_agent_operations import staged
     from test_phase3_tasks import make_task
@@ -1015,7 +1026,6 @@ def test_align01_unaffected_approved_agent_task_is_eligible_other_needs_review(d
         dsn,user,instance,conv,goal,2,
         executor="AGENT",capability="text.statistics.v1",
     )
-    _complete_all_unanswered(dsn,user,instance,conv)
     entered=call(dsn,enter_background,user_actor(user),EnterBackgroundCommand(
         instance_id=instance,expected_generation=1,expected_presence_revision=0,
         reason=BackgroundReason.EXPLICIT_DEPARTURE,idempotency_key=str(uuid4()),
@@ -1054,7 +1064,8 @@ def test_align01_unaffected_approved_agent_task_is_eligible_other_needs_review(d
                 "input_versions":{"task":999}},selection)
 
 
-def test_align01_return_mid_scan_revokes_epoch_before_ready(dsn):
+def test_align01_return_mid_scan_revokes_epoch_before_ready(dsn,monkeypatch):
+    _close_fixture_turns(dsn,monkeypatch)
     from test_phase3_tasks import make_goal,make_task
     user,instance,_=seed(dsn)
     conv=uuid4()
@@ -1063,7 +1074,6 @@ def test_align01_return_mid_scan_revokes_epoch_before_ready(dsn):
         dsn,user,instance,conv,goal,1,
         executor="AGENT",capability="text.statistics.v1",
     )
-    _complete_all_unanswered(dsn,user,instance,conv)
     enter(dsn,user,instance)
     drive_to_critical(dsn,user,instance)
     assert drive_critical(dsn,user,instance).stage=="ALIGNMENT_PENDING"
@@ -1083,7 +1093,8 @@ def test_align01_return_mid_scan_revokes_epoch_before_ready(dsn):
     )==[(0,)]
 
 
-def test_align01_stale_owner_version_blocks_certificate(dsn):
+def test_align01_stale_owner_version_blocks_certificate(dsn,monkeypatch):
+    _close_fixture_turns(dsn,monkeypatch)
     from test_phase3_tasks import make_goal,make_task
     user,instance,_=seed(dsn)
     conv=uuid4()
@@ -1092,7 +1103,6 @@ def test_align01_stale_owner_version_blocks_certificate(dsn):
         dsn,user,instance,conv,goal,1,
         executor="AGENT",capability="text.statistics.v1",
     )
-    _complete_all_unanswered(dsn,user,instance,conv)
     enter(dsn,user,instance)
     drive_to_critical(dsn,user,instance)
     assert drive_critical(dsn,user,instance).stage=="ALIGNMENT_PENDING"
