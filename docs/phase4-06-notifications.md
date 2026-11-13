@@ -35,7 +35,7 @@ not observed/read on a device.
   AVAILABLE does not imply the user read a message.
 - Authenticated `respond_to_notification` supports ACK, STOP, SNOOZE (bounded
   minutes), and REPLY; exact idempotency receipts and event/outbox. STOP
-  cancels future occurrences. REPLY is a durable, persona-scoped
+  cancels future occurrences **and suppresses already snoozed pending reminders**. REPLY is a durable, persona-scoped
   `PENDING_PERSONA` mailbox item, **not** a conversation turn or cognitive
   inference. It can be inspected only when the originating persona is
   explicitly selected in Foreground via
