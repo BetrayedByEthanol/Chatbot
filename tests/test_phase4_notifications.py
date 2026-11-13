@@ -264,6 +264,30 @@ def test_duplicate_platform_ticks_cannot_duplicate_occurrence(dsn):
     )==[(1,)]
 
 
+def test_quiet_backlog_cannot_starve_other_users_bounded_due_scan(dsn):
+    muted,first,_=seed(dsn)
+    current=datetime.now(timezone.utc)
+    minute=current.hour*60+current.minute
+    enabled(dsn,muted,first,tz="UTC",
+            start=(minute-30)%1440,end=(minute+30)%1440)
+    for _ in range(6):
+        command=schedule(muted,first,due=current-timedelta(minutes=2))
+        call(dsn,schedule_notification,user_actor(muted),command)
+    allowed,active,_=_ready(dsn)
+    available=schedule(allowed,active,due=current-timedelta(minutes=1))
+    call(dsn,schedule_notification,user_actor(allowed),available)
+    # Even limit=1 must skip all earlier quiet-hour candidates.
+    assert call(dsn,dispatch_due_notifications,limit=1)==1
+    assert check(dsn,
+        "SELECT count(*) FROM notification_occurrences WHERE intent_id=%s",
+        (available.intent_id,),
+    )==[(1,)]
+    assert check(dsn,
+        "SELECT count(*) FROM notification_occurrences WHERE user_id=%s",
+        (muted,),
+    )==[(0,)]
+
+
 def test_local_dst_recurring_schedule_gap_and_fold():
     zone=ZoneInfo("Europe/Berlin")
     before_spring=datetime(2026,3,28,12,tzinfo=zone).astimezone(timezone.utc)
