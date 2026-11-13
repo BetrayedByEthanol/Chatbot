@@ -14,6 +14,7 @@ from .tool_contracts import SLOW_TOOL, PROCEDURE_AGENT_OPERATION
 
 def require_procedure_agent_gate(cur, operation: dict, *,
                                  allow_past_deadline_evidence: bool=False,
+                                 allow_completed_background_evidence: bool=False,
                                  stage_only: bool=False) -> dict:
     """Return approved staging record or reject a stale task/run/capability.
 
@@ -43,22 +44,30 @@ def require_procedure_agent_gate(cur, operation: dict, *,
                 or operation.get("effect_class")!="READ_ONLY"
                 or stage["approved_background_epoch"] is None):
                 raise PermissionDenied("Background AGENT operation lacks user-approved P2 grant")
-            cur.execute(
-                """SELECT instance_id,generation,mode,background_epoch
-                   FROM persona_selection WHERE user_id=%s FOR SHARE""",(user_id,),
+            historical_result=(
+                allow_completed_background_evidence
+                and operation.get("status")=="COMPLETED"
+                and operation.get("effect_status")=="CONFIRMED"
+                and stage["approved_background_epoch"]
+                    ==operation.get("background_epoch")
             )
-            selected=cur.fetchone()
-            if (selected is None or selected["instance_id"]!=instance_id
-                or selected["mode"]!="BACKGROUND"
-                or stage["approved_background_epoch"]!=selected["background_epoch"]
-                or operation.get("background_epoch")!=selected["background_epoch"]):
-                raise VersionConflict("Background approval epoch no longer current")
-            # P4-03 certified readiness and current Goal/Procedure pins must
-            # remain valid at enqueue, claim, before dispatch and completion.
-            # Lazy import avoids a P0 scheduler -> Procedure gate cycle.
-            from .operation_scheduler import _eligible_for_policy
-            if not _eligible_for_policy(cur,operation,selected):
-                raise VersionConflict("Background task alignment revoked")
+            if not historical_result:
+                cur.execute(
+                    """SELECT instance_id,generation,mode,background_epoch
+                       FROM persona_selection WHERE user_id=%s FOR SHARE""",(user_id,),
+                )
+                selected=cur.fetchone()
+                if (selected is None or selected["instance_id"]!=instance_id
+                    or selected["mode"]!="BACKGROUND"
+                    or stage["approved_background_epoch"]!=selected["background_epoch"]
+                    or operation.get("background_epoch")!=selected["background_epoch"]):
+                    raise VersionConflict("Background approval epoch no longer current")
+                # Completion evidence was accepted under P0's live epoch
+                # fence. Reconciliation is only a historical evidence write,
+                # not permission to dispatch another Background tool action.
+                from .operation_scheduler import _eligible_for_policy
+                if not _eligible_for_policy(cur,operation,selected):
+                    raise VersionConflict("Background task alignment revoked")
         elif stage["approved_background_epoch"] is not None:
             raise PermissionDenied("Background-only step grant cannot become P1 authority")
     expected={
