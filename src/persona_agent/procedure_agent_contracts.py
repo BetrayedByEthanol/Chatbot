@@ -19,6 +19,24 @@ class AuthorizeAgentStepCommand(ProcedureRunChangeCommand):
     max_words: int = Field(default=5, ge=1, le=20)
 
 
+
+class AuthorizeBackgroundAgentStepCommand(AuthorizeAgentStepCommand):
+    """Explicit user opt-in to ONE read-only step in ONE future Background epoch.
+
+    Approvals use the standard exact procedure_approval_phrase; previous P3
+    Foreground authorizations never imply Background consent.
+    """
+    expected_background_epoch: int = Field(ge=1)
+
+
+class BackgroundAgentDispatchResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    operation_id: UUID
+    task_id: UUID
+    background_epoch: int
+    replayed: bool = False
+
+
 class AgentStepAuthorizationResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     operation_id: UUID
