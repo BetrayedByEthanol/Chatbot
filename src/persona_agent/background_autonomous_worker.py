@@ -10,15 +10,51 @@ import threading
 import psycopg
 
 from .background_autonomy import run_autonomous_scan
+from psycopg.rows import dict_row
 from .lifecycle import TrustedPlatformActor
 from .operation_contracts import StaleOperation
-from .operation_control import reap_stale_operations
+from .operation_control import reap_stale_operations, reap_invalid_background_queue
 from .procedure_agent_state import run_one_agent_step, reconcile_agent_step
 from .runtime import PermissionDenied, StaleSelection, VersionConflict
 
 
+def reconcile_pending_background_results(connection, *, limit: int=32) -> int:
+    """Recover durable terminal P2 outcomes after worker/process restart."""
+    if not 1<=limit<=128:
+        raise ValueError("invalid reconciliation limit")
+    with connection.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            """SELECT o.operation_id,o.user_id FROM operations o
+               JOIN procedure_agent_operation_authorizations stage
+                 ON stage.operation_id=o.operation_id
+               JOIN persona_selection selected
+                 ON selected.user_id=o.user_id
+                AND selected.instance_id=o.instance_id
+               WHERE o.origin='GOAL' AND o.priority_class='P2'
+                 AND o.operation_type='procedure.agent.step.v1'
+                 AND stage.state='AUTHORIZED'
+                 AND o.status IN ('COMPLETED','BLOCKED','FAILED',
+                                  'CANCELLED','OUTCOME_UNKNOWN')
+               ORDER BY o.updated_at,o.operation_id LIMIT %s""",(limit,),
+        )
+        pending=tuple(cur.fetchall())
+    recovered=0
+    for row in pending:
+        try:
+            reconcile_agent_step(
+                connection,TrustedPlatformActor(
+                    user_id=row["user_id"],source_id="background.autonomous.result",
+                ),row["operation_id"],
+            )
+        except (PermissionDenied,StaleSelection,VersionConflict,StaleOperation):
+            continue
+        recovered+=1
+    return recovered
+
+
 def run_autonomous_tick(connection, *, worker_id: str="background-agent"):
-    """Bounded new dispatch, one P0-claimed registered read-only execution."""
+    """P0 queue hygiene, bounded dispatch, one claim and durable recovery."""
+    reap_invalid_background_queue(connection,limit=32)
     admitted=run_autonomous_scan(connection,limit=32)
     lease=run_one_agent_step(connection,worker_id=worker_id)
     if lease is not None:
@@ -33,6 +69,7 @@ def run_autonomous_tick(connection, *, worker_id: str="background-agent"):
             # The attempt was stale, nonterminal or unselected. No fabricated
             # success: P0 recovery and the Procedure owner handle follow-up.
             pass
+    reconcile_pending_background_results(connection,limit=32)
     return admitted,lease
 
 
