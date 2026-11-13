@@ -51,7 +51,7 @@ CREATE TABLE notification_occurrences (
     instance_id uuid NOT NULL,
     scheduled_for timestamptz NOT NULL,
     status text NOT NULL DEFAULT 'AVAILABLE'
-        CHECK (status IN ('AVAILABLE','SNOOZED','ACKNOWLEDGED')),
+        CHECK (status IN ('AVAILABLE','SNOOZED','ACKNOWLEDGED','CANCELLED')),
     available_at timestamptz NOT NULL DEFAULT clock_timestamp(),
     snoozed_until timestamptz,
     acknowledged_at timestamptz,

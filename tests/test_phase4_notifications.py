@@ -273,6 +273,44 @@ def test_snooze_stop_and_response_cross_user_isolation(dsn):
     )==[(1,)]
 
 
+def test_stop_cancels_other_pending_snoozed_recurrence(dsn):
+    user,first,_=_ready(dsn)
+    cmd=schedule(user,first,recur="DAILY")
+    call(dsn,schedule_notification,user_actor(user),cmd)
+    assert call(dsn,dispatch_due_notifications)==1
+    first_notice=next(i for i in call(dsn,list_notification_inbox,user_actor(user))
+                      if i.intent_id==cmd.intent_id)
+    call(dsn,respond_to_notification,user_actor(user),
+         NotificationActionCommand(occurrence_id=first_notice.occurrence_id,
+                                   idempotency_key=uuid4().hex,
+                                   action="SNOOZE",snooze_minutes=60))
+    # Simulate the following day's due occurrence without changing source
+    # authorization, selection, or the old snooze's state.
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        conn.execute(
+            """UPDATE notification_intents
+               SET next_due_at=clock_timestamp()-interval '1 minute'
+               WHERE intent_id=%s""",(cmd.intent_id,),
+        )
+    assert call(dsn,dispatch_due_notifications)==1
+    current=next(i for i in call(dsn,list_notification_inbox,user_actor(user))
+                 if i.intent_id==cmd.intent_id)
+    assert current.occurrence_id!=first_notice.occurrence_id
+    call(dsn,respond_to_notification,user_actor(user),
+         NotificationActionCommand(occurrence_id=current.occurrence_id,
+                                   idempotency_key=uuid4().hex,action="STOP"))
+    assert check(dsn,
+        """SELECT status,snoozed_until FROM notification_occurrences
+           WHERE occurrence_id=%s""",(first_notice.occurrence_id,),
+    )==[("CANCELLED",None)]
+    assert check(dsn,
+        """SELECT count(*) FROM notification_occurrences
+           WHERE intent_id=%s AND status IN ('AVAILABLE','SNOOZED')""",
+        (cmd.intent_id,),
+    )==[(0,)]
+    assert call(dsn,dispatch_due_notifications)==0
+
+
 def test_duplicate_platform_ticks_cannot_duplicate_occurrence(dsn):
     user,first,_=_ready(dsn)
     cmd=schedule(user,first)

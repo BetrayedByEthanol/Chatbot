@@ -486,6 +486,16 @@ def respond_to_notification(
                        updated_at=clock_timestamp() WHERE intent_id=%s""",
                     (row["intent_id"],),
                 )
+                # STOP terminates all other pending occurrences too,
+                # including a prior snooze of the same recurring intent.
+                # Otherwise the platform could notify the user *after* STOP.
+                cur.execute(
+                    """UPDATE notification_occurrences
+                       SET status='CANCELLED',snoozed_until=NULL
+                       WHERE intent_id=%s AND occurrence_id<>%s
+                         AND status IN ('AVAILABLE','SNOOZED')""",
+                    (row["intent_id"],command.occurrence_id),
+                )
             event=_event(cur,actor.user_id,row["instance_id"],
                          "notification.response.v1",{
                 "intent_id":str(row["intent_id"]),
