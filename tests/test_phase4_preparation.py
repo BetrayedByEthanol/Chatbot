@@ -1203,3 +1203,72 @@ def test_align01_changed_goal_strategy_needs_new_method_approval(dsn,monkeypatch
         "SELECT eligible_tasks,review_tasks FROM background_alignment_certificates WHERE user_id=%s",
         (user,),
     )==[(0,1)]
+
+
+def test_align01_paused_ancestor_blocks_descendant_agent_task(dsn,monkeypatch):
+    _close_fixture_turns(dsn,monkeypatch)
+    from test_phase3_tasks import make_task
+    from persona_agent.goal_contracts import SetGoalStatusCommand
+    from persona_agent.goal_state import set_goal_status
+
+    user,instance,_=seed(dsn)
+    conversation=uuid4()
+    root=uuid4()
+    source=add_closed_turn(dsn,user,instance,conversation,
+                           "I want healthier home dinners.")
+    root_command=CreateGoalCommand(
+        instance_id=instance,expected_generation=1,
+        idempotency_key=str(uuid4()),conversation_id=conversation,
+        evidence_turn_id=source.turn_id,
+        evidence_quote="I want healthier home dinners.",
+        goal_id=root,title="Healthy dinners",
+        desired_outcome="Cook balanced dinners",
+        success_criterion="Make a balanced dinner each week",horizon="MEDIUM",
+    )
+    approval=add_closed_turn(dsn,user,instance,conversation,
+                             goal_action_approval_phrase(root_command))
+    call(dsn,create_goal,user_actor(user),
+         root_command.model_copy(update={"approval_turn_id":approval.turn_id}))
+
+    child=uuid4()
+    source=add_closed_turn(dsn,user,instance,conversation,
+                           "Plan a smaller meal preparation goal.")
+    subgoal=CreateGoalCommand(
+        instance_id=instance,expected_generation=1,
+        idempotency_key=str(uuid4()),conversation_id=conversation,
+        evidence_turn_id=source.turn_id,
+        evidence_quote="Plan a smaller meal preparation goal.",
+        goal_id=child,parent_goal_id=root,expected_parent_version=1,
+        title="Prepare ingredients",desired_outcome="Cut vegetables",
+        success_criterion="Ingredients prepared on Sundays",horizon="SHORT",
+    )
+    approval=add_closed_turn(dsn,user,instance,conversation,
+                             goal_action_approval_phrase(subgoal))
+    call(dsn,create_goal,user_actor(user),
+         subgoal.model_copy(update={"approval_turn_id":approval.turn_id}))
+    task,_,_=make_task(
+        dsn,user,instance,conversation,child,1,
+        executor="AGENT",capability="text.statistics.v1",
+    )
+    paused_source=add_closed_turn(dsn,user,instance,conversation,
+                                  "Pause my goal.")
+    paused=SetGoalStatusCommand(
+        instance_id=instance,expected_generation=1,
+        idempotency_key=str(uuid4()),conversation_id=conversation,
+        evidence_turn_id=paused_source.turn_id,evidence_quote="Pause my goal.",
+        goal_id=root,expected_goal_version=2,new_status="PAUSED",
+    )
+    paused_approval=add_closed_turn(dsn,user,instance,conversation,
+                                    goal_action_approval_phrase(paused))
+    call(dsn,set_goal_status,user_actor(user),
+         paused.model_copy(update={"approval_turn_id":paused_approval.turn_id}))
+    enter(dsn,user,instance)
+    drive_to_critical(dsn,user,instance,limit=72)
+    # The explicit owner status change is already committed with source proof;
+    # no model may auto-resume the parent or its descendant.
+    assert drive_critical(dsn,user,instance,limit=40).stage=="ALIGNMENT_PENDING"
+    assert advance_to_readiness(dsn,user,instance).stage=="READY"
+    assert check(dsn,
+        """SELECT decision,reason FROM background_alignment_task_checks
+           WHERE user_id=%s AND task_id=%s""",(user,task),
+    )==[("BLOCKED","GOAL_INACTIVE")]
