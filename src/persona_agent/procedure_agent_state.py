@@ -331,10 +331,28 @@ def reconcile_agent_step(connection: Connection, actor: TrustedPlatformActor,
                     or operation["result_ref"]!=result_ref
                     or cur.fetchone() is None):
                     raise VersionConflict("completed operation lacks fenced trusted result")
+            # Lock order must match admission/claim: operation -> stage ->
+            # persona selection -> graph -> RUN -> step/task. The shared
+            # gate reads the run FOR SHARE; taking an exclusive run lock
+            # afterwards would make two different completed AGENT steps
+            # deadlock while upgrading their shared locks. Serialize here
+            # before either reconciliation enters the shared gate.
+            _graph_read_lock(cur,actor,operation["instance_id"])
+            cur.execute(
+                """SELECT * FROM procedure_runs
+                   WHERE run_id=%s AND user_id=%s AND instance_id=%s
+                   FOR UPDATE""",
+                (stage["run_id"],actor.user_id,operation["instance_id"]),
+            )
+            run=cur.fetchone()
+            if run is None:
+                raise PermissionDenied("procedure run outside operation scope")
             try:
                 # P0 already accepted completion under its live deadline
                 # fence. Late reconciliation is evidence admission, not
                 # permission to execute a new operation after the deadline.
+                # Its FOR SHARE run check now observes the exclusive lock
+                # already owned by this transaction.
                 require_procedure_agent_gate(
                     cur,operation,allow_past_deadline_evidence=True,
                 )
@@ -356,11 +374,6 @@ def reconcile_agent_step(connection: Connection, actor: TrustedPlatformActor,
                     operation_id=operation_id,run_id=stage["run_id"],
                     resolution="INVALIDATED",
                 )
-            cur.execute(
-                """SELECT * FROM procedure_runs WHERE run_id=%s FOR UPDATE""",
-                (stage["run_id"],),
-            )
-            run=cur.fetchone()
             cur.execute(
                 """SELECT * FROM procedure_run_steps
                    WHERE run_id=%s AND step_id=%s FOR UPDATE""",
