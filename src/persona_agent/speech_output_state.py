@@ -4,7 +4,7 @@ Only clip metadata/status and evidence-linked events are durable; audio stays
 transient. No TTS inference or external playback occurs under DB locks.
 """
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from uuid import UUID, uuid4
 
 from psycopg import Connection
@@ -115,6 +115,14 @@ def prepare_speech_clip(
             )
             if cur.fetchone()["delivery_status"] != "GENERATED":
                 raise SpeechDeliveryConflict("response already marked delivered")
+            # Under the conversation lock, a durable stop barrier forbids all
+            # new clips, including late completions from in-flight TTS.
+            cur.execute(
+                "SELECT 1 FROM speech_output_interruptions WHERE response_id=%s",
+                (command.response_id,),
+            )
+            if cur.fetchone() is not None:
+                raise SpeechDeliveryConflict("speech generation was interrupted")
             cur.execute(
                 "SELECT * FROM speech_clips WHERE response_id=%s AND clip_index=%s",
                 (command.response_id, command.clip_index),
@@ -165,6 +173,7 @@ def prepare_speech_clip(
 def stream_response_speech(
     connection: Connection, actor: TrustedActor, response_id: UUID,
     target: SpeechOutputTarget, synthesizer: SpeechSynthesizer,
+    *, should_cancel: Callable[[], bool] | None = None,
 ) -> Iterator[GeneratedSpeechClip]:
     """Synthesize a bounded response in promptly dispatchable audio clips.
 
@@ -188,8 +197,14 @@ def stream_response_speech(
             text = response["response_text"]
     segments = split_speech_text(text)
     for index, segment in enumerate(segments):
+        if should_cancel is not None and should_cancel():
+            return
         # External computation takes place only after the read tx commits.
+        # In-flight provider calls may run to completion; the durable stop
+        # barrier rejects their eventual clip admission.
         wav = synthesizer.synthesize_wav(segment)
+        if should_cancel is not None and should_cancel():
+            return
         info = validate_wav_pcm16(wav)
         record = prepare_speech_clip(
             connection,actor,SpeechClipCommand(
@@ -198,13 +213,15 @@ def stream_response_speech(
                 duration_ms=info.duration_ms,payload_sha256=info.payload_sha256,
             ),
         )
+        if should_cancel is not None and should_cancel():
+            return
         if record.status in ("GENERATED",):
             yield GeneratedSpeechClip(record=record,audio_wav=wav)
         # Replays for queued/terminal clips must not trigger duplicate playback.
 
 
 _NEXT = {
-    "GENERATED": frozenset({"QUEUED","FAILED"}),
+    "GENERATED": frozenset({"QUEUED","INTERRUPTED","FAILED"}),
     "QUEUED": frozenset({"STARTED","INTERRUPTED","FAILED"}),
     "STARTED": frozenset({"PLAYED","INTERRUPTED","FAILED"}),
 }
