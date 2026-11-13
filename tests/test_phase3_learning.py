@@ -24,10 +24,15 @@ from persona_agent.procedure_run_state import (
 from persona_agent.runtime import PermissionDenied, VersionConflict
 from persona_agent.task_state import list_tasks
 from test_phase3_procedures import (
-    actor, approve, call, seed, turn, variant_command,
+    actor, approve, seed, turn, variant_command,
 )
 from test_phase3_runs import published, record, run_status, start_command
 from test_phase3_tasks import make_goal, make_task
+
+
+def call(dsn,fn,*args,**kwargs):
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        return fn(conn,*args,**kwargs)
 
 
 def evaluation_command(dsn,user,instance,conv,run,version,*,outcome,
