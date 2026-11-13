@@ -215,7 +215,12 @@ def test_no_history_reaches_critical_owner_gate_but_not_ready(dsn):
     assert (progress.stage,progress.state)==(
         "CRITICAL_PENDING","AWAITING_OWNER_COMMITS"
     )
-    assert call(dsn,run_preparation_scan)==()
+    # The scan is global and may also discover other test-owned epochs; our
+    # completed epoch is excluded without implying a global empty queue.
+    assert check(dsn,
+        """SELECT preparation_stage FROM background_preparation_epochs
+           WHERE user_id=%s AND instance_id=%s""",(user,instance),
+    )==[("CRITICAL_PENDING",)]
 
 
 def test_return_and_persona_switch_invalidate_preparation(dsn):
