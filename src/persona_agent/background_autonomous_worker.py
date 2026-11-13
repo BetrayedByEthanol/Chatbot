@@ -16,6 +16,7 @@ from .operation_contracts import StaleOperation
 from .operation_control import reap_stale_operations, reap_invalid_background_queue
 from .procedure_agent_state import run_one_agent_step, reconcile_agent_step
 from .runtime import PermissionDenied, StaleSelection, VersionConflict
+from .tool_contracts import PROCEDURE_AGENT_OPERATION
 
 
 def reconcile_pending_background_results(connection, *, limit: int=32) -> int:
@@ -31,11 +32,11 @@ def reconcile_pending_background_results(connection, *, limit: int=32) -> int:
                  ON selected.user_id=o.user_id
                 AND selected.instance_id=o.instance_id
                WHERE o.origin='GOAL' AND o.priority_class='P2'
-                 AND o.operation_type='procedure.agent.step.v1'
+                 AND o.operation_type=%s
                  AND stage.state='AUTHORIZED'
                  AND o.status IN ('COMPLETED','BLOCKED','FAILED',
                                   'CANCELLED','OUTCOME_UNKNOWN')
-               ORDER BY o.updated_at,o.operation_id LIMIT %s""",(limit,),
+               ORDER BY o.updated_at,o.operation_id LIMIT %s""",(PROCEDURE_AGENT_OPERATION,limit),
         )
         pending=tuple(cur.fetchall())
     recovered=0
