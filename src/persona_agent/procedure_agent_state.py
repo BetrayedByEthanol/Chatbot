@@ -133,7 +133,7 @@ def authorize_agent_step(connection: Connection, actor: TrustedActor,
                  source_quote,approval_turn_id,authorization_event_id,
                  approved_background_epoch
                ) VALUES(
-                 %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s
+                 %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s
                )""",
             (command.operation_id,actor.user_id,command.instance_id,
              command.run_id,command.step_id,run["task_id"],
