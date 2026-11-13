@@ -62,6 +62,17 @@ def validate_task_alignment(cur,user_id:UUID,instance_id:UUID,task:dict)->dict:
         return _outcome("BLOCKED","GOAL_INACTIVE",task,versions,priority=priority)
     if task["executor"]!="AGENT":
         return _outcome("BLOCKED","NOT_AGENT_WORK",task,versions,priority=priority)
+    # An agent Task must originate in a real authenticated Task-owned event.
+    # Cognitive proposals, even source-linked ones, are not action approval.
+    cur.execute(
+        """SELECT trust_level,payload->>'task_id' AS claimed_task
+           FROM events WHERE event_id=%s AND user_id=%s AND instance_id=%s""",
+        (task["event_id"],user_id,instance_id),
+    )
+    created=cur.fetchone()
+    if (created is None or created["trust_level"]!="AUTHENTICATED_USER"
+        or created["claimed_task"]!=str(task["task_id"])):
+        return _outcome("BLOCKED","SOURCE_UNVERIFIED",task,versions,priority=priority)
     if task["status"]!="PLANNED":
         return _outcome("BLOCKED","TASK_INACTIVE",task,versions,priority=priority)
     if task["suspended"]:
@@ -123,6 +134,18 @@ def validate_task_alignment(cur,user_id:UUID,instance_id:UUID,task:dict)->dict:
     proof=cur.fetchone()
     if proof is None or proof["trust_level"]!="AUTHENTICATED_USER":
         return _outcome("BLOCKED","SOURCE_UNVERIFIED",task,versions,run,priority)
+    # A Goal's explicitly selected strategy is not interchangeable with
+    # an unrelated generic procedure. If no personalized variant ties the
+    # run to the new strategy, it needs a renewed domain-owned decision.
+    cur.execute(
+        """SELECT strategy_id FROM goal_strategy_selections
+           WHERE goal_id=%s AND user_id=%s AND instance_id=%s
+           ORDER BY goal_version DESC LIMIT 1""",
+        (task["goal_id"],user_id,instance_id),
+    )
+    chosen=cur.fetchone()
+    if chosen is not None and run["variant_id"] is None:
+        return _outcome("REVIEW","STRATEGY_CHANGED",task,versions,run,priority)
     if run["variant_id"] is not None:
         cur.execute(
             """SELECT v.goal_id,v.strategy_id,v.current_revision
