@@ -27,8 +27,8 @@ from persona_agent.procedure_run_contracts import (
     LinkProcedureThreadCommand, RecordProcedureStepCommand,
 )
 from persona_agent.procedure_run_state import (
-    link_procedure_thread, list_procedure_runs, read_procedure_run,
-    record_procedure_step, start_procedure_run,
+    correct_procedure_step, link_procedure_thread, list_procedure_runs,
+    read_procedure_run, record_procedure_step, start_procedure_run,
 )
 from persona_agent.procedure_state import (
     create_personalized_approach, publish_shared_procedure,
@@ -496,8 +496,7 @@ def test_dependency_correction_revokes_queued_agent_and_new_authorization_recove
         ).fetchone()
         assert evidence==("TRUSTED_PLATFORM",)
     assert_exact_event_outbox(
-        dsn,user,instance,[verified.step_event_id] if False else
-        [invalid.event_id,assessed.event_id],
+        dsn,user,instance,[invalid.event_id,assessed.event_id],
     )
 
 
@@ -540,7 +539,7 @@ def test_stale_proposal_after_step_correction_never_mutates_private_revision(dsn
                 candidate.proposal_id).status=="PROPOSED"
 
     corrected=call(
-        dsn,record_procedure_step,actor(user),
+        dsn,correct_procedure_step,actor(user),
         step_correction(
             dsn,user,instance,conversation,start.run_id,reported.version,
             "generate",2,reported.step_event_id,
@@ -584,6 +583,8 @@ def test_reselection_recovers_durable_run_and_rejects_old_generation(dsn):
     )
     original=call(dsn,read_procedure_run,actor(user),instance,start.run_id)
     assert original.version==step.version
+    stale_source=turn(dsn,user,instance,conversation,
+                      "This was already a prior attempt.")
 
     # Provision a second instance for the same user, then switch via lifecycle.
     alternate_persona,alternate_instance=uuid4(),uuid4()
@@ -616,11 +617,10 @@ def test_reselection_recovers_durable_run_and_rejects_old_generation(dsn):
     recovered=call(dsn,read_procedure_run,actor(user),instance,start.run_id)
     assert recovered.version==original.version
     assert recovered.steps==original.steps and recovered.next_step_id=="generate"
-    old_turn=turn(dsn,user,instance,conversation,"This was already a prior attempt.")
     stale=RecordProcedureStepCommand(
         instance_id=instance,expected_generation=1,
         idempotency_key=uuid4().hex,conversation_id=conversation,
-        evidence_turn_id=old_turn.turn_id,
+        evidence_turn_id=stale_source.turn_id,
         evidence_quote="This was already a prior attempt",
         run_id=start.run_id,expected_run_version=recovered.version,
         step_id="check",expected_step_version=1,outcome="ATTEMPTED",
