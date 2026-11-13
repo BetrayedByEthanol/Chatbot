@@ -118,3 +118,19 @@ class ProcedureAdaptationView(BaseModel):
     reason: str
     status: Literal["PROPOSED", "APPLIED", "REJECTED"]
     applied_revision: int | None
+
+class ProcedureExperienceView(BaseModel):
+    """Bounded personal observations, never a population-wide success rate."""
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    template_id: UUID
+    variant_id: UUID | None
+    observed_run_count: int = Field(ge=0)
+    reported_success_count: int = Field(ge=0)
+    reported_failure_count: int = Field(ge=0)
+    incomplete_count: int = Field(ge=0)
+    unknown_count: int = Field(ge=0)
+    unevaluated_run_count: int = Field(ge=0)
+    failure_causes: dict[str, int]
+    run_ids: tuple[UUID, ...]
+    truncated: bool
+    independently_verified_effectiveness: Literal[False] = False
