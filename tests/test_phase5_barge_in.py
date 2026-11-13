@@ -103,7 +103,7 @@ def test_barrier_fences_inflight_tts_even_if_host_cannot_cancel_provider(dsn):
         assert conn.execute(
             "SELECT count(*) FROM speech_clips WHERE response_id=%s",
             (reply.response_id,),
-        ).fetchone()==0
+        ).fetchone()[0]==0
 
 
 def test_host_cancellation_avoids_late_clip_generation(dsn):
@@ -124,7 +124,7 @@ def test_host_cancellation_avoids_late_clip_generation(dsn):
         assert conn.execute(
             "SELECT count(*) FROM speech_clips WHERE response_id=%s",
             (reply.response_id,),
-        ).fetchone()==0
+        ).fetchone()[0]==0
 
 
 def test_stop_before_any_audio_persists_barrier(dsn):
