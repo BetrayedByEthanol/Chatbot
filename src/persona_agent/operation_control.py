@@ -659,13 +659,18 @@ def reap_invalid_background_queue(connection: Connection, *, limit: int=32) -> i
                    LEFT JOIN procedure_run_steps step ON step.run_id=a.run_id
                      AND step.step_id=a.step_id
                    LEFT JOIN persona_selection sel ON sel.user_id=o.user_id
+                   LEFT JOIN procedure_agent_checkpoints ck
+                     ON ck.checkpoint_ref=o.checkpoint_ref
+                    AND ck.operation_id=o.operation_id
+                    AND ck.claim_generation=o.claim_generation
+                    AND ck.user_id=o.user_id AND ck.instance_id=o.instance_id
                    WHERE o.operation_type=%s AND o.origin='GOAL'
                      AND o.priority_class='P2'
                      AND o.execution_policy='BACKGROUND_RESUMABLE'
                      AND (o.status IN ('QUEUED','RETRY_WAIT')
                        OR (o.status='SUSPENDED'
                            AND o.effect_status='PREPARED'
-                           AND o.checkpoint_ref IS NULL))
+                           AND ck.checkpoint_ref IS NULL))
                      AND (a.operation_id IS NULL OR a.state<>'AUTHORIZED'
                        OR a.approved_background_epoch IS DISTINCT FROM o.background_epoch
                        OR a.selection_generation<>o.selection_generation
@@ -686,7 +691,7 @@ def reap_invalid_background_queue(connection: Connection, *, limit: int=32) -> i
                        OR o.input_versions->>'task'<>a.task_version::text
                        OR o.input_versions->>'procedure_run'<>a.run_version::text
                        OR o.input_versions->>'procedure_step'<>a.step_version::text
-                       OR (o.status='SUSPENDED' AND o.checkpoint_ref IS NULL))
+                       OR (o.status='SUSPENDED' AND ck.checkpoint_ref IS NULL))
                    ORDER BY o.created_at,o.operation_id LIMIT %s
                    FOR UPDATE OF o SKIP LOCKED""",
                 (PROCEDURE_AGENT_OPERATION,limit),
@@ -700,11 +705,17 @@ def reap_invalid_background_queue(connection: Connection, *, limit: int=32) -> i
                        SET status='BLOCKED',worker_id=NULL,lease_until=NULL,
                            claimed_at=NULL,
                            version=version+1,updated_at=clock_timestamp(),
-                           last_error='P4-04: pinned Background approval revoked'
+                           last_error='P4: approval revoked or no restorable checkpoint'
                        WHERE operation_id=%s
                          AND (status IN ('QUEUED','RETRY_WAIT')
                            OR (status='SUSPENDED' AND effect_status='PREPARED'
-                               AND checkpoint_ref IS NULL))
+                               AND NOT EXISTS (
+                                  SELECT 1 FROM procedure_agent_checkpoints ck
+                                  WHERE ck.checkpoint_ref=operations.checkpoint_ref
+                                    AND ck.operation_id=operations.operation_id
+                                    AND ck.claim_generation=operations.claim_generation
+                                    AND ck.user_id=operations.user_id
+                                    AND ck.instance_id=operations.instance_id)))
                        RETURNING *""",
                     (row["operation_id"],),
                 )
