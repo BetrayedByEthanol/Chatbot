@@ -374,8 +374,9 @@ def prepare_summary(
             state=cur.fetchone()
             if state is None or state["summary_watermark"]!=job["start_sequence"]-1:
                 raise StaleSummary("summary watermark advanced or conversation removed")
-            if job["end_sequence"]>=state["next_sequence"]-1:
-                raise SummaryNotReady("the latest input must remain outside compression")
+            if (job["end_sequence"]>=state["next_sequence"]-1
+                and job["background_handover_epoch"] is None):
+                raise SummaryNotReady("the latest input must remain outside ordinary compression")
             turns=_read_range(cur,job)
             return SummaryWork(
                 operation_id=lease.operation_id,user_id=lease.user_id,
