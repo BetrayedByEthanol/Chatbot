@@ -347,6 +347,35 @@ def _locked_job(cur, lease: OperationLease) -> dict:
     job=cur.fetchone()
     if job is None or job["expected_generation"]!=lease.selection_generation:
         raise StaleSummary("missing or stale summary job correlation")
+    if job["background_handover_epoch"] is not None:
+        # A full-tail handover is allowed to summarize the latest delivered
+        # input ONLY while its original Background epoch remains selected.
+        # FOREGROUND_ASYNC operations are intentionally not epoch-fenced by
+        # P0. Fence this narrower authorization at BOTH prepare and commit.
+        #
+        # Lock order: operation -> selection (above) -> preparation epoch.
+        # The lifecycle transition locks selection before superseding an
+        # epoch, so a concurrent Foreground return either commits first and
+        # invalidates this job, or waits for this short transaction to finish.
+        cur.execute(
+            """SELECT 1 FROM persona_selection s
+               JOIN background_preparation_epochs e
+                 ON e.user_id=s.user_id
+                AND e.instance_id=s.instance_id
+                AND e.background_epoch=s.background_epoch
+                AND e.selection_generation=s.generation
+               WHERE s.user_id=%s AND s.instance_id=%s
+                 AND s.generation=%s AND s.mode='BACKGROUND'
+                 AND s.background_epoch=%s AND e.status='PENDING'
+               FOR SHARE OF s,e""",
+            (lease.user_id,lease.instance_id,lease.selection_generation,
+             job["background_handover_epoch"]),
+        )
+        if cur.fetchone() is None:
+            raise StaleSummary("Background handover epoch was superseded")
+        # Acquiring the epoch lock can wait behind a concurrent transition;
+        # recheck the claimed P0 lease before any worker state is committed.
+        require_claim(cur,lease)
     return job
 
 
