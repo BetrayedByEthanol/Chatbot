@@ -144,6 +144,16 @@ def process_critical_updates(cur, epoch: dict) -> str:
     Up to one small source range + one bounded review batch per transaction.
     """
     scope=(epoch["user_id"],epoch["instance_id"],epoch["background_epoch"])
+    # Recheck snapshot completeness even after the earlier SUMMARY/EVALUATE
+    # gates: corrupt or partial historical handovers must never be treated
+    # as an empty, successfully reconciled input.
+    cur.execute(
+        """SELECT count(*) AS captured
+           FROM background_preparation_conversations
+           WHERE user_id=%s AND instance_id=%s AND background_epoch=%s""",scope,
+    )
+    if cur.fetchone()["captured"] != epoch["captured_conversation_count"]:
+        return "SOURCE_GAP"
     cur.execute(
         """SELECT b.* FROM background_preparation_conversations b
            WHERE b.user_id=%s AND b.instance_id=%s AND b.background_epoch=%s
