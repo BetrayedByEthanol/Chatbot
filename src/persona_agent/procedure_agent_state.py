@@ -18,7 +18,10 @@ from .operation_contracts import (
     require_claim, require_current_authority, require_idle, StaleOperation,
 )
 from .operation_scheduler import claim_operation, enqueue_operation
-from .operation_control import complete_operation, fail_operation
+from .operation_control import (
+    complete_operation, fail_operation, request_background_suspension,
+    acknowledge_suspend, acknowledge_cancel,
+)
 from .procedure_agent_contracts import (
     AgentStepAuthorizationResult, AgentStepReconcileResult,
     AuthorizeAgentStepCommand, AuthorizeBackgroundAgentStepCommand,
@@ -245,6 +248,53 @@ def _read_authorized_execution(cur, lease):
     return item["instruction"],stage["max_words"]
 
 
+
+def _settle_preempted_background_attempt(connection: Connection, lease) -> bool:
+    """Stop P2 at a safe boundary without accepting a revoked tool result.
+
+    The P4-04 text tool is synchronous and cannot be interrupted mid-call.
+    This runs before and after that call. P1 cancellation behavior is left
+    unchanged by this Phase 4-only increment.
+    """
+    if lease.background_epoch is None:
+        return False
+    request_background_suspension(
+        connection,TrustedPlatformActor(
+            user_id=lease.user_id,source_id="background.preemption",
+        ),lease.operation_id,
+    )
+    with connection.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            """SELECT status FROM operations WHERE operation_id=%s
+               AND user_id=%s AND instance_id=%s
+               AND claim_generation=%s AND worker_id=%s""",
+            (lease.operation_id,lease.user_id,lease.instance_id,
+             lease.claim_generation,lease.worker_id),
+        )
+        row=cur.fetchone()
+    if row is None:
+        return True
+    if row["status"]=="SUSPEND_REQUESTED":
+        try:
+            acknowledge_suspend(connection,lease)
+        except StaleOperation:
+            # Cancellation may commit after our status read and win the
+            # suspension race. acknowledge_cancel re-reads and fences the
+            # exact live claim; on an expired/replaced claim it has no effect.
+            try:
+                acknowledge_cancel(connection,lease)
+            except StaleOperation:
+                pass  # P0 recovery owns an expired or replaced attempt.
+        return True
+    if row["status"]=="CANCEL_REQUESTED":
+        try:
+            acknowledge_cancel(connection,lease)
+        except StaleOperation:
+            pass
+        return True
+    return row["status"]!="RUNNING"
+
+
 def run_one_agent_step(connection: Connection, *, worker_id: str,
                        executor=analyze_text, lease_seconds: int=120):
     """Claim/read under locks, run registered read-only code OUTSIDE locks."""
@@ -261,19 +311,41 @@ def run_one_agent_step(connection: Connection, *, worker_id: str,
             with connection.cursor(row_factory=dict_row) as cur:
                 instruction,max_words=_read_authorized_execution(cur,lease)
     except (VersionConflict,PermissionDenied,StaleOperation):
-        # No invocation happened; stale authority must never run the tool.
+        # No invocation happened. A revoked epoch can be cooperatively
+        # acknowledged immediately rather than leaving its live claim held.
+        _settle_preempted_background_attempt(connection,lease)
         return lease
+    if _settle_preempted_background_attempt(connection,lease):
+        return lease
+    if lease.background_epoch is not None:
+        # The preemption check above may wait on operation or selection locks
+        # after the first dispatch gate released them. Revalidate the claim,
+        # current owner versions AND the live Task deadline after that wait;
+        # otherwise an expired attempt could still enter the executor.
+        try:
+            with connection.transaction():
+                with connection.cursor(row_factory=dict_row) as cur:
+                    instruction,max_words=_read_authorized_execution(cur,lease)
+        except (VersionConflict,PermissionDenied,StaleOperation):
+            _settle_preempted_background_attempt(connection,lease)
+            return lease
     try:
         result=executor(instruction,max_words)
         if not isinstance(result,str) or not 1<=len(result)<=12000:
             raise ValueError("registered tool returned invalid text")
     except Exception as exc:
+        if _settle_preempted_background_attempt(connection,lease):
+            return lease
         try:
             fail_operation(
                 connection,lease,reason=f"read-only tool failed: {type(exc).__name__}",
             )
         except (VersionConflict,PermissionDenied,StaleOperation):
-            pass
+            # A return/cancel can race between the initial safe-boundary
+            # check and failure reporting's authority/lease locks.
+            _settle_preempted_background_attempt(connection,lease)
+        return lease
+    if _settle_preempted_background_attempt(connection,lease):
         return lease
     with connection.transaction():
         connection.execute(
@@ -289,7 +361,7 @@ def run_one_agent_step(connection: Connection, *, worker_id: str,
                            result_ref=_result_ref(lease.operation_id,
                                                   lease.claim_generation))
     except (VersionConflict,PermissionDenied,StaleOperation):
-        pass
+        _settle_preempted_background_attempt(connection,lease)
     return lease
 
 

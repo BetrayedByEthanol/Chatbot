@@ -402,6 +402,101 @@ def cancel_operation(
             return updated_status
 
 
+
+def request_background_suspension(
+    connection: Connection, actor: TrustedPlatformActor, operation_id: UUID,
+) -> bool:
+    """P0 cooperative preemption signal after an authority/epoch revocation.
+
+    The lifecycle transaction never locks an operation row. A P0 poller or
+    the executing worker observes the durable selection change afterwards.
+    This signal does not release resources or assert that the tool stopped.
+    """
+    require_idle(connection)
+    if (type(actor) is not TrustedPlatformActor
+        or actor.source_id != "background.preemption"):
+        raise PermissionDenied("Background preemption requires trusted P0 source")
+    with connection.transaction():
+        with connection.cursor(row_factory=dict_row) as cur:
+            row=lock_operation(cur,operation_id)
+            if row["user_id"]!=actor.user_id:
+                raise PermissionDenied("cross-user suspension request")
+            if (row["priority_class"]!="P2"
+                or row["execution_policy"]!="BACKGROUND_RESUMABLE"):
+                raise InvalidOperation("only autonomous Background P2 may be preempted")
+            if row["status"]!="RUNNING" or row["effect_status"]!="PREPARED":
+                return False
+            cur.execute(
+                """SELECT instance_id,generation,mode,background_epoch
+                   FROM persona_selection WHERE user_id=%s FOR SHARE""",
+                (actor.user_id,),
+            )
+            selected=cur.fetchone()
+            if (selected is not None
+                and selected["instance_id"]==row["instance_id"]
+                and selected["generation"]==row["selection_generation"]
+                and selected["mode"]=="BACKGROUND"
+                and selected["background_epoch"]==row["background_epoch"]):
+                return False
+            cur.execute(
+                """UPDATE operations
+                   SET status='SUSPEND_REQUESTED',version=version+1,
+                       updated_at=clock_timestamp()
+                   WHERE operation_id=%s AND status='RUNNING'
+                     AND effect_status='PREPARED'
+                   RETURNING *""",
+                (operation_id,),
+            )
+            updated=cur.fetchone()
+            if updated is None:
+                return False
+            event_for(cur,updated,"operation.suspend_requested.v1",
+                      {"reason":"selected Background authority revoked"})
+            return True
+
+
+def acknowledge_suspend(connection: Connection, lease: OperationLease) -> None:
+    """Worker confirms a safe stop; never treats request as completed work.
+
+    It is legitimate for the prior Background epoch to be revoked. The exact
+    unexpired worker claim still fences acknowledgment; stale workers cannot
+    release a successor's reservations or write a checkpoint.
+    """
+    require_idle(connection)
+    with connection.transaction():
+        with connection.cursor(row_factory=dict_row) as cur:
+            row=require_claim(cur,lease,statuses=("SUSPEND_REQUESTED",))
+            if (row["execution_policy"]!="BACKGROUND_RESUMABLE"
+                or row["priority_class"]!="P2"
+                or row["effect_status"]!="PREPARED"):
+                raise InvalidOperation("attempt cannot safely acknowledge suspension")
+            release_resources(cur,row)
+            # Pool locks can outlive the original lease. Recheck and fence
+            # the final write so resource release rolls back if it expired.
+            require_claim(cur,lease,statuses=("SUSPEND_REQUESTED",))
+            cur.execute(
+                """UPDATE operations
+                   SET status='SUSPENDED',worker_id=NULL,lease_until=NULL,
+                       claimed_at=NULL,version=version+1,
+                       updated_at=clock_timestamp()
+                   WHERE operation_id=%s AND status='SUSPEND_REQUESTED'
+                     AND worker_id=%s AND claim_generation=%s
+                     AND selection_generation=%s
+                     AND background_epoch=%s
+                     AND lease_until>clock_timestamp()
+                     AND claimed_at+(timeout_seconds*interval '1 second')
+                           >clock_timestamp()
+                     AND (deadline IS NULL OR deadline>clock_timestamp())
+                   RETURNING *""",
+                (lease.operation_id,lease.worker_id,lease.claim_generation,
+                 lease.selection_generation,lease.background_epoch),
+            )
+            updated=cur.fetchone()
+            if updated is None:
+                raise StaleOperation("suspension acknowledgement lease expired")
+            event_for(cur,updated,"operation.suspended.v1",
+                      {"reason":"cooperative stop at safe execution boundary"})
+
 def acknowledge_cancel(connection: Connection, lease: OperationLease) -> None:
     """Stale result cannot commit, but a currently claimed cancelled task may clean up."""
     require_idle(connection)
@@ -668,6 +763,35 @@ def reap_stale_operations(connection: Connection, *, limit: int=100) -> int:
                 if (not revoked and not epoch_invalid and not expired
                     and not deadline_passed and not input_invalid
                     and row["status"]=="RUNNING"):
+                    continue
+                # A live P2 worker should receive an explicit cooperative
+                # suspension signal. Do not prematurely report SUSPENDED
+                # while its read-only executor is still running.
+                cooperative=(
+                    row["priority_class"]=="P2"
+                    and row["execution_policy"]=="BACKGROUND_RESUMABLE"
+                    and row["effect_status"]=="PREPARED"
+                    and not expired and not deadline_passed and not input_invalid
+                )
+                if cooperative and row["status"] in ("SUSPEND_REQUESTED","CANCEL_REQUESTED"):
+                    # A live lease still represents executing work. User
+                    # cancellation wins, but must also be acknowledged at a
+                    # safe boundary (or recovered after lease expiry).
+                    continue
+                if (cooperative and row["status"]=="RUNNING"
+                    and (revoked or epoch_invalid)):
+                    cursor.execute(
+                        """UPDATE operations SET status='SUSPEND_REQUESTED',
+                               version=version+1,updated_at=clock_timestamp()
+                           WHERE operation_id=%s AND status='RUNNING'
+                             AND effect_status='PREPARED' RETURNING *""",
+                        (op_id,),
+                    )
+                    requested=cursor.fetchone()
+                    if requested is not None:
+                        event_for(cursor,requested,"operation.suspend_requested.v1",
+                                  {"reason":"background epoch invalidated during recovery"})
+                        processed+=1
                     continue
                 if row["effect_status"]=="DISPATCHED":
                     _unknown(cursor,row,"worker interrupted after external dispatch")
