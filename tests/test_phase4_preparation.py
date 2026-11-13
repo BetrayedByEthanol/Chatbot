@@ -160,7 +160,14 @@ def test_frozen_conversations_and_full_tail_staged_sequentially(dsn):
     assert seen_summaries=={first,second}
     assert seen_reflections=={first,second}
     assert progress.state=="AWAITING_OWNER_COMMITS"
-    assert tick(dsn,user,instance).state=="AWAITING_OWNER_COMMITS"
+    for _ in range(8):
+        progress=tick(dsn,user,instance)
+        if progress.stage=="ALIGNMENT_PENDING":
+            break
+        assert progress.stage=="CRITICAL_PENDING",progress
+    else:
+        pytest.fail("critical source scan did not reach alignment handoff")
+    assert progress.state=="AWAITING_ALIGNMENT"
 
     marks=check(dsn,
         """SELECT conversation_id,summary_watermark,cognitive_watermark
@@ -172,7 +179,7 @@ def test_frozen_conversations_and_full_tail_staged_sequentially(dsn):
         """SELECT preparation_stage FROM background_preparation_epochs
            WHERE user_id=%s AND instance_id=%s AND background_epoch=1""",
         (user,instance),
-    )==[("CRITICAL_PENDING",)]
+    )==[("ALIGNMENT_PENDING",)]
     # Completion of the P2 model operations is not acceptance of critical
     # owner-domain changes or of the Phase 4 ALIGN-01 review.
     assert check(dsn,
@@ -185,7 +192,7 @@ def test_frozen_conversations_and_full_tail_staged_sequentially(dsn):
              AND e.event_type='background.preparation.stage_changed.v1'""",
         (user,instance),
     )
-    assert changes==[(2,)]
+    assert changes==[(3,)]
 
 
 def test_pending_turn_blocks_summarization_without_skipping_it(dsn):
