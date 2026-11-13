@@ -21,7 +21,7 @@ from .operation_scheduler import claim_operation, enqueue_operation
 from .operation_control import complete_operation, fail_operation
 from .procedure_agent_contracts import (
     AgentStepAuthorizationResult, AgentStepReconcileResult,
-    AuthorizeAgentStepCommand,
+    AuthorizeAgentStepCommand, AuthorizeBackgroundAgentStepCommand,
 )
 from .procedure_agent_gate import require_procedure_agent_gate
 from .procedure_run_state import _run, _step
@@ -42,12 +42,27 @@ def authorize_agent_step(connection: Connection, actor: TrustedActor,
                          command: AuthorizeAgentStepCommand
                          ) -> AgentStepAuthorizationResult:
     """Create exact, approved stage; do not enqueue until separately committed."""
+    background=type(command) is AuthorizeBackgroundAgentStepCommand
+    if type(command) not in (AuthorizeAgentStepCommand,AuthorizeBackgroundAgentStepCommand):
+        raise PermissionDenied("unsupported step authorization command")
     def apply(cur,receipt):
+        if background:
+            cur.execute(
+                """SELECT background_epoch,mode,generation FROM persona_selection
+                   WHERE user_id=%s AND instance_id=%s FOR SHARE""",
+                (actor.user_id,command.instance_id),
+            )
+            selected=cur.fetchone()
+            if (selected is None or selected["mode"]!="FOREGROUND"
+                or selected["generation"]!=command.expected_generation
+                or selected["background_epoch"]+1!=command.expected_background_epoch):
+                raise StaleSelection("Background permission is only valid for the next epoch")
         # All admission paths acquire stage -> graph -> run/step. In
         # particular, do not lock run and then wait on a staging row:
         # P0 enqueue/claim already locks the stage before the run.
         cur.execute(
-            """SELECT operation_id FROM procedure_agent_operation_authorizations
+            """SELECT operation_id,approved_background_epoch
+               FROM procedure_agent_operation_authorizations
                WHERE run_id=%s AND step_id=%s AND state='AUTHORIZED'
                FOR UPDATE""",
             (command.run_id,command.step_id),
@@ -69,10 +84,17 @@ def authorize_agent_step(connection: Connection, actor: TrustedActor,
                 (pending["operation_id"],),
             )
             old_operation=cur.fetchone()
-            if old_operation is not None:
+            if old_operation is not None and not (
+                background
+                and pending["approved_background_epoch"] is not None
+                and old_operation["status"]=="BLOCKED"
+            ):
                 raise VersionConflict(
                     "step has an admitted operation; cancel/reconcile it before replacing"
                 )
+            # A P0-blocked, never-executed Background operation can be
+            # replaced only through NEW authenticated user source/approval.
+            # Completed results must be reconciled instead of overwritten.
             # Stage-before-enqueue may crash or encounter a newly revoked
             # Task/Run authorization. A NEW separately approved user command
             # may supersede its orphaned, nonexecutable stage atomically.
@@ -96,7 +118,8 @@ def authorize_agent_step(connection: Connection, actor: TrustedActor,
         if cur.fetchone() is not None:
             raise VersionConflict("operation identifier already allocated")
         event=_publish(cur,actor,command.instance_id,
-                       "procedure.agent.authorized.v1",{
+                       ("procedure.agent.background_authorized.v1" if background
+                        else "procedure.agent.authorized.v1"),{
             "operation_id":str(command.operation_id),
             "run_id":str(command.run_id),
             "step_id":command.step_id,
@@ -106,6 +129,8 @@ def authorize_agent_step(connection: Connection, actor: TrustedActor,
             "task_version":command.expected_task_version,
             "capability":SLOW_TOOL,
             "effect_class":"READ_ONLY",
+            "expected_background_epoch":(command.expected_background_epoch
+                                          if background else None),
             "approval_turn_id":str(command.approval_turn_id),
         },receipt)
         cur.execute(
@@ -113,9 +138,10 @@ def authorize_agent_step(connection: Connection, actor: TrustedActor,
                  operation_id,user_id,instance_id,run_id,step_id,task_id,
                  run_version,step_version,task_version,selection_generation,
                  capability,max_words,source_conversation_id,source_turn_id,
-                 source_quote,approval_turn_id,authorization_event_id
+                 source_quote,approval_turn_id,authorization_event_id,
+                 approved_background_epoch
                ) VALUES(
-                 %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s
+                 %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s
                )""",
             (command.operation_id,actor.user_id,command.instance_id,
              command.run_id,command.step_id,run["task_id"],
@@ -123,7 +149,8 @@ def authorize_agent_step(connection: Connection, actor: TrustedActor,
              command.expected_task_version,command.expected_generation,
              SLOW_TOOL,command.max_words,command.conversation_id,
              command.evidence_turn_id,command.evidence_quote,
-             command.approval_turn_id,event),
+             command.approval_turn_id,event,
+             command.expected_background_epoch if background else None),
         )
         # Use the identical P0 fence before accepting this stage. A failed
         # gate rolls back its approval journal, receipt and staging row.
@@ -139,15 +166,26 @@ def authorize_agent_step(connection: Connection, actor: TrustedActor,
                 "procedure_run":command.expected_run_version,
                 "procedure_step":command.expected_step_version,
             },
-        })
+        },stage_only=True)
         return AgentStepAuthorizationResult(
             operation_id=command.operation_id,run_id=command.run_id,
             task_id=run["task_id"],event_id=event,
         )
     return _command(
-        connection,actor,command,"procedure.agent.authorize.v1",apply,
+        connection,actor,command,
+        ("procedure.agent.authorize_background.v1" if background
+         else "procedure.agent.authorize.v1"),apply,
         result_type=AgentStepAuthorizationResult,
     )
+
+
+def authorize_background_agent_step(connection: Connection, actor: TrustedActor,
+                                    command: AuthorizeBackgroundAgentStepCommand
+                                    ) -> AgentStepAuthorizationResult:
+    """Authenticated P4-04 one-epoch permission, NEVER immediate dispatch."""
+    if type(command) is not AuthorizeBackgroundAgentStepCommand:
+        raise PermissionDenied("explicit Background authorization required")
+    return authorize_agent_step(connection,actor,command)
 
 
 def schedule_agent_step(connection: Connection, actor: TrustedActor,
@@ -355,6 +393,7 @@ def reconcile_agent_step(connection: Connection, actor: TrustedPlatformActor,
                 # already owned by this transaction.
                 require_procedure_agent_gate(
                     cur,operation,allow_past_deadline_evidence=True,
+                    allow_completed_background_evidence=True,
                 )
             except (VersionConflict,PermissionDenied):
                 event=_publish(

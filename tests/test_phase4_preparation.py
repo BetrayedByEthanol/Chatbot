@@ -1057,7 +1057,7 @@ def test_align01_unaffected_approved_agent_task_is_eligible_other_needs_review(d
             base={
                 "instance_id":instance,"selection_generation":1,
                 "execution_policy":Policy.BACKGROUND_RESUMABLE.value,
-                "background_epoch":None,"user_id":user,
+                "background_epoch":selection["background_epoch"],"user_id":user,
                 "input_versions":{"task":1},
             }
             assert _eligible_for_policy(cur,{**base,"task_id":task},selection)
