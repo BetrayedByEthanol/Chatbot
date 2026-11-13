@@ -90,7 +90,7 @@ def authorize_agent_step(connection: Connection, actor: TrustedActor,
             raise PermissionDenied("procedure step lacks the registered read-only capability")
         if pending is not None:
             cur.execute(
-                "SELECT status FROM operations WHERE operation_id=%s",
+                "SELECT * FROM operations WHERE operation_id=%s FOR SHARE",
                 (pending["operation_id"],),
             )
             old_operation=cur.fetchone()

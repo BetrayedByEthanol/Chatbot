@@ -95,7 +95,8 @@ def test_explicit_renewal_restarts_from_checkpoint_in_next_ready_epoch(dsn,monke
         "SELECT count(*) FROM operations WHERE operation_id=%s",(command.operation_id,),
     )==[(0,)]
     # User approval is not dispatch; P0 autonomy still requires a READY epoch.
-    assert call(dsn,dispatch_one_background_step,producer(user),instance,3) is None
+    with pytest.raises(StaleSelection):
+        call(dsn,dispatch_one_background_step,producer(user),instance,3)
     _enter_next_ready(dsn,user,instance)
     dispatched=call(dsn,dispatch_one_background_step,producer(user),instance,3)
     assert dispatched is not None and dispatched.operation_id==command.operation_id
