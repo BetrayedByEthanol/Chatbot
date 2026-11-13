@@ -91,6 +91,38 @@ def process_alignment(cur,epoch:dict)->str:
     status=cur.fetchone()
     if status["n"]!=actual:
         return "SOURCE_UNVERIFIED"
+    # This is a multi-tick scan. Final certification must reject an owner
+    # revision committed after its earlier task batch was validated.
+    # Frozen Goal ancestry, procedure/run and task versions all matter.
+    cur.execute(
+        """SELECT 1 FROM background_alignment_task_checks checked
+           JOIN goal_tasks task
+             ON task.task_id=checked.task_id
+            AND task.user_id=checked.user_id
+            AND task.instance_id=checked.instance_id
+           LEFT JOIN procedure_runs run
+             ON run.run_id=checked.procedure_run_id
+            AND run.user_id=checked.user_id
+            AND run.instance_id=checked.instance_id
+           WHERE checked.user_id=%s AND checked.instance_id=%s
+             AND checked.background_epoch=%s
+             AND (task.version<>checked.task_version
+               OR (checked.procedure_run_id IS NOT NULL
+                   AND (run.run_id IS NULL
+                        OR run.version<>checked.procedure_run_version))
+               OR EXISTS (
+                   SELECT 1 FROM jsonb_each_text(checked.goal_versions) AS pinned(id,ver)
+                   LEFT JOIN goal_records goal
+                     ON goal.goal_id=pinned.id::uuid
+                    AND goal.user_id=checked.user_id
+                    AND goal.instance_id=checked.instance_id
+                   WHERE goal.goal_id IS NULL
+                      OR goal.version<>pinned.ver::bigint
+               ))
+           LIMIT 1""",scope,
+    )
+    if cur.fetchone() is not None:
+        return "SOURCE_UNVERIFIED"
     # Audit the precise result, NOT a generic "alignment complete" boolean.
     # The certificate and the existing P0 ready row share one transaction
     # with the preparation stage event/outbox in the calling coordinator.
