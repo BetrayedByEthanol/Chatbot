@@ -7,6 +7,9 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
+# The Phase 0 no-psycopg CI job must skip DB-integrated modules on collection.
+psycopg = pytest.importorskip("psycopg")
+
 from persona_agent.contracts import TrustedActor
 from persona_agent.multimodal_contracts import VoiceInputSource
 from persona_agent.streaming_asr import (
