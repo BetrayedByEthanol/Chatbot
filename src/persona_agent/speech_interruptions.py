@@ -39,6 +39,8 @@ def interrupt_speech_response(
             response = _response(cur,actor,command.response_id)
             if response["instance_id"] != command.instance_id:
                 raise PermissionDenied("interruption cannot target another persona")
+            if response["conversation_id"] != command.conversation_id:
+                raise PermissionDenied("interruption cannot target another conversation")
             _selection(cur,actor,command.instance_id,command.expected_generation)
             if response["selection_generation"] != command.expected_generation:
                 raise StaleSelection("speech interruption belongs to old generation")
