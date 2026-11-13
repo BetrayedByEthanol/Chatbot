@@ -176,6 +176,9 @@ def advance_background_preparation(
                 (actor.user_id,instance_id,background_epoch),
             )
             rows=cur.fetchall()
+            if len(rows) != epoch["captured_conversation_count"]:
+                _change_stage(cur,epoch,"BLOCKED",reason="incomplete frozen conversation snapshot")
+                return PreparationProgress("BLOCKED","REQUIRES_OPERATOR")
             for step in ("SUMMARIZE","EVALUATE"):
                 if stage != step:
                     continue
