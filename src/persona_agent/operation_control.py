@@ -497,6 +497,80 @@ def reconcile_unknown(
             return Status(status)
 
 
+
+def reap_invalid_background_queue(connection: Connection, *, limit: int=32) -> int:
+    """P0 owner retires permanently ineligible, unclaimed P4 operations.
+
+    A stale Task deadline/version, ProcedureRun/Step grant, revoked selected
+    epoch or invalidated stage cannot ever be executed on its pinned approval.
+    This does not touch RUNNING attempts (P0 lease/recovery owns those) and
+    does not silently mutate Task or Procedure owner state.
+    """
+    require_idle(connection)
+    if not 1<=limit<=128:
+        raise ValueError("invalid Background P2 reaper limit")
+    with connection.transaction():
+        with connection.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                """SELECT o.* FROM operations o
+                   LEFT JOIN procedure_agent_operation_authorizations a
+                     ON a.operation_id=o.operation_id
+                   LEFT JOIN goal_tasks task ON task.task_id=o.task_id
+                   LEFT JOIN procedure_runs run ON run.run_id=a.run_id
+                   LEFT JOIN procedure_run_steps step ON step.run_id=a.run_id
+                     AND step.step_id=a.step_id
+                   LEFT JOIN persona_selection sel ON sel.user_id=o.user_id
+                   WHERE o.operation_type=%s AND o.origin='GOAL'
+                     AND o.priority_class='P2'
+                     AND o.execution_policy='BACKGROUND_RESUMABLE'
+                     AND o.status IN ('QUEUED','RETRY_WAIT')
+                     AND (a.operation_id IS NULL OR a.state<>'AUTHORIZED'
+                       OR a.approved_background_epoch IS DISTINCT FROM o.background_epoch
+                       OR a.selection_generation<>o.selection_generation
+                       OR sel.mode IS DISTINCT FROM 'BACKGROUND'
+                       OR sel.instance_id IS DISTINCT FROM o.instance_id
+                       OR sel.generation IS DISTINCT FROM o.selection_generation
+                       OR sel.background_epoch IS DISTINCT FROM o.background_epoch
+                       OR task.task_id IS NULL OR task.status<>'PLANNED'
+                       OR task.suspended OR task.version<>a.task_version
+                       OR (task.deadline IS NOT NULL
+                           AND task.deadline<=clock_timestamp())
+                       OR run.run_id IS NULL OR run.status<>'ACTIVE'
+                       OR run.version<>a.run_version
+                       OR step.run_id IS NULL
+                       OR step.version<>a.step_version
+                       OR step.status NOT IN ('NOT_STARTED','FAILED','BLOCKED')
+                       OR step.executor<>'AGENT' OR step.capability<>a.capability
+                       OR o.input_versions->>'task'<>a.task_version::text
+                       OR o.input_versions->>'procedure_run'<>a.run_version::text
+                       OR o.input_versions->>'procedure_step'<>a.step_version::text)
+                   ORDER BY o.created_at,o.operation_id LIMIT %s
+                   FOR UPDATE OF o SKIP LOCKED""",
+                (PROCEDURE_AGENT_OPERATION,limit),
+            )
+            operations=cur.fetchall()
+            for row in operations:
+                # Never release a claimed worker's resources in a QUEUED
+                # recovery path: the row lock and guarded status are required.
+                cur.execute(
+                    """UPDATE operations
+                       SET status='BLOCKED',worker_id=NULL,lease_until=NULL,
+                           claimed_at=NULL,
+                           version=version+1,updated_at=clock_timestamp(),
+                           last_error='P4-04: pinned Background approval revoked'
+                       WHERE operation_id=%s AND status IN ('QUEUED','RETRY_WAIT')
+                       RETURNING *""",
+                    (row["operation_id"],),
+                )
+                updated=cur.fetchone()
+                if updated is None:
+                    continue
+                event_for(cur,updated,"operation.blocked.v1",{
+                    "reason":"expired or revoked P4-04 Goal/Task/Procedure authorization",
+                })
+            return len(operations)
+
+
 def reap_stale_operations(connection: Connection, *, limit: int=100) -> int:
     """Recover expired/cancelled/invalidated attempts without assuming side effects failed."""
     require_idle(connection)
