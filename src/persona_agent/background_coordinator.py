@@ -23,6 +23,7 @@ from .runtime import PermissionDenied, StaleSelection
 from .summary_contracts import SummaryNotReady, StaleSummary
 from .summary_memory import schedule_summary
 from .background_critical_updates import process_critical_updates
+from .background_alignment import process_alignment
 
 _COORDINATOR = "background.preparation"
 _TERMINAL = frozenset(("FAILED", "CANCELLED", "BLOCKED", "OUTCOME_UNKNOWN"))
@@ -172,8 +173,19 @@ def advance_background_preparation(
             stage=epoch["preparation_stage"]
             if stage == "BLOCKED":
                 return PreparationProgress(stage,"BLOCKED")
+            if stage == "READY":
+                return PreparationProgress(stage,"READY")
             if stage == "ALIGNMENT_PENDING":
-                return PreparationProgress(stage,"AWAITING_ALIGNMENT")
+                outcome=process_alignment(cur,epoch)
+                if outcome in ("SOURCE_UNVERIFIED","CRITICAL_UNRESOLVED"):
+                    # Never certify an inconsistent source. Leave a durable
+                    # failing gate instead of pretending alignment succeeded.
+                    _change_stage(cur,epoch,"BLOCKED",reason=outcome)
+                    return PreparationProgress("BLOCKED","REQUIRES_OPERATOR")
+                if outcome=="READY":
+                    _change_stage(cur,epoch,"READY")
+                    return PreparationProgress("READY","READY")
+                return PreparationProgress("ALIGNMENT_PENDING","SCANNING_ALIGNMENT")
             if stage == "CRITICAL_PENDING":
                 status=process_critical_updates(cur,epoch)
                 if status=="SOURCE_GAP":
@@ -296,7 +308,7 @@ def run_preparation_scan(connection: Connection, *, limit: int = 32
                 AND s.background_epoch=e.background_epoch
                 AND s.mode='BACKGROUND'
                WHERE e.status='PENDING'
-                 AND e.preparation_stage IN ('SUMMARIZE','EVALUATE','CRITICAL_PENDING')
+                 AND e.preparation_stage IN ('SUMMARIZE','EVALUATE','CRITICAL_PENDING','ALIGNMENT_PENDING')
                ORDER BY e.preparation_updated_at,e.user_id,e.background_epoch
                LIMIT %s""",
             (limit,),
@@ -314,7 +326,7 @@ def run_preparation_scan(connection: Connection, *, limit: int = 32
             # Return/switch raced with discovery; the next scan ignores it.
             continue
         outcomes.append(progress)
-        if progress.stage in ("SUMMARIZE", "EVALUATE", "CRITICAL_PENDING"):
+        if progress.stage in ("SUMMARIZE", "EVALUATE", "CRITICAL_PENDING", "ALIGNMENT_PENDING"):
             # A permanently waiting earlier epoch must not starve the next
             # page of otherwise eligible instances. This is only a polling
             # cursor (not an authorization or readiness transition).
@@ -325,7 +337,7 @@ def run_preparation_scan(connection: Connection, *, limit: int = 32
                        WHERE user_id=%s AND instance_id=%s AND background_epoch=%s
                          AND status='PENDING'
                          AND preparation_stage IN (
-                           'SUMMARIZE','EVALUATE','CRITICAL_PENDING'
+                           'SUMMARIZE','EVALUATE','CRITICAL_PENDING','ALIGNMENT_PENDING'
                          )""",
                     (epoch["user_id"],epoch["instance_id"],epoch["background_epoch"]),
                 )
