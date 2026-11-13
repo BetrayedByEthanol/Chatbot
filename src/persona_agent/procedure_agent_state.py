@@ -305,7 +305,9 @@ def run_one_agent_step(connection: Connection, *, worker_id: str,
             with connection.cursor(row_factory=dict_row) as cur:
                 instruction,max_words=_read_authorized_execution(cur,lease)
     except (VersionConflict,PermissionDenied,StaleOperation):
-        # No invocation happened; stale authority must never run the tool.
+        # No invocation happened. A revoked epoch can be cooperatively
+        # acknowledged immediately rather than leaving its live claim held.
+        _settle_preempted_background_attempt(connection,lease)
         return lease
     if _settle_preempted_background_attempt(connection,lease):
         return lease
@@ -314,6 +316,8 @@ def run_one_agent_step(connection: Connection, *, worker_id: str,
         if not isinstance(result,str) or not 1<=len(result)<=12000:
             raise ValueError("registered tool returned invalid text")
     except Exception as exc:
+        if _settle_preempted_background_attempt(connection,lease):
+            return lease
         try:
             fail_operation(
                 connection,lease,reason=f"read-only tool failed: {type(exc).__name__}",
@@ -337,7 +341,7 @@ def run_one_agent_step(connection: Connection, *, worker_id: str,
                            result_ref=_result_ref(lease.operation_id,
                                                   lease.claim_generation))
     except (VersionConflict,PermissionDenied,StaleOperation):
-        pass
+        _settle_preempted_background_attempt(connection,lease)
     return lease
 
 
