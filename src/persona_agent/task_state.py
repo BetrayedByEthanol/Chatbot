@@ -19,7 +19,8 @@ from .runtime import (
     _fingerprint,
 )
 from .task_contracts import (
-    AddTaskDependencyCommand, CancelTaskCommand, ConfirmUserTaskCommand,
+    AddTaskDependencyCommand, CancelTaskCommand, ConfirmCancellationProvenanceCommand,
+    ConfirmUserTaskCommand,
     CorrectTaskOutcomeCommand, CreateTaskCommand, ReportTaskOutcomeCommand,
     SetTaskPriorityCommand, TaskCommandResult, TaskUserCommand, TaskView,
     task_approval_phrase,
@@ -447,6 +448,82 @@ def cancel_task(connection: Connection, actor: TrustedActor,
                                  version=cur.fetchone()["version"],
                                  event_id=event,action="TASK_CANCELLED")
     return _command(connection,actor,command,"goal.task.cancel.v1",apply)
+
+
+def confirm_legacy_cancellation_provenance(
+    connection: Connection, actor: TrustedActor,
+    command: ConfirmCancellationProvenanceCommand,
+) -> TaskCommandResult:
+    """User-authenticated proof for a legacy cancellation without source ID.
+
+    The original cancellation is never retried or rewritten. A fresh source
+    attestation and distinct exact approval identify a historical original
+    turn, recorded in Task-owned append-only evidence and an outbox event.
+    """
+    def apply(cur, receipt):
+        cur.execute(
+            """SELECT e.event_id,e.recorded_at,t.version
+               FROM events e
+               JOIN goal_tasks t ON t.user_id=e.user_id AND t.instance_id=e.instance_id
+                AND t.task_id=%s AND t.status='CANCELLED'
+               WHERE e.event_id=%s AND e.user_id=%s AND e.instance_id=%s
+                 AND e.event_type='goal.task.cancelled.v1'
+                 AND e.trust_level='AUTHENTICATED_USER'
+                 AND e.payload->>'task_id'=%s
+                 AND e.payload->>'source_turn_id' IS NULL
+               FOR SHARE OF t""",
+            (command.task_id,command.original_cancel_event_id,actor.user_id,
+             command.instance_id,str(command.task_id)),
+        )
+        original=cur.fetchone()
+        if original is None or original["version"]!=command.expected_task_version:
+            raise VersionConflict("original legacy cancellation/version not verified")
+        cur.execute(
+            """SELECT created_at FROM conversation_turns
+               WHERE user_id=%s AND instance_id=%s
+                 AND conversation_id=%s AND turn_id=%s""",
+            (actor.user_id,command.instance_id,command.original_conversation_id,
+             command.original_source_turn_id),
+        )
+        turn=cur.fetchone()
+        if turn is None or turn["created_at"]>original["recorded_at"]:
+            raise PermissionDenied("historical source was not available when task was cancelled")
+        cur.execute(
+            """SELECT 1 FROM task_cancellation_provenance
+               WHERE original_cancel_event_id=%s""",
+            (command.original_cancel_event_id,),
+        )
+        if cur.fetchone() is not None:
+            raise VersionConflict("legacy cancellation already has owner-confirmed provenance")
+        event=_publish(
+            cur,actor,command.instance_id,
+            "goal.task.cancellation.provenance_confirmed.v1",{
+                "task_id":str(command.task_id),
+                "original_cancel_event_id":str(command.original_cancel_event_id),
+                "original_source_turn_id":str(command.original_source_turn_id),
+                "attestation_turn_id":str(command.evidence_turn_id),
+                "approval_turn_id":str(command.approval_turn_id),
+            },receipt,
+        )
+        cur.execute(
+            """INSERT INTO task_cancellation_provenance(
+                 original_cancel_event_id,user_id,instance_id,task_id,
+                 original_conversation_id,original_source_turn_id,
+                 attestation_conversation_id,attestation_turn_id,
+                 approval_turn_id,proof_event_id
+               ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+            (command.original_cancel_event_id,actor.user_id,command.instance_id,
+             command.task_id,command.original_conversation_id,
+             command.original_source_turn_id,command.conversation_id,
+             command.evidence_turn_id,command.approval_turn_id,event),
+        )
+        return TaskCommandResult(
+            task_id=command.task_id,version=original["version"],event_id=event,
+            action="CANCELLATION_PROVENANCE_CONFIRMED",
+        )
+    return _command(
+        connection,actor,command,"goal.task.cancel.provenance.confirm.v1",apply,
+    )
 
 
 def report_task_outcome(connection: Connection, actor: TrustedActor,
