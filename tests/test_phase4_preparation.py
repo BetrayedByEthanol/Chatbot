@@ -351,8 +351,8 @@ def test_completed_job_watermark_race_does_not_block_epoch(dsn,monkeypatch):
     enter(dsn,user,instance)
 
     def completed_after_initial_read(cursor,conversation_id,generation,start_sequence,
-                                     *,summary):
-        assert summary and conversation_id==conversation
+                                     *,summary,background_epoch=None):
+        assert summary and conversation_id==conversation and background_epoch==1
         # Simulate an independent P0 summary worker committing the watermark
         # after preparation has read the old watermark, but before this SQL
         # statement sees its new COMPLETED status. The coordinator holds no
