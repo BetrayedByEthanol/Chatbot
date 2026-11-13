@@ -412,15 +412,10 @@ def test_background_autonomy_gate_requires_preparation(dsn):
             VALUES (%s,%s,1)
             """,(user,instance),
         )
-    lease=claim(dsn)
-    assert lease.operation_id==c.operation_id and lease.background_epoch==1
-    invoke(dsn,record_primary_activity,actor(user),PrimaryActivityCommand(
-        instance_id=instance,expected_generation=1,idempotency_key=str(uuid4()),
-    ))
-    with pytest.raises(StaleOperation):
-        invoke(dsn,complete_operation,lease,result_ref="stale-bg")
-    assert invoke(dsn,reap_stale_operations)>=1
-    assert operation(dsn,c.operation_id)[0]=="SUSPENDED"
+    # P4-03 extends the old P0 skeleton: a bare epoch-ready row is no
+    # longer proof that a specific task/goal/procedure has been aligned.
+    # This P0 fixture intentionally has no task ID or owner versions.
+    assert claim(dsn) is None
 
 
 def test_user_cancel_before_claim_and_running_worker_ack(dsn):
