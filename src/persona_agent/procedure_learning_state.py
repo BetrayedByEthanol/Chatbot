@@ -263,9 +263,13 @@ def decide_procedure_adaptation(connection: Connection, actor: TrustedActor,
         variant=_variant_revision(
             cur,actor,command.instance_id,proposal["variant_id"],for_update=True,
         )
-        if (command.expected_revision!=proposal["expected_revision"]
-            or variant["current_revision"]!=proposal["expected_revision"]):
+        if command.expected_revision!=proposal["expected_revision"]:
+            raise VersionConflict("decision does not match proposal's pinned revision")
+        if (command.decision=="APPLY"
+            and variant["current_revision"]!=proposal["expected_revision"]):
             raise VersionConflict("proposal pinned revision is no longer current")
+        # REJECT is always admissible for an owned, undecided proposal:
+        # a user can dismiss an obsolete candidate without reactivating it.
         applied_revision=None
         if command.decision=="APPLY":
             # Serialize with new outcome assessments before reading the
@@ -417,6 +421,26 @@ def read_procedure_adaptation(connection: Connection, actor: TrustedActor,
             p=cur.fetchone()
             if p is None:
                 raise PermissionDenied("private adaptation unavailable")
+            status=("APPLIED" if p["decision"]=="APPLY" else
+                    "REJECTED" if p["decision"]=="REJECT" else "PROPOSED")
+            if p["decision"] is None:
+                # Effective readiness is derived, not written over immutable
+                # proposal history: the private revision, run and latest
+                # evaluation can all change after the proposal was recorded.
+                cur.execute(
+                    """SELECT current_revision FROM personalized_procedures
+                       WHERE variant_id=%s AND user_id=%s AND instance_id=%s""",
+                    (p["variant_id"],actor.user_id,instance_id),
+                )
+                current=cur.fetchone()
+                run=_run(cur,actor,instance_id,p["run_id"],lock=False)
+                latest=_latest_evaluation(cur,actor,instance_id,p["run_id"])
+                if (current is None
+                    or current["current_revision"]!=p["expected_revision"]
+                    or latest is None
+                    or latest["evaluation_id"]!=p["evaluation_id"]
+                    or run["version"]!=latest["run_version"]):
+                    status="STALE"
             return ProcedureAdaptationView(
                 proposal_id=p["proposal_id"],evaluation_id=p["evaluation_id"],
                 run_id=p["run_id"],variant_id=p["variant_id"],
@@ -425,9 +449,7 @@ def read_procedure_adaptation(connection: Connection, actor: TrustedActor,
                 policy=p["policy"],parameters=p["parameters"],
                 step_text_overrides=p["step_text_overrides"],
                 reason=p["reason"],
-                status=("PROPOSED" if p["decision"] is None
-                        else "APPLIED" if p["decision"]=="APPLY" else "REJECTED"),
-                applied_revision=p["applied_revision"],
+                status=status,applied_revision=p["applied_revision"],
             )
 
 
