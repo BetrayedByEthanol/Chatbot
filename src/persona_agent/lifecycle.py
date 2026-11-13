@@ -15,6 +15,7 @@ from psycopg.pq import TransactionStatus
 from psycopg.rows import dict_row
 
 from .contracts import TrustedActor
+from .background_preparation import begin_background_epoch, supersede_background_epoch
 from .runtime import (
     IdempotencyConflict,
     PermissionDenied,
@@ -243,6 +244,12 @@ def switch_persona(
             raise StaleSelection("different selected instance")
         if current["instance_id"] == command.target_instance_id:
             raise InvalidLifecycleTransition("already selected; use primary activity for return")
+        if current["mode"] == "BACKGROUND":
+            supersede_background_epoch(
+                cursor, user_id=actor.user_id,
+                instance_id=current["instance_id"],
+                background_epoch=current["background_epoch"],
+            )
         cursor.execute(
             """
             UPDATE persona_selection
@@ -287,6 +294,12 @@ def record_primary_activity(
     def transition(cursor, current):
         if current["instance_id"] != command.instance_id:
             raise StaleSelection("activity targeted an inactive instance")
+        if current["mode"] == "BACKGROUND":
+            supersede_background_epoch(
+                cursor, user_id=actor.user_id,
+                instance_id=command.instance_id,
+                background_epoch=current["background_epoch"],
+            )
         cursor.execute(
             """
             UPDATE persona_selection
@@ -353,6 +366,13 @@ def enter_background(
             (actor.user_id,),
         )
         updated = cursor.fetchone()
+        begin_background_epoch(
+            cursor, user_id=actor.user_id,
+            instance_id=updated["instance_id"],
+            generation=updated["generation"],
+            background_epoch=updated["background_epoch"],
+            presence_revision=updated["presence_revision"],
+        )
         return updated, {
             "instance_id": str(command.instance_id),
             "previous_mode": current["mode"],

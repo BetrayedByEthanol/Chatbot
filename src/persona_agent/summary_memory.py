@@ -198,8 +198,13 @@ def schedule_summary(
     platform = type(actor) is TrustedPlatformActor
     if not platform:
         _require_actor(actor)
-    if not 1 <= retain_recent <= 32 or not 1 <= max_turns <= 16:
+    if not 0 <= retain_recent <= 32 or not 1 <= max_turns <= 16:
         raise ValueError("invalid summary range policy")
+    if retain_recent == 0 and (
+        type(actor) is not TrustedPlatformActor
+        or actor.source_id != "background.preparation"
+    ):
+        raise PermissionDenied("full-tail summarization requires Background coordinator authority")
     if expected_generation < 1:
         raise ValueError("expected_generation must be positive")
     with connection.transaction():
@@ -208,7 +213,7 @@ def schedule_summary(
                 # The platform can finish a handover summary in selected
                 # Background mode, but never for an inactive or stale persona.
                 cur.execute(
-                    """SELECT instance_id,generation,mode
+                    """SELECT instance_id,generation,mode,background_epoch
                        FROM persona_selection WHERE user_id=%s FOR SHARE""",
                     (actor.user_id,),
                 )
@@ -217,6 +222,8 @@ def schedule_summary(
                     or selected["generation"]!=expected_generation
                     or selected["mode"] not in ("FOREGROUND","BACKGROUND")):
                     raise StaleSelection("automatic summary requires selected persona")
+                if retain_recent == 0 and selected["mode"] != "BACKGROUND":
+                    raise StaleSelection("full-tail summary requires Background mode")
             else:
                 _selection(cur,actor,instance_id,expected_generation)
             cur.execute(
@@ -234,7 +241,22 @@ def schedule_summary(
             if end<start:
                 return None
             cur.execute(
-                """SELECT j.*,o.status AS operation_status
+                """SELECT j.*,o.status AS operation_status,
+                          (j.background_handover_epoch IS NOT NULL
+                            AND NOT EXISTS (
+                               SELECT 1 FROM persona_selection s
+                               JOIN background_preparation_epochs e
+                                 ON e.user_id=s.user_id
+                                AND e.instance_id=s.instance_id
+                                AND e.background_epoch=s.background_epoch
+                                AND e.selection_generation=s.generation
+                               WHERE s.user_id=j.user_id
+                                 AND s.instance_id=j.instance_id
+                                 AND s.generation=j.expected_generation
+                                 AND s.mode='BACKGROUND'
+                                 AND s.background_epoch=j.background_handover_epoch
+                                 AND e.status='PENDING'
+                            )) AS revoked_handover
                    FROM conversation_summary_jobs j
                    LEFT JOIN operations o ON o.operation_id=j.operation_id
                    WHERE j.conversation_id=%s AND j.start_sequence=%s
@@ -244,27 +266,33 @@ def schedule_summary(
                 (conversation_id,start,expected_generation),
             )
             staged=cur.fetchone()
+            # An obsolete handover is not an active admission slot. Retain
+            # its immutable job and P0 operation for forensic recovery, but
+            # create a new attempt (and ID) for the current Background epoch
+            # or for eligible ordinary Foreground summarization. The worker's
+            # epoch fence remains responsible for rejecting the old attempt.
+            revoked=staged is not None and staged["revoked_handover"]
             # A failed operation is terminal in P0. Never reuse its receipt:
             # only a deliberate retry can stage a *different* operation ID.
-            if staged is not None and staged["operation_status"]=="FAILED":
+            if not revoked and staged is not None and staged["operation_status"]=="FAILED":
                 if not retry_failed:
                     raise SummaryNotReady(
                         "summary operation failed; explicitly set retry_failed=True"
                     )
-            elif staged is not None and staged["operation_status"] in (
+            elif not revoked and staged is not None and staged["operation_status"] in (
                 "CANCELLED","COMPLETED","BLOCKED","OUTCOME_UNKNOWN"
             ):
                 raise StaleSummary(
                     "terminal or blocked summary operation requires operator review"
                 )
-            elif staged is not None and staged["operation_status"]=="SUSPENDED":
+            elif not revoked and staged is not None and staged["operation_status"]=="SUSPENDED":
                 raise StaleSummary(
                     "suspended summary operation must use scheduler re-admission"
                 )
             # No job, or an explicitly retried FAILED job: reserve a new
             # monotonic attempt while holding the conversation serialization
             # lock, protecting concurrent scheduling and worker recovery.
-            create_new=(staged is None or staged["operation_status"]=="FAILED")
+            create_new=(revoked or staged is None or staged["operation_status"]=="FAILED")
             if create_new:
                 admission_origin=Origin.COGNITIVE if platform else Origin.USER
                 admission_attempt=(
@@ -285,11 +313,12 @@ def schedule_summary(
                     """INSERT INTO conversation_summary_jobs(
                          operation_id,conversation_id,user_id,instance_id,
                          expected_generation,admission_attempt,admission_origin,
-                         start_sequence,end_sequence
-                       ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                         start_sequence,end_sequence,background_handover_epoch
+                       ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
                     (op_id,conversation_id,actor.user_id,instance_id,
                      expected_generation,admission_attempt,
-                     admission_origin.value,start,end),
+                     admission_origin.value,start,end,
+                     selected["background_epoch"] if retain_recent == 0 else None),
                 )
             else:
                 # Includes crash after staging but before P0 enqueue:
@@ -339,6 +368,35 @@ def _locked_job(cur, lease: OperationLease) -> dict:
     job=cur.fetchone()
     if job is None or job["expected_generation"]!=lease.selection_generation:
         raise StaleSummary("missing or stale summary job correlation")
+    if job["background_handover_epoch"] is not None:
+        # A full-tail handover is allowed to summarize the latest delivered
+        # input ONLY while its original Background epoch remains selected.
+        # FOREGROUND_ASYNC operations are intentionally not epoch-fenced by
+        # P0. Fence this narrower authorization at BOTH prepare and commit.
+        #
+        # Lock order: operation -> selection (above) -> preparation epoch.
+        # The lifecycle transition locks selection before superseding an
+        # epoch, so a concurrent Foreground return either commits first and
+        # invalidates this job, or waits for this short transaction to finish.
+        cur.execute(
+            """SELECT 1 FROM persona_selection s
+               JOIN background_preparation_epochs e
+                 ON e.user_id=s.user_id
+                AND e.instance_id=s.instance_id
+                AND e.background_epoch=s.background_epoch
+                AND e.selection_generation=s.generation
+               WHERE s.user_id=%s AND s.instance_id=%s
+                 AND s.generation=%s AND s.mode='BACKGROUND'
+                 AND s.background_epoch=%s AND e.status='PENDING'
+               FOR SHARE OF s,e""",
+            (lease.user_id,lease.instance_id,lease.selection_generation,
+             job["background_handover_epoch"]),
+        )
+        if cur.fetchone() is None:
+            raise StaleSummary("Background handover epoch was superseded")
+        # Acquiring the epoch lock can wait behind a concurrent transition;
+        # recheck the claimed P0 lease before any worker state is committed.
+        require_claim(cur,lease)
     return job
 
 
@@ -366,8 +424,9 @@ def prepare_summary(
             state=cur.fetchone()
             if state is None or state["summary_watermark"]!=job["start_sequence"]-1:
                 raise StaleSummary("summary watermark advanced or conversation removed")
-            if job["end_sequence"]>=state["next_sequence"]-1:
-                raise SummaryNotReady("the latest input must remain outside compression")
+            if (job["end_sequence"]>=state["next_sequence"]-1
+                and job["background_handover_epoch"] is None):
+                raise SummaryNotReady("the latest input must remain outside ordinary compression")
             turns=_read_range(cur,job)
             return SummaryWork(
                 operation_id=lease.operation_id,user_id=lease.user_id,

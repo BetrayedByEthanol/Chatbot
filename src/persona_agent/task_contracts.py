@@ -73,6 +73,20 @@ class CancelTaskCommand(TaskUserCommand):
     expected_task_version: int = Field(ge=1)
 
 
+class ConfirmCancellationProvenanceCommand(TaskUserCommand):
+    """Re-attest legacy cancellation source without executing it again.
+
+    Fresh evidence_turn_id and approval_turn_id form the two authenticated
+    turns required for a new source attestation. original_source_turn_id
+    remains the historical turn that the P4 epoch must reconcile.
+    """
+    task_id: UUID
+    expected_task_version: int = Field(ge=1)
+    original_cancel_event_id: UUID
+    original_conversation_id: UUID
+    original_source_turn_id: UUID
+
+
 class ReportTaskOutcomeCommand(TaskUserCommand):
     task_id: UUID
     expected_task_version: int = Field(ge=1)
@@ -128,7 +142,7 @@ class TaskCommandResult(BaseModel):
     task_id: UUID
     version: int
     event_id: UUID
-    action: Literal["TASK_CREATED", "DEPENDENCY_ADDED", "OUTCOME_REPORTED", "USER_COMPLETION_CONFIRMED", "OUTCOME_CORRECTED", "PRIORITY_SET", "TASK_CANCELLED"]
+    action: Literal["TASK_CREATED", "DEPENDENCY_ADDED", "OUTCOME_REPORTED", "USER_COMPLETION_CONFIRMED", "OUTCOME_CORRECTED", "PRIORITY_SET", "TASK_CANCELLED", "CANCELLATION_PROVENANCE_CONFIRMED"]
     report_id: UUID | None = None
     confirmation_id: UUID | None = None
     correction_id: UUID | None = None
