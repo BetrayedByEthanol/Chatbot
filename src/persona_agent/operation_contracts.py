@@ -178,6 +178,54 @@ def require_idle(connection: Connection) -> None:
         raise ValueError("operation commands require an idle autocommit connection")
 
 
+
+def count_active_background_p2(cursor, user_id: UUID, instance_id: UUID,
+                               background_epoch: int) -> int:
+    """P0 admission budget: stale queued P2 is not a permanent reservation.
+
+    RUNNING/CANCEL_REQUESTED/SUSPEND_REQUESTED always consume a slot until P0
+    releases the active claim. QUEUED/RETRY_WAIT consume a slot only while
+    their exact user-approved Task/Run/Step grant remains executable. P0's
+    separate recovery pass journals permanently stale queued operations.
+    """
+    cursor.execute(
+        """SELECT count(*) AS active
+           FROM operations o
+           LEFT JOIN procedure_agent_operation_authorizations a
+             ON a.operation_id=o.operation_id AND a.user_id=o.user_id
+            AND a.instance_id=o.instance_id
+           LEFT JOIN goal_tasks task ON task.task_id=o.task_id
+             AND task.user_id=o.user_id AND task.instance_id=o.instance_id
+           LEFT JOIN procedure_runs run ON run.run_id=a.run_id
+             AND run.user_id=a.user_id AND run.instance_id=a.instance_id
+           LEFT JOIN procedure_run_steps step ON step.run_id=a.run_id
+             AND step.step_id=a.step_id
+             AND step.user_id=a.user_id AND step.instance_id=a.instance_id
+           WHERE o.user_id=%s AND o.instance_id=%s
+             AND o.background_epoch=%s AND o.priority_class='P2'
+             AND o.status IN ('QUEUED','RETRY_WAIT','RUNNING',
+                              'CANCEL_REQUESTED','SUSPEND_REQUESTED')
+             AND (o.status IN ('RUNNING','CANCEL_REQUESTED','SUSPEND_REQUESTED')
+                  OR (
+                    o.operation_type=%s AND a.state='AUTHORIZED'
+                    AND a.approved_background_epoch=o.background_epoch
+                    AND a.selection_generation=o.selection_generation
+                    AND task.status='PLANNED' AND NOT task.suspended
+                    AND task.version=a.task_version
+                    AND (task.deadline IS NULL OR task.deadline>clock_timestamp())
+                    AND run.status='ACTIVE' AND run.version=a.run_version
+                    AND step.status IN ('NOT_STARTED','FAILED','BLOCKED')
+                    AND step.version=a.step_version
+                    AND step.executor='AGENT' AND step.capability=a.capability
+                    AND o.input_versions->>'task'=a.task_version::text
+                    AND o.input_versions->>'procedure_run'=a.run_version::text
+                    AND o.input_versions->>'procedure_step'=a.step_version::text
+                  ))""",
+        (user_id,instance_id,background_epoch,PROCEDURE_AGENT_OPERATION),
+    )
+    return cursor.fetchone()["active"]
+
+
 def event_for(cursor, row: dict, event_type: str, detail: dict | None = None, *, source_id: str = 'operation.scheduler', trust_level: str = 'TRUSTED_PLATFORM') -> UUID:
     """Append operation domain event + matching outbox inside caller's transaction."""
     operation_id = row["operation_id"]
