@@ -74,16 +74,34 @@ class TurnTakingController:
     def barge_in_detected(self) -> bool:
         return self._barge_in_detected
 
-    def set_playback_active(self, active: bool) -> None:
-        """Host reports physical playback, not merely a queued or generated clip."""
+    def set_playback_active(self, active: bool) -> bool:
+        """Guard physical playback start/resume; return True if it must stop.
+
+        The trusted host MUST check this return value before starting/resuming
+        audio. True means flush the output queue and persist interrupt_command().
+        This closes the race where speech started during a playback gap:
+        no new VAD onset will occur because the ASR session is recording.
+        """
         if type(active) is not bool:
             raise TypeError("playback status must be bool")
         with self._lock:
-            if self._playback_active and not active and not self._barge_in_detected:
-                self._remaining_guard_frames = self._guard_frames
             if active and self._barge_in_detected:
                 raise RuntimeError("interrupted response must never restart playback")
+            if active and self.session.status in {
+                StreamStatus.RECORDING, StreamStatus.FINAL_PENDING,
+                StreamStatus.COMMITTED,
+            }:
+                # Accepted user speech always outranks output, even under the
+                # default half-duplex echo policy. Do not activate playback.
+                self._barge_in_detected = True
+                self.cancellation.set()
+                self._remaining_guard_frames = 0
+                return True
+            if self._playback_active and not active and not self._barge_in_detected:
+                if self.session.status is StreamStatus.LISTENING:
+                    self._remaining_guard_frames = self._guard_frames
             self._playback_active = active
+            return False
 
     def accept_microphone_frame(self, frame: Pcm16Frame) -> TurnFrameResult:
         """Bounded 20-ms processing; no DB, TTS, ASR or media callbacks."""
