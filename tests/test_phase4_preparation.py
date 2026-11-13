@@ -893,3 +893,56 @@ def test_full_tail_requires_pending_handover_status_even_in_background(dsn):
         call(dsn,prepare_summary,lease)
     _assert_no_handover_writes(dsn,conversation)
     _cancel_handover_claim(dsn,user,lease)
+
+
+def test_revoked_full_tail_does_not_suppress_ordinary_auto_summary(dsn):
+    from persona_agent.automatic_summaries import _admit_if_due, AutoSummaryPolicy
+
+    user,instance,_=seed(dsn)
+    conversation=uuid4()
+    for index in range(5):
+        add_closed_turn(dsn,user,instance,conversation,
+                        f"Ordinary summary history {index}.")
+    enter(dsn,user,instance)
+    obsolete=call(dsn,schedule_summary,coordinator(user),conversation,instance,1,
+                  retain_recent=0,max_turns=8)
+    call(dsn,record_primary_activity,user_actor(user),PrimaryActivityCommand(
+        instance_id=instance,expected_generation=1,idempotency_key=str(uuid4()),
+    ))
+
+    # The automatic summary preflight must ignore the queued full-tail
+    # operation that lost its Background epoch, then schedule a new normal
+    # summary retaining the most recent two exact turns.
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        admitted,replayed=_admit_if_due(
+            conn,user_id=user,instance_id=instance,conversation_id=conversation,
+            generation=1,mode="FOREGROUND",
+            policy=AutoSummaryPolicy(
+                min_candidate_turns=2,retain_recent=2,max_turns=8,
+            ),
+        )
+    assert (admitted,replayed)==(1,0)
+    jobs=check(dsn,
+        """SELECT operation_id,admission_attempt,background_handover_epoch,
+                  end_sequence FROM conversation_summary_jobs
+           WHERE conversation_id=%s ORDER BY admission_attempt""",
+        (conversation,),
+    )
+    assert jobs==[(obsolete.operation_id,1,1,5),
+                  (jobs[1][0],2,None,3)]
+    assert jobs[1][0]!=obsolete.operation_id
+
+    # Explicit cancellation of the obsolete QUEUED job frees its slot.
+    old_version=check(dsn,"SELECT version FROM operations WHERE operation_id=%s",
+                      (obsolete.operation_id,))[0][0]
+    assert call(dsn,cancel_operation,user_actor(user),CancelOperationCommand(
+        operation_id=obsolete.operation_id,expected_version=old_version,
+        idempotency_key=str(uuid4()),
+    ))==Status.CANCELLED
+    normal=claim(dsn,SUMMARY_OPERATION)
+    assert normal.operation_id==jobs[1][0]
+    call(dsn,run_summary,normal,SummaryModel())
+    assert check(dsn,
+        "SELECT summary_watermark FROM conversations WHERE conversation_id=%s",
+        (conversation,),
+    )==[(3,)]
