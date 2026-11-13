@@ -155,6 +155,28 @@ def test_delivery_and_action_receipts_are_exactly_once(dsn):
         assert check(dsn,"SELECT count(*) FROM outbox WHERE event_id=%s",(event_id,))==[(1,)]
 
 
+def test_concurrent_first_time_policy_opt_in_is_revision_fenced(dsn):
+    user,first,_=seed(dsn)
+    first_policy=policy(user,first,enabled=True,key="policy-a")
+    conflicting=policy(user,first,enabled=False,key="policy-b")
+    def apply(command):
+        try:
+            return call(dsn,update_notification_policy,user_actor(user),command)
+        except VersionConflict as exc:
+            return exc
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results=list(executor.map(apply,(first_policy,conflicting)))
+    assert sum(isinstance(r,VersionConflict) for r in results)==1
+    assert sum(not isinstance(r,VersionConflict) for r in results)==1
+    assert check(dsn,
+        "SELECT version FROM notification_policies WHERE user_id=%s",(user,),
+    )==[(1,)]
+    assert check(dsn,
+        "SELECT count(*) FROM events WHERE event_type='notification.policy.changed.v1' "
+        "AND user_id=%s",(user,),
+    )==[(1,)]
+
+
 def test_quiet_hours_defers_and_new_policy_releases_without_duplicates(dsn):
     user,first,_=seed(dsn)
     now=datetime.now(timezone.utc)
