@@ -114,6 +114,18 @@ def _admit_if_due(
                LEFT JOIN operations o ON o.operation_id=j.operation_id
                WHERE j.conversation_id=%s AND j.start_sequence=%s
                  AND j.expected_generation=%s
+                 AND (j.background_handover_epoch IS NULL OR EXISTS (
+                    SELECT 1 FROM persona_selection s
+                    JOIN background_preparation_epochs e
+                      ON e.user_id=s.user_id AND e.instance_id=s.instance_id
+                     AND e.background_epoch=s.background_epoch
+                     AND e.selection_generation=s.generation
+                    WHERE s.user_id=j.user_id AND s.instance_id=j.instance_id
+                      AND s.generation=j.expected_generation
+                      AND s.mode='BACKGROUND'
+                      AND s.background_epoch=j.background_handover_epoch
+                      AND e.status='PENDING'
+                 ))
                ORDER BY j.admission_attempt DESC LIMIT 1""",
             (conversation_id,start,generation),
         )
