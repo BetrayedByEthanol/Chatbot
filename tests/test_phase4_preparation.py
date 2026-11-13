@@ -23,9 +23,9 @@ from persona_agent.lifecycle import (
 from persona_agent.operation_contracts import Status
 from persona_agent.operation_scheduler import claim_operation, configure_resource_pool
 from persona_agent.cognitive_contracts import COGNITIVE_CAPABILITY,COGNITIVE_OPERATION
-from persona_agent.cognitive_engine import run_cognition
+from persona_agent.cognitive_engine import run_cognition, schedule_cognition
 from persona_agent.summary_contracts import SUMMARY_CAPABILITY,SUMMARY_OPERATION
-from persona_agent.summary_memory import run_summary
+from persona_agent.summary_memory import run_summary, schedule_summary
 from persona_agent.runtime import PermissionDenied
 
 
@@ -280,3 +280,29 @@ def test_untrusted_platform_and_cross_user_denied(dsn):
     with pytest.raises(StaleBackgroundPreparation):
         tick(dsn,stranger,instance)
     assert tick(dsn,user,instance).stage=="CRITICAL_PENDING"
+
+
+def test_full_tail_operations_require_coordinator_and_background_mode(dsn):
+    user,instance,_=seed(dsn)
+    conversation=uuid4()
+    add_closed_turn(dsn,user,instance,conversation,"A finished response.")
+    with pytest.raises(PermissionDenied):
+        call(dsn,schedule_summary,user_actor(user),conversation,instance,1,
+             retain_recent=0)
+    with pytest.raises(PermissionDenied):
+        call(dsn,schedule_summary,TrustedPlatformActor(
+            user_id=user,source_id="memory.auto_summary.v1",
+        ),conversation,instance,1,retain_recent=0)
+    with pytest.raises(PermissionDenied):
+        call(dsn,schedule_cognition,TrustedPlatformActor(
+            user_id=user,source_id="cognition.auto_reflection.v1",
+        ),conversation,instance,1,retain_recent=0,min_closed_turns=1)
+    # Even a trusted coordinator cannot trigger full-tail inference in
+    # Foreground (whether or not an entry had previously been prepared).
+    from persona_agent.runtime import StaleSelection
+    with pytest.raises(StaleSelection):
+        call(dsn,schedule_summary,coordinator(user),conversation,instance,1,
+             retain_recent=0)
+    with pytest.raises(StaleSelection):
+        call(dsn,schedule_cognition,coordinator(user),conversation,instance,1,
+             retain_recent=0,min_closed_turns=1)
