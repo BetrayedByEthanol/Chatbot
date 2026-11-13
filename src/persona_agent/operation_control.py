@@ -26,6 +26,15 @@ class CancelOperationCommand(BaseModel):
     idempotency_key: str = Field(min_length=1,max_length=128)
 
 
+def _background_readonly_retry_seconds(attempt_count: int) -> int:
+    """Finite, deterministic P2 read-only retry delay (attempts 1/2: 2/4s).
+
+    Only P0 chooses this delay. The final attempt (max_attempts=3 for the
+    registered Procedure AGENT operation) transitions to FAILED, not RETRY.
+    """
+    return min(60, 2 ** min(attempt_count, 6))
+
+
 def _update_state(cursor, row: dict, status: str, *, error: str | None = None,
                   result_ref: str | None = None, eligible_delay: int = 0) -> dict:
     cursor.execute(
@@ -135,6 +144,13 @@ def checkpoint_operation(
         with connection.cursor(row_factory=dict_row) as cursor:
             row=require_claim(cursor,lease)
             require_current_authority(cursor,row)
+            if (row["operation_type"]==PROCEDURE_AGENT_OPERATION
+                and row["priority_class"]=="P2"):
+                # Registered P2 uses *only* the Procedure owner's immutable
+                # safe-stop snapshot, created atomically in suspend ACK.
+                # An arbitrary opaque ref would make an uncheckpointed crash
+                # appear restorable and strand its user authorization.
+                raise InvalidOperation("P2 checkpoints require cooperative safe-stop ACK")
             # The authority lock can block beyond the original lease,
             # without changing the selected persona or generation.
             # Recheck after the lock and fence the final database write.
@@ -287,6 +303,12 @@ def fail_operation(
                 return Status.OUTCOME_UNKNOWN
             status=("FAILED" if row["attempt_count"]>=row["max_attempts"]
                     else "RETRY_WAIT")
+            # GOAL/P2 read-only AGENT recovery is P0-owned; caller-provided
+            # zero/short delays cannot cause unbounded hot-loop retries.
+            if (status=="RETRY_WAIT"
+                and row["operation_type"]==PROCEDURE_AGENT_OPERATION
+                and row["origin"]=="GOAL" and row["priority_class"]=="P2"):
+                delay_seconds=_background_readonly_retry_seconds(row["attempt_count"])
             release_resources(cursor,row)
             # Pool locks may have blocked past lease, timeout or deadline.
             # Rejecting the worker rolls back the resource release entirely;
@@ -615,10 +637,13 @@ def reap_invalid_background_queue(connection: Connection, *, limit: int=32) -> i
 
     A stale Task deadline/version, ProcedureRun/Step grant, revoked selected
     epoch or invalidated stage cannot ever be executed on its pinned approval.
-    A generic P0 reaper may already have SUSPENDED a never-claimed queued
-    P2 operation; that zero-attempt PREPARED record is safe to block as well.
-    Claimed SUSPENDED/RUNNING work is left to P4-05 recovery. This never
-    silently mutates Task or Procedure owner state.
+    A generic P0 reaper may already have SUSPENDED never-claimed queued P2.
+    P4-05d also retires a *stopped* claimed SUSPENDED/PREPARED P2 attempt
+    when it has no validated safe-stop checkpoint. Such a crash/lease expiry
+    cannot be resumed under P4-05c and must not monopolize the Procedure
+    authorization indefinitely. Checkpointed SUSPENDED work is preserved.
+    RUNNING claims are always left to P0 lease recovery. This never silently
+    mutates Task or Procedure owner state.
     """
     require_idle(connection)
     if not 1<=limit<=128:
@@ -638,9 +663,9 @@ def reap_invalid_background_queue(connection: Connection, *, limit: int=32) -> i
                      AND o.priority_class='P2'
                      AND o.execution_policy='BACKGROUND_RESUMABLE'
                      AND (o.status IN ('QUEUED','RETRY_WAIT')
-                       OR (o.status='SUSPENDED' AND o.attempt_count=0
-                           AND o.claim_generation=0
-                           AND o.effect_status='PREPARED'))
+                       OR (o.status='SUSPENDED'
+                           AND o.effect_status='PREPARED'
+                           AND o.checkpoint_ref IS NULL))
                      AND (a.operation_id IS NULL OR a.state<>'AUTHORIZED'
                        OR a.approved_background_epoch IS DISTINCT FROM o.background_epoch
                        OR a.selection_generation<>o.selection_generation
@@ -660,7 +685,8 @@ def reap_invalid_background_queue(connection: Connection, *, limit: int=32) -> i
                        OR step.executor<>'AGENT' OR step.capability<>a.capability
                        OR o.input_versions->>'task'<>a.task_version::text
                        OR o.input_versions->>'procedure_run'<>a.run_version::text
-                       OR o.input_versions->>'procedure_step'<>a.step_version::text)
+                       OR o.input_versions->>'procedure_step'<>a.step_version::text
+                       OR (o.status='SUSPENDED' AND o.checkpoint_ref IS NULL))
                    ORDER BY o.created_at,o.operation_id LIMIT %s
                    FOR UPDATE OF o SKIP LOCKED""",
                 (PROCEDURE_AGENT_OPERATION,limit),
@@ -677,8 +703,8 @@ def reap_invalid_background_queue(connection: Connection, *, limit: int=32) -> i
                            last_error='P4-04: pinned Background approval revoked'
                        WHERE operation_id=%s
                          AND (status IN ('QUEUED','RETRY_WAIT')
-                           OR (status='SUSPENDED' AND attempt_count=0
-                             AND claim_generation=0 AND effect_status='PREPARED'))
+                           OR (status='SUSPENDED' AND effect_status='PREPARED'
+                               AND checkpoint_ref IS NULL))
                        RETURNING *""",
                     (row["operation_id"],),
                 )
@@ -764,7 +790,27 @@ def reap_stale_operations(connection: Connection, *, limit: int=100) -> int:
                         seconds=row["timeout_seconds"])<=now
                 )
                 deadline_passed=row["deadline"] is not None and row["deadline"]<=now
-                input_invalid=False
+                # Registered P2 deliberately has operations.deadline=NULL.
+                # On an *expired* attempt only, consult the authoritative
+                # Task deadline before requeueing. An in-flight, live worker
+                # must never lose its resources solely because Task time
+                # elapsed while a synchronous read-only tool was executing.
+                if (expired and row["operation_type"]==PROCEDURE_AGENT_OPERATION
+                    and row["origin"]=="GOAL" and row["priority_class"]=="P2"):
+                    cursor.execute(
+                        """SELECT deadline FROM goal_tasks
+                           WHERE task_id=%s AND user_id=%s AND instance_id=%s
+                           FOR SHARE""",
+                        (row["task_id"],row["user_id"],row["instance_id"]),
+                    )
+                    task=cursor.fetchone()
+                    if task is None:
+                        # Missing owner state is not a valid retry target.
+                        input_invalid=True
+                    elif task["deadline"] is not None and task["deadline"]<=now:
+                        deadline_passed=True
+                else:
+                    input_invalid=False
                 if "persona_instance" in row["input_versions"]:
                     cursor.execute(
                         """
@@ -830,8 +876,13 @@ def reap_stale_operations(connection: Connection, *, limit: int=100) -> int:
                     updated=_update_state(
                         cursor,row,status,
                         error="worker lease, selection or background epoch invalidated",
-                        eligible_delay=min(3600,2**min(row["attempt_count"],10))
-                        if status=="RETRY_WAIT" else 0,
+                        eligible_delay=(
+                            _background_readonly_retry_seconds(row["attempt_count"])
+                            if row["operation_type"]==PROCEDURE_AGENT_OPERATION
+                               and row["origin"]=="GOAL"
+                               and row["priority_class"]=="P2"
+                            else min(3600,2**min(row["attempt_count"],10))
+                        ) if status=="RETRY_WAIT" else 0,
                     )
                     event_for(cursor,updated,"operation.recovered.v1",{"status":status})
                 processed+=1
