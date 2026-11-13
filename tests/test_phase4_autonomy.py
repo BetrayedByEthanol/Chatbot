@@ -221,3 +221,40 @@ def test_foreground_return_during_readonly_tool_fences_p2_result(dsn,monkeypatch
         "SELECT status FROM goal_tasks WHERE task_id=%s",(task,),
     )==[("PLANNED",)]
     assert call(dsn,run_autonomous_scan)==()
+
+
+def test_ready_epoch_scanner_does_not_starve_later_personas(dsn):
+    from test_phase4_preparation import seed,tick,advance_to_readiness
+
+    # No new permissions are issued, and no tool executes. This isolates the
+    # durable READY-poll cursor from the separate P0 admission system.
+    isolated=[]
+    for _ in range(4):
+        user,instance,_=seed(dsn)
+        call(dsn,enter_background,user_actor(user),EnterBackgroundCommand(
+            instance_id=instance,expected_generation=1,
+            expected_presence_revision=0,
+            reason=BackgroundReason.EXPLICIT_DEPARTURE,
+            idempotency_key=uuid4().hex,
+        ))
+        assert tick(dsn,user,instance).stage=="CRITICAL_PENDING"
+        assert tick(dsn,user,instance).stage=="ALIGNMENT_PENDING"
+        assert advance_to_readiness(dsn,user,instance).stage=="READY"
+        isolated.append((user,instance))
+
+    count=check(dsn,
+        """SELECT count(*) FROM background_preparation_epochs e
+           JOIN persona_selection s ON s.user_id=e.user_id
+             AND s.instance_id=e.instance_id
+             AND s.background_epoch=e.background_epoch
+           WHERE s.mode='BACKGROUND' AND e.status='PENDING'
+             AND e.preparation_stage='READY'""",())[0][0]
+    for _ in range(count+4):
+        assert call(dsn,run_autonomous_scan,limit=1)==()
+    for user,instance in isolated:
+        assert check(dsn,
+            """SELECT autonomous_polled_at IS NOT NULL
+               FROM background_preparation_epochs WHERE user_id=%s
+                 AND instance_id=%s AND background_epoch=1""",
+            (user,instance),
+        )==[(True,)]
