@@ -694,3 +694,29 @@ def test_legacy_task_cancel_source_is_recovered_only_by_fresh_user_attestation(d
     assert len(match)==1 and match[0]["owner_ref"]==proof.event_id
     assert check(dsn,"SELECT status FROM goal_tasks WHERE task_id=%s",
                  (task_id,))==[("CANCELLED",)]
+
+
+def test_explicit_memory_owner_revision_is_accepted_without_extraction_candidate(dsn):
+    from persona_agent.memory_contracts import AdmitMemoryCommand
+    from persona_agent.memory import admit_memory
+    user,instance,_=seed(dsn)
+    conversation=uuid4()
+    source=add_closed_turn(dsn,user,instance,conversation,"My hobby is gardening.")
+    committed=call(dsn,admit_memory,user_actor(user),AdmitMemoryCommand(
+        instance_id=instance,expected_generation=1,
+        conversation_id=conversation,evidence_turn_id=source.turn_id,
+        evidence_quote="My hobby is gardening.",
+        memory_kind="FACT",subject_key="user",predicate_key="hobby",
+        value_text="gardening",confidence=1.0,idempotency_key=str(uuid4()),
+    ))
+    assert check(dsn,
+        "SELECT count(*) FROM memory_extraction_candidates WHERE source_turn_id=%s",
+        (source.turn_id,),
+    )==[(0,)]
+    enter(dsn,user,instance)
+    drive_to_critical(dsn,user,instance)
+    assert drive_critical(dsn,user,instance).stage=="ALIGNMENT_PENDING"
+    item=call(dsn,list_critical_updates,user_actor(user),instance,1)[0]
+    assert (item["domain"],item["status"],item["owner_ref"])==(
+        "MEMORY","VERIFIED",committed.event_id,
+    )
