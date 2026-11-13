@@ -457,6 +457,20 @@ def respond_to_notification(
     _actor(actor)
     with connection.transaction():
         with connection.cursor(row_factory=dict_row) as cur:
+            # Consistent lock order for all responses (including STOP):
+            # intent first, occurrence second. STOP may cancel other
+            # occurrences; locking an occurrence first permits a 2-STOP
+            # deadlock when each caller holds a different occurrence lock.
+            cur.execute(
+                """SELECT i.intent_id FROM notification_intents i
+                   JOIN notification_occurrences o ON o.intent_id=i.intent_id
+                   WHERE o.occurrence_id=%s AND o.user_id=%s
+                     AND i.user_id=%s
+                   FOR UPDATE OF i""",
+                (command.occurrence_id,actor.user_id,actor.user_id),
+            )
+            if cur.fetchone() is None:
+                raise PermissionDenied("notification response outside authenticated user")
             cur.execute(
                 """SELECT o.*,i.active FROM notification_occurrences o
                    JOIN notification_intents i ON i.intent_id=o.intent_id
