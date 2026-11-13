@@ -129,13 +129,29 @@ def test_checkpoint_restoration_rejects_changed_task_owner_versions(dsn,monkeypa
              operation_id=op)
 
 
-def test_checkpoint_restoration_rejects_changed_instruction_digest(dsn,monkeypatch):
+def test_procedure_definition_is_immutable_after_checkpoint(dsn,monkeypatch):
     user,_,_,run,op,_=_checkpointed(dsn,monkeypatch)
     with psycopg.connect(dsn,autocommit=True) as conn:
-        conn.execute(
-            """UPDATE procedure_run_steps SET instruction=instruction||' changed'
-               WHERE run_id=%s AND step_id='inspect'""",(run,),
-        )
+        # Phase 3 makes the approved Procedure step definition immutable.
+        # A direct instruction edit fails before restoration is attempted.
+        with pytest.raises(psycopg.Error,match="definition is immutable"):
+            conn.execute(
+                """UPDATE procedure_run_steps SET instruction=instruction||' changed'
+                   WHERE run_id=%s AND step_id='inspect'""",(run,),
+            )
+    assert call(dsn,load_validated_procedure_checkpoint,
+                user_actor(user),operation_id=op).run_id==run
+
+
+def test_checkpoint_restoration_rejects_instruction_digest_mismatch(dsn,monkeypatch):
+    user,_,_,_,op,_=_checkpointed(dsn,monkeypatch)
+    import persona_agent.procedure_agent_checkpoint as checkpoint
+    class MismatchedDigest:
+        def hexdigest(self):
+            return "0"*64
+    # Simulate a corrupted/incompatible checksum during read, without
+    # bypassing the DB's immutable checkpoint and Procedure definition guards.
+    monkeypatch.setattr(checkpoint,"sha256",lambda data: MismatchedDigest())
     with pytest.raises(VersionConflict,match="instruction differs"):
         call(dsn,load_validated_procedure_checkpoint,user_actor(user),
              operation_id=op)
