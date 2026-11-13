@@ -49,10 +49,62 @@ def test_text_clip_segmentation_is_deterministic_and_bounded():
     assert len(result)>1
     assert all(len(x)<=220 for x in result)
     assert " ".join(result)==" ".join(many.split())
-    with pytest.raises(ValueError):
-        split_speech_text("x"*221)
+    # A long unspaced token must not suppress otherwise valid speech.
+    assert split_speech_text("x"*221)==("x"*220, "x")
     with pytest.raises(ValueError):
         split_speech_text(" ")
+
+
+
+@pytest.mark.parametrize("text", [
+    "这是一个正常的中文回答。" * 20,
+    "これは通常の日本語の回答です。" * 20,
+    "没有标点符号的中文回答" * 40,
+    "漢字" * 150,
+    "a" * 1000,
+])
+def test_unspaced_multilingual_text_splits_without_changing_content(text):
+    clips = split_speech_text(text)
+    assert 1 < len(clips) <= 64
+    assert all(1 <= len(clip) <= 220 for clip in clips)
+    assert "".join(clips) == text
+
+
+def test_cjk_sentences_and_closing_quotes_form_natural_boundaries():
+    text = "她说：“这是答案。”然后继续。次の文です！"
+    clips = split_speech_text(text)
+    assert clips[0] == "她说：“这是答案。”"
+    assert "".join(clips) == text
+
+
+def test_full_conversation_limit_preserves_cjk_and_clip_budget():
+    text = "这是回答。" * 2400
+    assert len(text) == 12000
+    clips = split_speech_text(text)
+    assert len(clips) <= 64
+    assert all(len(clip) <= 220 for clip in clips)
+    assert "".join(clips) == text
+
+
+def test_forced_split_does_not_detach_combining_accents():
+    text = "a" * 219 + "e\u0301" + "b" * 80
+    clips = split_speech_text(text)
+    assert clips[0] == "a" * 219
+    assert "".join(clips) == text
+    assert not any(clip.startswith("\u0301") for clip in clips)
+
+
+def test_english_long_text_still_prefers_word_and_sentence_boundaries():
+    text = "A normal English response. " * 15
+    clips = split_speech_text(text)
+    assert all(len(clip) <= 220 for clip in clips)
+    assert all(clip.endswith(".") for clip in clips)
+    assert " ".join(clips) == " ".join(text.split())
+
+
+def test_unrepresentable_clip_budget_rejected_explicitly():
+    with pytest.raises(ValueError, match="capacity"):
+        split_speech_text("字" * 3000, max_chars=40)
 
 
 def test_piper_adapter_validates_model_and_wraps_pcm_as_wav(tmp_path, monkeypatch):
