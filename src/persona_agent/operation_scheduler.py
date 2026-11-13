@@ -20,7 +20,7 @@ from .runtime import (
     IdempotencyConflict, PermissionDenied, StaleSelection, VersionConflict,
     _fingerprint,
 )
-from .tool_contracts import PROCEDURE_AGENT_OPERATION
+from .tool_contracts import PROCEDURE_AGENT_OPERATION, SLOW_TOOL, RESOURCE_KEY
 from .procedure_agent_gate import require_procedure_agent_gate
 
 
