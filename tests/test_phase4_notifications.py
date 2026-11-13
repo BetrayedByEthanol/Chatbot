@@ -273,6 +273,47 @@ def test_snooze_stop_and_response_cross_user_isolation(dsn):
     )==[(1,)]
 
 
+def test_concurrent_stop_on_two_occurrences_has_no_lock_cycle(dsn):
+    user,first,_=_ready(dsn)
+    recurring=schedule(user,first,recur="DAILY")
+    call(dsn,schedule_notification,user_actor(user),recurring)
+    assert call(dsn,dispatch_due_notifications)==1
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        conn.execute(
+            """UPDATE notification_intents
+               SET next_due_at=clock_timestamp()-interval '1 minute'
+               WHERE intent_id=%s""",(recurring.intent_id,),
+        )
+    assert call(dsn,dispatch_due_notifications)==1
+    items=[i for i in call(dsn,list_notification_inbox,user_actor(user))
+           if i.intent_id==recurring.intent_id]
+    assert len(items)==2
+    commands=[
+        NotificationActionCommand(occurrence_id=item.occurrence_id,
+                                  idempotency_key=uuid4().hex,action="STOP")
+        for item in items
+    ]
+    def stop(command):
+        try:
+            return call(dsn,respond_to_notification,user_actor(user),command)
+        except VersionConflict as exc:
+            return exc
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results=list(executor.map(stop,commands))
+    assert sum(isinstance(x,VersionConflict) for x in results)==1
+    assert sum(not isinstance(x,VersionConflict) for x in results)==1
+    assert check(dsn,
+        "SELECT count(*) FROM notification_occurrences "
+        "WHERE intent_id=%s AND status IN ('AVAILABLE','SNOOZED')",
+        (recurring.intent_id,),
+    )==[(0,)]
+    assert check(dsn,
+        """SELECT count(*) FROM events
+           WHERE event_type='notification.response.v1'
+             AND payload->>'intent_id'=%s""",(str(recurring.intent_id),),
+    )==[(1,)]
+
+
 def test_earliest_snooze_is_not_starved_by_due_intents(dsn):
     user,first,_=_ready(dsn)
     old=schedule(user,first,due=datetime.now(timezone.utc)-timedelta(minutes=3))
