@@ -145,6 +145,10 @@ def test_wrong_persona_channel_and_origin_cannot_stop_playback(dsn):
     with pytest.raises(PermissionDenied):
         call(dsn,interrupt_speech_response,actor(user),
              command(dsn,reply.response_id,instance,channel="another:channel"))
+    with pytest.raises(PermissionDenied):
+        call(dsn,interrupt_speech_response,actor(user),
+             command(dsn,reply.response_id,instance).model_copy(
+                 update={"conversation_id":uuid4()}))
     stranger,_=seed(dsn)
     with pytest.raises(PermissionDenied):
         call(dsn,interrupt_speech_response,actor(stranger),
