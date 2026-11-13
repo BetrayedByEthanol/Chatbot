@@ -1,9 +1,12 @@
 """P5-04 barge-in, echo policy, and scoped durable speech-stop contracts."""
 
+from dataclasses import dataclass
 from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from .streaming_asr import DecodeRequest
 
 
 class SpeechInterruptCommand(BaseModel):
@@ -33,11 +36,11 @@ class SpeechInterruptResult(BaseModel):
     replayed: bool = False
 
 
-class TurnFrameResult(BaseModel):
-    """No auth tokens or PCM bytes flow through the interruption signal."""
+@dataclass(frozen=True)
+class TurnFrameResult:
+    """Pure in-memory perception decision, never a conversation turn."""
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
     suppressed_echo_risk: bool = False
     speech_started: bool = False
     interrupt_requested: bool = False
-    decode_request: object | None = Field(default=None,exclude=True)
+    decode_request: DecodeRequest | None = None
