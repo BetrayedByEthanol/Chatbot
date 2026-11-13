@@ -21,7 +21,8 @@ from .procedure_state import (
 )
 from .procedure_learning_contracts import (
     DecideProcedureAdaptationCommand, EvaluateProcedureRunCommand,
-    ProcedureAdaptationView, ProcedureEvaluationView, ProcedureLearningResult,
+    ProcedureAdaptationView, ProcedureCriterionReport,
+    ProcedureEvaluationView, ProcedureLearningResult,
     ProposeProcedureAdaptationCommand,
 )
 from .procedure_run_state import _run
@@ -56,6 +57,15 @@ def evaluate_procedure_run(connection: Connection, actor: TrustedActor,
         if (command.outcome=="USER_REPORTED_SUCCESS"
             and run["status"]!="USER_CONFIRMED"):
             raise VersionConflict("user-reported success needs a finished procedure run")
+        definition=_definition(cur,run["template_id"],run["template_version"],run["persona_id"])
+        reported={r.position:r.state for r in command.criteria}
+        if any(pos<1 or pos>len(definition.success_tests) for pos in reported):
+            raise ValueError("criterion position not in pinned procedure version")
+        if command.outcome=="USER_REPORTED_SUCCESS" and (
+            len(reported)!=len(definition.success_tests)
+            or any(state!="USER_REPORTED_MET" for state in reported.values())
+        ):
+            raise VersionConflict("reported success requires user-reported evidence for every criterion")
         cur.execute(
             """SELECT step_id,status,executor,last_step_event_id
                FROM procedure_run_steps WHERE run_id=%s""",
@@ -97,6 +107,7 @@ def evaluate_procedure_run(connection: Connection, actor: TrustedActor,
             "outcome":command.outcome,"failure_cause":command.failure_cause,
             "confidence":command.confidence,
             "supporting_step_events":[str(ref) for ref,_ in evidence],
+            "reported_criteria":[{"position":p,"state":v} for p,v in sorted(reported.items())],
             "independently_verified":False,
             "task_or_goal_completed":False,
         },receipt)
@@ -120,6 +131,16 @@ def evaluate_procedure_run(connection: Connection, actor: TrustedActor,
                    ) VALUES(%s,%s,%s,%s,%s,%s)""",
                 (command.evaluation_id,command.run_id,step_id,event_id,
                  actor.user_id,command.instance_id),
+            )
+        for position,state in sorted(reported.items()):
+            cur.execute(
+                """INSERT INTO procedure_evaluation_criteria(
+                     evaluation_id,run_id,user_id,instance_id,criterion_position,
+                     criterion_text,reported_state
+                   ) VALUES(%s,%s,%s,%s,%s,%s,%s)""",
+                (command.evaluation_id,command.run_id,actor.user_id,
+                 command.instance_id,position,
+                 definition.success_tests[position-1],state),
             )
         return ProcedureLearningResult(
             entity_id=command.evaluation_id,event_id=event,
@@ -338,6 +359,7 @@ def read_procedure_evaluations(connection: Connection, actor: TrustedActor,
             evaluations=cur.fetchall()
             ids=[e["evaluation_id"] for e in evaluations]
             evidence:dict[UUID,list[UUID]]={}
+            criteria:dict[UUID,list[ProcedureCriterionReport]]={}
             if ids:
                 cur.execute(
                     """SELECT evaluation_id,step_event_id
@@ -348,6 +370,19 @@ def read_procedure_evaluations(connection: Connection, actor: TrustedActor,
                 )
                 for row in cur.fetchall():
                     evidence.setdefault(row["evaluation_id"],[]).append(row["step_event_id"])
+                cur.execute(
+                    """SELECT evaluation_id,criterion_position,reported_state
+                       FROM procedure_evaluation_criteria
+                       WHERE evaluation_id=ANY(%s) AND user_id=%s AND instance_id=%s
+                       ORDER BY criterion_position""",
+                    (ids,actor.user_id,instance_id),
+                )
+                for row in cur.fetchall():
+                    criteria.setdefault(row["evaluation_id"],[]).append(
+                        ProcedureCriterionReport(
+                            position=row["criterion_position"],state=row["reported_state"],
+                        )
+                    )
             return tuple(ProcedureEvaluationView(
                 evaluation_id=e["evaluation_id"],run_id=e["run_id"],
                 evaluation_revision=e["evaluation_revision"],
@@ -356,6 +391,7 @@ def read_procedure_evaluations(connection: Connection, actor: TrustedActor,
                 outcome=e["outcome"],failure_cause=e["failure_cause"],
                 rationale=e["rationale"],confidence=e["confidence"],
                 supporting_step_event_ids=tuple(evidence.get(e["evaluation_id"],())),
+                criteria=tuple(criteria.get(e["evaluation_id"],())),
             ) for e in evaluations)
 
 
