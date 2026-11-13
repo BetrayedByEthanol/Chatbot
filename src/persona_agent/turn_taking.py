@@ -138,6 +138,7 @@ class TurnTakingController:
                 raise RuntimeError("no accepted speech barge-in to persist")
             return SpeechInterruptCommand(
                 response_id=self.response_id,
+                conversation_id=self.session.source.conversation_id,
                 instance_id=self.session.source.instance_id,
                 expected_generation=self.session.source.expected_generation,
                 output_channel_id=self.target.channel_id,
