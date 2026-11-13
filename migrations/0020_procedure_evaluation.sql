@@ -54,6 +54,20 @@ CREATE TABLE procedure_evaluation_step_evidence (
         REFERENCES procedure_run_steps(run_id,step_id,user_id,instance_id)
 );
 
+CREATE TABLE procedure_evaluation_criteria (
+    evaluation_id uuid NOT NULL,
+    run_id uuid NOT NULL,
+    user_id uuid NOT NULL,
+    instance_id uuid NOT NULL,
+    criterion_position integer NOT NULL CHECK(criterion_position BETWEEN 1 AND 12),
+    criterion_text text NOT NULL CHECK(char_length(criterion_text) BETWEEN 1 AND 400),
+    reported_state text NOT NULL CHECK(
+        reported_state IN ('UNKNOWN','USER_REPORTED_MET','USER_REPORTED_UNMET')),
+    PRIMARY KEY(evaluation_id,criterion_position),
+    FOREIGN KEY(evaluation_id,run_id,user_id,instance_id)
+        REFERENCES procedure_run_evaluations(evaluation_id,run_id,user_id,instance_id)
+);
+
 CREATE TABLE procedure_adaptation_proposals (
     proposal_id uuid PRIMARY KEY,
     evaluation_id uuid NOT NULL,
@@ -117,6 +131,9 @@ CREATE TRIGGER immutable_procedure_run_evaluations
     FOR EACH ROW EXECUTE FUNCTION reject_procedure_run_history_mutation();
 CREATE TRIGGER immutable_procedure_evaluation_step_evidence
     BEFORE UPDATE OR DELETE ON procedure_evaluation_step_evidence
+    FOR EACH ROW EXECUTE FUNCTION reject_procedure_run_history_mutation();
+CREATE TRIGGER immutable_procedure_evaluation_criteria
+    BEFORE UPDATE OR DELETE ON procedure_evaluation_criteria
     FOR EACH ROW EXECUTE FUNCTION reject_procedure_run_history_mutation();
 CREATE TRIGGER immutable_procedure_adaptation_proposals
     BEFORE UPDATE OR DELETE ON procedure_adaptation_proposals
