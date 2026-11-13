@@ -157,6 +157,11 @@ def validate_task_alignment(cur,user_id:UUID,instance_id:UUID,task:dict)->dict:
         variant=cur.fetchone()
         if variant is None or variant["current_revision"]!=run["variant_revision"]:
             return _outcome("REVIEW","PROCEDURE_REVISION_CHANGED",task,versions,run,priority)
+        # Generic variants cannot silently stand in for a newly selected
+        # Goal strategy. Only a Goal/Strategy-bound owner-approved variant
+        # can discharge that relationship.
+        if chosen is not None and variant["goal_id"] is None:
+            return _outcome("REVIEW","STRATEGY_CHANGED",task,versions,run,priority)
         if variant["goal_id"] is not None:
             if variant["goal_id"]!=task["goal_id"]:
                 return _outcome("BLOCKED","PROCEDURE_SCOPE_INVALID",task,versions,run,priority)
