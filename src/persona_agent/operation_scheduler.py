@@ -14,7 +14,7 @@ from .cognitive_contracts import COGNITIVE_OPERATION, COGNITIVE_CAPABILITY, COGN
 from .operation_contracts import (
     EffectClass, EnqueueOperation, EnqueueResult, InvalidOperation, Origin,
     OperationLease, Policy, Priority, ResourceUnavailable, Status,
-    event_for, require_idle,
+    event_for, require_idle, count_active_background_p2,
 )
 from .runtime import (
     IdempotencyConflict, PermissionDenied, StaleSelection, VersionConflict,
@@ -242,15 +242,10 @@ def enqueue_operation(
                     )
                     # Fixed epoch, immutable step consent and task-specific
                     # ALIGN-01 proof: generic trusted platform cannot forge P2.
-                    cur.execute(
-                        """SELECT count(*) AS active FROM operations
-                           WHERE user_id=%s AND instance_id=%s
-                             AND background_epoch=%s AND priority_class='P2'
-                             AND status IN ('QUEUED','RETRY_WAIT','RUNNING',
-                                            'CANCEL_REQUESTED','SUSPEND_REQUESTED')""",
-                        (actor.user_id,command.instance_id,selected["background_epoch"]),
-                    )
-                    if cur.fetchone()["active"]>=2:
+                    if count_active_background_p2(
+                        cur,actor.user_id,command.instance_id,
+                        selected["background_epoch"],
+                    )>=2:
                         raise ResourceUnavailable("Background P2 admission budget is full")
                 elif selected["mode"]!="FOREGROUND":
                     raise PermissionDenied("new P1 AGENT work needs selected Foreground")
