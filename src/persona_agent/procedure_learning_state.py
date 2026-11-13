@@ -22,7 +22,7 @@ from .procedure_state import (
 from .procedure_learning_contracts import (
     DecideProcedureAdaptationCommand, EvaluateProcedureRunCommand,
     ProcedureAdaptationView, ProcedureCriterionReport,
-    ProcedureEvaluationView, ProcedureLearningResult,
+    ProcedureEvaluationView, ProcedureExperienceView, ProcedureLearningResult,
     ProposeProcedureAdaptationCommand,
 )
 from .procedure_run_state import _run
@@ -429,3 +429,73 @@ def read_procedure_adaptation(connection: Connection, actor: TrustedActor,
                         else "APPLIED" if p["decision"]=="APPLY" else "REJECTED"),
                 applied_revision=p["applied_revision"],
             )
+
+
+def summarize_personal_procedure_experience(
+    connection: Connection, actor: TrustedActor, instance_id: UUID,
+    template_id: UUID, *, variant_id: UUID | None = None,
+    limit: int = 50,
+) -> ProcedureExperienceView:
+    """Latest assessment per run, bounded and scoped, with no quality score.
+
+    Distinct procedures and contexts are never pooled across personas.
+    An evaluation correction replaces its predecessor in this projection,
+    but append-only history remains separately readable.
+    """
+    require_idle(connection)
+    _require_actor(actor)
+    if not 1 <= limit <= 100:
+        raise ValueError("experience sample limit must be 1..100")
+    with connection.transaction():
+        with connection.cursor(row_factory=dict_row) as cur:
+            _read_selected(cur,actor,instance_id)
+            if variant_id is not None:
+                variant=_variant_revision(
+                    cur,actor,instance_id,variant_id,for_update=False,
+                )
+                if variant["template_id"] != template_id:
+                    raise PermissionDenied("private method does not match template")
+            cur.execute(
+                """WITH latest AS (
+                     SELECT DISTINCT ON (run_id)
+                         run_id,outcome,failure_cause
+                     FROM procedure_run_evaluations
+                     WHERE user_id=%s AND instance_id=%s
+                     ORDER BY run_id,evaluation_revision DESC
+                   )
+                   SELECT run.run_id,latest.outcome,latest.failure_cause
+                   FROM procedure_runs run
+                   LEFT JOIN latest ON latest.run_id=run.run_id
+                   WHERE run.user_id=%s AND run.instance_id=%s
+                     AND run.template_id=%s
+                     AND (%s::uuid IS NULL OR run.variant_id=%s::uuid)
+                   ORDER BY run.created_at DESC,run.run_id
+                   LIMIT %s""",
+                (actor.user_id,instance_id,actor.user_id,instance_id,
+                 template_id,variant_id,variant_id,limit+1),
+            )
+            rows=cur.fetchall()
+    truncated=len(rows)>limit
+    rows=rows[:limit]
+    counts={
+        "USER_REPORTED_SUCCESS":0,
+        "USER_REPORTED_FAILURE":0,
+        "INCOMPLETE":0,"UNKNOWN":0,None:0,
+    }
+    causes:dict[str,int]={}
+    for row in rows:
+        counts[row["outcome"]]+=1
+        if row["failure_cause"] is not None:
+            causes[row["failure_cause"]]=causes.get(row["failure_cause"],0)+1
+    return ProcedureExperienceView(
+        template_id=template_id,variant_id=variant_id,
+        observed_run_count=len(rows),
+        reported_success_count=counts["USER_REPORTED_SUCCESS"],
+        reported_failure_count=counts["USER_REPORTED_FAILURE"],
+        incomplete_count=counts["INCOMPLETE"],
+        unknown_count=counts["UNKNOWN"],
+        unevaluated_run_count=counts[None],
+        failure_causes=causes,
+        run_ids=tuple(row["run_id"] for row in rows),
+        truncated=truncated,
+    )
