@@ -52,6 +52,7 @@ def test_stop_preserves_played_clip_and_fences_unplayed_clips(dsn):
     assert result.interrupted_clips==2 and not result.replayed
     repeated=call(dsn,interrupt_speech_response,actor(user),stopped)
     assert repeated.replayed and repeated.interruption_id==result.interruption_id
+    assert repeated.interrupted_clips == 2
     with psycopg.connect(dsn,autocommit=True) as conn:
         assert conn.execute(
             "SELECT status FROM speech_clips WHERE response_id=%s ORDER BY clip_index",
