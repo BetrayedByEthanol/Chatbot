@@ -63,6 +63,10 @@ reachable; resource pools must be provisioned by the trusted operator.
   operations whose Task/Run/Step/epoch authority is permanently revoked.
   Its authoritative slot-budget query excludes such dead queued reservations
   but continues counting RUNNING/CANCEL_REQUESTED/SUSPEND_REQUESTED claims.
+  A generic P0 recovery pass may first mark never-claimed queued work
+  `SUSPENDED`; the P4 reaper safely converts only zero-claim,
+  `PREPARED` suspended records to `BLOCKED`, never claimed or
+  externally dispatched work.
   Fresh explicit user approval can supersede a previously blocked Background
   grant; historical completed results must be reconciled first.
 - Crash after a P0-confirmed read-only completion but before Procedure result
