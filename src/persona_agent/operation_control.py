@@ -470,14 +470,25 @@ def acknowledge_suspend(connection: Connection, lease: OperationLease) -> None:
                 or row["priority_class"]!="P2"
                 or row["effect_status"]!="PREPARED"):
                 raise InvalidOperation("attempt cannot safely acknowledge suspension")
+            # This records a typed, immutable restart-required checkpoint for
+            # the single registered P2 read-only AGENT step. It is evidence of
+            # a safe STOP, not permission to dispatch work in a later epoch.
+            # A changed owner input may produce no checkpoint, but must not
+            # prevent releasing a stopped worker's resources.
+            checkpoint_ref=None
+            if row["operation_type"]==PROCEDURE_AGENT_OPERATION:
+                from .procedure_agent_checkpoint import write_safe_stop_checkpoint
+                checkpoint_ref=write_safe_stop_checkpoint(cur,row)
             release_resources(cur,row)
             # Pool locks can outlive the original lease. Recheck and fence
-            # the final write so resource release rolls back if it expired.
+            # the final write so resource release and checkpoint roll back if
+            # the attempt expired or a competing cancellation won the race.
             require_claim(cur,lease,statuses=("SUSPEND_REQUESTED",))
             cur.execute(
                 """UPDATE operations
                    SET status='SUSPENDED',worker_id=NULL,lease_until=NULL,
                        claimed_at=NULL,version=version+1,
+                       checkpoint_ref=COALESCE(%s,checkpoint_ref),
                        updated_at=clock_timestamp()
                    WHERE operation_id=%s AND status='SUSPEND_REQUESTED'
                      AND worker_id=%s AND claim_generation=%s
@@ -488,12 +499,18 @@ def acknowledge_suspend(connection: Connection, lease: OperationLease) -> None:
                            >clock_timestamp()
                      AND (deadline IS NULL OR deadline>clock_timestamp())
                    RETURNING *""",
-                (lease.operation_id,lease.worker_id,lease.claim_generation,
-                 lease.selection_generation,lease.background_epoch),
+                (checkpoint_ref,lease.operation_id,lease.worker_id,
+                 lease.claim_generation,lease.selection_generation,
+                 lease.background_epoch),
             )
             updated=cur.fetchone()
             if updated is None:
                 raise StaleOperation("suspension acknowledgement lease expired")
+            if checkpoint_ref is not None:
+                event_for(cur,updated,"operation.checkpointed.v1",{
+                    "checkpoint_ref":checkpoint_ref,
+                    "kind":"READ_ONLY_RESTART_REQUIRED",
+                })
             event_for(cur,updated,"operation.suspended.v1",
                       {"reason":"cooperative stop at safe execution boundary"})
 
