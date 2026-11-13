@@ -132,7 +132,7 @@ def require_procedure_agent_gate(cur, operation: dict, *,
     unmet,_,_,_=_confirmation_state(cur,actor,instance_id,[stage["task_id"]])
     if unmet.get(stage["task_id"]):
         raise VersionConflict("AGENT task dependency no longer effective")
-    if background:
+    if not stage_only and operation.get("execution_policy")=="BACKGROUND_RESUMABLE":
         # The new grant must carry valid source lineage at EVERY P0 fence;
         # the predecessor's old epoch is never an execution permission.
         from .procedure_agent_checkpoint import require_resume_lineage
