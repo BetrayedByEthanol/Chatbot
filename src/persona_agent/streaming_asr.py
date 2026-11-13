@@ -103,6 +103,24 @@ class DecodeOutcome:
     committed: TranscriptIngressResult | None = None
 
 
+
+class AsrCapabilities(BaseModel):
+    """Read-only provider capabilities; unknown benchmarks remain unknown."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    input_encoding: Literal["PCM_S16LE"] = "PCM_S16LE"
+    sample_rate_hz: Literal[16000] = 16000
+    frame_ms: Literal[20] = 20
+    native_streaming: bool = False
+    snapshot_previews: bool = True
+    cancellation: Literal["BETWEEN_REQUESTS"] = "BETWEEN_REQUESTS"
+    privacy_class: Literal["LOCAL_INFERENCE"] = "LOCAL_INFERENCE"
+    languages: tuple[str, ...] | None = None
+    device: str
+    estimated_vram_mb: int | None = None
+    measured_p95_ms: int | None = None
+
+
 class SpeechRecognizer(Protocol):
     """Provider-specific decode; called outside DB locks and transactions."""
 

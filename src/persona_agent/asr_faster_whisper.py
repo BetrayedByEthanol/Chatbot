@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from threading import Lock
 from typing import Any
 
-from .streaming_asr import FRAME_BYTES
+from .streaming_asr import FRAME_BYTES, AsrCapabilities
 
 
 @dataclass
@@ -29,6 +29,14 @@ class FasterWhisperRecognizer:
             raise ValueError("beam_size must be 1..8")
         if self.language is not None and not 1 <= len(self.language) <= 16:
             raise ValueError("invalid ASR language")
+
+    @property
+    def capabilities(self) -> AsrCapabilities:
+        """A conservative, measured-later provider profile; no model load."""
+        return AsrCapabilities(
+            languages=(self.language,) if self.language is not None else None,
+            device=self.device,
+        )
 
     def _load_model(self):
         with self._model_lock:

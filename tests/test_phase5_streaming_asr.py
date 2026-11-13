@@ -157,6 +157,12 @@ def test_stale_partial_revision_and_wrong_utterance():
 
 def test_local_provider_rejects_bad_pcm_without_optional_import():
     provider = FasterWhisperRecognizer("tiny")
+    capabilities = provider.capabilities
+    assert capabilities.native_streaming is False
+    assert capabilities.snapshot_previews is True
+    assert capabilities.privacy_class == "LOCAL_INFERENCE"
+    assert capabilities.measured_p95_ms is None
+    assert provider._model is None
     with pytest.raises(ValueError, match="complete"):
         provider.transcribe_pcm16(b"bad")
     with pytest.raises(ValueError):
