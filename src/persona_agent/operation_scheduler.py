@@ -20,6 +20,8 @@ from .runtime import (
     IdempotencyConflict, PermissionDenied, StaleSelection, VersionConflict,
     _fingerprint,
 )
+from .tool_contracts import PROCEDURE_AGENT_OPERATION
+from .procedure_agent_gate import require_procedure_agent_gate
 
 
 def configure_resource_pool(
@@ -205,6 +207,19 @@ def enqueue_operation(
             ):
                 raise StaleSelection("enqueue selection generation invalid")
 
+            if command.operation_type==PROCEDURE_AGENT_OPERATION:
+                if selected["mode"]!="FOREGROUND":
+                    raise PermissionDenied("new AGENT work requires selected Foreground authority")
+                require_procedure_agent_gate(cur,{
+                    "operation_id":command.operation_id,
+                    "user_id":actor.user_id,
+                    "instance_id":command.instance_id,
+                    "operation_type":command.operation_type,
+                    "task_id":command.task_id,
+                    "input_versions":command.input_versions,
+                    "selection_generation":command.expected_generation,
+                })
+
             # Check mutable input versions only for a NEW admission, after
             # idempotency replay and while holding the selection authority gate.
             if "persona_instance" in command.input_versions:
@@ -267,10 +282,10 @@ def enqueue_operation(
                     execution_policy,priority_class,eligible_at,deadline,
                     timeout_seconds,max_attempts,selection_generation,
                     background_epoch,effect_class,request_fingerprint,source_id,
-                    idempotency_key,input_versions,concurrency_group
+                    idempotency_key,input_versions,concurrency_group,task_id
                 ) VALUES (
                     %s,%s,%s,%s,%s,%s,%s,coalesce(%s,clock_timestamp()),%s,
-                    %s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s
+                    %s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s
                 )
                 RETURNING *
                 """,
@@ -283,7 +298,7 @@ def enqueue_operation(
                     admitted_background_epoch,command.effect_class.value,
                     fingerprint,actor.source_id,
                     command.idempotency_key,json.dumps(command.input_versions),
-                    command.concurrency_group,
+                    command.concurrency_group,command.task_id,
                 ),
             )
             operation=cur.fetchone()
@@ -454,6 +469,12 @@ def claim_operation(
                     op=cur.fetchone()
                     if op is None:
                         continue
+                    if op["task_id"] is not None and op["operation_type"]!=PROCEDURE_AGENT_OPERATION:
+                        continue
+                    if op["operation_type"]==PROCEDURE_AGENT_OPERATION and (
+                        allowed_types is None or PROCEDURE_AGENT_OPERATION not in allowed_types
+                    ):
+                        continue
                     cur.execute(
                         "SELECT capability FROM operation_capabilities WHERE operation_id=%s",
                         (op_id,),
@@ -481,6 +502,12 @@ def claim_operation(
                     selected=cur.fetchone()
                     if not _eligible_for_policy(cur,op,selected):
                         continue
+                    if op["operation_type"]==PROCEDURE_AGENT_OPERATION:
+                        try:
+                            require_procedure_agent_gate(cur,op)
+                        except (PermissionDenied,VersionConflict):
+                            # Stale/cancelled work cannot be claimed.
+                            continue
                     if "persona_instance" in op["input_versions"]:
                         cur.execute(
                             "SELECT version FROM persona_instances "

@@ -186,9 +186,20 @@ def start_procedure_run(connection: Connection, actor: TrustedActor,
             _graph_read_lock(cur,actor,command.instance_id)
             task=_task(cur,actor,command.instance_id,command.task_id,lock="SHARE")
             _active_goal_chain(cur,actor,command.instance_id,task["goal_id"])
-            if (task["status"]!="PLANNED" or task["suspended"]
-                or task["executor"]!="USER"):
+            if (task["status"]!="PLANNED" or task["suspended"]):
                 raise VersionConflict("task is not actionable for guided run")
+            # Task execution authority cannot be smuggled through a USER
+            # task that happens to reference an AGENT procedure step.
+            executors={step.executor for step in steps}
+            if (task["executor"]=="USER" and "AGENT" in executors):
+                raise PermissionDenied("AGENT procedure needs an AGENT-owned task")
+            if (task["executor"]=="AGENT" and (
+                "AGENT" not in executors or any(
+                    step.executor=="AGENT" and step.capability!=task["capability"]
+                    for step in steps
+                )
+            )):
+                raise PermissionDenied("task AGENT capability must match procedure steps")
             # Use the same deadline rule as Task.list_tasks. Starting new work
             # is distinct from admitting truthful evidence of prior work.
             if (task["deadline"] is not None
@@ -411,7 +422,10 @@ def set_procedure_run_status(connection: Connection, actor: TrustedActor,
             )
             steps=cur.fetchall()
             if command.action=="FINISH" and (not steps or any(
-                step["executor"]!="USER" or step["status"]!="USER_CONFIRMED"
+                not (
+                    (step["executor"]=="USER" and step["status"]=="USER_CONFIRMED")
+                    or (step["executor"]=="AGENT" and step["status"]=="VERIFIED")
+                )
                 for step in steps
             )):
                 raise VersionConflict("all user steps require explicit confirmation")
@@ -472,7 +486,8 @@ def read_procedure_run(connection: Connection, actor: TrustedActor,
             )
             links=tuple(ProcedureRunThreadLink(**x) for x in cur.fetchall())
             next_step=next(
-                (x.step_id for x in steps if x.status!="USER_CONFIRMED"),None,
+                (x.step_id for x in steps if x.status not in
+                 ("USER_CONFIRMED","VERIFIED")),None,
             )
             return ProcedureRunView(
                 run_id=run_id,template_id=run["template_id"],
