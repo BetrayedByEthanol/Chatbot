@@ -41,3 +41,12 @@ UPDATE background_preparation_epochs
 SET preparation_stage='BLOCKED',
     preparation_updated_at=clock_timestamp()
 WHERE status='PENDING';
+
+-- Background entry holds the selected-instance authority row. Bound the
+-- conversation-tail snapshot query with a scoped index, not a tenant-wide scan.
+CREATE INDEX conversations_background_snapshot_idx
+    ON conversations(user_id, instance_id, conversation_id);
+
+CREATE INDEX background_preparation_poll_idx
+    ON background_preparation_epochs(preparation_updated_at, user_id, background_epoch)
+    WHERE status='PENDING' AND preparation_stage IN ('SUMMARIZE','EVALUATE');
