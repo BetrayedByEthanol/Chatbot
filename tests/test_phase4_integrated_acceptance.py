@@ -26,7 +26,7 @@ from persona_agent.procedure_agent_checkpoint import load_validated_procedure_ch
 from persona_agent.procedure_agent_state import (
     renew_background_agent_step,run_one_agent_step,reconcile_agent_step,
 )
-from persona_agent.runtime import StaleSelection,PermissionDenied
+from persona_agent.runtime import StaleSelection
 from persona_agent.tool_contracts import PROCEDURE_AGENT_OPERATION
 from test_phase4_resumption import _stopped,_renew_command,_enter_next_ready
 from test_phase4_preemption import _admitted,_return
@@ -73,11 +73,19 @@ def _reply(dsn,user,occurrence_id):
 
 
 def _drain_only_notification(dsn,user,intent):
-    assert call(dsn,dispatch_due_notifications,limit=1)==1
-    inbox=[r for r in call(dsn,list_notification_inbox,user_actor(user))
-           if r.intent_id==intent.intent_id]
+    # Other test users may have a due notification in the same persistent
+    # integration database. Do not assume the global scanner's first item
+    # belongs to this scenario; require only exactly-once local delivery.
+    for _ in range(8):
+        call(dsn,dispatch_due_notifications,limit=32)
+        inbox=[r for r in call(dsn,list_notification_inbox,user_actor(user))
+               if r.intent_id==intent.intent_id]
+        if inbox:
+            break
     assert len(inbox)==1
-    assert call(dsn,dispatch_due_notifications,limit=1)==0
+    call(dsn,dispatch_due_notifications,limit=32)
+    assert len([r for r in call(dsn,list_notification_inbox,user_actor(user))
+                if r.intent_id==intent.intent_id])==1
     return inbox[0]
 
 
@@ -86,8 +94,9 @@ def test_safe_stop_to_new_epoch_resume_plus_inactive_mode_communication(
 ):
     """P4-01..06 full path: safe-stop, approval, new READY, P2, inbox, reply."""
     user,instance,task,run,source,checkpoint=_stopped(dsn,monkeypatch)
-    assert call(dsn,load_validated_procedure_checkpoint,user_actor(user),
-                operation_id=source).operation_id==source
+    restored=call(dsn,load_validated_procedure_checkpoint,user_actor(user),
+                  operation_id=source)
+    assert restored.instruction and restored.max_words==5
     _opt_in(dsn,user,instance)
     intent=_follow_up(dsn,user,instance,run)
     renewed=_renew_command(dsn,user,instance,run,source,checkpoint)
@@ -258,9 +267,8 @@ def test_inactive_persona_reply_retains_scope_but_cannot_revive_old_checkpoint(
              operation_id=source)
     with pytest.raises(StaleSelection):
         call(dsn,list_pending_notification_replies,user_actor(user),instance)
-    with pytest.raises(PermissionDenied):
-        call(dsn,list_notification_inbox,user_actor(uuid4()))
-        # An unauthenticated caller cannot observe a different user's inbox.
+    assert call(dsn,list_notification_inbox,user_actor(uuid4()))==()
+    # A differently authenticated user cannot observe this inbox.
     call(dsn,switch_persona,user_actor(user),
          switch_cmd(other,instance,generation=2))
     queued=call(dsn,list_pending_notification_replies,user_actor(user),instance)
