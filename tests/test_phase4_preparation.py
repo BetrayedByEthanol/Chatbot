@@ -391,10 +391,10 @@ from persona_agent.memory_extraction import (
 )
 
 
-def drive_to_critical(dsn,user,instance,limit=36):
+def drive_to_critical(dsn,user,instance,limit=36,*,epoch=1):
     """Run actual P0 model-operation handover, not a fabricated watermark."""
     for _ in range(limit):
-        progress=tick(dsn,user,instance)
+        progress=tick(dsn,user,instance,epoch=epoch)
         if progress.stage=="CRITICAL_PENDING":
             return progress
         assert progress.state=="ENQUEUED",progress
@@ -406,9 +406,9 @@ def drive_to_critical(dsn,user,instance,limit=36):
     pytest.fail("summary/cognitive handover never finished")
 
 
-def drive_critical(dsn,user,instance,limit=16):
+def drive_critical(dsn,user,instance,limit=16,*,epoch=1):
     for _ in range(limit):
-        result=tick(dsn,user,instance)
+        result=tick(dsn,user,instance,epoch=epoch)
         if result.state in ("WAITING_OWNER","AWAITING_ALIGNMENT","REQUIRES_OPERATOR"):
             return result
         assert result.stage=="CRITICAL_PENDING",result
