@@ -81,6 +81,7 @@ speech-stop barrier. No new persona lifecycle manager or worker service.
 
 - \`migrations/0031_speech_interruptions.sql\`:
   per-response one-time stop fence scoped to user, persona and generation.
+  Stop commands additionally match the source conversation ID.
 - \`turn_taking.py\`: no database, no provider calls, no audio persistence.
   Emits one early interruption signal after accepted speech onset.
 - \`speech_interruptions.py\`: durable stop, per-clip interruption and
