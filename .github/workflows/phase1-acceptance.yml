@@ -79,7 +79,15 @@ jobs:
                                autocommit=True) as conn:
               conn.execute("CREATE DATABASE phase4cross")
           PY
-          python -m pytest -q tests/test_phase4_integrated_acceptance.py
+          python -m pytest -q tests/test_phase4_integrated_acceptance.py \
+            --junitxml=phase4-integrated-acceptance.xml
+      - name: Archive Phase 4 acceptance timings and tests
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase4-integrated-acceptance
+          path: phase4-integrated-acceptance.xml
+          if-no-files-found: ignore
       - name: Report Ollama diagnostics on failure
         if: failure()
         run: docker logs --tail 100 phase1-ollama || true

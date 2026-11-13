@@ -128,8 +128,12 @@ def test_safe_stop_to_new_epoch_resume_plus_inactive_mode_communication(
     assert result.resolution=="VERIFIED"
     notice=_drain_only_notification(dsn,user,intent)
     assert notice.instance_id==instance
+    turn_count=check(dsn,
+        "SELECT count(*) FROM conversation_turns WHERE user_id=%s",
+        (user,),
+    )[0][0]
     _reply(dsn,user,notice.occurrence_id)
-    # In-app platform delivery + reply must NOT wake Background cognition.
+    # In-app platform delivery + reply must NOT create conversation turns.
     with pytest.raises(StaleSelection):
         call(dsn,list_pending_notification_replies,user_actor(user),instance)
     assert check(dsn,
@@ -159,9 +163,9 @@ def test_safe_stop_to_new_epoch_resume_plus_inactive_mode_communication(
     messages=call(dsn,list_pending_notification_replies,user_actor(user),instance)
     assert len(messages)==1
     assert check(dsn,
-        "SELECT count(*) FROM conversation_turns WHERE turn_id=%s",
-        (messages[0]["reply_id"],),
-    )==[(0,)]
+        "SELECT count(*) FROM conversation_turns WHERE user_id=%s",
+        (user,),
+    )==[(turn_count,)]
     for name in (
         "procedure.agent.background_resumption_authorized.v1",
         "notification.scheduled.v1","notification.available.v1",
