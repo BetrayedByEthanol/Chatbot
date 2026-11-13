@@ -32,13 +32,18 @@ from test_phase3_tasks import make_goal, make_task
 
 def evaluation_command(dsn,user,instance,conv,run,version,*,outcome,
                        cause=None,prior=None,step_events=(),criteria=()):
-    message=turn(dsn,user,instance,conv,
-                 "I observed this outcome when trying the guided method.")
+    report_text={
+        "USER_REPORTED_SUCCESS":"I completed the procedure successfully and checked the result.",
+        "USER_REPORTED_FAILURE":"This procedure failed in my environment and needs diagnosis.",
+        "INCOMPLETE":"I could not finish the procedure and have incomplete results.",
+        "UNKNOWN":"I cannot yet confirm whether the procedure succeeded.",
+    }[outcome]
+    message=turn(dsn,user,instance,conv,report_text)
     return EvaluateProcedureRunCommand(
         instance_id=instance,expected_generation=1,
         idempotency_key=uuid4().hex,conversation_id=conv,
         evidence_turn_id=message.turn_id,
-        evidence_quote="I observed this outcome",
+        evidence_quote=report_text,
         evaluation_id=uuid4(),run_id=run,expected_run_version=version,
         expected_previous_evaluation_id=prior,
         outcome=outcome,failure_cause=cause,confidence=0.7,
