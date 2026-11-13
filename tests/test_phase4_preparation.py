@@ -1147,6 +1147,22 @@ def test_align01_changed_goal_strategy_needs_new_method_approval(dsn,monkeypatch
     from persona_agent.goal_state import propose_goal_strategy,select_goal_strategy
 
     user,instance,conv,goal,task,run=staged(dsn,configured=False)
+    from test_phase3_procedures import variant_command
+    from test_phase3_runs import start_command
+    from persona_agent.procedure_state import create_personalized_approach
+    from persona_agent.procedure_run_state import start_procedure_run
+    template=check(dsn,
+        "SELECT template_id FROM procedure_runs WHERE run_id=%s",(run,),
+    )[0][0]
+    # A generic user-approved variant is legitimate for normal guidance,
+    # but it must not silently satisfy a later selected Goal strategy.
+    private=variant_command(dsn,user,instance,conv,template,1)
+    call(dsn,create_personalized_approach,user_actor(user),private)
+    pinned=start_command(
+        dsn,user,instance,conv,template,variant=private.variant_id,
+        revision=1,task=task,
+    )
+    call(dsn,start_procedure_run,user_actor(user),pinned)
     candidate=uuid4()
     source=explicit_turn(dsn,user,instance,conv,
                          "Consider a different way to prepare my meals.")
