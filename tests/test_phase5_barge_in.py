@@ -171,6 +171,77 @@ def test_delivery_before_interruption_cannot_be_revoked(dsn):
              command(reply.response_id,instance))
 
 
+def test_live_barge_in_produces_one_user_turn_without_marking_tts_heard(dsn):
+    """Early speech stop then the existing ASR FINAL -> Conversation ingress."""
+    from datetime import datetime,timedelta,timezone
+    from struct import pack
+    from persona_agent.multimodal_contracts import VoiceInputSource
+    from persona_agent.streaming_asr import (
+        Pcm16Frame,StreamConfig,VoiceStreamSession,FRAME_BYTES,
+    )
+    from persona_agent.turn_taking import EchoPolicy,TurnTakingController
+    from persona_agent.conversation import prepare_text_context
+
+    user,instance,reply=response(dsn,text="Assistant is speaking.")
+    clip=call(dsn,prepare_speech_clip,actor(user),clip_command(reply.response_id))
+    for state in ("QUEUED","STARTED"):
+        call(dsn,acknowledge_speech_clip,actor(user),ack(clip,state))
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        conversation_id=conn.execute(
+            "SELECT conversation_id FROM conversation_responses WHERE response_id=%s",
+            (reply.response_id,),
+        ).fetchone()[0]
+    source=VoiceInputSource(
+        conversation_id=conversation_id,instance_id=instance,
+        expected_generation=1,channel_id="authenticated-microphone",
+    )
+    session=VoiceStreamSession(
+        actor(user),source,uuid4(),
+        StreamConfig(activation_frames=3,preroll_frames=3,
+                     endpoint_silence_frames=5,max_idle_frames=100,
+                     max_utterance_frames=100),
+    )
+    control=TurnTakingController(
+        session,reply.response_id,SpeechOutputTarget(channel_id="browser:voice"),
+        echo_policy=EchoPolicy.VERIFIED_AEC,
+    )
+    control.set_playback_active(True)
+    voiced=pack("<h",3000)*(FRAME_BYTES//2)
+    start=datetime(2026,11,13,12,0,tzinfo=timezone.utc)
+    def pcm(n,samples):
+        return Pcm16Frame(
+            sequence=n,pcm16=samples,
+            captured_at=start+timedelta(milliseconds=20*n),
+        )
+    for n in range(3):
+        result=control.accept_microphone_frame(pcm(n,voiced))
+    assert result.interrupt_requested
+    assert control.cancellation.is_set()
+    control.set_playback_active(False)
+    stopped=call(dsn,interrupt_speech_response,actor(user),control.interrupt_command())
+    assert stopped.interrupted_clips==1
+    for n in range(3,8):
+        result=control.accept_microphone_frame(pcm(n,bytes(FRAME_BYTES)))
+    assert result.decode_request and result.decode_request.status=="FINAL"
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        done=session.apply_decode(conn,result.decode_request,"I have another question")
+    assert done.disposition=="COMMITTED"
+    context=call(dsn,prepare_text_context,actor(user),done.committed.turn_id)
+    roles=[(m.role,m.content) for m in context.messages]
+    assert ("user","I have another question") in roles
+    assert ("assistant","Assistant is speaking.") not in roles
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT delivery_status FROM conversation_responses WHERE response_id=%s",
+            (reply.response_id,),
+        ).fetchone()==("GENERATED",)
+        assert conn.execute(
+            """SELECT count(*) FROM conversation_turns
+               WHERE conversation_id=%s""",
+            (conversation_id,),
+        ).fetchone()[0]==2
+
+
 def test_competing_stop_commands_create_only_one_barrier(dsn):
     user,instance,reply=response(dsn)
     clip=call(dsn,prepare_speech_clip,actor(user),clip_command(reply.response_id))
