@@ -20,12 +20,19 @@ speech-stop barrier. No new persona lifecycle manager or worker service.
    user voice from loudspeaker echo. Hardware/room-specific evaluation is
    required before permitting full duplex. The host must not select
    VERIFIED_AEC merely because a client reports that it is capable.
-4. On TurnFrameResult.interrupt_requested, the host **immediately** stops
-   the physical speaker and flushes queued audio, cancels the response-local
-   TTS generator Event, and commits interrupt_speech_response() with the
-   selected response/persona/channel/utterance binding. **Never await DB
-   work before stopping physical playback.** Retain input PCM samples and
-   continue VAD/ASR of the real user utterance.
+4. **Before every physical playback start or resume**, including an
+   inter-clip gap, the host must call set_playback_active(True) and check its
+   boolean result. When speech is already RECORDING, FINAL_PENDING or
+   COMMITTED, the controller returns True, refuses to activate playback and
+   sets the response cancellation signal. The host must flush pending audio,
+   persist interrupt_command(), and never start/resume that response.
+   Playback already underway instead reports an early interruption via
+   TurnFrameResult.interrupt_requested at accepted VAD onset. In either case
+   the host **immediately** stops the physical speaker and flushes queued
+   audio, cancels the response-local TTS generator Event, and commits
+   interrupt_speech_response() with the selected
+   response/persona/channel/utterance binding. **Never await DB work before
+   stopping physical playback.** Retain input PCM and continue VAD/ASR.
 5. The stop transaction locks selection, conversation, response and existing
    clips. It writes exactly one speech_output_interruptions barrier and
    transitions generated/queued/started clips to INTERRUPTED with per-clip
@@ -74,6 +81,10 @@ speech-stop barrier. No new persona lifecycle manager or worker service.
   durable clip records preserve what was actually confirmed PLAYED; an
   interruption leaves unacknowledged hearing uncertain. Do not infer
   procedure/task completion from spoken or generated text.
+- An identical authenticated interruption command replays its committed
+  receipt after a newer user transcript or persona selection change.
+  Authentication, immutable source scope and interruption origin still must
+  match; freshness checks apply only when creating a new stop.
 - A live ASR/TTS full-duplex smoke and actual AEC hardware integration are
   required before declaring real-time conversational voice acceptance.
 
