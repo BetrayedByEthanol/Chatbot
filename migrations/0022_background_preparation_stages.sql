@@ -6,7 +6,9 @@ ALTER TABLE background_preparation_epochs
   CHECK (preparation_stage IN (
       'SUMMARIZE', 'EVALUATE', 'CRITICAL_PENDING', 'BLOCKED'
   )),
-  ADD COLUMN preparation_updated_at timestamptz NOT NULL DEFAULT clock_timestamp();
+  ADD COLUMN preparation_updated_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+  ADD COLUMN captured_conversation_count integer NOT NULL DEFAULT 0
+    CHECK (captured_conversation_count >= 0);
 
 CREATE TABLE background_preparation_conversations (
     user_id uuid NOT NULL,
