@@ -25,6 +25,7 @@ from .operation_control import (
 from .procedure_agent_contracts import (
     AgentStepAuthorizationResult, AgentStepReconcileResult,
     AuthorizeAgentStepCommand, AuthorizeBackgroundAgentStepCommand,
+    RenewBackgroundAgentStepCommand,
 )
 from .procedure_agent_gate import require_procedure_agent_gate
 from .procedure_run_state import _run, _step
@@ -45,8 +46,14 @@ def authorize_agent_step(connection: Connection, actor: TrustedActor,
                          command: AuthorizeAgentStepCommand
                          ) -> AgentStepAuthorizationResult:
     """Create exact, approved stage; do not enqueue until separately committed."""
-    background=type(command) is AuthorizeBackgroundAgentStepCommand
-    if type(command) not in (AuthorizeAgentStepCommand,AuthorizeBackgroundAgentStepCommand):
+    renewal=type(command) is RenewBackgroundAgentStepCommand
+    background=type(command) in (
+        AuthorizeBackgroundAgentStepCommand,RenewBackgroundAgentStepCommand,
+    )
+    if type(command) not in (
+        AuthorizeAgentStepCommand,AuthorizeBackgroundAgentStepCommand,
+        RenewBackgroundAgentStepCommand,
+    ):
         raise PermissionDenied("unsupported step authorization command")
     def apply(cur,receipt):
         if background:
@@ -87,10 +94,19 @@ def authorize_agent_step(connection: Connection, actor: TrustedActor,
                 (pending["operation_id"],),
             )
             old_operation=cur.fetchone()
+            if renewal:
+                if (pending["operation_id"]!=command.resume_from_operation_id
+                    or old_operation is None):
+                    raise VersionConflict("renewal must supersede the exact suspended grant")
+                # All owner validation and the source checkpoint check occur
+                # under this single approval transaction, before supersession.
+                from .procedure_agent_checkpoint import require_renewable_source
+                require_renewable_source(cur,actor,old_operation,command)
             if old_operation is not None and not (
-                background
-                and pending["approved_background_epoch"] is not None
-                and old_operation["status"]=="BLOCKED"
+                (background and not renewal
+                 and pending["approved_background_epoch"] is not None
+                 and old_operation["status"]=="BLOCKED")
+                or (renewal and old_operation["status"]=="SUSPENDED")
             ):
                 raise VersionConflict(
                     "step has an admitted operation; cancel/reconcile it before replacing"
@@ -114,6 +130,8 @@ def authorize_agent_step(connection: Connection, actor: TrustedActor,
                    WHERE operation_id=%s""",
                 (superseded,pending["operation_id"]),
             )
+        if renewal and pending is None:
+            raise VersionConflict("no suspended checkpoint grant to renew")
         cur.execute(
             "SELECT 1 FROM procedure_agent_operation_authorizations WHERE operation_id=%s",
             (command.operation_id,),
@@ -121,7 +139,8 @@ def authorize_agent_step(connection: Connection, actor: TrustedActor,
         if cur.fetchone() is not None:
             raise VersionConflict("operation identifier already allocated")
         event=_publish(cur,actor,command.instance_id,
-                       ("procedure.agent.background_authorized.v1" if background
+                       ("procedure.agent.background_resumption_authorized.v1" if renewal
+                        else "procedure.agent.background_authorized.v1" if background
                         else "procedure.agent.authorized.v1"),{
             "operation_id":str(command.operation_id),
             "run_id":str(command.run_id),
@@ -135,6 +154,12 @@ def authorize_agent_step(connection: Connection, actor: TrustedActor,
             "expected_background_epoch":(command.expected_background_epoch
                                           if background else None),
             "approval_turn_id":str(command.approval_turn_id),
+            "resume_from_operation_id":(
+                str(command.resume_from_operation_id) if renewal else None
+            ),
+            "resume_checkpoint_ref":(
+                command.resume_checkpoint_ref if renewal else None
+            ),
         },receipt)
         cur.execute(
             """INSERT INTO procedure_agent_operation_authorizations(
@@ -155,6 +180,17 @@ def authorize_agent_step(connection: Connection, actor: TrustedActor,
              command.approval_turn_id,event,
              command.expected_background_epoch if background else None),
         )
+        if renewal:
+            cur.execute(
+                """INSERT INTO procedure_agent_resume_links(
+                     operation_id,source_operation_id,checkpoint_ref,
+                     user_id,instance_id,approved_background_epoch,
+                     authorization_event_id
+                   ) VALUES(%s,%s,%s,%s,%s,%s,%s)""",
+                (command.operation_id,command.resume_from_operation_id,
+                 command.resume_checkpoint_ref,actor.user_id,
+                 command.instance_id,command.expected_background_epoch,event),
+            )
         # Use the identical P0 fence before accepting this stage. A failed
         # gate rolls back its approval journal, receipt and staging row.
         require_procedure_agent_gate(cur,{
@@ -176,7 +212,8 @@ def authorize_agent_step(connection: Connection, actor: TrustedActor,
         )
     return _command(
         connection,actor,command,
-        ("procedure.agent.authorize_background.v1" if background
+        ("procedure.agent.renew_background.v1" if renewal
+         else "procedure.agent.authorize_background.v1" if background
          else "procedure.agent.authorize.v1"),apply,
         result_type=AgentStepAuthorizationResult,
     )
@@ -188,6 +225,21 @@ def authorize_background_agent_step(connection: Connection, actor: TrustedActor,
     """Authenticated P4-04 one-epoch permission, NEVER immediate dispatch."""
     if type(command) is not AuthorizeBackgroundAgentStepCommand:
         raise PermissionDenied("explicit Background authorization required")
+    return authorize_agent_step(connection,actor,command)
+
+
+def renew_background_agent_step(connection: Connection, actor: TrustedActor,
+                                command: RenewBackgroundAgentStepCommand
+                                ) -> AgentStepAuthorizationResult:
+    """New one-epoch approval linked to an immutable stopped source attempt.
+
+    A different operation ID is mandatory; P0's old SUSPENDED attempt
+    remains historical and never inherits this new permission.
+    """
+    if type(command) is not RenewBackgroundAgentStepCommand:
+        raise PermissionDenied("renewed Background step requires explicit resume command")
+    if command.operation_id==command.resume_from_operation_id:
+        raise PermissionDenied("renewal must create a new operation")
     return authorize_agent_step(connection,actor,command)
 
 

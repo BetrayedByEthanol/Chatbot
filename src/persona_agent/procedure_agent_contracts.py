@@ -29,6 +29,16 @@ class AuthorizeBackgroundAgentStepCommand(AuthorizeAgentStepCommand):
     expected_background_epoch: int = Field(ge=1)
 
 
+class RenewBackgroundAgentStepCommand(AuthorizeBackgroundAgentStepCommand):
+    """New explicit next-epoch user approval to restart a safely stopped step.
+
+    A NEW operation and command receipt are required. Never revives the old
+    P0 lease/epoch or silently inherits its permission/attempt budget.
+    """
+    resume_from_operation_id: UUID
+    resume_checkpoint_ref: str = Field(min_length=1,max_length=1000)
+
+
 class BackgroundAgentDispatchResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     operation_id: UUID
