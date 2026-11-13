@@ -134,10 +134,9 @@ def _admit_if_due(
             # Explicit user/operator recovery owns terminal FAILED retry.
             # Active jobs are already admitted and consume no further tokens.
             return 0,0
-        # Recovery is not a *new* scheduling decision. A short Background
-        # range staged before an enqueue crash remains authorized when the
-        # same generation returns to Foreground. Inspect the latest attempt
-        # before applying the larger Foreground threshold.
+        # Recover only the latest still-authorized staged admission.
+        # A revoked full-tail Background job is excluded above and must not
+        # bypass Foreground retention thresholds or suppress fresh work.
         staged_without_operation=last is not None and last["status"] is None
         threshold=1 if mode=="BACKGROUND" else policy.min_candidate_turns
         if not staged_without_operation and eligible<threshold:
