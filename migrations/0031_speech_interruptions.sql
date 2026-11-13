@@ -10,6 +10,8 @@ CREATE TABLE speech_output_interruptions (
     input_channel_id text NOT NULL CHECK (char_length(input_channel_id) BETWEEN 1 AND 128),
     utterance_id uuid,
     reason text NOT NULL CHECK (reason IN ('USER_SPEECH','CLIENT_STOP')),
+    interrupted_clips integer NOT NULL DEFAULT 0
+        CHECK (interrupted_clips BETWEEN 0 AND 64),
     interrupted_at timestamptz NOT NULL DEFAULT clock_timestamp(),
     FOREIGN KEY (response_id,user_id,instance_id)
         REFERENCES conversation_responses(response_id,user_id,instance_id),
