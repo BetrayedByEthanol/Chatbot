@@ -94,9 +94,9 @@ def agent_method(capability=SLOW_TOOL):
     )
 
 
-def staged(dsn,*,configured=True,capability=SLOW_TOOL):
+def staged(dsn,*,configured=True,capability=SLOW_TOOL,definition=None):
     user,persona,instance,conv,template=published(
-        dsn,defined=agent_method(capability),
+        dsn,defined=definition or agent_method(capability),
     )
     if configured:
         configured_pool(dsn)
@@ -109,7 +109,8 @@ def staged(dsn,*,configured=True,capability=SLOW_TOOL):
 
 
 def authorization(dsn,user,instance,conv,run,*,task_version=1,
-                  run_version=1,step_version=1,operation_id=None):
+                  run_version=1,step_version=1,operation_id=None,
+                  step_id="inspect"):
     evidence=turn(dsn,user,instance,conv,
                   "Please execute this registered read-only AGENT step.")
     request=AuthorizeAgentStepCommand(
@@ -119,7 +120,7 @@ def authorization(dsn,user,instance,conv,run,*,task_version=1,
         evidence_quote="Please execute this registered read-only AGENT step",
         operation_id=operation_id or uuid4(),
         run_id=run,expected_run_version=run_version,
-        step_id="inspect",expected_step_version=step_version,
+        step_id=step_id,expected_step_version=step_version,
         expected_task_version=task_version,max_words=5,
     )
     return approve(dsn,user,instance,request)
@@ -670,3 +671,109 @@ def test_task_deadline_expires_while_goal_lock_blocks_pre_dispatch(dsn,monkeypat
     ))
     assert cancelled.value=="CANCEL_REQUESTED"
     call(dsn,acknowledge_cancel,lease)
+
+
+def test_parallel_completed_agent_steps_reconcile_serially_without_deadlock(dsn):
+    """Two P0-completed operations in one run must not upgrade run SHARE locks.
+
+    They originate from distinct AGENT steps with the same pinned run
+    revision. Both results are valid before reconciliation; the first
+    committed procedure result increments the run revision, and the second
+    is then intentionally INVALIDATED. Neither may deadlock the other.
+    """
+    definition=ProcedureDefinition(
+        title="Two independent read-only steps",
+        purpose="Exercise concurrent result reconciliation in one run",
+        applicability="Deterministic locally registered text statistics",
+        limitations="No external side effects",
+        policy="STABLE",preconditions=("User approved both AGENT steps",),
+        steps=(
+            ProcedureStep(
+                step_id="inspect",
+                instruction="Analyze the first local text sample",
+                executor="AGENT",capability=SLOW_TOOL,
+                success_test="First registered tool result persisted",
+            ),
+            ProcedureStep(
+                step_id="inspect_more",
+                instruction="Analyze the second local text sample",
+                executor="AGENT",capability=SLOW_TOOL,
+                success_test="Second registered tool result persisted",
+            ),
+        ),
+        success_tests=("Both outputs have independently fenced provenance",),
+    )
+    user,instance,conv,goal,task,run=staged(dsn,definition=definition)
+    first=authorization(dsn,user,instance,conv,run,step_id="inspect")
+    second=authorization(dsn,user,instance,conv,run,step_id="inspect_more")
+    for cmd in (first,second):
+        queued=call(dsn,schedule_agent_step,actor(user),cmd)
+        assert queued.status.value=="QUEUED"
+    claimed=[]
+    for i in range(2):
+        lease=call(dsn,run_one_agent_step,worker_id=f"two-step-worker-{i}")
+        assert lease is not None
+        claimed.append(lease.operation_id)
+    assert set(claimed)=={first.operation_id,second.operation_id}
+    assert all(operation_row(dsn,cmd.operation_id)[0]=="COMPLETED"
+               for cmd in (first,second))
+    initial=call(dsn,read_procedure_run,actor(user),instance,run)
+    assert initial.version==1
+    assert all(step.status=="NOT_STARTED" for step in initial.steps)
+
+    # Real PostgreSQL row lock: both result consumers must block while
+    # the run is held FOR SHARE, then serialize their exclusive writes.
+    # An attempt to obtain shared run locks before upgrading them can
+    # create the exact lock-upgrade deadlock reported by Codex.
+    pids=Queue()
+
+    def reconcile_on_connection(cmd):
+        with psycopg.connect(dsn,autocommit=True) as conn:
+            pids.put(conn.info.backend_pid)
+            return reconcile_agent_step(conn,platform(user),cmd.operation_id)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        with psycopg.connect(dsn,autocommit=True) as blocker:
+            with blocker.transaction():
+                blocker.execute(
+                    """SELECT run_id FROM procedure_runs WHERE run_id=%s
+                       FOR SHARE""",(run,),
+                ).fetchone()
+                futures=[pool.submit(reconcile_on_connection,cmd)
+                         for cmd in (first,second)]
+                worker_pids={pids.get(timeout=5) for _ in range(2)}
+                assert len(worker_pids)==2
+                for pid in worker_pids:
+                    _wait_until_db_lock(dsn,pid)
+            outcomes=[future.result(timeout=15) for future in futures]
+
+    assert sorted(out.resolution for out in outcomes)==["INVALIDATED","VERIFIED"]
+    winner=next(out for out in outcomes if out.resolution=="VERIFIED")
+    assert winner.step_event_id is not None
+    state=call(dsn,read_procedure_run,actor(user),instance,run)
+    assert state.version==2
+    assert sum(step.status=="VERIFIED" for step in state.steps)==1
+    assert sum(step.status=="NOT_STARTED" for step in state.steps)==1
+    assert call(dsn,list_tasks,actor(user),instance,goal)[0].status=="PLANNED"
+
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        events=conn.execute(
+            """SELECT event_type,count(*) FROM events
+               WHERE user_id=%s AND instance_id=%s AND event_type IN
+                 ('procedure.agent.result_accepted.v1',
+                  'procedure.agent.result_invalidated.v1')
+               GROUP BY event_type""",(user,instance),
+        ).fetchall()
+        assert dict(events)=={
+            "procedure.agent.result_accepted.v1":1,
+            "procedure.agent.result_invalidated.v1":1,
+        }
+        rows=conn.execute(
+            """SELECT state,count(*) FROM procedure_agent_operation_authorizations
+               WHERE run_id=%s GROUP BY state""",(run,),
+        ).fetchall()
+        assert dict(rows)=={"RECONCILED":1,"INVALIDATED":1}
+    assert all(
+        call(dsn,reconcile_agent_step,platform(user),cmd.operation_id).replayed
+        for cmd in (first,second)
+    )
