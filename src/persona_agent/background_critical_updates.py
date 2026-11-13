@@ -106,7 +106,32 @@ def _owner_reference(cur, row: dict) -> UUID | None:
                ORDER BY p.event_id LIMIT 1""",params,
         )
         found=cur.fetchone()
-        return found["event_id"] if found else None
+        if found:
+            return found["event_id"]
+        # Task cancellation is recorded as a Task-owned command/event; unlike
+        # priority rules it has no separate revision table. Require its exact
+        # receipt, the authenticated source turn, and the resulting CANCELLED
+        # task projection, rather than trusting an arbitrary event payload.
+        cur.execute(
+            """SELECT e.event_id FROM events e
+               JOIN command_receipts receipt
+                 ON receipt.event_id=e.event_id
+                AND receipt.user_id=e.user_id
+                AND receipt.instance_id=e.instance_id
+                AND receipt.command_type='goal.task.cancel.v1'
+               JOIN goal_tasks t ON t.user_id=e.user_id
+                AND t.instance_id=e.instance_id
+                AND t.task_id::text=e.payload->>'task_id'
+                AND t.status='CANCELLED'
+               WHERE e.user_id=%s AND e.instance_id=%s
+                 AND e.event_type='goal.task.cancelled.v1'
+                 AND e.trust_level='AUTHENTICATED_USER'
+                 AND e.payload->>'source_turn_id'=%s
+               ORDER BY e.recorded_at DESC LIMIT 1""",
+            (row["user_id"],row["instance_id"],str(row["source_turn_id"])),
+        )
+        cancelled=cur.fetchone()
+        return cancelled["event_id"] if cancelled else None
     # No general authoritative instruction/permission domain is installed.
     # Never accept a platform boolean or a conversational guess as approval.
     return None
