@@ -292,11 +292,12 @@ def schedule_summary(
                     """INSERT INTO conversation_summary_jobs(
                          operation_id,conversation_id,user_id,instance_id,
                          expected_generation,admission_attempt,admission_origin,
-                         start_sequence,end_sequence
-                       ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                         start_sequence,end_sequence,background_handover_epoch
+                       ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
                     (op_id,conversation_id,actor.user_id,instance_id,
                      expected_generation,admission_attempt,
-                     admission_origin.value,start,end),
+                     admission_origin.value,start,end,
+                     selected["background_epoch"] if retain_recent == 0 else None),
                 )
             else:
                 # Includes crash after staging but before P0 enqueue:
