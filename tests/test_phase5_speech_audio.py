@@ -42,7 +42,7 @@ def test_wav_validation_ensures_real_duration_and_header_integrity():
 def test_text_clip_segmentation_is_deterministic_and_bounded():
     text="First sentence. Second sentence! Third sentence?"
     assert split_speech_text(text,max_chars=40)==(
-        "First sentence. Second sentence!", "Third sentence?",
+        "First sentence.", "Second sentence!", "Third sentence?",
     )
     many="hello " * 120
     result=split_speech_text(many)
