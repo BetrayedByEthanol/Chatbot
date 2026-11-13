@@ -530,3 +530,67 @@ def test_memory_conflict_cannot_be_promoted_without_memory_owner(dsn):
     assert check(dsn,
         "SELECT count(*) FROM background_ready_epochs WHERE user_id=%s",(user,),
     )==[(0,)]
+
+
+def test_task_priority_needs_owner_commit_with_separate_user_approval(dsn):
+    from persona_agent.task_contracts import (
+        CreateTaskCommand,SetTaskPriorityCommand,task_approval_phrase,
+    )
+    from persona_agent.task_state import create_task,set_task_priority
+
+    user,instance,_=seed(dsn)
+    conversation=uuid4()
+    goal=uuid4()
+    goal_source=add_closed_turn(dsn,user,instance,conversation,
+                                "I want to eat healthy dinners.")
+    goal_cmd=CreateGoalCommand(
+        instance_id=instance,expected_generation=1,idempotency_key=str(uuid4()),
+        conversation_id=conversation,evidence_turn_id=goal_source.turn_id,
+        evidence_quote="I want to eat healthy dinners.",goal_id=goal,
+        title="Healthy dinners",desired_outcome="Eat healthy",
+        success_criterion="Cook dinner three times a week",horizon="SHORT",
+    )
+    goal_approval=add_closed_turn(dsn,user,instance,conversation,
+                                  goal_action_approval_phrase(goal_cmd))
+    call(dsn,create_goal,user_actor(user),
+         goal_cmd.model_copy(update={"approval_turn_id":goal_approval.turn_id}))
+
+    task_id=uuid4()
+    task_source=add_closed_turn(dsn,user,instance,conversation,
+                                "Prepare vegetables this weekend.")
+    task_cmd=CreateTaskCommand(
+        instance_id=instance,expected_generation=1,idempotency_key=str(uuid4()),
+        conversation_id=conversation,evidence_turn_id=task_source.turn_id,
+        evidence_quote="Prepare vegetables this weekend.",
+        task_id=task_id,goal_id=goal,expected_goal_version=1,
+        title="Vegetables",action_description="Prepare vegetables",
+        completion_criterion="Vegetables prepared",
+        evidence_requirement="User confirms",executor="USER",
+    )
+    task_approval=add_closed_turn(dsn,user,instance,conversation,
+                                  task_approval_phrase(task_cmd))
+    task_result=call(dsn,create_task,user_actor(user),
+                     task_cmd.model_copy(update={"approval_turn_id":task_approval.turn_id}))
+    suspend_source=add_closed_turn(dsn,user,instance,conversation,
+                                   "Suspend my task.")
+    priority_cmd=SetTaskPriorityCommand(
+        instance_id=instance,expected_generation=1,idempotency_key=str(uuid4()),
+        conversation_id=conversation,evidence_turn_id=suspend_source.turn_id,
+        evidence_quote="Suspend my task.",
+        task_id=task_id,expected_task_version=task_result.version,rule="SUSPEND",
+    )
+    priority_approval=add_closed_turn(dsn,user,instance,conversation,
+                                      task_approval_phrase(priority_cmd))
+    result=call(dsn,set_task_priority,user_actor(user),
+                priority_cmd.model_copy(update={"approval_turn_id":priority_approval.turn_id}))
+    enter(dsn,user,instance)
+    drive_to_critical(dsn,user,instance)
+    verified=drive_critical(dsn,user,instance)
+    assert verified.stage=="ALIGNMENT_PENDING"
+    issues=call(dsn,list_critical_updates,user_actor(user),instance,1)
+    assert len(issues)==1
+    assert (issues[0]["domain"],issues[0]["status"],issues[0]["owner_ref"])==(
+        "TASK","VERIFIED",result.event_id,
+    )
+    assert check(dsn,"SELECT suspended FROM goal_tasks WHERE task_id=%s",
+                 (task_id,))==[(True,)]
