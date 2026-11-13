@@ -720,3 +720,155 @@ def test_explicit_memory_owner_revision_is_accepted_without_extraction_candidate
     assert (item["domain"],item["status"],item["owner_ref"])==(
         "MEMORY","VERIFIED",committed.event_id,
     )
+
+
+# P4-02 full-tail authority: Foreground return does not advance generation,
+# so P0's general FOREGROUND_ASYNC fence is deliberately insufficient.
+from persona_agent.summary_memory import prepare_summary, commit_summary
+from persona_agent.summary_contracts import StaleSummary, SummaryDraft
+from persona_agent.operation_control import (
+    cancel_operation, acknowledge_cancel, CancelOperationCommand,
+)
+
+
+def _cancel_handover_claim(dsn,user,lease):
+    """Clean up an intentionally stale P0 claim without leaking pool capacity."""
+    version=check(
+        dsn,"SELECT version FROM operations WHERE operation_id=%s",
+        (lease.operation_id,),
+    )[0][0]
+    status=call(dsn,cancel_operation,user_actor(user),CancelOperationCommand(
+        operation_id=lease.operation_id,expected_version=version,
+        idempotency_key=str(uuid4()),
+    ))
+    assert status==Status.CANCEL_REQUESTED
+    call(dsn,acknowledge_cancel,lease)
+
+
+def _assert_no_handover_writes(dsn,conversation):
+    assert check(dsn,
+        "SELECT summary_watermark FROM conversations WHERE conversation_id=%s",
+        (conversation,),
+    )==[(0,)]
+    assert check(dsn,
+        "SELECT count(*) FROM conversation_summaries WHERE conversation_id=%s",
+        (conversation,),
+    )==[(0,)]
+    assert check(dsn,
+        "SELECT count(*) FROM memory_episodes WHERE conversation_id=%s",
+        (conversation,),
+    )==[(0,)]
+
+
+def test_full_tail_queued_before_foreground_return_must_not_prepare(dsn):
+    user,instance,_=seed(dsn)
+    conversation=uuid4()
+    add_closed_turn(dsn,user,instance,conversation,"I finished a healthy dinner.")
+    enter(dsn,user,instance)
+    staged=call(dsn,schedule_summary,coordinator(user),conversation,instance,1,
+                retain_recent=0,max_turns=8)
+    assert staged is not None
+    call(dsn,record_primary_activity,user_actor(user),PrimaryActivityCommand(
+        instance_id=instance,expected_generation=1,idempotency_key=str(uuid4()),
+    ))
+    # F_ASYNC remains claimable at P0 after returning to Foreground.
+    # Summary ownership MUST reject this obsolete full-tail permission.
+    lease=claim(dsn,SUMMARY_OPERATION)
+    assert lease.operation_id==staged.operation_id
+    with pytest.raises(StaleSummary,match="superseded"):
+        call(dsn,prepare_summary,lease)
+    _assert_no_handover_writes(dsn,conversation)
+    _cancel_handover_claim(dsn,user,lease)
+
+
+def test_full_tail_inference_return_cannot_commit_summary_episode_or_watermark(dsn):
+    user,instance,_=seed(dsn)
+    conversation=uuid4()
+    source=add_closed_turn(dsn,user,instance,conversation,
+                           "I prepared a healthy meal this evening.")
+    enter(dsn,user,instance)
+    staged=call(dsn,schedule_summary,coordinator(user),conversation,instance,1,
+                retain_recent=0,max_turns=8)
+    lease=claim(dsn,SUMMARY_OPERATION)
+    assert lease.operation_id==staged.operation_id
+
+    class ReturnDuringInference:
+        def generate(self,messages):
+            # prepare_summary has already released its transaction before the
+            # model is called. Simulate a real primary-user return here.
+            changed=call(
+                dsn,record_primary_activity,user_actor(user),PrimaryActivityCommand(
+                    instance_id=instance,expected_generation=1,
+                    idempotency_key=str(uuid4()),
+                ),
+            )
+            assert changed.mode=="FOREGROUND"
+            return ModelReply(model_id="fenced-summary",text=json.dumps({
+                "summary":"The user prepared a meal.",
+                "episodes":[{
+                    "source_turn_id":str(source.turn_id),
+                    "evidence_quote":"I prepared a healthy meal",
+                    "topic":"healthy dinner",
+                    "description":"User reported preparing a meal.",
+                    "confidence":0.9,
+                }],
+            }))
+
+    with pytest.raises(StaleSummary,match="superseded"):
+        call(dsn,run_summary,lease,ReturnDuringInference())
+    _assert_no_handover_writes(dsn,conversation)
+    _cancel_handover_claim(dsn,user,lease)
+
+
+def test_full_tail_earlier_epoch_does_not_revive_after_reenter_background(dsn):
+    user,instance,_=seed(dsn)
+    conversation=uuid4()
+    add_closed_turn(dsn,user,instance,conversation,"I exercised on Tuesday.")
+    enter(dsn,user,instance)
+    original=call(dsn,schedule_summary,coordinator(user),conversation,instance,1,
+                  retain_recent=0,max_turns=8)
+    lease=claim(dsn,SUMMARY_OPERATION)
+    work=call(dsn,prepare_summary,lease)
+    call(dsn,record_primary_activity,user_actor(user),PrimaryActivityCommand(
+        instance_id=instance,expected_generation=1,idempotency_key=str(uuid4()),
+    ))
+    reentered=call(dsn,enter_background,user_actor(user),EnterBackgroundCommand(
+        instance_id=instance,expected_generation=1,
+        expected_presence_revision=2,
+        reason=BackgroundReason.EXPLICIT_DEPARTURE,
+        idempotency_key=str(uuid4()),
+    ))
+    assert reentered.background_epoch==3
+    assert lease.operation_id==original.operation_id
+    # Same persona and generation, now Background again: epoch equality is
+    # essential; checking only mode='BACKGROUND' would be insufficient.
+    with pytest.raises(StaleSummary,match="superseded"):
+        call(dsn,commit_summary,lease,work,
+             SummaryDraft(summary="An obsolete summary.",episodes=()),
+             "fenced-summary")
+    _assert_no_handover_writes(dsn,conversation)
+    _cancel_handover_claim(dsn,user,lease)
+
+
+def test_full_tail_requires_pending_handover_status_even_in_background(dsn):
+    user,instance,_=seed(dsn)
+    conversation=uuid4()
+    add_closed_turn(dsn,user,instance,conversation,"I went for a walk.")
+    enter(dsn,user,instance)
+    staged=call(dsn,schedule_summary,coordinator(user),conversation,instance,1,
+                retain_recent=0,max_turns=8)
+    lease=claim(dsn,SUMMARY_OPERATION)
+    assert lease.operation_id==staged.operation_id
+    # Defense in depth: a status revocation must be respected regardless of
+    # the selection row's Background mode and epoch value.
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        conn.execute(
+            """UPDATE background_preparation_epochs
+               SET status='SUPERSEDED',superseded_at=clock_timestamp()
+               WHERE user_id=%s AND instance_id=%s AND background_epoch=1""",
+            (user,instance),
+        )
+    with pytest.raises(StaleSummary,match="superseded"):
+        call(dsn,prepare_summary,lease)
+    _assert_no_handover_writes(dsn,conversation)
+    _cancel_handover_claim(dsn,user,lease)
