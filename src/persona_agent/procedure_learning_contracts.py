@@ -17,6 +17,13 @@ FailureCause = Literal[
     "INCOMPLETE_USER_ACTION", "METHOD_MISMATCH", "INVALID_SUCCESS_CRITERIA",
 ]
 AdaptationDecision = Literal["APPLY", "REJECT"]
+CriterionState = Literal["UNKNOWN", "USER_REPORTED_MET", "USER_REPORTED_UNMET"]
+
+
+class ProcedureCriterionReport(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    position: int = Field(ge=1, le=12)
+    state: CriterionState
 
 
 class EvaluateProcedureRunCommand(ProcedureUserCommand):
@@ -29,7 +36,8 @@ class EvaluateProcedureRunCommand(ProcedureUserCommand):
     rationale: str = Field(min_length=10, max_length=800)
     # Direct immutable run-step event references, not a model's unsourced claim.
     supporting_step_event_ids: tuple[UUID, ...] = Field(default=(), max_length=20)
-    confidence: float = Field(ge=0, le=1)
+    criteria: tuple[ProcedureCriterionReport, ...] = Field(default=(), max_length=12)
+    confidence: float = Field(ge=0, le=1, allow_inf_nan=False)
 
     @model_validator(mode="after")
     def check_outcome(self):
@@ -39,6 +47,8 @@ class EvaluateProcedureRunCommand(ProcedureUserCommand):
             raise ValueError("failure cause only applies to reported failures")
         if len(set(self.supporting_step_event_ids)) != len(self.supporting_step_event_ids):
             raise ValueError("duplicate step evidence")
+        if len({item.position for item in self.criteria}) != len(self.criteria):
+            raise ValueError("duplicate success criterion position")
         if not self.rationale.strip():
             raise ValueError("assessment rationale cannot be blank")
         return self
@@ -88,6 +98,7 @@ class ProcedureEvaluationView(BaseModel):
     rationale: str
     confidence: float
     supporting_step_event_ids: tuple[UUID, ...]
+    criteria: tuple[ProcedureCriterionReport, ...]
     # Outcome is user testimony or a tentative observation, not verified.
     independently_verified: Literal[False] = False
     task_or_goal_completed: Literal[False] = False
