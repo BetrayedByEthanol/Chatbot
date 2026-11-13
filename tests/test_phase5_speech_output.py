@@ -146,6 +146,27 @@ def test_speech_clips_mark_response_delivered_only_after_all_played(dsn):
                for m in context.messages)
 
 
+def test_multilingual_unspaced_response_can_be_synthesized(dsn):
+    """Chinese response follows the existing conversation-to-speech path."""
+    text = "这是一个正常的中文回答。" * 20
+    user,instance,reply = response(dsn, text=text)
+    synth = FakeSynthesizer()
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        clips = list(stream_response_speech(
+            conn, actor(user), reply.response_id,
+            SpeechOutputTarget(channel_id="browser:voice"), synth,
+        ))
+        assert len(clips) > 1
+        assert len(clips) <= 64
+        assert "".join(synth.calls) == text
+        assert all(len(segment) <= 220 for segment in synth.calls)
+        assert all(clip.record.clip_count == len(clips) for clip in clips)
+        assert conn.execute(
+            "SELECT count(*) FROM speech_clips WHERE response_id=%s",
+            (reply.response_id,),
+        ).fetchone()[0] == len(clips)
+
+
 def test_clip_idempotency_and_scope(dsn):
     user,instance,reply=response(dsn)
     first=call(dsn,prepare_speech_clip,actor(user),clip_command(reply.response_id))
