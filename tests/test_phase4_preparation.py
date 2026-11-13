@@ -306,3 +306,30 @@ def test_full_tail_operations_require_coordinator_and_background_mode(dsn):
     with pytest.raises(StaleSelection):
         call(dsn,schedule_cognition,coordinator(user),conversation,instance,1,
              retain_recent=0,min_closed_turns=1)
+
+
+def test_incomplete_snapshot_never_means_no_conversation(dsn):
+    user,instance,_=seed(dsn)
+    conversation=uuid4()
+    add_closed_turn(dsn,user,instance,conversation,"Important instruction before departure.")
+    enter(dsn,user,instance)
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            """SELECT captured_conversation_count
+               FROM background_preparation_epochs
+               WHERE user_id=%s AND instance_id=%s AND background_epoch=1""",
+            (user,instance),
+        ).fetchone()[0]==1
+        # Corrupt the derived snapshot to model a partial migration or a
+        # failed manual repair. The production entry transaction is atomic.
+        conn.execute(
+            """DELETE FROM background_preparation_conversations
+               WHERE user_id=%s AND instance_id=%s AND background_epoch=1""",
+            (user,instance),
+        )
+    result=tick(dsn,user,instance)
+    assert (result.stage,result.state)==("BLOCKED","REQUIRES_OPERATOR")
+    assert check(dsn,
+        "SELECT 1 FROM background_ready_epochs WHERE user_id=%s",
+        (user,),
+    )==[]
