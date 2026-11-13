@@ -38,6 +38,13 @@ def begin_background_epoch(
         """,
         (background_epoch, user_id, instance_id),
     )
+    captured=cursor.rowcount
+    cursor.execute(
+        """UPDATE background_preparation_epochs
+           SET captured_conversation_count=%s
+           WHERE user_id=%s AND instance_id=%s AND background_epoch=%s""",
+        (captured,user_id,instance_id,background_epoch),
+    )
 
 
 def supersede_background_epoch(
