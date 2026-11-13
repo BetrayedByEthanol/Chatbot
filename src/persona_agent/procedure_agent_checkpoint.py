@@ -225,6 +225,7 @@ def require_renewable_source(cur, actor: TrustedActor, source: dict,
         or source["operation_id"]==command.operation_id
         or source["user_id"]!=actor.user_id
         or source["instance_id"]!=command.instance_id
+        or source["selection_generation"]!=command.expected_generation
         or source["task_id"] is None
         or source["operation_type"]!=PROCEDURE_AGENT_OPERATION
         or source["origin"]!="GOAL"
