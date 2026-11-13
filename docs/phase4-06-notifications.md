@@ -43,6 +43,14 @@ not observed/read on a device.
   is outside this first transport slice and must never auto-reactivate
   a persona.
 
+## Runtime
+
+Deploy the deterministic in-app notifier alongside existing workers using
+`python -m persona_agent.notification_worker --dsn "$DATABASE_URL"`.
+`--once` allows an idempotent cron/host tick. This worker polls only
+PostgreSQL due intents; no persona, cognition or external transport process
+is invoked. The authenticated frontend consumes the inbox API separately.
+
 ## Failure behavior
 
 - Existing PostgreSQL transactions, stream events and transactional outbox
