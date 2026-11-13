@@ -393,6 +393,7 @@ def reconcile_agent_step(connection: Connection, actor: TrustedPlatformActor,
                 # already owned by this transaction.
                 require_procedure_agent_gate(
                     cur,operation,allow_past_deadline_evidence=True,
+                    allow_completed_background_evidence=True,
                 )
             except (VersionConflict,PermissionDenied):
                 event=_publish(
