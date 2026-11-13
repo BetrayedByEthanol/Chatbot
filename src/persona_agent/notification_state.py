@@ -284,6 +284,15 @@ def dispatch_due_notifications(connection: Connection, *, limit: int=32) -> int:
             """SELECT i.intent_id FROM notification_intents i
                JOIN notification_policies p ON p.user_id=i.user_id
                WHERE i.active AND p.enabled AND i.next_due_at<=clock_timestamp()
+               AND (
+                   p.quiet_start_min IS NULL OR
+                   p.quiet_start_min=p.quiet_end_min OR
+                   MOD(
+                     EXTRACT(HOUR FROM timezone(p.timezone,clock_timestamp()))::int*60
+                     + EXTRACT(MINUTE FROM timezone(p.timezone,clock_timestamp()))::int
+                     - p.quiet_start_min + 1440, 1440
+                   ) >= MOD((p.quiet_end_min-p.quiet_start_min+1440),1440)
+                 )
                ORDER BY i.next_due_at,i.intent_id LIMIT %s""",(limit*4,),
         )
         candidates=[r["intent_id"] for r in cur.fetchall()]
@@ -358,6 +367,15 @@ def dispatch_due_notifications(connection: Connection, *, limit: int=32) -> int:
                JOIN notification_policies p ON p.user_id=o.user_id
                WHERE o.status='SNOOZED' AND p.enabled
                  AND o.snoozed_until<=clock_timestamp()
+               AND (
+                   p.quiet_start_min IS NULL OR
+                   p.quiet_start_min=p.quiet_end_min OR
+                   MOD(
+                     EXTRACT(HOUR FROM timezone(p.timezone,clock_timestamp()))::int*60
+                     + EXTRACT(MINUTE FROM timezone(p.timezone,clock_timestamp()))::int
+                     - p.quiet_start_min + 1440, 1440
+                   ) >= MOD((p.quiet_end_min-p.quiet_start_min+1440),1440)
+                 )
                ORDER BY o.snoozed_until,o.occurrence_id LIMIT %s""",(limit*4,),
         )
         snoozed=[r["occurrence_id"] for r in cur.fetchall()]
