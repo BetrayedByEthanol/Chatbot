@@ -273,6 +273,41 @@ def test_snooze_stop_and_response_cross_user_isolation(dsn):
     )==[(1,)]
 
 
+def test_earliest_snooze_is_not_starved_by_due_intents(dsn):
+    user,first,_=_ready(dsn)
+    old=schedule(user,first,due=datetime.now(timezone.utc)-timedelta(minutes=3))
+    call(dsn,schedule_notification,user_actor(user),old)
+    assert call(dsn,dispatch_due_notifications,limit=1)==1
+    occurrence=next(i.occurrence_id
+                    for i in call(dsn,list_notification_inbox,user_actor(user))
+                    if i.intent_id==old.intent_id)
+    call(dsn,respond_to_notification,user_actor(user),
+         NotificationActionCommand(occurrence_id=occurrence,idempotency_key=uuid4().hex,
+                                   action="SNOOZE",snooze_minutes=30))
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        conn.execute(
+            """UPDATE notification_occurrences
+               SET snoozed_until=clock_timestamp()-interval '2 minutes'
+               WHERE occurrence_id=%s""",(occurrence,),
+        )
+    later=schedule(user,first,due=datetime.now(timezone.utc)-timedelta(minutes=1))
+    call(dsn,schedule_notification,user_actor(user),later)
+    assert call(dsn,dispatch_due_notifications,limit=1)==1
+    assert check(dsn,
+        "SELECT status FROM notification_occurrences WHERE occurrence_id=%s",
+        (occurrence,),
+    )==[("AVAILABLE",)]
+    assert check(dsn,
+        "SELECT count(*) FROM notification_occurrences WHERE intent_id=%s",
+        (later.intent_id,),
+    )==[(0,)]
+    assert call(dsn,dispatch_due_notifications,limit=1)==1
+    assert check(dsn,
+        "SELECT count(*) FROM notification_occurrences WHERE intent_id=%s",
+        (later.intent_id,),
+    )==[(1,)]
+
+
 def test_stop_cancels_other_pending_snoozed_recurrence(dsn):
     user,first,_=_ready(dsn)
     cmd=schedule(user,first,recur="DAILY")
