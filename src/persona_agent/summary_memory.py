@@ -213,7 +213,7 @@ def schedule_summary(
                 # The platform can finish a handover summary in selected
                 # Background mode, but never for an inactive or stale persona.
                 cur.execute(
-                    """SELECT instance_id,generation,mode
+                    """SELECT instance_id,generation,mode,background_epoch
                        FROM persona_selection WHERE user_id=%s FOR SHARE""",
                     (actor.user_id,),
                 )
