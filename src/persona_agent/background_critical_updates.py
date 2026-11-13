@@ -131,7 +131,24 @@ def _owner_reference(cur, row: dict) -> UUID | None:
             (row["user_id"],row["instance_id"],str(row["source_turn_id"])),
         )
         cancelled=cur.fetchone()
-        return cancelled["event_id"] if cancelled else None
+        if cancelled:
+            return cancelled["event_id"]
+        cur.execute(
+            """SELECT p.proof_event_id FROM task_cancellation_provenance p
+               JOIN events e ON e.event_id=p.proof_event_id
+                AND e.user_id=p.user_id AND e.instance_id=p.instance_id
+               JOIN goal_tasks t ON t.task_id=p.task_id
+                AND t.user_id=p.user_id AND t.instance_id=p.instance_id
+               WHERE p.user_id=%s AND p.instance_id=%s
+                 AND p.original_conversation_id=%s
+                 AND p.original_source_turn_id=%s
+                 AND e.event_type='goal.task.cancellation.provenance_confirmed.v1'
+                 AND e.trust_level='AUTHENTICATED_USER'
+                 AND t.status='CANCELLED'
+               ORDER BY p.proof_event_id LIMIT 1""",params,
+        )
+        attested=cur.fetchone()
+        return attested["proof_event_id"] if attested else None
     # No general authoritative instruction/permission domain is installed.
     # Never accept a platform boolean or a conversational guess as approval.
     return None
