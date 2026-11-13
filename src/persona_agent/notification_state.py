@@ -279,145 +279,152 @@ def _next_daily(now: datetime,zone_name: str,hour: int,minute: int) -> datetime:
 # occurs; this transaction makes an occurrence AVAILABLE atomically with its
 # provenance event and next recurrence time.
 def dispatch_due_notifications(connection: Connection, *, limit: int=32) -> int:
+    """Globally ordered in-app due scan across new and snoozed occurrences.
+
+    One bounded SQL discovery joins both work types and sorts by due time.
+    An endless stream of new due intents cannot starve an older snooze.
+    """
     require_idle(connection)
     if not 1<=limit<=128:
         raise ValueError("notification batch limit must be 1..128")
     committed=0
-    # Per-intent transactions; a failed candidate cannot corrupt others.
-    # Join policy before the bounded scan so opt-outs do not starve due work.
     with connection.cursor(row_factory=dict_row) as cur:
         cur.execute(
-            """SELECT i.intent_id FROM notification_intents i
-               JOIN notification_policies p ON p.user_id=i.user_id
-               WHERE i.active AND p.enabled AND i.next_due_at<=clock_timestamp()
-               AND (
-                   p.quiet_start_min IS NULL OR
-                   p.quiet_start_min=p.quiet_end_min OR
-                   MOD(
-                     EXTRACT(HOUR FROM timezone(p.timezone,clock_timestamp()))::int*60
-                     + EXTRACT(MINUTE FROM timezone(p.timezone,clock_timestamp()))::int
-                     - p.quiet_start_min + 1440, 1440
-                   ) >= MOD((p.quiet_end_min-p.quiet_start_min+1440),1440)
-                 )
-               ORDER BY i.next_due_at,i.intent_id LIMIT %s""",(limit*4,),
+            """SELECT kind,item_id FROM (
+                  SELECT 'INTENT' AS kind,i.intent_id AS item_id,
+                         i.next_due_at AS due_at
+                  FROM notification_intents i
+                  JOIN notification_policies p ON p.user_id=i.user_id
+                  WHERE i.active AND p.enabled AND i.next_due_at<=clock_timestamp()
+                  AND (
+                      p.quiet_start_min IS NULL OR
+                      p.quiet_start_min=p.quiet_end_min OR
+                      MOD(
+                        EXTRACT(HOUR FROM timezone(p.timezone,clock_timestamp()))::int*60
+                        + EXTRACT(MINUTE FROM timezone(p.timezone,clock_timestamp()))::int
+                        - p.quiet_start_min + 1440, 1440
+                      ) >= MOD((p.quiet_end_min-p.quiet_start_min+1440),1440)
+                    )
+
+                  UNION ALL
+                  SELECT 'SNOOZE' AS kind,o.occurrence_id AS item_id,
+                         o.snoozed_until AS due_at
+                  FROM notification_occurrences o
+                  JOIN notification_policies p ON p.user_id=o.user_id
+                  WHERE o.status='SNOOZED' AND p.enabled
+                    AND o.snoozed_until<=clock_timestamp()
+                  AND (
+                      p.quiet_start_min IS NULL OR
+                      p.quiet_start_min=p.quiet_end_min OR
+                      MOD(
+                        EXTRACT(HOUR FROM timezone(p.timezone,clock_timestamp()))::int*60
+                        + EXTRACT(MINUTE FROM timezone(p.timezone,clock_timestamp()))::int
+                        - p.quiet_start_min + 1440, 1440
+                      ) >= MOD((p.quiet_end_min-p.quiet_start_min+1440),1440)
+                    )
+
+               ) due
+               ORDER BY due_at,item_id LIMIT %s""",(limit*4,),
         )
-        candidates=[r["intent_id"] for r in cur.fetchall()]
-    for ident in candidates:
+        candidates=[(row["kind"],row["item_id"]) for row in cur.fetchall()]
+    for kind,item_id in candidates:
         if committed>=limit:
             break
-        with connection.transaction():
-            with connection.cursor(row_factory=dict_row) as cur:
-                cur.execute(
-                    """SELECT * FROM notification_intents
-                       WHERE intent_id=%s AND active AND next_due_at<=clock_timestamp()
-                       FOR UPDATE SKIP LOCKED""",(ident,),
-                )
-                intent=cur.fetchone()
-                if intent is None:
-                    continue
-                cur.execute(
-                    """SELECT * FROM notification_policies
-                       WHERE user_id=%s FOR SHARE""",(intent["user_id"],),
-                )
-                policy=cur.fetchone()
-                if policy is None or not policy["enabled"]:
-                    continue
-                cur.execute("SELECT clock_timestamp() AS now")
-                now=cur.fetchone()["now"]
-                if _is_quiet(policy,now):
-                    continue
-                overdue=now-intent["next_due_at"]>timedelta(hours=24)
-                if not overdue:
-                    occurrence=uuid4()
+        if kind=="INTENT":
+            ident=item_id
+            with connection.transaction():
+                with connection.cursor(row_factory=dict_row) as cur:
                     cur.execute(
-                        """INSERT INTO notification_occurrences(
-                             occurrence_id,intent_id,user_id,instance_id,scheduled_for)
-                           VALUES(%s,%s,%s,%s,%s)""",
-                        (occurrence,ident,intent["user_id"],
-                         intent["instance_id"],intent["next_due_at"]),
+                        """SELECT * FROM notification_intents
+                           WHERE intent_id=%s AND active AND next_due_at<=clock_timestamp()
+                           FOR UPDATE SKIP LOCKED""",(ident,),
                     )
-                    _event(cur,intent["user_id"],intent["instance_id"],
-                           "notification.available.v1",{
-                        "intent_id":str(ident),"occurrence_id":str(occurrence),
-                        "scheduled_for":intent["next_due_at"].isoformat(),
-                        "channel":"IN_APP",
-                    },actor_source="notification.platform.in_app",
+                    intent=cur.fetchone()
+                    if intent is None:
+                        continue
+                    cur.execute(
+                        """SELECT * FROM notification_policies
+                           WHERE user_id=%s FOR SHARE""",(intent["user_id"],),
+                    )
+                    policy=cur.fetchone()
+                    if policy is None or not policy["enabled"]:
+                        continue
+                    cur.execute("SELECT clock_timestamp() AS now")
+                    now=cur.fetchone()["now"]
+                    if _is_quiet(policy,now):
+                        continue
+                    overdue=now-intent["next_due_at"]>timedelta(hours=24)
+                    if not overdue:
+                        occurrence=uuid4()
+                        cur.execute(
+                            """INSERT INTO notification_occurrences(
+                                 occurrence_id,intent_id,user_id,instance_id,scheduled_for)
+                               VALUES(%s,%s,%s,%s,%s)""",
+                            (occurrence,ident,intent["user_id"],
+                             intent["instance_id"],intent["next_due_at"]),
+                        )
+                        _event(cur,intent["user_id"],intent["instance_id"],
+                               "notification.available.v1",{
+                            "intent_id":str(ident),"occurrence_id":str(occurrence),
+                            "scheduled_for":intent["next_due_at"].isoformat(),
+                            "channel":"IN_APP",
+                        },actor_source="notification.platform.in_app",
+                               trust_level="TRUSTED_PLATFORM")
+                        committed+=1
+                    else:
+                        _event(cur,intent["user_id"],intent["instance_id"],
+                               "notification.missed.v1",{
+                            "intent_id":str(ident),
+                            "scheduled_for":intent["next_due_at"].isoformat(),
+                        },actor_source="notification.platform.in_app",
+                               trust_level="TRUSTED_PLATFORM")
+                        committed+=1
+                    if intent["recurrence"]=="DAILY":
+                        next_due=_next_daily(now,intent["timezone"],
+                                             intent["local_hour"],intent["local_minute"])
+                        cur.execute(
+                            """UPDATE notification_intents SET next_due_at=%s,
+                                 updated_at=clock_timestamp()
+                               WHERE intent_id=%s""",(next_due,ident),
+                        )
+                    else:
+                        cur.execute(
+                            """UPDATE notification_intents SET active=false,
+                                 updated_at=clock_timestamp()
+                               WHERE intent_id=%s""",(ident,),
+                        )
+        else:
+            oid=item_id
+            with connection.transaction():
+                with connection.cursor(row_factory=dict_row) as cur:
+                    cur.execute(
+                        """SELECT * FROM notification_occurrences
+                           WHERE occurrence_id=%s AND status='SNOOZED'
+                             AND snoozed_until<=clock_timestamp() FOR UPDATE SKIP LOCKED""",
+                        (oid,),
+                    )
+                    row=cur.fetchone()
+                    if row is None:
+                        continue
+                    cur.execute("SELECT * FROM notification_policies WHERE user_id=%s FOR SHARE",
+                                (row["user_id"],))
+                    policy=cur.fetchone()
+                    if policy is None or not policy["enabled"]:
+                        continue
+                    cur.execute("SELECT clock_timestamp() AS now")
+                    if _is_quiet(policy,cur.fetchone()["now"]):
+                        continue
+                    cur.execute(
+                        """UPDATE notification_occurrences SET status='AVAILABLE',
+                             snoozed_until=NULL,available_at=clock_timestamp()
+                           WHERE occurrence_id=%s""",(oid,),
+                    )
+                    _event(cur,row["user_id"],row["instance_id"],
+                           "notification.snooze_elapsed.v1",{
+                           "occurrence_id":str(oid)},
+                           actor_source="notification.platform.in_app",
                            trust_level="TRUSTED_PLATFORM")
                     committed+=1
-                else:
-                    _event(cur,intent["user_id"],intent["instance_id"],
-                           "notification.missed.v1",{
-                        "intent_id":str(ident),
-                        "scheduled_for":intent["next_due_at"].isoformat(),
-                    },actor_source="notification.platform.in_app",
-                           trust_level="TRUSTED_PLATFORM")
-                    committed+=1
-                if intent["recurrence"]=="DAILY":
-                    next_due=_next_daily(now,intent["timezone"],
-                                         intent["local_hour"],intent["local_minute"])
-                    cur.execute(
-                        """UPDATE notification_intents SET next_due_at=%s,
-                             updated_at=clock_timestamp()
-                           WHERE intent_id=%s""",(next_due,ident),
-                    )
-                else:
-                    cur.execute(
-                        """UPDATE notification_intents SET active=false,
-                             updated_at=clock_timestamp()
-                           WHERE intent_id=%s""",(ident,),
-                    )
-    # Snoozed notifications are due independently of intent.active (one-shot).
-    with connection.cursor(row_factory=dict_row) as cur:
-        cur.execute(
-            """SELECT o.occurrence_id FROM notification_occurrences o
-               JOIN notification_policies p ON p.user_id=o.user_id
-               WHERE o.status='SNOOZED' AND p.enabled
-                 AND o.snoozed_until<=clock_timestamp()
-               AND (
-                   p.quiet_start_min IS NULL OR
-                   p.quiet_start_min=p.quiet_end_min OR
-                   MOD(
-                     EXTRACT(HOUR FROM timezone(p.timezone,clock_timestamp()))::int*60
-                     + EXTRACT(MINUTE FROM timezone(p.timezone,clock_timestamp()))::int
-                     - p.quiet_start_min + 1440, 1440
-                   ) >= MOD((p.quiet_end_min-p.quiet_start_min+1440),1440)
-                 )
-               ORDER BY o.snoozed_until,o.occurrence_id LIMIT %s""",(limit*4,),
-        )
-        snoozed=[r["occurrence_id"] for r in cur.fetchall()]
-    for oid in snoozed:
-        if committed>=limit:
-            break
-        with connection.transaction():
-            with connection.cursor(row_factory=dict_row) as cur:
-                cur.execute(
-                    """SELECT * FROM notification_occurrences
-                       WHERE occurrence_id=%s AND status='SNOOZED'
-                         AND snoozed_until<=clock_timestamp() FOR UPDATE SKIP LOCKED""",
-                    (oid,),
-                )
-                row=cur.fetchone()
-                if row is None:
-                    continue
-                cur.execute("SELECT * FROM notification_policies WHERE user_id=%s FOR SHARE",
-                            (row["user_id"],))
-                policy=cur.fetchone()
-                if policy is None or not policy["enabled"]:
-                    continue
-                cur.execute("SELECT clock_timestamp() AS now")
-                if _is_quiet(policy,cur.fetchone()["now"]):
-                    continue
-                cur.execute(
-                    """UPDATE notification_occurrences SET status='AVAILABLE',
-                         snoozed_until=NULL,available_at=clock_timestamp()
-                       WHERE occurrence_id=%s""",(oid,),
-                )
-                _event(cur,row["user_id"],row["instance_id"],
-                       "notification.snooze_elapsed.v1",{
-                       "occurrence_id":str(oid)},
-                       actor_source="notification.platform.in_app",
-                       trust_level="TRUSTED_PLATFORM")
-                committed+=1
     return committed
 
 
