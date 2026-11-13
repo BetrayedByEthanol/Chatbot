@@ -264,12 +264,26 @@ def run_preparation_scan(connection: Connection, *, limit: int = 32
     outcomes=[]
     for epoch in epochs:
         try:
-            outcomes.append(advance_background_preparation(
+            progress=advance_background_preparation(
                 connection,
                 TrustedPlatformActor(user_id=epoch["user_id"],source_id=_COORDINATOR),
                 epoch["instance_id"],epoch["background_epoch"],
-            ))
+            )
         except StaleBackgroundPreparation:
             # Return/switch raced with discovery; the next scan ignores it.
             continue
+        outcomes.append(progress)
+        if progress.stage in ("SUMMARIZE", "EVALUATE"):
+            # A permanently waiting earlier epoch must not starve the next
+            # page of otherwise eligible instances. This is only a polling
+            # cursor (not an authorization or readiness transition).
+            with connection.transaction():
+                connection.execute(
+                    """UPDATE background_preparation_epochs
+                       SET preparation_updated_at=clock_timestamp()
+                       WHERE user_id=%s AND instance_id=%s AND background_epoch=%s
+                         AND status='PENDING'
+                         AND preparation_stage IN ('SUMMARIZE','EVALUATE')""",
+                    (epoch["user_id"],epoch["instance_id"],epoch["background_epoch"]),
+                )
     return tuple(outcomes)
