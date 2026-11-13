@@ -149,6 +149,10 @@ class TurnTakingController:
     def stop(self) -> None:
         """Stop this response only; do not cancel persona tasks/operations."""
         with self._lock:
+            if self._playback_active and not self._barge_in_detected:
+                # Manual output stop needs the same tail-echo guard as a
+                # natural playback completion; barge-in must not lose speech.
+                self._remaining_guard_frames = self._guard_frames
             self._playback_active = False
             self.cancellation.set()
 
