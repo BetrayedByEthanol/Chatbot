@@ -14,6 +14,7 @@ class SpeechInterruptCommand(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
     response_id: UUID
+    conversation_id: UUID
     instance_id: UUID
     expected_generation: int = Field(ge=1)
     output_channel_id: str = Field(min_length=1,max_length=128)
