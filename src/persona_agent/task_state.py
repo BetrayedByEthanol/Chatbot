@@ -434,6 +434,7 @@ def cancel_task(connection: Connection, actor: TrustedActor,
             raise VersionConflict("confirmed or cancelled task cannot be cancelled")
         event=_publish(cur,actor,command.instance_id,"goal.task.cancelled.v1",{
             "task_id":str(command.task_id),
+            "source_turn_id":str(command.evidence_turn_id),
             "approval_turn_id":str(command.approval_turn_id),
         },receipt)
         cur.execute(
