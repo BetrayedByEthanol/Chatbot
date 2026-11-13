@@ -198,8 +198,13 @@ def schedule_summary(
     platform = type(actor) is TrustedPlatformActor
     if not platform:
         _require_actor(actor)
-    if not 1 <= retain_recent <= 32 or not 1 <= max_turns <= 16:
+    if not 0 <= retain_recent <= 32 or not 1 <= max_turns <= 16:
         raise ValueError("invalid summary range policy")
+    if retain_recent == 0 and (
+        type(actor) is not TrustedPlatformActor
+        or actor.source_id != "background.preparation"
+    ):
+        raise PermissionDenied("full-tail summarization requires Background coordinator authority")
     if expected_generation < 1:
         raise ValueError("expected_generation must be positive")
     with connection.transaction():
@@ -208,7 +213,7 @@ def schedule_summary(
                 # The platform can finish a handover summary in selected
                 # Background mode, but never for an inactive or stale persona.
                 cur.execute(
-                    """SELECT instance_id,generation,mode
+                    """SELECT instance_id,generation,mode,background_epoch
                        FROM persona_selection WHERE user_id=%s FOR SHARE""",
                     (actor.user_id,),
                 )
@@ -217,6 +222,8 @@ def schedule_summary(
                     or selected["generation"]!=expected_generation
                     or selected["mode"] not in ("FOREGROUND","BACKGROUND")):
                     raise StaleSelection("automatic summary requires selected persona")
+                if retain_recent == 0 and selected["mode"] != "BACKGROUND":
+                    raise StaleSelection("full-tail summary requires Background mode")
             else:
                 _selection(cur,actor,instance_id,expected_generation)
             cur.execute(
@@ -285,11 +292,12 @@ def schedule_summary(
                     """INSERT INTO conversation_summary_jobs(
                          operation_id,conversation_id,user_id,instance_id,
                          expected_generation,admission_attempt,admission_origin,
-                         start_sequence,end_sequence
-                       ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                         start_sequence,end_sequence,background_handover_epoch
+                       ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
                     (op_id,conversation_id,actor.user_id,instance_id,
                      expected_generation,admission_attempt,
-                     admission_origin.value,start,end),
+                     admission_origin.value,start,end,
+                     selected["background_epoch"] if retain_recent == 0 else None),
                 )
             else:
                 # Includes crash after staging but before P0 enqueue:
@@ -366,8 +374,9 @@ def prepare_summary(
             state=cur.fetchone()
             if state is None or state["summary_watermark"]!=job["start_sequence"]-1:
                 raise StaleSummary("summary watermark advanced or conversation removed")
-            if job["end_sequence"]>=state["next_sequence"]-1:
-                raise SummaryNotReady("the latest input must remain outside compression")
+            if (job["end_sequence"]>=state["next_sequence"]-1
+                and job["background_handover_epoch"] is None):
+                raise SummaryNotReady("the latest input must remain outside ordinary compression")
             turns=_read_range(cur,job)
             return SummaryWork(
                 operation_id=lease.operation_id,user_id=lease.user_id,

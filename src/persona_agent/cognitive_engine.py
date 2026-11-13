@@ -98,8 +98,10 @@ def schedule_cognition(
         raise PermissionDenied("terminal cognitive retry requires explicit operator authority")
     if not 1<=max_turns<=16 or not 1<=min_closed_turns<=max_turns:
         raise ValueError("invalid cognitive range policy")
-    if not 1<=retain_recent<=16 or expected_generation<1:
+    if not 0<=retain_recent<=16 or expected_generation<1:
         raise ValueError("invalid cognitive retention or generation")
+    if retain_recent == 0 and actor.source_id != "background.preparation":
+        raise PermissionDenied("full-tail cognitive evaluation requires Background coordinator")
     with connection.transaction():
         with connection.cursor(row_factory=dict_row) as cur:
             cur.execute(
@@ -112,6 +114,8 @@ def schedule_cognition(
                 or selected["generation"]!=expected_generation
                 or selected["mode"] not in ("FOREGROUND","BACKGROUND")):
                 raise StaleSelection("cognitive scheduling requires selected persona")
+            if retain_recent == 0 and selected["mode"] != "BACKGROUND":
+                raise StaleSelection("full-tail cognitive evaluation requires Background mode")
             cur.execute(
                 """SELECT cognitive_watermark,next_sequence FROM conversations
                    WHERE conversation_id=%s AND user_id=%s AND instance_id=%s

@@ -23,6 +23,29 @@ def begin_background_epoch(
         """,
         (user_id, instance_id, background_epoch, generation, presence_revision),
     )
+    # The active-selection lock held by enter_background() serializes with
+    # primary-user ingress. Capture all pre-departure conversations atomically;
+    # never infer an epoch boundary from later, mutable next_sequence values.
+    cursor.execute(
+        """
+        INSERT INTO background_preparation_conversations (
+            user_id, instance_id, background_epoch,
+            conversation_id, target_sequence, critical_scan_sequence
+        )
+        SELECT user_id, instance_id, %s, conversation_id, next_sequence - 1,
+               critical_committed_watermark
+        FROM conversations
+        WHERE user_id = %s AND instance_id = %s
+        """,
+        (background_epoch, user_id, instance_id),
+    )
+    captured=cursor.rowcount
+    cursor.execute(
+        """UPDATE background_preparation_epochs
+           SET captured_conversation_count=%s
+           WHERE user_id=%s AND instance_id=%s AND background_epoch=%s""",
+        (captured,user_id,instance_id,background_epoch),
+    )
 
 
 def supersede_background_epoch(
