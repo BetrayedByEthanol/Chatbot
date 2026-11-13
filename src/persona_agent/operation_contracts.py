@@ -70,7 +70,7 @@ class EnqueueOperation(BaseModel):
     timeout_seconds: int = Field(default=300, ge=1, le=86400)
     max_attempts: int = Field(default=3, ge=1, le=30)
     input_versions: dict[str, int] = Field(default_factory=dict)
-    task_id: UUID | None = None  # Task gate is not implemented yet.
+    task_id: UUID | None = None  # Registered ProcedureRun/Task gate.
 
     @model_validator(mode="after")
     def validate_operation(self):
@@ -78,14 +78,20 @@ class EnqueueOperation(BaseModel):
         if self.task_id is not None and not agent_step:
             raise ValueError("task-owned operations require the registered procedure gate")
         if agent_step:
-            # This is NOT a generic executable task gateway: only the exact
-            # already-registered, read-only tool may be admitted through a
-            # durable user-approved ProcedureRun/Task/Step authorization.
+            # P4-04 adds ONLY a separately approved GOAL/P2 single-epoch
+            # variant of the preexisting READ_ONLY registered tool.
+            valid_mode=(
+                (self.origin is Origin.USER
+                 and self.execution_policy is Policy.FOREGROUND_ASYNC
+                 and self.priority_class is Priority.P1)
+                or
+                (self.origin is Origin.GOAL
+                 and self.execution_policy is Policy.BACKGROUND_RESUMABLE
+                 and self.priority_class is Priority.P2)
+            )
             if (
                 self.task_id is None
-                or self.origin is not Origin.USER
-                or self.execution_policy is not Policy.FOREGROUND_ASYNC
-                or self.priority_class is not Priority.P1
+                or not valid_mode
                 or self.effect_class is not EffectClass.READ_ONLY
                 or self.capabilities!=(SLOW_TOOL,)
                 or self.resources!={RESOURCE_KEY:1}
