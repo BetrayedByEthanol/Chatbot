@@ -503,8 +503,10 @@ def reap_invalid_background_queue(connection: Connection, *, limit: int=32) -> i
 
     A stale Task deadline/version, ProcedureRun/Step grant, revoked selected
     epoch or invalidated stage cannot ever be executed on its pinned approval.
-    This does not touch RUNNING attempts (P0 lease/recovery owns those) and
-    does not silently mutate Task or Procedure owner state.
+    A generic P0 reaper may already have SUSPENDED a never-claimed queued
+    P2 operation; that zero-attempt PREPARED record is safe to block as well.
+    Claimed SUSPENDED/RUNNING work is left to P4-05 recovery. This never
+    silently mutates Task or Procedure owner state.
     """
     require_idle(connection)
     if not 1<=limit<=128:
@@ -523,7 +525,10 @@ def reap_invalid_background_queue(connection: Connection, *, limit: int=32) -> i
                    WHERE o.operation_type=%s AND o.origin='GOAL'
                      AND o.priority_class='P2'
                      AND o.execution_policy='BACKGROUND_RESUMABLE'
-                     AND o.status IN ('QUEUED','RETRY_WAIT')
+                     AND (o.status IN ('QUEUED','RETRY_WAIT')
+                       OR (o.status='SUSPENDED' AND o.attempt_count=0
+                           AND o.claim_generation=0
+                           AND o.effect_status='PREPARED'))
                      AND (a.operation_id IS NULL OR a.state<>'AUTHORIZED'
                        OR a.approved_background_epoch IS DISTINCT FROM o.background_epoch
                        OR a.selection_generation<>o.selection_generation
@@ -558,7 +563,10 @@ def reap_invalid_background_queue(connection: Connection, *, limit: int=32) -> i
                            claimed_at=NULL,
                            version=version+1,updated_at=clock_timestamp(),
                            last_error='P4-04: pinned Background approval revoked'
-                       WHERE operation_id=%s AND status IN ('QUEUED','RETRY_WAIT')
+                       WHERE operation_id=%s
+                         AND (status IN ('QUEUED','RETRY_WAIT')
+                           OR (status='SUSPENDED' AND attempt_count=0
+                             AND claim_generation=0 AND effect_status='PREPARED'))
                        RETURNING *""",
                     (row["operation_id"],),
                 )
