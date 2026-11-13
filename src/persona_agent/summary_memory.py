@@ -241,7 +241,22 @@ def schedule_summary(
             if end<start:
                 return None
             cur.execute(
-                """SELECT j.*,o.status AS operation_status
+                """SELECT j.*,o.status AS operation_status,
+                          (j.background_handover_epoch IS NOT NULL
+                            AND NOT EXISTS (
+                               SELECT 1 FROM persona_selection s
+                               JOIN background_preparation_epochs e
+                                 ON e.user_id=s.user_id
+                                AND e.instance_id=s.instance_id
+                                AND e.background_epoch=s.background_epoch
+                                AND e.selection_generation=s.generation
+                               WHERE s.user_id=j.user_id
+                                 AND s.instance_id=j.instance_id
+                                 AND s.generation=j.expected_generation
+                                 AND s.mode='BACKGROUND'
+                                 AND s.background_epoch=j.background_handover_epoch
+                                 AND e.status='PENDING'
+                            )) AS revoked_handover
                    FROM conversation_summary_jobs j
                    LEFT JOIN operations o ON o.operation_id=j.operation_id
                    WHERE j.conversation_id=%s AND j.start_sequence=%s
@@ -251,27 +266,33 @@ def schedule_summary(
                 (conversation_id,start,expected_generation),
             )
             staged=cur.fetchone()
+            # An obsolete handover is not an active admission slot. Retain
+            # its immutable job and P0 operation for forensic recovery, but
+            # create a new attempt (and ID) for the current Background epoch
+            # or for eligible ordinary Foreground summarization. The worker's
+            # epoch fence remains responsible for rejecting the old attempt.
+            revoked=staged is not None and staged["revoked_handover"]
             # A failed operation is terminal in P0. Never reuse its receipt:
             # only a deliberate retry can stage a *different* operation ID.
-            if staged is not None and staged["operation_status"]=="FAILED":
+            if not revoked and staged is not None and staged["operation_status"]=="FAILED":
                 if not retry_failed:
                     raise SummaryNotReady(
                         "summary operation failed; explicitly set retry_failed=True"
                     )
-            elif staged is not None and staged["operation_status"] in (
+            elif not revoked and staged is not None and staged["operation_status"] in (
                 "CANCELLED","COMPLETED","BLOCKED","OUTCOME_UNKNOWN"
             ):
                 raise StaleSummary(
                     "terminal or blocked summary operation requires operator review"
                 )
-            elif staged is not None and staged["operation_status"]=="SUSPENDED":
+            elif not revoked and staged is not None and staged["operation_status"]=="SUSPENDED":
                 raise StaleSummary(
                     "suspended summary operation must use scheduler re-admission"
                 )
             # No job, or an explicitly retried FAILED job: reserve a new
             # monotonic attempt while holding the conversation serialization
             # lock, protecting concurrent scheduling and worker recovery.
-            create_new=(staged is None or staged["operation_status"]=="FAILED")
+            create_new=(revoked or staged is None or staged["operation_status"]=="FAILED")
             if create_new:
                 admission_origin=Origin.COGNITIVE if platform else Origin.USER
                 admission_attempt=(
