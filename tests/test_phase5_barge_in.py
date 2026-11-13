@@ -24,10 +24,15 @@ from test_phase5_speech_output import (
 )
 
 
-def command(response_id, instance, *, channel="browser:voice",
+def command(dsn, response_id, instance, *, channel="browser:voice",
             generation=1, utterance=None, reason="USER_SPEECH"):
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        conversation_id=conn.execute(
+            "SELECT conversation_id FROM conversation_responses WHERE response_id=%s",
+            (response_id,),
+        ).fetchone()[0]
     return SpeechInterruptCommand(
-        response_id=response_id,instance_id=instance,
+        response_id=response_id,conversation_id=conversation_id,instance_id=instance,
         expected_generation=generation,output_channel_id=channel,
         input_channel_id="authenticated-microphone",
         reason=reason,
@@ -47,7 +52,7 @@ def test_stop_preserves_played_clip_and_fences_unplayed_clips(dsn):
         call(dsn,acknowledge_speech_clip,actor(user),ack(clips[0],status))
     call(dsn,acknowledge_speech_clip,actor(user),ack(clips[1],"QUEUED"))
     call(dsn,acknowledge_speech_clip,actor(user),ack(clips[1],"STARTED"))
-    stopped=command(reply.response_id,instance)
+    stopped=command(dsn,reply.response_id,instance)
     result=call(dsn,interrupt_speech_response,actor(user),stopped)
     assert result.interrupted_clips==2 and not result.replayed
     repeated=call(dsn,interrupt_speech_response,actor(user),stopped)
@@ -84,7 +89,7 @@ def test_stop_preserves_played_clip_and_fences_unplayed_clips(dsn):
 
 def test_barrier_fences_inflight_tts_even_if_host_cannot_cancel_provider(dsn):
     user,instance,reply=response(dsn,text="Short.")
-    cmd=command(reply.response_id,instance)
+    cmd=command(dsn,reply.response_id,instance)
     class DelayedTTS(FakeSynthesizer):
         def synthesize_wav(self,text):
             call(dsn,interrupt_speech_response,actor(user),cmd)
@@ -125,7 +130,7 @@ def test_host_cancellation_avoids_late_clip_generation(dsn):
 def test_stop_before_any_audio_persists_barrier(dsn):
     user,instance,reply=response(dsn)
     result=call(dsn,interrupt_speech_response,actor(user),
-                command(reply.response_id,instance))
+                command(dsn,reply.response_id,instance))
     assert result.interrupted_clips==0
     with pytest.raises(SpeechDeliveryConflict):
         call(dsn,prepare_speech_clip,actor(user),clip_command(reply.response_id))
@@ -136,19 +141,19 @@ def test_wrong_persona_channel_and_origin_cannot_stop_playback(dsn):
     clip=call(dsn,prepare_speech_clip,actor(user),clip_command(reply.response_id))
     with pytest.raises(PermissionDenied):
         call(dsn,interrupt_speech_response,actor(user),
-             command(reply.response_id,uuid4()))
+             command(dsn,reply.response_id,uuid4()))
     with pytest.raises(PermissionDenied):
         call(dsn,interrupt_speech_response,actor(user),
-             command(reply.response_id,instance,channel="another:channel"))
+             command(dsn,reply.response_id,instance,channel="another:channel"))
     stranger,_=seed(dsn)
     with pytest.raises(PermissionDenied):
         call(dsn,interrupt_speech_response,actor(stranger),
-             command(reply.response_id,instance))
-    valid=command(reply.response_id,instance)
+             command(dsn,reply.response_id,instance))
+    valid=command(dsn,reply.response_id,instance)
     call(dsn,interrupt_speech_response,actor(user),valid)
     with pytest.raises(SpeechDeliveryConflict):
         call(dsn,interrupt_speech_response,actor(user),
-             command(reply.response_id,instance))
+             command(dsn,reply.response_id,instance))
     assert clip.status=="GENERATED"
 
 
@@ -159,7 +164,7 @@ def test_old_selected_persona_cannot_interrupt_new_generation(dsn):
         expected_generation=1,idempotency_key=str(uuid4())))
     with pytest.raises(StaleSelection):
         call(dsn,interrupt_speech_response,actor(user),
-             command(reply.response_id,instance))
+             command(dsn,reply.response_id,instance))
 
 
 def test_delivery_before_interruption_cannot_be_revoked(dsn):
@@ -169,7 +174,7 @@ def test_delivery_before_interruption_cannot_be_revoked(dsn):
         call(dsn,acknowledge_speech_clip,actor(user),ack(clip,status))
     with pytest.raises(SpeechDeliveryConflict,match="already delivered"):
         call(dsn,interrupt_speech_response,actor(user),
-             command(reply.response_id,instance))
+             command(dsn,reply.response_id,instance))
 
 
 def test_live_barge_in_produces_one_user_turn_without_marking_tts_heard(dsn):
@@ -246,7 +251,7 @@ def test_live_barge_in_produces_one_user_turn_without_marking_tts_heard(dsn):
 def test_competing_stop_commands_create_only_one_barrier(dsn):
     user,instance,reply=response(dsn)
     clip=call(dsn,prepare_speech_clip,actor(user),clip_command(reply.response_id))
-    cmd=command(reply.response_id,instance)
+    cmd=command(dsn,reply.response_id,instance)
     with ThreadPoolExecutor(max_workers=2) as pool:
         pending=[
             pool.submit(call,dsn,interrupt_speech_response,actor(user),cmd)
