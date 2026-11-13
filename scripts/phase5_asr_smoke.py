@@ -54,6 +54,10 @@ def main(argv=None) -> int:
                 sequence=number, pcm16=pcm,
                 captured_at=start + timedelta(milliseconds=20 * number),
             ))
+            # NO_SPEECH is terminal. Stop consuming an overlong silent WAV
+            # before the next frame could raise on this closed session.
+            if session.status is StreamStatus.NO_SPEECH:
+                break
             if request is not None:
                 last_request = request
                 if request.status == "FINAL":
