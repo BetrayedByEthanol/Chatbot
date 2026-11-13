@@ -116,7 +116,7 @@ class ProcedureAdaptationView(BaseModel):
     parameters: dict[str, ParameterValue]
     step_text_overrides: dict[str, str]
     reason: str
-    status: Literal["PROPOSED", "APPLIED", "REJECTED"]
+    status: Literal["PROPOSED", "STALE", "APPLIED", "REJECTED"]
     applied_revision: int | None
 
 class ProcedureExperienceView(BaseModel):
