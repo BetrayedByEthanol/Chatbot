@@ -313,6 +313,8 @@ def test_supersession_prevents_stale_proposals_and_accepted_revision(dsn):
     history=call(dsn,read_procedure_evaluations,actor(user),instance,run)
     assert [r.evaluation_revision for r in history]==[2,1]
     assert history[0].supersedes_evaluation_id==first.evaluation_id
+    assert call(dsn,read_procedure_adaptation,actor(user),instance,
+                proposal.proposal_id).status=="STALE"
     with pytest.raises(VersionConflict,match="superseded"):
         call(dsn,propose_procedure_adaptation,actor(user),proposal_command(
             dsn,user,instance,conv,first.evaluation_id,variant,1,
@@ -324,6 +326,12 @@ def test_supersession_prevents_stale_proposals_and_accepted_revision(dsn):
         ))
     assert call(dsn,read_personalized_approach,actor(user),instance,variant
                 ).revision==1
+    dismissed=call(dsn,decide_procedure_adaptation,actor(user),decide_command(
+        dsn,user,instance,conv,proposal.proposal_id,1,"REJECT",
+    ))
+    assert dismissed.action=="ADAPTATION_REJECTED"
+    assert call(dsn,read_procedure_adaptation,actor(user),instance,
+                proposal.proposal_id).status=="REJECTED"
 
 
 def test_concurrent_evaluation_requires_exact_previous_revision(dsn):
