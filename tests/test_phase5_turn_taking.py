@@ -102,6 +102,57 @@ def test_speech_without_playback_never_interrupts_response():
     assert not c.cancellation.is_set()
 
 
+
+@pytest.mark.parametrize("mode", [
+    EchoPolicy.VERIFIED_AEC,
+    EchoPolicy.BLOCK_MIC_DURING_OUTPUT,
+])
+def test_speech_accepted_before_first_clip_prevents_playback_start(mode):
+    c = controller(mode)
+    for n in range(3):
+        observed = c.accept_microphone_frame(frame(n))
+    assert observed.speech_started
+    assert c.session.status is StreamStatus.RECORDING
+    assert c.set_playback_active(True) is True
+    assert c.barge_in_detected and c.cancellation.is_set()
+    command = c.interrupt_command()
+    assert command.reason == "USER_SPEECH"
+    assert command.utterance_id == c.session.utterance_id
+    assert c._playback_active is False  # attempted start was refused
+    with pytest.raises(RuntimeError, match="must never restart"):
+        c.set_playback_active(True)
+    # The utterance must remain eligible for ASR; no guard may discard it.
+    for n in range(3, 8):
+        result = c.accept_microphone_frame(frame(n, SILENCE))
+    assert result.decode_request is not None
+    assert result.decode_request.status == "FINAL"
+
+
+def test_speech_in_interclip_gap_blocks_playback_resume():
+    c = controller(EchoPolicy.VERIFIED_AEC, guard=0)
+    assert c.set_playback_active(True) is False
+    assert c.set_playback_active(False) is False
+    for n in range(3):
+        c.accept_microphone_frame(frame(n))
+    assert c.session.status is StreamStatus.RECORDING
+    assert c.set_playback_active(True) is True
+    assert c.cancellation.is_set()
+    assert c._playback_active is False
+    with pytest.raises(RuntimeError, match="must never restart"):
+        c.set_playback_active(True)
+
+
+def test_final_pending_user_utterance_blocks_output_restart():
+    c = controller(EchoPolicy.VERIFIED_AEC)
+    for n in range(3):
+        c.accept_microphone_frame(frame(n))
+    request = c.session.finish()
+    assert request is not None and request.status == "FINAL"
+    assert c.session.status is StreamStatus.FINAL_PENDING
+    assert c.set_playback_active(True) is True
+    assert c.interrupt_command().utterance_id == c.session.utterance_id
+
+
 def test_frame_source_order_and_timestamp_are_checked_after_suppression():
     c=controller()
     c.set_playback_active(True)
