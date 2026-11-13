@@ -79,6 +79,7 @@ def test_verified_aec_allows_early_barge_in_before_asr_final():
     assert events[-1].decode_request is None
     command=c.interrupt_command()
     assert command.reason=="USER_SPEECH"
+    assert command.conversation_id==c.session.source.conversation_id
     assert command.utterance_id==c.session.utterance_id
     assert command.input_channel_id==c.session.source.channel_id
     assert command.output_channel_id==c.target.channel_id
