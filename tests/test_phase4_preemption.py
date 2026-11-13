@@ -10,7 +10,7 @@ from persona_agent.lifecycle import (
 from persona_agent.operation_contracts import StaleOperation
 from persona_agent.operation_control import (
     acknowledge_suspend,request_background_suspension,reap_stale_operations,
-    heartbeat_operation,complete_operation,
+    complete_operation,cancel_operation,acknowledge_cancel,CancelOperationCommand,
 )
 from persona_agent.operation_scheduler import claim_operation
 from persona_agent.procedure_agent_state import (
@@ -132,3 +132,24 @@ def test_preemption_requires_platform_scope_and_revocation(dsn,monkeypatch):
     _return(dsn,user,instance)
     assert call(dsn,request_background_suspension,preemptor,op)
     call(dsn,acknowledge_suspend,lease)
+
+
+def test_user_cancellation_takes_precedence_over_pending_p2_suspension(dsn,monkeypatch):
+    user,instance,_,_,op=_admitted(dsn,monkeypatch)
+    lease=_lease(dsn)
+    _return(dsn,user,instance)
+    preemptor=TrustedPlatformActor(user_id=user,source_id="background.preemption")
+    assert call(dsn,request_background_suspension,preemptor,op)
+    version=check(dsn,"SELECT version FROM operations WHERE operation_id=%s",(op,))[0][0]
+    status=call(dsn,cancel_operation,user_actor(user),CancelOperationCommand(
+        operation_id=op,expected_version=version,idempotency_key=uuid4().hex,
+    ))
+    assert status.value=="CANCEL_REQUESTED"
+    call(dsn,reap_stale_operations)
+    assert check(dsn,"SELECT status FROM operations WHERE operation_id=%s",(op,))==[("CANCEL_REQUESTED",)]
+    with pytest.raises(StaleOperation):
+        call(dsn,acknowledge_suspend,lease)
+    call(dsn,acknowledge_cancel,lease)
+    assert check(dsn,
+        "SELECT status FROM operations WHERE operation_id=%s",(op,),
+    )==[("CANCELLED",)]

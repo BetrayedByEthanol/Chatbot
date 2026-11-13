@@ -773,7 +773,10 @@ def reap_stale_operations(connection: Connection, *, limit: int=100) -> int:
                     and row["effect_status"]=="PREPARED"
                     and not expired and not deadline_passed and not input_invalid
                 )
-                if cooperative and row["status"]=="SUSPEND_REQUESTED":
+                if cooperative and row["status"] in ("SUSPEND_REQUESTED","CANCEL_REQUESTED"):
+                    # A live lease still represents executing work. User
+                    # cancellation wins, but must also be acknowledged at a
+                    # safe boundary (or recovered after lease expiry).
                     continue
                 if (cooperative and row["status"]=="RUNNING"
                     and (revoked or epoch_invalid)):
