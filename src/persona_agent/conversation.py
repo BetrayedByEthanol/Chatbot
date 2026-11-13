@@ -17,6 +17,7 @@ from .conversation_contracts import (
     StaleConversation, TextInputCommand, TextInputResult, TextModelGateway,
     TextResponseResult,
 )
+from .multimodal_contracts import VoiceInputProvenance
 from .operation_contracts import require_idle
 from .runtime import IdempotencyConflict, PermissionDenied, StaleSelection, _fingerprint
 
@@ -102,7 +103,8 @@ def _event(cursor, *, user_id: UUID, instance_id: UUID, conversation_id: UUID,
 
 
 def ingest_text(connection: Connection, actor: TrustedActor,
-                command: TextInputCommand) -> TextInputResult:
+                command: TextInputCommand, *,
+                provenance: VoiceInputProvenance | None = None) -> TextInputResult:
     """Commit user text, a receipt, event and outbox before model inference.
 
     A duplicate authenticated command replays its original turn even after a
@@ -110,6 +112,10 @@ def ingest_text(connection: Connection, actor: TrustedActor,
     """
     require_idle(connection)
     _require_actor(actor)
+    if provenance is not None and type(provenance) is not VoiceInputProvenance:
+        raise TypeError("voice provenance must be a validated host contract")
+    # Do not include optional metadata in the existing text command fingerprint:
+    # historical idempotency receipts must remain valid across the upgrade.
     fingerprint = _fingerprint(command)
     receipt_id = uuid4()
     with connection.transaction():
@@ -210,15 +216,24 @@ def ingest_text(connection: Connection, actor: TrustedActor,
                 """,
                 (turn_id,command.conversation_id),
             )
+            detail = {
+                "turn_id":str(turn_id),"conversation_id":str(command.conversation_id),
+                "sequence":seq,
+            }
+            if provenance is not None:
+                detail.update({
+                    "input_modality":"VOICE",
+                    "utterance_id":str(provenance.utterance_id),
+                    "channel_id":provenance.channel_id,
+                    "captured_at":provenance.captured_at.isoformat(),
+                    "capture_time_basis":"SOURCE_REPORTED",
+                })
             event_id = _event(
                 cursor,user_id=actor.user_id,instance_id=command.instance_id,
                 conversation_id=command.conversation_id,
                 event_type="conversation.user_text.received.v1",
                 source_id=actor.source_id,trust_level="AUTHENTICATED_USER",
-                detail={
-                    "turn_id":str(turn_id),"conversation_id":str(command.conversation_id),
-                    "sequence":seq,
-                },
+                detail=detail,
                 correlation_id=receipt_id,
             )
             result = TextInputResult(
