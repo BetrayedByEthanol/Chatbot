@@ -1,0 +1,43 @@
+"""P5-04 barge-in, echo policy, and scoped durable speech-stop contracts."""
+
+from typing import Literal
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+
+class SpeechInterruptCommand(BaseModel):
+    """Trusted host constructs this after stopping audible output immediately."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    response_id: UUID
+    instance_id: UUID
+    expected_generation: int = Field(ge=1)
+    output_channel_id: str = Field(min_length=1,max_length=128)
+    input_channel_id: str = Field(min_length=1,max_length=128)
+    reason: Literal["USER_SPEECH","CLIENT_STOP"]
+    utterance_id: UUID | None = None
+
+    @model_validator(mode="after")
+    def require_user_utterance(self):
+        if (self.reason == "USER_SPEECH") != (self.utterance_id is not None):
+            raise ValueError("user-speech interruption requires utterance provenance")
+        return self
+
+
+class SpeechInterruptResult(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    interruption_id: UUID
+    response_id: UUID
+    interrupted_clips: int = Field(ge=0,le=64)
+    replayed: bool = False
+
+
+class TurnFrameResult(BaseModel):
+    """No auth tokens or PCM bytes flow through the interruption signal."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    suppressed_echo_risk: bool = False
+    speech_started: bool = False
+    interrupt_requested: bool = False
+    decode_request: object | None = Field(default=None,exclude=True)
