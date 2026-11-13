@@ -18,7 +18,10 @@ from .operation_contracts import (
     require_claim, require_current_authority, require_idle, StaleOperation,
 )
 from .operation_scheduler import claim_operation, enqueue_operation
-from .operation_control import complete_operation, fail_operation
+from .operation_control import (
+    complete_operation, fail_operation, request_background_suspension,
+    acknowledge_suspend, acknowledge_cancel,
+)
 from .procedure_agent_contracts import (
     AgentStepAuthorizationResult, AgentStepReconcileResult,
     AuthorizeAgentStepCommand, AuthorizeBackgroundAgentStepCommand,
@@ -245,6 +248,47 @@ def _read_authorized_execution(cur, lease):
     return item["instruction"],stage["max_words"]
 
 
+
+def _settle_preempted_background_attempt(connection: Connection, lease) -> bool:
+    """Stop P2 at a safe boundary without accepting a revoked tool result.
+
+    The P4-04 text tool is synchronous and cannot be interrupted mid-call.
+    This runs before and after that call. P1 cancellation behavior is left
+    unchanged by this Phase 4-only increment.
+    """
+    if lease.background_epoch is None:
+        return False
+    request_background_suspension(
+        connection,TrustedPlatformActor(
+            user_id=lease.user_id,source_id="background.preemption",
+        ),lease.operation_id,
+    )
+    with connection.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            """SELECT status FROM operations WHERE operation_id=%s
+               AND user_id=%s AND instance_id=%s
+               AND claim_generation=%s AND worker_id=%s""",
+            (lease.operation_id,lease.user_id,lease.instance_id,
+             lease.claim_generation,lease.worker_id),
+        )
+        row=cur.fetchone()
+    if row is None:
+        return True
+    if row["status"]=="SUSPEND_REQUESTED":
+        try:
+            acknowledge_suspend(connection,lease)
+        except StaleOperation:
+            pass  # The P0 reaper now owns an expired/stale attempt.
+        return True
+    if row["status"]=="CANCEL_REQUESTED":
+        try:
+            acknowledge_cancel(connection,lease)
+        except StaleOperation:
+            pass
+        return True
+    return row["status"]!="RUNNING"
+
+
 def run_one_agent_step(connection: Connection, *, worker_id: str,
                        executor=analyze_text, lease_seconds: int=120):
     """Claim/read under locks, run registered read-only code OUTSIDE locks."""
@@ -263,6 +307,8 @@ def run_one_agent_step(connection: Connection, *, worker_id: str,
     except (VersionConflict,PermissionDenied,StaleOperation):
         # No invocation happened; stale authority must never run the tool.
         return lease
+    if _settle_preempted_background_attempt(connection,lease):
+        return lease
     try:
         result=executor(instruction,max_words)
         if not isinstance(result,str) or not 1<=len(result)<=12000:
@@ -274,6 +320,8 @@ def run_one_agent_step(connection: Connection, *, worker_id: str,
             )
         except (VersionConflict,PermissionDenied,StaleOperation):
             pass
+        return lease
+    if _settle_preempted_background_attempt(connection,lease):
         return lease
     with connection.transaction():
         connection.execute(

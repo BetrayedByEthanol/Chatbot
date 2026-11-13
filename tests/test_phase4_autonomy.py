@@ -212,7 +212,7 @@ def test_foreground_return_during_readonly_tool_fences_p2_result(dsn,monkeypatch
     assert lease.operation_id==approved.operation_id
     assert check(dsn,
         "SELECT status FROM operations WHERE operation_id=%s",(approved.operation_id,),
-    )==[("RUNNING",)]
+    )==[("SUSPENDED",)]
     assert check(dsn,
         "SELECT status FROM procedure_run_steps WHERE run_id=%s AND step_id='inspect'",
         (run,),
