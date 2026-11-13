@@ -268,10 +268,13 @@ def decide_procedure_adaptation(connection: Connection, actor: TrustedActor,
             raise VersionConflict("proposal pinned revision is no longer current")
         applied_revision=None
         if command.decision=="APPLY":
+            # Serialize with new outcome assessments before reading the
+            # latest evaluation. Checking the head first and only then
+            # waiting for the run lock could approve a superseded report.
+            run=_run(cur,actor,command.instance_id,proposal["run_id"],lock=False)
             evaluation=_latest_evaluation(
                 cur,actor,command.instance_id,proposal["run_id"],
             )
-            run=_run(cur,actor,command.instance_id,proposal["run_id"],lock=False)
             if (evaluation is None or evaluation["evaluation_id"]!=proposal["evaluation_id"]
                 or run["version"]!=evaluation["run_version"]):
                 raise VersionConflict("procedure outcome evidence changed since proposal")
