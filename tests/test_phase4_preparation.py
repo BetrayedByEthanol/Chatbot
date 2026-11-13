@@ -946,3 +946,329 @@ def test_revoked_full_tail_does_not_suppress_ordinary_auto_summary(dsn):
         "SELECT summary_watermark FROM conversations WHERE conversation_id=%s",
         (conversation,),
     )==[(3,)]
+
+
+# P4-03 — ALIGN-01 and atomic P0 readiness ----------------------------
+
+from persona_agent.operation_scheduler import _eligible_for_policy
+
+
+def advance_to_readiness(dsn,user,instance,epoch=1,limit=32):
+    for _ in range(limit):
+        step=tick(dsn,user,instance,epoch)
+        if step.stage in ("READY","BLOCKED"):
+            return step
+        assert step.stage=="ALIGNMENT_PENDING",step
+    pytest.fail("ALIGN-01 did not complete within bounded scan")
+
+
+def test_align01_certifies_no_history_but_does_not_authorize_generic_p2(dsn):
+    user,instance,_=seed(dsn)
+    enter(dsn,user,instance)
+    assert tick(dsn,user,instance).stage=="CRITICAL_PENDING"
+    assert tick(dsn,user,instance).stage=="ALIGNMENT_PENDING"
+    certified=advance_to_readiness(dsn,user,instance)
+    assert (certified.stage,certified.state)==("READY","READY")
+    assert advance_to_readiness(dsn,user,instance).state=="READY"
+    assert check(dsn,
+        """SELECT checked_tasks,eligible_tasks,blocked_tasks,review_tasks
+           FROM background_alignment_certificates WHERE user_id=%s""",(user,),
+    )==[(0,0,0,0)]
+    assert check(dsn,
+        "SELECT count(*) FROM background_ready_epochs WHERE user_id=%s",(user,),
+    )==[(1,)]
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        from psycopg.rows import dict_row
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute("SELECT * FROM persona_selection WHERE user_id=%s",(user,))
+            selected=cur.fetchone()
+            # A taskless GOAL-origin operation cannot exploit a READY row.
+            assert not _eligible_for_policy(cur,{
+                "instance_id":instance,"selection_generation":1,
+                "execution_policy":"BACKGROUND_RESUMABLE",
+                "background_epoch":selected["background_epoch"],
+                "user_id":user,"task_id":None,"input_versions":{},
+            },selected)
+
+
+def _close_fixture_turns(dsn,monkeypatch):
+    """Keep P3's genuine approved commands and deliver each response in order.
+
+    Replaying old unanswered turns after a newer turn is intentionally denied
+    by Conversation; wrap the test factories instead of bypassing that guard.
+    """
+    call(dsn,configure_resource_pool,"cognition.llm",
+         capacity_units=3,p0_reserved_units=1)
+    import test_phase3_procedures as procedures
+    import test_phase3_runs as runs
+    import test_phase3_tasks as tasks
+    for module in (procedures,runs,tasks):
+        original=module.turn
+        def close_turn(*args,_original=original,**kwargs):
+            result=_original(*args,**kwargs)
+            response=call(
+                dsn,respond_to_text,user_actor(args[1]),result.turn_id,FastResponse(),
+            )
+            call(dsn,acknowledge_text_delivery,user_actor(args[1]),response.response_id)
+            return result
+        monkeypatch.setattr(module,"turn",close_turn)
+
+
+def test_align01_unaffected_approved_agent_task_is_eligible_other_needs_review(dsn,monkeypatch):
+    _close_fixture_turns(dsn,monkeypatch)
+    # Real P3 authorized records, not fabricated agent permissions.
+    from test_phase3_agent_operations import staged
+    from test_phase3_tasks import make_task
+    from persona_agent.operation_contracts import Policy
+
+    user,instance,conv,goal,task,run=staged(dsn,configured=False)
+    # Creating a second task under the same goal does not invalidate the
+    # first's purpose, but the second has no approved procedure run.
+    extra,_,_=make_task(
+        dsn,user,instance,conv,goal,2,
+        executor="AGENT",capability="text.statistics.v1",
+    )
+    entered=call(dsn,enter_background,user_actor(user),EnterBackgroundCommand(
+        instance_id=instance,expected_generation=1,expected_presence_revision=0,
+        reason=BackgroundReason.EXPLICIT_DEPARTURE,idempotency_key=str(uuid4()),
+    ))
+    assert entered.background_epoch==1
+    drive_to_critical(dsn,user,instance,limit=72)
+    assert drive_critical(dsn,user,instance,limit=40).stage=="ALIGNMENT_PENDING"
+    done=advance_to_readiness(dsn,user,instance)
+    assert done.stage=="READY"
+    results=check(dsn,
+        """SELECT task_id,decision,reason FROM background_alignment_task_checks
+           WHERE user_id=%s AND background_epoch=1 ORDER BY task_id""",(user,),
+    )
+    assert {x[0]:(x[1],x[2]) for x in results}=={
+        task:("ELIGIBLE","VALIDATED"),
+        extra:("REVIEW","MISSING_APPROVED_RUN"),
+    }
+    assert check(dsn,
+        """SELECT checked_tasks,eligible_tasks,blocked_tasks,review_tasks
+           FROM background_alignment_certificates WHERE user_id=%s""",(user,),
+    )==[(2,1,0,1)]
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        from psycopg.rows import dict_row
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute("SELECT * FROM persona_selection WHERE user_id=%s",(user,))
+            selection=cur.fetchone()
+            base={
+                "instance_id":instance,"selection_generation":1,
+                "execution_policy":Policy.BACKGROUND_RESUMABLE.value,
+                "background_epoch":None,"user_id":user,
+                "input_versions":{"task":1},
+            }
+            assert _eligible_for_policy(cur,{**base,"task_id":task},selection)
+            assert not _eligible_for_policy(cur,{**base,"task_id":extra},selection)
+            assert not _eligible_for_policy(cur,{**base,"task_id":task,
+                "input_versions":{"task":999}},selection)
+
+
+def test_align01_return_mid_scan_revokes_epoch_before_ready(dsn,monkeypatch):
+    _close_fixture_turns(dsn,monkeypatch)
+    from test_phase3_tasks import make_goal,make_task
+    user,instance,_=seed(dsn)
+    conv=uuid4()
+    goal=make_goal(dsn,user,instance,conv)
+    task,_,_=make_task(
+        dsn,user,instance,conv,goal,1,
+        executor="AGENT",capability="text.statistics.v1",
+    )
+    enter(dsn,user,instance)
+    drive_to_critical(dsn,user,instance)
+    assert drive_critical(dsn,user,instance).stage=="ALIGNMENT_PENDING"
+    assert tick(dsn,user,instance).state=="SCANNING_ALIGNMENT"
+    call(dsn,record_primary_activity,user_actor(user),PrimaryActivityCommand(
+        instance_id=instance,expected_generation=1,idempotency_key=str(uuid4()),
+    ))
+    with pytest.raises(StaleBackgroundPreparation):
+        tick(dsn,user,instance)
+    assert check(dsn,
+        "SELECT count(*) FROM background_alignment_certificates WHERE user_id=%s",
+        (user,),
+    )==[(0,)]
+    assert check(dsn,
+        "SELECT count(*) FROM background_ready_epochs WHERE user_id=%s",
+        (user,),
+    )==[(0,)]
+
+
+def test_align01_stale_owner_version_blocks_certificate(dsn,monkeypatch):
+    _close_fixture_turns(dsn,monkeypatch)
+    from test_phase3_tasks import make_goal,make_task
+    user,instance,_=seed(dsn)
+    conv=uuid4()
+    goal=make_goal(dsn,user,instance,conv)
+    task,_,_=make_task(
+        dsn,user,instance,conv,goal,1,
+        executor="AGENT",capability="text.statistics.v1",
+    )
+    enter(dsn,user,instance)
+    drive_to_critical(dsn,user,instance)
+    assert drive_critical(dsn,user,instance).stage=="ALIGNMENT_PENDING"
+    assert tick(dsn,user,instance).state=="SCANNING_ALIGNMENT"
+    # Simulate a concurrently committed owner revision without bypassing the
+    # coordinator's selection/epoch gate, testing stale projection fencing.
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        conn.execute(
+            "UPDATE goal_tasks SET version=version+1 WHERE task_id=%s",(task,),
+        )
+    result=tick(dsn,user,instance)
+    assert (result.stage,result.state)==("BLOCKED","REQUIRES_OPERATOR")
+    assert check(dsn,
+        "SELECT count(*) FROM background_ready_epochs WHERE user_id=%s",
+        (user,),
+    )==[(0,)]
+
+
+def test_align01_pending_instruction_never_certifies_ready(dsn):
+    user,instance,_=seed(dsn)
+    conv=uuid4()
+    add_closed_turn(dsn,user,instance,conv,
+                    "Do not run autonomous background tasks.")
+    enter(dsn,user,instance)
+    drive_to_critical(dsn,user,instance)
+    assert drive_critical(dsn,user,instance).state=="WAITING_OWNER"
+    assert check(dsn,
+        "SELECT count(*) FROM background_alignment_certificates WHERE user_id=%s",
+        (user,),
+    )==[(0,)]
+
+
+def test_align01_changed_goal_strategy_needs_new_method_approval(dsn,monkeypatch):
+    _close_fixture_turns(dsn,monkeypatch)
+    from test_phase3_agent_operations import staged
+    from test_phase3_procedures import turn as explicit_turn
+    from persona_agent.goal_contracts import (
+        ProposeGoalStrategyCommand,SelectGoalStrategyCommand,
+    )
+    from persona_agent.goal_state import propose_goal_strategy,select_goal_strategy
+
+    user,instance,conv,goal,task,run=staged(dsn,configured=False)
+    from test_phase3_procedures import variant_command
+    from test_phase3_runs import start_command
+    from persona_agent.procedure_state import create_personalized_approach
+    from persona_agent.procedure_run_state import start_procedure_run
+    template=check(dsn,
+        "SELECT template_id FROM procedure_runs WHERE run_id=%s",(run,),
+    )[0][0]
+    # A generic user-approved variant is legitimate for normal guidance,
+    # but it must not silently satisfy a later selected Goal strategy.
+    private=variant_command(dsn,user,instance,conv,template,1)
+    call(dsn,create_personalized_approach,user_actor(user),private)
+    pinned=start_command(
+        dsn,user,instance,conv,template,variant=private.variant_id,
+        revision=1,task=task,
+    )
+    call(dsn,start_procedure_run,user_actor(user),pinned)
+    candidate=uuid4()
+    source=explicit_turn(dsn,user,instance,conv,
+                         "Consider a different way to prepare my meals.")
+    proposed=ProposeGoalStrategyCommand(
+        instance_id=instance,expected_generation=1,idempotency_key=str(uuid4()),
+        conversation_id=conv,evidence_turn_id=source.turn_id,
+        evidence_quote="Consider a different way to prepare my meals.",
+        goal_id=goal,strategy_id=candidate,
+        title="Alternative meal preparation",
+        approach="Use ingredients prepared on weekends for weeknight meals",
+        suitability_note="May better fit the user's available time",
+    )
+    call(dsn,propose_goal_strategy,user_actor(user),proposed)
+    request=explicit_turn(dsn,user,instance,conv,
+                          "Select the new strategy for my goal.")
+    selected=SelectGoalStrategyCommand(
+        instance_id=instance,expected_generation=1,idempotency_key=str(uuid4()),
+        conversation_id=conv,evidence_turn_id=request.turn_id,
+        evidence_quote="Select the new strategy for my goal.",
+        goal_id=goal,strategy_id=candidate,expected_goal_version=2,
+    )
+    approval=explicit_turn(dsn,user,instance,conv,
+                           goal_action_approval_phrase(selected))
+    call(dsn,select_goal_strategy,user_actor(user),
+         selected.model_copy(update={"approval_turn_id":approval.turn_id}))
+    call(dsn,enter_background,user_actor(user),EnterBackgroundCommand(
+        instance_id=instance,expected_generation=1,expected_presence_revision=0,
+        reason=BackgroundReason.EXPLICIT_DEPARTURE,idempotency_key=str(uuid4()),
+    ))
+    drive_to_critical(dsn,user,instance,limit=72)
+    assert drive_critical(dsn,user,instance,limit=40).stage=="ALIGNMENT_PENDING"
+    assert advance_to_readiness(dsn,user,instance).stage=="READY"
+    assert check(dsn,
+        """SELECT decision,reason FROM background_alignment_task_checks
+           WHERE user_id=%s AND task_id=%s""",(user,task),
+    )==[("REVIEW","STRATEGY_CHANGED")]
+    assert check(dsn,
+        "SELECT eligible_tasks,review_tasks FROM background_alignment_certificates WHERE user_id=%s",
+        (user,),
+    )==[(0,1)]
+
+
+def test_align01_paused_ancestor_blocks_descendant_agent_task(dsn,monkeypatch):
+    _close_fixture_turns(dsn,monkeypatch)
+    from test_phase3_tasks import make_task
+    from persona_agent.goal_contracts import SetGoalStatusCommand
+    from persona_agent.goal_state import set_goal_status
+
+    user,instance,_=seed(dsn)
+    conversation=uuid4()
+    root=uuid4()
+    source=add_closed_turn(dsn,user,instance,conversation,
+                           "I want healthier home dinners.")
+    root_command=CreateGoalCommand(
+        instance_id=instance,expected_generation=1,
+        idempotency_key=str(uuid4()),conversation_id=conversation,
+        evidence_turn_id=source.turn_id,
+        evidence_quote="I want healthier home dinners.",
+        goal_id=root,title="Healthy dinners",
+        desired_outcome="Cook balanced dinners",
+        success_criterion="Make a balanced dinner each week",horizon="MEDIUM",
+    )
+    approval=add_closed_turn(dsn,user,instance,conversation,
+                             goal_action_approval_phrase(root_command))
+    call(dsn,create_goal,user_actor(user),
+         root_command.model_copy(update={"approval_turn_id":approval.turn_id}))
+
+    child=uuid4()
+    source=add_closed_turn(dsn,user,instance,conversation,
+                           "Plan a smaller meal preparation goal.")
+    subgoal=CreateGoalCommand(
+        instance_id=instance,expected_generation=1,
+        idempotency_key=str(uuid4()),conversation_id=conversation,
+        evidence_turn_id=source.turn_id,
+        evidence_quote="Plan a smaller meal preparation goal.",
+        goal_id=child,parent_goal_id=root,expected_parent_version=1,
+        title="Prepare ingredients",desired_outcome="Cut vegetables",
+        success_criterion="Ingredients prepared on Sundays",horizon="SHORT",
+    )
+    approval=add_closed_turn(dsn,user,instance,conversation,
+                             goal_action_approval_phrase(subgoal))
+    call(dsn,create_goal,user_actor(user),
+         subgoal.model_copy(update={"approval_turn_id":approval.turn_id}))
+    task,_,_=make_task(
+        dsn,user,instance,conversation,child,1,
+        executor="AGENT",capability="text.statistics.v1",
+    )
+    paused_source=add_closed_turn(dsn,user,instance,conversation,
+                                  "Pause my goal.")
+    paused=SetGoalStatusCommand(
+        instance_id=instance,expected_generation=1,
+        idempotency_key=str(uuid4()),conversation_id=conversation,
+        evidence_turn_id=paused_source.turn_id,evidence_quote="Pause my goal.",
+        goal_id=root,expected_goal_version=2,new_status="PAUSED",
+    )
+    paused_approval=add_closed_turn(dsn,user,instance,conversation,
+                                    goal_action_approval_phrase(paused))
+    call(dsn,set_goal_status,user_actor(user),
+         paused.model_copy(update={"approval_turn_id":paused_approval.turn_id}))
+    enter(dsn,user,instance)
+    drive_to_critical(dsn,user,instance,limit=72)
+    # The explicit owner status change is already committed with source proof;
+    # no model may auto-resume the parent or its descendant.
+    assert drive_critical(dsn,user,instance,limit=40).stage=="ALIGNMENT_PENDING"
+    assert advance_to_readiness(dsn,user,instance).stage=="READY"
+    assert check(dsn,
+        """SELECT decision,reason FROM background_alignment_task_checks
+           WHERE user_id=%s AND task_id=%s""",(user,task),
+    )==[("BLOCKED","GOAL_INACTIVE")]

@@ -363,16 +363,60 @@ def _eligible_for_policy(cursor, operation: dict, selected: dict | None) -> bool
     if (operation["background_epoch"] is not None
         and operation["background_epoch"] != selected["background_epoch"]):
         return False
-    # P2 requires a real epoch-specific Background preparation barrier.
+    # P4-03: a global epoch seal alone is insufficient. Autonomous work
+    # must target an explicitly aligned task and its exact checked version.
+    if (operation["task_id"] is None
+        or operation["input_versions"].get("task") is None):
+        return False
     cursor.execute(
-        """
-        SELECT 1 FROM background_ready_epochs
-        WHERE user_id=%s AND instance_id=%s AND background_epoch=%s
-        """,
-        (
-            operation["user_id"],operation["instance_id"],
-            selected["background_epoch"],
-        ),
+        """SELECT 1 FROM background_ready_epochs ready
+           JOIN background_alignment_certificates cert
+             ON cert.user_id=ready.user_id
+            AND cert.instance_id=ready.instance_id
+            AND cert.background_epoch=ready.background_epoch
+           JOIN background_preparation_epochs epoch
+             ON epoch.user_id=cert.user_id
+            AND epoch.instance_id=cert.instance_id
+            AND epoch.background_epoch=cert.background_epoch
+           JOIN background_alignment_task_checks checked
+             ON checked.user_id=cert.user_id
+            AND checked.instance_id=cert.instance_id
+            AND checked.background_epoch=cert.background_epoch
+            AND checked.task_id=%s
+           JOIN goal_tasks task ON task.task_id=checked.task_id
+            AND task.user_id=checked.user_id
+            AND task.instance_id=checked.instance_id
+           WHERE ready.user_id=%s AND ready.instance_id=%s
+             AND ready.background_epoch=%s
+             AND cert.selection_generation=%s
+             AND epoch.selection_generation=%s
+             AND epoch.status='PENDING' AND epoch.preparation_stage='READY'
+             AND checked.decision='ELIGIBLE'
+             AND checked.task_version=task.version
+             AND checked.task_version=%s
+             AND task.status='PLANNED' AND NOT task.suspended
+             AND NOT EXISTS (
+                 SELECT 1 FROM jsonb_each_text(checked.goal_versions)
+                   AS pin(id,ver)
+                 LEFT JOIN goal_records goal
+                   ON goal.goal_id=pin.id::uuid
+                  AND goal.user_id=checked.user_id
+                  AND goal.instance_id=checked.instance_id
+                 WHERE goal.goal_id IS NULL
+                    OR goal.version<>pin.ver::bigint OR goal.status<>'ACTIVE'
+             )
+             AND EXISTS (
+                 SELECT 1 FROM procedure_runs run
+                 WHERE run.run_id=checked.procedure_run_id
+                   AND run.user_id=checked.user_id
+                   AND run.instance_id=checked.instance_id
+                   AND run.version=checked.procedure_run_version
+                   AND run.status='ACTIVE'
+             )
+           LIMIT 1""",
+        (operation["task_id"],operation["user_id"],operation["instance_id"],
+         selected["background_epoch"],selected["generation"],
+         selected["generation"],operation["input_versions"]["task"]),
     )
     return cursor.fetchone() is not None
 
