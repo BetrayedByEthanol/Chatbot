@@ -19,6 +19,40 @@ from .speech_output_state import _clip_event, _latest_response, _response
 from .turn_taking_contracts import SpeechInterruptCommand, SpeechInterruptResult
 
 
+
+def _replay_existing_interruption(cur, response, command):
+    """Return a verified historical receipt without requiring live authority.
+
+    Identical authenticated retries must survive newer conversation turns and
+    persona switches. A different origin may never appropriate the receipt.
+    """
+    cur.execute(
+        "SELECT * FROM speech_output_interruptions WHERE response_id=%s",
+        (command.response_id,),
+    )
+    prior = cur.fetchone()
+    if prior is None:
+        return None
+    if (
+        prior["user_id"] != response["user_id"]
+        or prior["instance_id"] != command.instance_id
+        or prior["selection_generation"] != command.expected_generation
+        or prior["output_channel_id"] != command.output_channel_id
+        or prior["input_channel_id"] != command.input_channel_id
+        or prior["utterance_id"] != command.utterance_id
+        or prior["reason"] != command.reason
+    ):
+        raise SpeechDeliveryConflict(
+            "speech response already interrupted by another origin"
+        )
+    return SpeechInterruptResult(
+        interruption_id=prior["interruption_id"],
+        response_id=command.response_id,
+        interrupted_clips=prior["interrupted_clips"],
+        replayed=True,
+    )
+
+
 def interrupt_speech_response(
     connection: Connection, actor: TrustedActor,
     command: SpeechInterruptCommand,
@@ -41,13 +75,25 @@ def interrupt_speech_response(
                 raise PermissionDenied("interruption cannot target another persona")
             if response["conversation_id"] != command.conversation_id:
                 raise PermissionDenied("interruption cannot target another conversation")
-            _selection(cur,actor,command.instance_id,command.expected_generation)
             if response["selection_generation"] != command.expected_generation:
                 raise StaleSelection("speech interruption belongs to old generation")
+            # A committed interruption is immutable historical evidence.
+            # Authenticated matching retries do not need current selection or
+            # dialogue freshness, which may have changed since the first ACK.
+            replay = _replay_existing_interruption(cur, response, command)
+            if replay is not None:
+                return replay
+
+            _selection(cur,actor,command.instance_id,command.expected_generation)
             cur.execute(
                 "SELECT 1 FROM conversations WHERE conversation_id=%s FOR UPDATE",
                 (response["conversation_id"],),
             )
+            # Re-read after serialization: concurrent duplicate stops may
+            # have committed while this transaction awaited the row lock.
+            replay = _replay_existing_interruption(cur, response, command)
+            if replay is not None:
+                return replay
             if not _latest_response(cur,response):
                 raise StaleSelection("speech was superseded by a newer user turn")
             cur.execute(
@@ -57,24 +103,6 @@ def interrupt_speech_response(
             )
             if cur.fetchone()["delivery_status"] != "GENERATED":
                 raise SpeechDeliveryConflict("speech response is already delivered")
-            cur.execute(
-                "SELECT * FROM speech_output_interruptions WHERE response_id=%s",
-                (command.response_id,),
-            )
-            prior=cur.fetchone()
-            if prior is not None:
-                if (prior["output_channel_id"]!=command.output_channel_id
-                        or prior["input_channel_id"]!=command.input_channel_id
-                        or prior["utterance_id"]!=command.utterance_id
-                        or prior["reason"]!=command.reason):
-                    raise SpeechDeliveryConflict(
-                        "speech response already interrupted by another origin"
-                    )
-                return SpeechInterruptResult(
-                    interruption_id=prior["interruption_id"],
-                    response_id=command.response_id,
-                    interrupted_clips=prior["interrupted_clips"],replayed=True,
-                )
             cur.execute(
                 "SELECT DISTINCT channel_id FROM speech_clips WHERE response_id=%s",
                 (command.response_id,),
