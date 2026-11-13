@@ -48,8 +48,10 @@ def main(argv=None) -> int:
             pcm = audio.readframes(FRAME_BYTES // 2)
             if not pcm:
                 break
-            if len(pcm) != FRAME_BYTES:
-                parser.error("input WAV has a truncated 20-ms final frame")
+            # A valid WAV can end between 20-ms frame boundaries. Zero-pad
+            # the final PCM16 chunk so the stream can finalize at EOF.
+            if len(pcm) < FRAME_BYTES:
+                pcm = pcm.ljust(FRAME_BYTES, b"\x00")
             request = session.accept_frame(Pcm16Frame(
                 sequence=number, pcm16=pcm,
                 captured_at=start + timedelta(milliseconds=20 * number),
