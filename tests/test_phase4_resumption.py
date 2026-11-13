@@ -65,9 +65,9 @@ def _enter_next_ready(dsn,user,instance):
         idempotency_key=uuid4().hex,
     ))
     assert result.background_epoch==3
-    drive_to_critical(dsn,user,instance,limit=96)
-    assert drive_critical(dsn,user,instance,limit=48).stage=="ALIGNMENT_PENDING"
-    assert advance_to_readiness(dsn,user,instance).stage=="READY"
+    drive_to_critical(dsn,user,instance,limit=96,epoch=3)
+    assert drive_critical(dsn,user,instance,limit=48,epoch=3).stage=="ALIGNMENT_PENDING"
+    assert advance_to_readiness(dsn,user,instance,epoch=3).stage=="READY"
 
 
 def test_explicit_renewal_restarts_from_checkpoint_in_next_ready_epoch(dsn,monkeypatch):
