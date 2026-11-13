@@ -104,8 +104,29 @@ def enqueue_operation(
         and not command.input_versions
         and command.idempotency_key==f"cognition:{command.operation_id}"
     )
-    if platform and not (is_summary_admission or is_cognitive_admission):
-        raise PermissionDenied("platform admission is restricted to staged summary or cognitive operations")
+    is_background_agent_admission=(
+        platform and actor.source_id=="background.autonomous.dispatch"
+        and command.operation_type==PROCEDURE_AGENT_OPERATION
+        and command.origin is Origin.GOAL
+        and command.execution_policy is Policy.BACKGROUND_RESUMABLE
+        and command.priority_class is Priority.P2
+        and command.effect_class is EffectClass.READ_ONLY
+        and command.capabilities==(SLOW_TOOL,)
+        and command.resources=={RESOURCE_KEY:1}
+        and command.task_id is not None
+        and not command.dependencies and command.eligible_at is None
+        and command.deadline is None
+        and command.timeout_seconds==300 and command.max_attempts==3
+        and set(command.input_versions)=={
+            "task","procedure_run","procedure_step"}
+        and command.concurrency_group==f"procedure.agent:{command.operation_id}"
+        and command.idempotency_key==f"procedure-agent:{command.operation_id}"
+    )
+    if platform and not (
+        is_summary_admission or is_cognitive_admission
+        or is_background_agent_admission
+    ):
+        raise PermissionDenied("platform cannot admit an unapproved operation")
     # A caller can repair a job staged by the OTHER authorized producer,
     # but may not create fresh operations with that producer's origin.
     # Validate the immutable P2-03 staged job before a cross-origin enqueue.
@@ -208,8 +229,23 @@ def enqueue_operation(
                 raise StaleSelection("enqueue selection generation invalid")
 
             if command.operation_type==PROCEDURE_AGENT_OPERATION:
-                if selected["mode"]!="FOREGROUND":
-                    raise PermissionDenied("new AGENT work requires selected Foreground authority")
+                if is_background_agent_admission:
+                    if selected["mode"]!="BACKGROUND":
+                        raise PermissionDenied("P2 needs selected Background authority")
+                    # Fixed epoch, immutable step consent and task-specific
+                    # ALIGN-01 proof: generic trusted platform cannot forge P2.
+                    cur.execute(
+                        """SELECT count(*) AS active FROM operations
+                           WHERE user_id=%s AND instance_id=%s
+                             AND background_epoch=%s AND priority_class='P2'
+                             AND status IN ('QUEUED','RETRY_WAIT','RUNNING',
+                                            'CANCEL_REQUESTED','SUSPEND_REQUESTED')""",
+                        (actor.user_id,command.instance_id,selected["background_epoch"]),
+                    )
+                    if cur.fetchone()["active"]>=2:
+                        raise ResourceUnavailable("Background P2 admission budget is full")
+                elif selected["mode"]!="FOREGROUND":
+                    raise PermissionDenied("new P1 AGENT work needs selected Foreground")
                 require_procedure_agent_gate(cur,{
                     "operation_id":command.operation_id,
                     "user_id":actor.user_id,
@@ -218,6 +254,13 @@ def enqueue_operation(
                     "task_id":command.task_id,
                     "input_versions":command.input_versions,
                     "selection_generation":command.expected_generation,
+                    "execution_policy":command.execution_policy.value,
+                    "origin":command.origin.value,
+                    "priority_class":command.priority_class.value,
+                    "effect_class":command.effect_class.value,
+                    "background_epoch":(
+                        selected["background_epoch"]
+                        if is_background_agent_admission else None),
                 })
 
             # Check mutable input versions only for a NEW admission, after
@@ -244,7 +287,9 @@ def enqueue_operation(
             # Bind ephemeral work to one Background epoch from admission.
             # An operation queued in Foreground targets only the next epoch.
             admitted_background_epoch = None
-            if command.execution_policy == Policy.BACKGROUND_EPHEMERAL:
+            if is_background_agent_admission:
+                admitted_background_epoch = selected["background_epoch"]
+            elif command.execution_policy == Policy.BACKGROUND_EPHEMERAL:
                 admitted_background_epoch = selected["background_epoch"] + (
                     0 if selected["mode"] == "BACKGROUND" else 1
                 )
@@ -360,8 +405,12 @@ def _eligible_for_policy(cursor, operation: dict, selected: dict | None) -> bool
         return False
     if operation["execution_policy"] == Policy.BACKGROUND_EPHEMERAL.value:
         return operation["background_epoch"] == selected["background_epoch"]
-    if (operation["background_epoch"] is not None
-        and operation["background_epoch"] != selected["background_epoch"]):
+    if operation["execution_policy"] == Policy.BACKGROUND_RESUMABLE.value:
+        # P4-04: P2 can NEVER float to an unrelated later Background epoch.
+        if operation["background_epoch"] != selected["background_epoch"]:
+            return False
+    elif (operation["background_epoch"] is not None
+          and operation["background_epoch"] != selected["background_epoch"]):
         return False
     # P4-03: a global epoch seal alone is insufficient. Autonomous work
     # must target an explicitly aligned task and its exact checked version.
