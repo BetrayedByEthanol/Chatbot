@@ -194,8 +194,23 @@ def advance_background_preparation(
                         pending[watermark_key]+1,summary=summary,
                     )
                     if status in _TERMINAL or status == "COMPLETED":
-                        # A terminal operation without a sufficient watermark
-                        # cannot satisfy this epoch; never skip its range.
+                        # READ COMMITTED: the worker may commit its watermark
+                        # between the snapshot SELECT and this job-status read.
+                        # Recheck after seeing a terminal state before marking
+                        # a successfully processed epoch permanently BLOCKED.
+                        cur.execute(
+                            """SELECT summary_watermark,cognitive_watermark
+                               FROM conversations
+                               WHERE conversation_id=%s AND user_id=%s
+                                 AND instance_id=%s""",
+                            (pending["conversation_id"],actor.user_id,instance_id),
+                        )
+                        fresh=cur.fetchone()
+                        if fresh is not None and fresh[watermark_key] > pending[watermark_key]:
+                            return PreparationProgress(
+                                step,"RECHECK_WATERMARK",
+                                pending["conversation_id"],operation_id,
+                            )
                         _change_stage(cur,epoch,"BLOCKED",
                                       reason=f"{step}: {status} operation")
                         return PreparationProgress("BLOCKED","REQUIRES_OPERATOR",
