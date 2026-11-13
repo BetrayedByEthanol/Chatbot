@@ -25,3 +25,17 @@ CREATE TABLE background_preparation_conversations (
 
 CREATE INDEX background_preparation_conversations_lookup_idx
     ON background_preparation_conversations(conversation_id, background_epoch);
+
+-- A full-tail summary must be explicitly authorized at admission, not inferred
+-- at worker execution from the current conversation length.
+ALTER TABLE conversation_summary_jobs
+    ADD COLUMN background_handover_epoch bigint
+      CHECK (background_handover_epoch IS NULL OR background_handover_epoch >= 1);
+
+-- P4-01 could already have PENDING epochs before this migration. Their
+-- departure-time conversation tails cannot be reconstructed reliably.
+-- Fail closed and require a fresh authenticated Background entry.
+UPDATE background_preparation_epochs
+SET preparation_stage='BLOCKED',
+    preparation_updated_at=clock_timestamp()
+WHERE status='PENDING';
