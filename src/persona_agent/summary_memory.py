@@ -198,8 +198,13 @@ def schedule_summary(
     platform = type(actor) is TrustedPlatformActor
     if not platform:
         _require_actor(actor)
-    if not 1 <= retain_recent <= 32 or not 1 <= max_turns <= 16:
+    if not 0 <= retain_recent <= 32 or not 1 <= max_turns <= 16:
         raise ValueError("invalid summary range policy")
+    if retain_recent == 0 and (
+        type(actor) is not TrustedPlatformActor
+        or actor.source_id != "background.preparation"
+    ):
+        raise PermissionDenied("full-tail summarization requires Background coordinator authority")
     if expected_generation < 1:
         raise ValueError("expected_generation must be positive")
     with connection.transaction():
@@ -217,6 +222,8 @@ def schedule_summary(
                     or selected["generation"]!=expected_generation
                     or selected["mode"] not in ("FOREGROUND","BACKGROUND")):
                     raise StaleSelection("automatic summary requires selected persona")
+                if retain_recent == 0 and selected["mode"] != "BACKGROUND":
+                    raise StaleSelection("full-tail summary requires Background mode")
             else:
                 _selection(cur,actor,instance_id,expected_generation)
             cur.execute(
