@@ -997,6 +997,8 @@ def _close_fixture_turns(dsn,monkeypatch):
     Replaying old unanswered turns after a newer turn is intentionally denied
     by Conversation; wrap the test factories instead of bypassing that guard.
     """
+    call(dsn,configure_resource_pool,"cognition.llm",
+         capacity_units=3,p0_reserved_units=1)
     import test_phase3_procedures as procedures
     import test_phase3_runs as runs
     import test_phase3_tasks as tasks
