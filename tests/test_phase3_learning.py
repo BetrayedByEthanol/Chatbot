@@ -13,7 +13,7 @@ from persona_agent.procedure_learning_contracts import (
 from persona_agent.procedure_learning_state import (
     decide_procedure_adaptation, evaluate_procedure_run,
     propose_procedure_adaptation, read_procedure_adaptation,
-    read_procedure_evaluations,
+    read_procedure_evaluations, summarize_personal_procedure_experience,
 )
 from persona_agent.procedure_state import (
     create_personalized_approach, read_personalized_approach,
@@ -365,3 +365,63 @@ def test_cross_persona_evidence_and_proposal_isolation(dsn):
                  assessed.evaluation_id,variant,1,
                  params={"hostname":"localhost","days":100},
              ))
+
+
+def test_personal_experience_counts_latest_per_run_without_global_inference(dsn):
+    user,instance,conv,template,variant,run=prepared_variant_run(dsn,"PARAMETERIZED")
+    first=evaluation_command(
+        dsn,user,instance,conv,run,1,
+        outcome="USER_REPORTED_FAILURE",cause="ENVIRONMENT",
+    )
+    call(dsn,evaluate_procedure_run,actor(user),first)
+    second_run=start_command(
+        dsn,user,instance,conv,template,variant=variant,revision=1,
+    )
+    call(dsn,start_procedure_run,actor(user),second_run)
+    second=evaluation_command(
+        dsn,user,instance,conv,second_run.run_id,1,outcome="UNKNOWN",
+    )
+    call(dsn,evaluate_procedure_run,actor(user),second)
+    summary=call(
+        dsn,summarize_personal_procedure_experience,
+        actor(user),instance,template,variant_id=variant,
+    )
+    assert summary.observed_run_count==2
+    assert summary.reported_failure_count==1
+    assert summary.unknown_count==1
+    assert summary.failure_causes=={"ENVIRONMENT":1}
+    assert not summary.truncated
+    assert summary.independently_verified_effectiveness is False
+
+    # Correct the earlier outcome without counting it twice.
+    corrected=evaluation_command(
+        dsn,user,instance,conv,run,1,
+        outcome="INCOMPLETE",prior=first.evaluation_id,
+    )
+    call(dsn,evaluate_procedure_run,actor(user),corrected)
+    current=call(
+        dsn,summarize_personal_procedure_experience,
+        actor(user),instance,template,variant_id=variant,
+    )
+    assert current.observed_run_count==2
+    assert current.reported_failure_count==0
+    assert current.incomplete_count==1
+    assert current.unknown_count==1
+    assert current.failure_causes=={}
+
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            """SELECT count(*) FROM procedure_run_evaluations
+               WHERE run_id=%s""",(run,),
+        ).fetchone()[0]==2  # Immutable previous observations retained
+    limited=call(
+        dsn,summarize_personal_procedure_experience,
+        actor(user),instance,template,variant_id=variant,limit=1,
+    )
+    assert limited.observed_run_count==1 and limited.truncated
+    outsider,_,other_instance=seed(dsn)
+    empty=call(
+        dsn,summarize_personal_procedure_experience,
+        actor(outsider),other_instance,template,
+    )
+    assert empty.observed_run_count==0
