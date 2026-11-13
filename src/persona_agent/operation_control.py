@@ -801,6 +801,7 @@ def reap_stale_operations(connection: Connection, *, limit: int=100) -> int:
                         seconds=row["timeout_seconds"])<=now
                 )
                 deadline_passed=row["deadline"] is not None and row["deadline"]<=now
+                input_invalid=False
                 # Registered P2 deliberately has operations.deadline=NULL.
                 # On an *expired* attempt only, consult the authoritative
                 # Task deadline before requeueing. An in-flight, live worker
@@ -820,8 +821,6 @@ def reap_stale_operations(connection: Connection, *, limit: int=100) -> int:
                         input_invalid=True
                     elif task["deadline"] is not None and task["deadline"]<=now:
                         deadline_passed=True
-                else:
-                    input_invalid=False
                 if "persona_instance" in row["input_versions"]:
                     cursor.execute(
                         """
