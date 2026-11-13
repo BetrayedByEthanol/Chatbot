@@ -36,6 +36,15 @@ def _zone(name: str) -> ZoneInfo:
         raise ValueError("unknown IANA timezone") from exc
 
 
+def _owned_instance(cur,user_id,instance_id):
+    cur.execute(
+        "SELECT 1 FROM persona_instances WHERE user_id=%s AND id=%s",
+        (user_id,instance_id),
+    )
+    if cur.fetchone() is None:
+        raise PermissionDenied("notification persona outside authenticated user scope")
+
+
 def _selection(cur,user_id,instance_id,generation):
     cur.execute(
         """SELECT instance_id,generation,mode FROM persona_selection
@@ -124,6 +133,7 @@ def update_notification_policy(
     _zone(command.timezone)
     with connection.transaction():
         with connection.cursor(row_factory=dict_row) as cur:
+            _owned_instance(cur,actor.user_id,command.instance_id)
             rid,previous=_receipt(cur,actor,command.instance_id,command,
                                   "notification.policy.update.v1")
             if previous is not None:
@@ -174,6 +184,7 @@ def schedule_notification(
     local=command.due_at.astimezone(zone)
     with connection.transaction():
         with connection.cursor(row_factory=dict_row) as cur:
+            _owned_instance(cur,actor.user_id,command.instance_id)
             rid,previous=_receipt(cur,actor,command.instance_id,command,
                                   "notification.schedule.v1")
             if previous is not None:
