@@ -43,7 +43,7 @@ def split_speech_text(text: str, *, max_chars: int = MAX_CHARS) -> tuple[str, ..
         raise ValueError("speech response exceeds maximum clip capacity")
 
     stops = frozenset(".!?。！？؟")
-    closers = frozenset("\\"'”’」』）】》〉)]}")
+    closers = frozenset('”’」』）】》〉)]}') | frozenset(('"', "'"))
     clauses = frozenset("、，,;；：:")
     parts: list[str] = []
     start = 0
@@ -94,8 +94,8 @@ def split_speech_text(text: str, *, max_chars: int = MAX_CHARS) -> tuple[str, ..
                 # sequences attached to their preceding base characters.
                 while end > start and (
                     unicodedata.combining(normalized[end])
-                    or normalized[end] in "\\ufe0e\\ufe0f\\u200d"
-                    or normalized[end - 1] == "\\u200d"
+                    or normalized[end] in ("\ufe0e", "\ufe0f", "\u200d")
+                    or normalized[end - 1] == "\u200d"
                 ):
                     end -= 1
                 if end == start:
