@@ -126,7 +126,7 @@ def enqueue_operation(
         is_summary_admission or is_cognitive_admission
         or is_background_agent_admission
     ):
-        raise PermissionDenied("platform cannot admit an unapproved operation")
+        raise PermissionDenied("platform admission is restricted to staged summary or cognitive operations or exact approved Background steps")
     # A caller can repair a job staged by the OTHER authorized producer,
     # but may not create fresh operations with that producer's origin.
     # Validate the immutable P2-03 staged job before a cross-origin enqueue.
