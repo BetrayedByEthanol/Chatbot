@@ -34,12 +34,17 @@ Stages are `SUMMARIZE → EVALUATE → CRITICAL_PENDING`, with terminal `BLOCKED
 
 ### Operator execution
 
-After applying ordered migrations through `0022`, configure the existing `cognition.llm` resource pool and run existing summary/cognition workers. Start the coordination worker with:
+After applying ordered migrations through `0022`, configure the existing `cognition.llm` resource pool. The prior `automatic_summaries` worker **only admits jobs**, not inference, so this slice also supplies a small standalone P0-claimed summary inference runner. Start the P2 cognition inference worker and, optionally, its regular auto-admission worker. Start the coordination worker with:
 
 ```sh
-DATABASE_URL=postgresql://... python -m persona_agent.background_preparation_worker --once
+DATABASE_URL=postgresql://... SUMMARY_MODEL=qwen2.5:0.5b \\
+  python -m persona_agent.summary_inference_worker
+DATABASE_URL=postgresql://... COGNITIVE_MODEL=qwen2.5:0.5b \\
+  python -m persona_agent.automatic_cognition
 DATABASE_URL=postgresql://... python -m persona_agent.background_preparation_worker --poll-seconds 1
 ```
+
+For a SQL-only preparation tick, use `python -m persona_agent.background_preparation_worker --once`. The model inference workers use the **same** P0 operations and resource pool (not another scheduler).
 
 No P2 goal work will start from this command.
 
