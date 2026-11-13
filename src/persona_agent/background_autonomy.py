@@ -13,7 +13,7 @@ from psycopg.rows import dict_row
 from .lifecycle import TrustedPlatformActor
 from .operation_contracts import (
     EffectClass, EnqueueOperation, Origin, Policy, Priority,
-    ResourceUnavailable, require_idle,
+    ResourceUnavailable, require_idle, count_active_background_p2,
 )
 from .operation_scheduler import enqueue_operation
 from .runtime import PermissionDenied, StaleSelection, VersionConflict
@@ -79,15 +79,9 @@ def dispatch_one_background_step(connection: Connection,
             )
             # At most two active P2 operations per persona/epoch; P0 checks
             # this budget AGAIN transactionally when enqueuing.
-            cur.execute(
-                """SELECT count(*) AS n FROM operations
-                   WHERE user_id=%s AND instance_id=%s AND background_epoch=%s
-                     AND priority_class='P2'
-                     AND status IN ('QUEUED','RETRY_WAIT','RUNNING',
-                                    'CANCEL_REQUESTED','SUSPEND_REQUESTED')""",
-                (actor.user_id,instance_id,background_epoch),
-            )
-            if cur.fetchone()["n"]>=2:
+            if count_active_background_p2(
+                cur,actor.user_id,instance_id,background_epoch,
+            )>=2:
                 return None
             cur.execute(
                 """SELECT stage.operation_id,stage.task_id,stage.run_version,
