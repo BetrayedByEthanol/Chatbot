@@ -18,7 +18,7 @@ The recognizers are **conservative sentinels, not full pragmatic intent extracti
 - Migration `0023_background_critical_updates.sql`: `background_critical_updates` source/epoch/domain ledger with `PENDING` or `VERIFIED`, optional domain-owned proof reference; `critical_scan_sequence` per frozen conversation; `critical_committed_watermark` in Conversation. Extends the epoch stage set with `ALIGNMENT_PENDING`. All scoped constraints and checks retain privacy and generation boundaries.
 - `background_critical_updates.process_critical_updates`: bounded source classification, identity-preserving owner proof reconciliation, and selective watermark advancement on completion. `list_critical_updates` is a read-only authenticated review surface.
 - `background_coordinator.advance_background_preparation`: stages progress from `SUMMARIZE → EVALUATE → CRITICAL_PENDING → ALIGNMENT_PENDING`, with a persistent `BLOCKED` state on damaged frozen source. In-progress `CRITICAL_PENDING` remains polled fairly.
-- `task_state.cancel_task` now includes authenticated source-turn provenance in its event. No Task-domain authority is weakened.
+- `task_state.cancel_task` now includes authenticated source-turn provenance. Pre-existing events lack this field, so migration `0024_task_cancellation_provenance.sql` and Task-owned `ConfirmCancellationProvenanceCommand` provide an audited repair: the user supplies a fresh attestation and separate exact approval, binding the old cancellation event to its historical turn. The Task owner emits a new authenticated proof event and append-only record without changing the cancelled task or retrying its operation.
 
 ## Safety and failure behavior
 
