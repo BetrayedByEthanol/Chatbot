@@ -252,6 +252,66 @@ def test_live_barge_in_produces_one_user_turn_without_marking_tts_heard(dsn):
         ).fetchone()[0]==2
 
 
+
+def test_interruption_replays_after_final_user_transcript_supersedes_reply(dsn):
+    user, instance, reply = response(dsn)
+    clip = call(dsn, prepare_speech_clip, actor(user), clip_command(reply.response_id))
+    stop = command(dsn, reply.response_id, instance)
+    first = call(dsn, interrupt_speech_response, actor(user), stop)
+    assert first.interrupted_clips == 1
+    # Exactly the same transition as an ASR FINAL: a newer user turn is
+    # committed after the stop, before the transport receives its ACK.
+    turn = call(dsn, ingest_text, actor(user), TextInputCommand(
+        conversation_id=stop.conversation_id, instance_id=instance,
+        expected_generation=1, idempotency_key=str(uuid4()),
+        text="Please answer this instead",
+    ))
+    assert turn.turn_id
+    second = call(dsn, interrupt_speech_response, actor(user), stop)
+    assert second.replayed
+    assert second.interruption_id == first.interruption_id
+    assert second.interrupted_clips == 1
+    with pytest.raises(SpeechDeliveryConflict, match="another origin"):
+        call(dsn, interrupt_speech_response, actor(user), stop.model_copy(
+            update={"utterance_id": uuid4()},
+        ))
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        assert conn.execute(
+            """SELECT count(*) FROM events WHERE event_type=
+               'communication.speech_output.interrupted.v1'
+               AND payload->>'response_id'=%s""",
+            (str(reply.response_id),),
+        ).fetchone()[0] == 1
+
+
+def test_interruption_replays_after_persona_switch_without_reactivation(dsn):
+    user, instance, other, reply = response(dsn, two=True)
+    stop = command(dsn, reply.response_id, instance)
+    initial = call(dsn, interrupt_speech_response, actor(user), stop)
+    call(dsn, switch_persona, actor(user), SwitchPersonaCommand(
+        expected_instance_id=instance, target_instance_id=other,
+        expected_generation=1, idempotency_key=str(uuid4()),
+    ))
+    replayed = call(dsn, interrupt_speech_response, actor(user), stop)
+    assert replayed.replayed
+    assert replayed.interruption_id == initial.interruption_id
+    assert replayed.interrupted_clips == initial.interrupted_clips
+    with pytest.raises(SpeechDeliveryConflict, match="another origin"):
+        call(dsn, interrupt_speech_response, actor(user), stop.model_copy(
+            update={"input_channel_id": "unauthorized:microphone"},
+        ))
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        selection=conn.execute(
+            "SELECT instance_id,generation FROM persona_selection WHERE user_id=%s",
+            (user,),
+        ).fetchone()
+        assert selection == (other, 2)
+        assert conn.execute(
+            "SELECT count(*) FROM speech_output_interruptions WHERE response_id=%s",
+            (reply.response_id,),
+        ).fetchone()[0] == 1
+
+
 def test_competing_stop_commands_create_only_one_barrier(dsn):
     user,instance,reply=response(dsn)
     clip=call(dsn,prepare_speech_clip,actor(user),clip_command(reply.response_id))
