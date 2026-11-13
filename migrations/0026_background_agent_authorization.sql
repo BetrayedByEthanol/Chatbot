@@ -11,3 +11,11 @@ CREATE INDEX procedure_background_stage_idx
   ON procedure_agent_operation_authorizations(
      user_id,instance_id,approved_background_epoch,state,task_id)
   WHERE approved_background_epoch IS NOT NULL AND state='AUTHORIZED';
+
+-- Round-robin fairness across READY personas and bounded intra-persona
+-- candidate rotation. A rejected but stale approval must not monopolize
+-- the first ranked candidate on every subsequent polling cycle.
+ALTER TABLE background_preparation_epochs
+  ADD COLUMN autonomous_polled_at timestamptz,
+  ADD COLUMN autonomous_cursor_position bigint NOT NULL DEFAULT 0
+    CHECK (autonomous_cursor_position >= 0);
