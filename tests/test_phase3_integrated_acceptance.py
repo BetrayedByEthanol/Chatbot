@@ -43,7 +43,8 @@ from persona_agent.procedure_agent_state import (
     reconcile_agent_step, run_one_agent_step, schedule_agent_step,
 )
 from persona_agent.runtime import PermissionDenied, StaleSelection, VersionConflict
-from persona_agent.task_state import correct_task_outcome, list_tasks
+from persona_agent.task_contracts import CreateTaskCommand, task_approval_phrase
+from persona_agent.task_state import create_task, correct_task_outcome, list_tasks
 
 from test_phase3_procedures import (
     actor, approve, definition, publication, seed, turn, variant_command,
@@ -52,8 +53,7 @@ from test_phase3_runs import (
     correction as step_correction, record, run_status, start_command,
 )
 from test_phase3_tasks import (
-    confirm_done, correction_command as task_correction, edge, make_task,
-    report_done,
+    confirm_done, correction_command as task_correction, edge, report_done,
 )
 from test_phase3_learning import (
     decide_command, evaluation_command, proposal_command,
@@ -84,6 +84,50 @@ def isolate_registered_worker_queue(dsn):
             operation_id=operation_id,expected_version=version,
             idempotency_key=uuid4().hex,
         ))
+
+
+def approved_goal(dsn,user,instance,conversation,*,source_text,title,
+                  desired_outcome,criterion):
+    source=turn(dsn,user,instance,conversation,source_text)
+    goal_id=uuid4()
+    command=CreateGoalCommand(
+        instance_id=instance,expected_generation=1,
+        idempotency_key=uuid4().hex,conversation_id=conversation,
+        evidence_turn_id=source.turn_id,evidence_quote=source_text,
+        goal_id=goal_id,title=title,desired_outcome=desired_outcome,
+        success_criterion=criterion,horizon="MEDIUM",
+    )
+    approved=turn(dsn,user,instance,conversation,
+                  goal_action_approval_phrase(command))
+    result=call(dsn,create_goal,actor(user),
+                command.model_copy(update={"approval_turn_id":approved.turn_id}))
+    assert result.goal_version==1
+    return goal_id
+
+
+def approved_task(dsn,user,instance,conversation,goal_id,goal_version,*,
+                  title,description,criterion,executor="USER",capability=None):
+    source_text="Please add a task: "+title
+    source=turn(dsn,user,instance,conversation,source_text)
+    command=CreateTaskCommand(
+        instance_id=instance,expected_generation=1,
+        idempotency_key=uuid4().hex,conversation_id=conversation,
+        evidence_turn_id=source.turn_id,evidence_quote=source_text,
+        task_id=uuid4(),goal_id=goal_id,
+        expected_goal_version=goal_version,title=title,
+        action_description=description,executor=executor,capability=capability,
+        completion_criterion=criterion,
+        evidence_requirement=(
+            "Bounded registered operation result" if executor=="AGENT"
+            else "Explicit user report and confirmation"
+        ),
+    )
+    approved=turn(dsn,user,instance,conversation,
+                  task_approval_phrase(command))
+    result=call(dsn,create_task,actor(user),
+                command.model_copy(update={"approval_turn_id":approved.turn_id}))
+    assert result.action=="TASK_CREATED" and result.version==1
+    return command.task_id,result
 
 
 def goal_with_strategy(dsn,user,instance,conversation):
@@ -216,13 +260,17 @@ def test_complete_user_flow_goal_strategy_task_run_sessions_learning(dsn):
         dsn,user,persona,instance,conversation,goal,strategy,
     )
 
-    initial_task,_,_=make_task(
+    initial_task,_=approved_task(
         dsn,user,instance,conversation,goal,2,
         title="Generate and validate local TLS certificate",
+        description="Generate a self-signed test certificate and check local TLS",
+        criterion="Local certificate exists and the TLS handshake is checked",
     )
-    dependent,_,_=make_task(
+    dependent,_=approved_task(
         dsn,user,instance,conversation,goal,3,
         title="Record local test endpoint details",
+        description="Write down the confirmed local Nginx TLS test settings",
+        criterion="Test endpoint details have been recorded",
     )
     edge(dsn,user,instance,conversation,dependent,initial_task,4)
     assert not {t.task_id:t for t in call(
@@ -389,19 +437,28 @@ def test_dependency_correction_revokes_queued_agent_and_new_authorization_recove
     call(dsn,publish_shared_procedure,actor(user),publication(
         dsn,user,persona,instance,conversation,template,0,agent_method(),
     ))
-    # The Goal and AGENT task use the real Task owner rather than a fake
-    # procedure-run task marker.
-    from test_phase3_tasks import make_goal
-    goal=make_goal(dsn,user,instance,conversation)
-    agent_task,_,_=make_task(
+    # The Goal and AGENT task are real, meaningfully aligned domain state.
+    goal=approved_goal(
+        dsn,user,instance,conversation,
+        source_text="I want to inspect the content of local text instructions.",
+        title="Review local test instructions",
+        desired_outcome="A bounded local text inspection is recorded",
+        criterion="Registered read-only analysis produces a confirmed result",
+    )
+    agent_task,_=approved_task(
         dsn,user,instance,conversation,goal,1,
-        executor="AGENT",capability=SLOW_TOOL,title="Analyze local text",
+        title="Analyze approved local text",executor="AGENT",capability=SLOW_TOOL,
+        description="Run registered read-only text statistics on the instruction",
+        criterion="P0 has an authenticated read-only statistics result",
     )
     start=start_command(dsn,user,instance,conversation,template,task=agent_task)
     call(dsn,start_procedure_run,actor(user),start)
 
-    prerequisite,_,_=make_task(
-        dsn,user,instance,conversation,goal,2,title="Approve input sample",
+    prerequisite,_=approved_task(
+        dsn,user,instance,conversation,goal,2,
+        title="Approve input sample",
+        description="Review and approve the local sample before analysis",
+        criterion="User confirms the sample is appropriate to analyze",
     )
     edge(dsn,user,instance,conversation,agent_task,prerequisite,3)
     blocked_auth=authorization(
