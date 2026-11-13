@@ -333,3 +333,40 @@ def test_incomplete_snapshot_never_means_no_conversation(dsn):
         "SELECT 1 FROM background_ready_epochs WHERE user_id=%s",
         (user,),
     )==[]
+
+
+def test_completed_job_watermark_race_does_not_block_epoch(dsn,monkeypatch):
+    import persona_agent.background_coordinator as coordinator_module
+
+    user,instance,_=seed(dsn)
+    conversation=uuid4()
+    add_closed_turn(dsn,user,instance,conversation,"The source turn was delivered.")
+    enter(dsn,user,instance)
+
+    def completed_after_initial_read(cursor,conversation_id,generation,start_sequence,
+                                     *,summary):
+        assert summary and conversation_id==conversation
+        # Simulate an independent P0 summary worker committing the watermark
+        # after preparation has read the old watermark, but before this SQL
+        # statement sees its new COMPLETED status. The coordinator holds no
+        # lock on this conversation row, by design.
+        with psycopg.connect(dsn,autocommit=True) as other:
+            other.execute(
+                """UPDATE conversations SET summary_watermark=1
+                   WHERE conversation_id=%s AND user_id=%s AND instance_id=%s""",
+                (conversation,user,instance),
+            )
+        return uuid4(),"COMPLETED"
+
+    monkeypatch.setattr(coordinator_module,"_job_status",completed_after_initial_read)
+    progress=tick(dsn,user,instance)
+    assert (progress.stage,progress.state)==("SUMMARIZE","RECHECK_WATERMARK")
+    assert check(dsn,
+        """SELECT preparation_stage FROM background_preparation_epochs
+           WHERE user_id=%s AND instance_id=%s AND background_epoch=1""",
+        (user,instance),
+    )==[("SUMMARIZE",)]
+    assert check(dsn,
+        """SELECT 1 FROM background_ready_epochs WHERE user_id=%s""",
+        (user,),
+    )==[]
