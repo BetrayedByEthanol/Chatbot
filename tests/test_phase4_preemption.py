@@ -153,3 +153,140 @@ def test_user_cancellation_takes_precedence_over_pending_p2_suspension(dsn,monke
     assert check(dsn,
         "SELECT status FROM operations WHERE operation_id=%s",(op,),
     )==[("CANCELLED",)]
+
+
+def test_dispatch_rechecks_lease_expiry_after_preemption_lock_wait(dsn,monkeypatch):
+    """The P2 executor must not run on a claim expired after first gate."""
+    user,instance,_,_,op=_admitted(dsn,monkeypatch)
+    import persona_agent.procedure_agent_state as agent
+    old_request=agent.request_background_suspension
+    once=[False]
+
+    def delay_request(connection,actor,operation_id):
+        response=old_request(connection,actor,operation_id)
+        if not once[0]:
+            once[0]=True
+            with psycopg.connect(dsn,autocommit=True) as conn:
+                conn.execute(
+                    """UPDATE operations
+                       SET lease_until=clock_timestamp()-interval '1 second'
+                       WHERE operation_id=%s""",(op,),
+                )
+        return response
+
+    monkeypatch.setattr(agent,"request_background_suspension",delay_request)
+    invoked=[]
+    lease=call(dsn,run_one_agent_step,worker_id="p405-lease-race",
+               executor=lambda instruction,words: invoked.append(instruction) or "wrong")
+    assert lease is not None and lease.operation_id==op
+    assert once[0] and not invoked
+    assert check(dsn,"SELECT status FROM operations WHERE operation_id=%s",(op,))==[("RUNNING",)]
+    assert check(dsn,
+        "SELECT count(*) FROM procedure_agent_operation_results WHERE operation_id=%s",
+        (op,),
+    )==[(0,)]
+    assert call(dsn,reap_stale_operations)>=1
+
+
+def test_dispatch_rechecks_task_deadline_after_preemption_lock_wait(dsn,monkeypatch):
+    """Task deadline can elapse after preemption's selection/row lock waits."""
+    user,instance,task,_,op=_admitted(dsn,monkeypatch)
+    import persona_agent.procedure_agent_state as agent
+    old_request=agent.request_background_suspension
+    once=[False]
+
+    def delay_request(connection,actor,operation_id):
+        response=old_request(connection,actor,operation_id)
+        if not once[0]:
+            once[0]=True
+            with psycopg.connect(dsn,autocommit=True) as conn:
+                conn.execute(
+                    """UPDATE goal_tasks
+                       SET deadline=clock_timestamp()-interval '1 second'
+                       WHERE task_id=%s""",(task,),
+                )
+        return response
+
+    monkeypatch.setattr(agent,"request_background_suspension",delay_request)
+    invoked=[]
+    lease=call(dsn,run_one_agent_step,worker_id="p405-deadline-race",
+               executor=lambda instruction,words: invoked.append(instruction) or "wrong")
+    assert lease is not None and lease.operation_id==op
+    assert once[0] and not invoked
+    assert check(dsn,
+        "SELECT count(*) FROM procedure_agent_operation_results WHERE operation_id=%s",
+        (op,),
+    )==[(0,)]
+
+
+def test_cancellation_race_after_suspension_read_gets_acknowledged(dsn,monkeypatch):
+    """User cancellation between SELECT and ACK must release live P2 slots."""
+    user,instance,_,_,op=_admitted(dsn,monkeypatch)
+    import persona_agent.procedure_agent_state as agent
+    real_ack=agent.acknowledge_suspend
+    intervened=[False]
+
+    def cancellation_wins(connection,lease):
+        if not intervened[0]:
+            intervened[0]=True
+            version=check(dsn,
+                "SELECT version FROM operations WHERE operation_id=%s",(op,),
+            )[0][0]
+            status=call(dsn,cancel_operation,user_actor(user),CancelOperationCommand(
+                operation_id=op,expected_version=version,idempotency_key=uuid4().hex,
+            ))
+            assert status.value=="CANCEL_REQUESTED"
+        return real_ack(connection,lease)
+
+    monkeypatch.setattr(agent,"acknowledge_suspend",cancellation_wins)
+
+    def return_during_execution(instruction,words):
+        _return(dsn,user,instance)
+        return "must be discarded"
+
+    lease=call(dsn,run_one_agent_step,worker_id="p405-ack-race",
+               executor=return_during_execution)
+    assert lease is not None and intervened[0]
+    assert check(dsn,"SELECT status FROM operations WHERE operation_id=%s",(op,))==[("CANCELLED",)]
+    assert check(dsn,
+        "SELECT count(*) FROM operation_resource_reservations WHERE operation_id=%s",
+        (op,),
+    )==[(0,)]
+    assert check(dsn,
+        "SELECT count(*) FROM procedure_agent_operation_results WHERE operation_id=%s",
+        (op,),
+    )==[(0,)]
+
+
+def test_failure_reporting_losing_preemption_race_settles_live_claim(dsn,monkeypatch):
+    """The worker stops after failure, so it must ACK a newly revoked epoch."""
+    user,instance,_,_,op=_admitted(dsn,monkeypatch)
+    import persona_agent.procedure_agent_state as agent
+    real_fail=agent.fail_operation
+    intervened=[False]
+
+    def revocation_wins(connection,lease,*,reason,delay_seconds=1):
+        if not intervened[0]:
+            intervened[0]=True
+            _return(dsn,user,instance)
+        return real_fail(connection,lease,reason=reason,delay_seconds=delay_seconds)
+
+    monkeypatch.setattr(agent,"fail_operation",revocation_wins)
+
+    def broken_tool(instruction,words):
+        raise RuntimeError("simulated tool error")
+
+    lease=call(dsn,run_one_agent_step,worker_id="p405-failure-race",
+               executor=broken_tool)
+    assert lease is not None and intervened[0]
+    assert check(dsn,
+        "SELECT status FROM operations WHERE operation_id=%s",(op,),
+    )==[("SUSPENDED",)]
+    assert check(dsn,
+        "SELECT count(*) FROM operation_resource_reservations WHERE operation_id=%s",
+        (op,),
+    )==[(0,)]
+    assert check(dsn,
+        "SELECT count(*) FROM procedure_agent_operation_results WHERE operation_id=%s",
+        (op,),
+    )==[(0,)]

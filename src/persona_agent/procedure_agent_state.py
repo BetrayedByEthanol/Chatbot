@@ -278,7 +278,13 @@ def _settle_preempted_background_attempt(connection: Connection, lease) -> bool:
         try:
             acknowledge_suspend(connection,lease)
         except StaleOperation:
-            pass  # The P0 reaper now owns an expired/stale attempt.
+            # Cancellation may commit after our status read and win the
+            # suspension race. acknowledge_cancel re-reads and fences the
+            # exact live claim; on an expired/replaced claim it has no effect.
+            try:
+                acknowledge_cancel(connection,lease)
+            except StaleOperation:
+                pass  # P0 recovery owns an expired or replaced attempt.
         return True
     if row["status"]=="CANCEL_REQUESTED":
         try:
@@ -311,6 +317,18 @@ def run_one_agent_step(connection: Connection, *, worker_id: str,
         return lease
     if _settle_preempted_background_attempt(connection,lease):
         return lease
+    if lease.background_epoch is not None:
+        # The preemption check above may wait on operation or selection locks
+        # after the first dispatch gate released them. Revalidate the claim,
+        # current owner versions AND the live Task deadline after that wait;
+        # otherwise an expired attempt could still enter the executor.
+        try:
+            with connection.transaction():
+                with connection.cursor(row_factory=dict_row) as cur:
+                    instruction,max_words=_read_authorized_execution(cur,lease)
+        except (VersionConflict,PermissionDenied,StaleOperation):
+            _settle_preempted_background_attempt(connection,lease)
+            return lease
     try:
         result=executor(instruction,max_words)
         if not isinstance(result,str) or not 1<=len(result)<=12000:
@@ -323,7 +341,9 @@ def run_one_agent_step(connection: Connection, *, worker_id: str,
                 connection,lease,reason=f"read-only tool failed: {type(exc).__name__}",
             )
         except (VersionConflict,PermissionDenied,StaleOperation):
-            pass
+            # A return/cancel can race between the initial safe-boundary
+            # check and failure reporting's authority/lease locks.
+            _settle_preempted_background_attempt(connection,lease)
         return lease
     if _settle_preempted_background_attempt(connection,lease):
         return lease
