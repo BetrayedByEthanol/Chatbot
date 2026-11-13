@@ -594,3 +594,103 @@ def test_task_priority_needs_owner_commit_with_separate_user_approval(dsn):
     )
     assert check(dsn,"SELECT suspended FROM goal_tasks WHERE task_id=%s",
                  (task_id,))==[(True,)]
+
+
+def test_legacy_task_cancel_source_is_recovered_only_by_fresh_user_attestation(dsn):
+    from persona_agent.task_contracts import (
+        CreateTaskCommand,CancelTaskCommand,ConfirmCancellationProvenanceCommand,
+        task_approval_phrase,
+    )
+    from persona_agent.task_state import (
+        create_task,cancel_task,confirm_legacy_cancellation_provenance,
+    )
+    user,instance,_=seed(dsn)
+    conversation=uuid4()
+    goal=uuid4()
+    intro=add_closed_turn(dsn,user,instance,conversation,
+                          "I want to cook at home more often.")
+    goal_cmd=CreateGoalCommand(
+        instance_id=instance,expected_generation=1,idempotency_key=str(uuid4()),
+        conversation_id=conversation,evidence_turn_id=intro.turn_id,
+        evidence_quote="I want to cook at home more often.",
+        goal_id=goal,title="Home dinners",desired_outcome="Cook meals",
+        success_criterion="Cook twice each week",horizon="SHORT",
+    )
+    gp=add_closed_turn(dsn,user,instance,conversation,
+                       goal_action_approval_phrase(goal_cmd))
+    call(dsn,create_goal,user_actor(user),
+         goal_cmd.model_copy(update={"approval_turn_id":gp.turn_id}))
+    ts=add_closed_turn(dsn,user,instance,conversation,
+                       "Prepare dinner ingredients.")
+    task_id=uuid4()
+    task_cmd=CreateTaskCommand(
+        instance_id=instance,expected_generation=1,idempotency_key=str(uuid4()),
+        conversation_id=conversation,evidence_turn_id=ts.turn_id,
+        evidence_quote="Prepare dinner ingredients.",task_id=task_id,
+        goal_id=goal,expected_goal_version=1,title="Dinner prep",
+        action_description="Prepare ingredients",
+        completion_criterion="Ingredients are ready",
+        evidence_requirement="User confirmation",executor="USER",
+    )
+    tp=add_closed_turn(dsn,user,instance,conversation,
+                       task_approval_phrase(task_cmd))
+    call(dsn,create_task,user_actor(user),
+         task_cmd.model_copy(update={"approval_turn_id":tp.turn_id}))
+    original=add_closed_turn(dsn,user,instance,conversation,
+                             "Cancel my task.")
+    cancel_cmd=CancelTaskCommand(
+        instance_id=instance,expected_generation=1,idempotency_key=str(uuid4()),
+        conversation_id=conversation,evidence_turn_id=original.turn_id,
+        evidence_quote="Cancel my task.",task_id=task_id,expected_task_version=1,
+    )
+    cp=add_closed_turn(dsn,user,instance,conversation,
+                       task_approval_phrase(cancel_cmd))
+    cancel_result=call(dsn,cancel_task,user_actor(user),
+                       cancel_cmd.model_copy(update={"approval_turn_id":cp.turn_id}))
+    # Simulate a cancellation event written by the P3 version before P4-02b
+    # added source_turn_id, not a permitted production event mutation.
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        conn.execute("UPDATE events SET payload=payload-'source_turn_id' WHERE event_id=%s",
+                     (cancel_result.event_id,))
+
+    enter(dsn,user,instance)
+    drive_to_critical(dsn,user,instance)
+    assert drive_critical(dsn,user,instance).state=="WAITING_OWNER"
+    assert check(dsn,"SELECT count(*) FROM background_ready_epochs WHERE user_id=%s",
+                 (user,))==[(0,)]
+
+    returned=call(dsn,record_primary_activity,user_actor(user),PrimaryActivityCommand(
+        instance_id=instance,expected_generation=1,idempotency_key=str(uuid4()),
+    ))
+    assert returned.presence_revision==2
+    attestation=add_closed_turn(dsn,user,instance,conversation,
+                  "I confirm my earlier cancellation request was mine.")
+    rebind=ConfirmCancellationProvenanceCommand(
+        instance_id=instance,expected_generation=1,idempotency_key=str(uuid4()),
+        conversation_id=conversation,evidence_turn_id=attestation.turn_id,
+        evidence_quote="I confirm my earlier cancellation request was mine.",
+        task_id=task_id,expected_task_version=cancel_result.version,
+        original_cancel_event_id=cancel_result.event_id,
+        original_conversation_id=conversation,
+        original_source_turn_id=original.turn_id,
+    )
+    approval=add_closed_turn(dsn,user,instance,conversation,
+                             task_approval_phrase(rebind))
+    proof=call(dsn,confirm_legacy_cancellation_provenance,user_actor(user),
+               rebind.model_copy(update={"approval_turn_id":approval.turn_id}))
+    assert proof.action=="CANCELLATION_PROVENANCE_CONFIRMED"
+    assert call(dsn,confirm_legacy_cancellation_provenance,user_actor(user),
+               rebind.model_copy(update={"approval_turn_id":approval.turn_id})).replayed
+
+    new=call(dsn,enter_background,user_actor(user),EnterBackgroundCommand(
+        instance_id=instance,expected_generation=1,expected_presence_revision=2,
+        reason=BackgroundReason.EXPLICIT_DEPARTURE,idempotency_key=str(uuid4()),
+    ))
+    assert new.background_epoch==3
+    drive_to_critical(dsn,user,instance,epoch=3)
+    assert drive_critical(dsn,user,instance,epoch=3).stage=="ALIGNMENT_PENDING"
+    items=call(dsn,list_critical_updates,user_actor(user),instance,3)
+    match=[x for x in items if x["source_turn_id"]==original.turn_id]
+    assert len(match)==1 and match[0]["owner_ref"]==proof.event_id
+    assert check(dsn,"SELECT status FROM goal_tasks WHERE task_id=%s",
+                 (task_id,))==[("CANCELLED",)]
