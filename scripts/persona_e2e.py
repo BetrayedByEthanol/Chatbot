@@ -49,6 +49,22 @@ def drop_isolated_database(admin_dsn: str, name: str) -> None:
         )
 
 
+def publish_status_file(path: Path) -> None:
+    """Signal ZIP publication only after write_bundle returns successfully.
+
+    A private wrapper-owned status path is optional for direct CLI use.
+    Atomic replacement prevents the shell from observing a partial marker.
+    Failure to publish the marker is treated as uncertain evidence status:
+    the runner retains its created database and the wrapper retains Compose.
+    """
+    temporary = path.with_name(path.name + ".partial")
+    try:
+        temporary.write_text("PUBLISHED\n", encoding="ascii")
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def run(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -76,6 +92,10 @@ def run(argv=None) -> int:
     parser.add_argument(
         "--keep-db",action="store_true",
         help="Keep the newly created database for debugging (no teardown)",
+    )
+    parser.add_argument(
+        "--publication-status-file",type=Path,
+        help="Private wrapper-owned path marked PUBLISHED only after ZIP publication",
     )
     args = parser.parse_args(argv)
     if not args.admin_dsn:
@@ -124,6 +144,11 @@ def run(argv=None) -> int:
             model=args.model,git_sha=git_sha,
             migration_hashes=migration_hashes,
         )
+        # The shell wrapper must know whether deleting the Compose volume is
+        # safe. If this marker fails, preserve the DB as well: the wrapper
+        # cannot distinguish a saved ZIP from an interrupted publication.
+        if args.publication_status_file is not None:
+            publish_status_file(args.publication_status_file)
         bundle_written = True
         print("Saved evaluation bundle:",args.report.resolve(),flush=True)
     finally:
