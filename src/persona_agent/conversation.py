@@ -244,6 +244,13 @@ def ingest_text(connection: Connection, actor: TrustedActor,
                 conversation_id=command.conversation_id,turn_id=turn_id,
                 turn_sequence=seq,source_event_id=event_id,text=command.text,
             )
+            # Preserve provenance for optional interpretation derived from
+            # a later response without searching the event journal by JSON.
+            cursor.execute(
+                "UPDATE conversation_turns SET source_input_event_id=%s "
+                "WHERE turn_id=%s AND user_id=%s",
+                (event_id,turn_id,actor.user_id),
+            )
             result = TextInputResult(
                 conversation_id=command.conversation_id,
                 turn_id=turn_id,event_id=event_id,sequence=seq,
@@ -610,7 +617,8 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
             cursor.execute(
                 """
                 SELECT t.turn_id,t.status,t.conversation_id,t.instance_id,
-                       t.selection_generation
+                       t.selection_generation,t.input_text,t.sequence,
+                       t.source_input_event_id
                 FROM conversation_turns t
                 WHERE t.turn_id=%s AND t.user_id=%s
                 """,
@@ -697,6 +705,18 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
                 source_id="conversation.runtime",trust_level="TRUSTED_PLATFORM",
                 detail={"turn_id":str(context.turn_id),"response_id":str(response_id)},
             )
+            if generated.intent_candidate is not None:
+                from .intent_interpretation import record_model_intent_on_response
+                record_model_intent_on_response(
+                    cursor,user_id=actor.user_id,
+                    instance_id=context.instance_id,
+                    conversation_id=context.conversation_id,
+                    turn_id=context.turn_id,
+                    turn_sequence=scoped["sequence"],
+                    input_text=scoped["input_text"],
+                    source_event_id=scoped["source_input_event_id"],
+                    response_id=response_id,candidate=generated.intent_candidate,
+                )
             return TextResponseResult(
                 response_id=response_id,turn_id=context.turn_id,
                 text=text,model_id=generated.model_id,delivery_status="GENERATED",
@@ -837,5 +857,14 @@ def respond_to_text(connection: Connection, actor: TrustedActor, turn_id: UUID,
         connection,actor,turn_id,max_turns=max_turns,
         max_context_chars=max_context_chars,
     )
-    generated=gateway.generate(context.messages)
+    # MVP-01B: on narrow implicit-language cues, a capable gateway can
+    # enrich the *same* primary response pass. Ordinary text and all legacy
+    # gateways keep their exact existing single-call behavior.
+    from .intent_interpretation import should_interpret_with_model
+    enriched=getattr(gateway,"generate_interpreted",None)
+    if (callable(enriched) and context.messages[-1].role=="user"
+            and should_interpret_with_model(context.messages[-1].content)):
+        generated=enriched(context.messages)
+    else:
+        generated=gateway.generate(context.messages)
     return commit_text_response(connection,actor,context,generated)
