@@ -133,6 +133,12 @@ class BehavioralAcceptanceHarness:
         self.turns.append(observed)
         return observed
 
+    def poll_followups(self, *, limit: int = 20) -> int:
+        """Use the existing host's authorized follow-up delivery path."""
+        if self._host is None:
+            raise RuntimeError("start a session before polling")
+        return self._host.poll_followups(limit=limit)
+
     def enable_explicit_memory_worker(self) -> None:
         """Subscribe the already-implemented extraction consumer."""
         if self._extraction_consumer is not None:
