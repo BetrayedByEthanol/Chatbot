@@ -122,6 +122,34 @@ def test_topic_switch_preserves_independent_resolution_and_old_question(dsn):
         assert q==("PENDING",None)
 
 
+def test_explicit_reference_refocuses_unique_existing_thread(dsn):
+    identity=seed_local_demo(dsn)
+    host=BehavioralAcceptanceHarness(dsn,identity,ReplyModel((
+        "We can build a walking habit.",
+        "Okay, recipes are another subject.",
+        "Let's pick up the walking discussion.",
+    )))
+    host.begin_session("refocus")
+    host.send("I want to walk more.",idempotency_key="walking")
+    walk=state(dsn,identity).focus_thread_id
+    host.send(
+        "Let's discuss cooking instead.",idempotency_key="switch",
+    )
+    cooking=state(dsn,identity).focus_thread_id
+    assert cooking!=walk
+    host.restart_host()
+    host.send(
+        "Can we plan the next step for that goal?",
+        idempotency_key="refer-to-walking",
+    )
+    active=state(dsn,identity)
+    assert len(active.threads)==2
+    assert active.focus_thread_id==walk
+    by_id={thread.thread_id:thread for thread in active.threads}
+    assert by_id[cooking].attention_status==Attention.RECENT
+    assert by_id[cooking].resolution_status==Resolution.OPEN
+
+
 def test_delivered_choice_is_a_pending_decision_not_automatic_consent(dsn):
     identity=seed_local_demo(dsn)
     host=BehavioralAcceptanceHarness(dsn,identity,ReplyModel((
