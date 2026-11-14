@@ -3,7 +3,7 @@
 Mock model text tests runtime contracts; they do not claim real-model
 interpretation quality. Domain observations are read-only.
 """
-from uuid import uuid4
+from uuid import UUID
 
 import pytest
 
@@ -89,7 +89,7 @@ def test_existing_extraction_worker_accepts_input_evidence_across_sessions(dsn):
             (identity.user_id, identity.instance_id),
         ).fetchone()
     assert row == (
-        source.conversation_id, saved.turn_id and __import__("uuid").UUID(saved.turn_id),
+        source.conversation_id, UUID(saved.turn_id),
         "My favorite drink is tea.", "USER_REPORTED",
     )
 
