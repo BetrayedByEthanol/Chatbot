@@ -66,6 +66,12 @@ auto-recorded dialogue acts **replaceable** by a later authorized explicit
 - A matching inferred `next_conversational_action` is updated to the
   explicit interpretation, but any unrelated manually changed next action
   is preserved.
+- When the next input answers a pending automatically recorded QUESTION,
+  its auto-generated `Await answer: …` action is cleared **only on an
+  exact text match** (including the existing 200-character bound).
+  Any custom action subsequently set by `set_thread_progress()` survives
+  answer resolution; the act still becomes ANSWERED and the turn is linked
+  to its thread.
 - A separate `conversation.dialogue.auto_act_replaced.v1` event records
   old and new act IDs. Retries replay the receipt, while competing explicit
   registrations yield a domain `VersionConflict`, not a unique violation.
@@ -108,6 +114,9 @@ auto-recorded dialogue acts **replaceable** by a later authorized explicit
   authenticated explicit act from reinterpreting that same delivered
   response. Only the explicit act remains pending after reconciliation;
   historical automatic proposals are not deleted.
+- Ingress answer resolution preserves explicitly customized next actions,
+  including those with an `Await answer:` prefix for a different question.
+  Only the exact automatic question hint is removed.
 - No generated-but-undelivered response can create pending questions.
 - Discussion topics and QUESTION/ANSWERED records never mean goal acceptance,
   permission, instruction execution, verified completion, or success.
