@@ -9,7 +9,7 @@ import re
 from uuid import UUID, uuid4
 
 from .dialogue_state import _link_turn
-from .intent_interpretation import classify_intent
+from .intent_interpretation import classify_intent, should_interpret_with_model
 from .conversation import _event
 
 _TOPIC_REQUEST = re.compile(
@@ -303,6 +303,13 @@ def resolve_auto_question_on_ingress(
             or _CLEAR_SWITCH.match(value)):
         return
     interpretation=classify_intent(value)
+    if should_interpret_with_model(value):
+        # MVP-01B's primary inference can still identify this input as a
+        # new OBJECTIVE. Keep it unlinked until that proposal is admitted
+        # at response commit, then select its topic on delivery. Without
+        # a supported model signal, abstain instead of guessing that the
+        # message answered an unrelated pending question.
+        return
     if interpretation and (
         interpretation.kind in ("CORRECTION","HYPOTHETICAL","INSTRUCTION")
         or _starts_new_topic(interpretation.kind,interpretation.label)
