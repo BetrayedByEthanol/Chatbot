@@ -138,6 +138,30 @@ def test_natural_analysis_routes_to_durable_async_worker_and_followup(dsn):
         ).fetchone()[0]==1
 
 
+def test_jsonl_message_without_operator_mode_uses_natural_clock_route(
+    dsn,monkeypatch,
+):
+    import json
+    from persona_agent.acceptance_host import serve_jsonl
+
+    identity=seed_local_demo(dsn)
+    output=[]
+    host=LocalAcceptanceSession(dsn,identity,NoInference(),output.append)
+    monkeypatch.setattr(
+        "persona_agent.acceptance_host._emit_json",output.append,
+    )
+    serve_jsonl(host,[
+        json.dumps({
+            "action":"message","text":"What time is it in London?",
+            "idempotency_key":"transport-auto",
+        }),
+        json.dumps({"action":"quit"}),
+    ])
+    assert [item["type"] for item in output]==["reply","bye"]
+    assert output[0]["model_id"]==TIME_TOOL
+    assert "Europe/London" in output[0]["text"]
+
+
 def test_unrecognized_input_falls_back_to_one_model_response(dsn):
     identity=seed_local_demo(dsn)
     output=[]
