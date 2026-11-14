@@ -163,9 +163,9 @@ def test_delivered_choice_is_a_pending_decision_not_automatic_consent(dsn):
     assert first.pending_acts[0].kind=="DECISION"
     assert "Await choice:" in first.threads[0].next_conversational_action
 
-    # An unqualified acknowledgment does not resolve a decision and
-    # cannot make an approved Goal/Task state from ordinary conversation.
-    host.send("Okay",idempotency_key="not-approval")
+    # An affirmative conversational answer alone does not resolve a
+    # decision or create an approved Goal/Task outcome.
+    host.send("Yes",idempotency_key="not-approval")
     after=state(dsn,identity)
     assert [act.act_id for act in after.pending_acts]==[
         first.pending_acts[0].act_id
