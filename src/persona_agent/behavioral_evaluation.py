@@ -6,6 +6,7 @@ Snapshots contain synthetic conversation text and must be handled as private.
 """
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timezone
 from hashlib import sha256
 import json
@@ -25,6 +26,7 @@ from .acceptance_host import seed_local_demo
 from .behavioral_acceptance import BehavioralAcceptanceHarness
 from .contracts import TrustedActor
 from .dialogue_state import load_active_dialogue
+from .model_gateway import OllamaChatGateway
 from .observability import get_turn_trace
 from .tool_gateway import run_one_text_tool
 
@@ -99,30 +101,58 @@ def validate_scenario(value: Any) -> dict:
 
 
 class RecordingGateway:
-    """Observe actual inference input, never parse responses into commands."""
+    """Record the real Ollama HTTP payload, or label mock preflight evidence.
+
+    Ollama's generate_interpreted() inserts its own system instruction. For
+    that gateway, observe in _chat() *after* insertion rather than logging
+    the upstream messages before the instruction exists. Non-Ollama test
+    gateways can only provide explicitly labeled pre-gateway evidence.
+    """
 
     def __init__(self, inner):
-        self.inner = inner
         self.requests: list[dict] = []
+        self._outbound_capture = isinstance(inner, OllamaChatGateway)
+        if self._outbound_capture:
+            previous_observer = inner.request_observer
 
-    def _record(self, messages, route):
-        self.requests.append({
-            "at": timestamp(),
-            "route": route,
-            "messages": [
-                {"role":m.role, "content":m.content} for m in messages
-            ],
-        })
+            def capture(payload):
+                self.requests.append({
+                    "at":timestamp(),
+                    "route":(
+                        "generate_interpreted" if payload.get("format")=="json"
+                        else "generate"
+                    ),
+                    "capture_boundary":"ollama.outbound",
+                    "payload":jsonable(payload),
+                    "messages":jsonable(payload["messages"]),
+                })
+                if previous_observer is not None:
+                    previous_observer(payload)
+
+            # Immutable clone: do not mutate a production gateway instance.
+            self.inner = replace(inner, request_observer=capture)
+        else:
+            self.inner = inner
+
+    def _record_pre_gateway(self, messages, route):
+        if not self._outbound_capture:
+            self.requests.append({
+                "at":timestamp(), "route":route,
+                "capture_boundary":"pre_gateway_unverified",
+                "messages":[
+                    {"role":m.role, "content":m.content} for m in messages
+                ],
+            })
 
     def generate(self, messages):
-        self._record(messages, "generate")
+        self._record_pre_gateway(messages, "generate")
         return self.inner.generate(messages)
 
     def generate_interpreted(self, messages):
         method = getattr(self.inner, "generate_interpreted", None)
         if method is None:
             return self.generate(messages)
-        self._record(messages, "generate_interpreted")
+        self._record_pre_gateway(messages, "generate_interpreted")
         return method(messages)
 
 
