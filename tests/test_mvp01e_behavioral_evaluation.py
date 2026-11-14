@@ -461,7 +461,7 @@ def test_compose_wrapper_preserves_evidence_on_failed_publication(
     assert bool(downs) is expect_teardown
     if not published:
         assert "EVIDENCE NOT CONFIRMED" in result.stderr
-        match=re.search(r"preserving Compose project (persona-e2e-[^\\s]+)",
+        match=re.search(r"preserving Compose project (persona-e2e-[a-zA-Z0-9-]+)",
                         result.stderr)
         assert match is not None
         assert match.group(1) in commands[0]
@@ -538,6 +538,7 @@ def test_runner_publishes_marker_only_after_zip_written(tmp_path,monkeypatch):
 
     # A valid ZIP without a publish marker is an uncertain state: retain DB.
     marker.unlink()
+    report.unlink()  # The CLI intentionally refuses to overwrite ZIP reports.
     dropped.clear()
     def fail_marker(path):
         raise OSError("status directory unwritable")
