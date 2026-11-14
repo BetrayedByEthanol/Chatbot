@@ -32,7 +32,6 @@ _CHOICE_QUESTION = re.compile(
     re.I,
 )
 _NOT_ANSWERS = {"okay", "ok", "got it", "understood"}
-_YES_NO = {"yes", "no", "yes please", "no thanks", "sure"}
 
 
 def _event_of_progress(
@@ -150,6 +149,7 @@ def advance_on_delivery(
                    WHERE origin.signal_id=%s AND origin.conversation_id=%s
                      AND origin.user_id=%s AND origin.instance_id=%s
                      AND d.instance_id=%s
+                     AND d.origin_kind='AUTO_SIGNAL'
                    LIMIT 1""",
                 (signal["related_signal_id"],conversation_id,
                  user_id,instance_id,instance_id),
