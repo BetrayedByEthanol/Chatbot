@@ -139,6 +139,13 @@ def main(argv=None):
         "intent_signal_persistence": (
             "WORKING" if state["intent_signals"] >= 3 else "MISSING"
         ),
+        "dialogue_thread_persistence": (
+            "WORKING" if state["dialogue_threads"] >= 1 else "MISSING"
+        ),
+        "pending_dialogue_observed": (
+            "WORKING" if state["dialogue_pending_acts"] >= 1
+            else "NOT_OBSERVED"
+        ),
         "natural_goal_approval": (
             "WORKING" if state["goals"] >= 1 else "MISSING"
         ),

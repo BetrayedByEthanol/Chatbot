@@ -1,0 +1,419 @@
+"""MVP-01C: automatic, bounded Conversation Manager dialogue progression.
+
+These are discussion-level observations, not domain goals, permissions,
+user-approved decisions or procedure outcomes. All mutations use the
+existing conversation row lock and its surrounding ingress/delivery
+transaction; no model inference, tools, or new scheduler are invoked.
+"""
+import re
+from uuid import UUID, uuid4
+
+from .dialogue_state import _link_turn
+from .intent_interpretation import (
+    classify_intent, parse_explicit_topic_switch, should_interpret_with_model,
+)
+from .conversation import _event
+
+_TOPIC_REQUEST = re.compile(
+    r"^(?:please help\b|help me\b|can you help\b|could you help\b|"
+    r"how (?:do|can|would)\b|"
+    r"let(?:'s| us) (?:discuss|talk about)\b|"
+    r"(?:switch|change) (?:the )?topic\b|"
+    r"new topic\b)",
+    re.I,
+)
+_CLEAR_SWITCH = re.compile(
+    r"^(?:let(?:'s| us) (?:discuss|talk about)\b|"
+    r"(?:switch|change) (?:the )?topic\b|new topic\b)",
+    re.I,
+)
+_QUESTION = re.compile(r"(?:^|[.!]\s+)([^.!?\n]{4,180}\?)\s*$")
+_CHOICE_QUESTION = re.compile(
+    r"^(?:would you prefer|do you prefer|which (?:option|approach|plan) "
+    r"(?:would|do) you (?:choose|prefer))\b.*\bor\b",
+    re.I,
+)
+_NOT_ANSWERS = {"okay", "ok", "got it", "understood"}
+
+
+def _starts_new_topic(kind: str, label: str) -> bool:
+    """Shared ingress/delivery gate: a topic request is not an answer."""
+    return kind == "OBJECTIVE" or (
+        kind == "REQUEST" and bool(_TOPIC_REQUEST.match(label))
+    )
+
+
+def _event_of_progress(
+    cur, *, user_id, instance_id, conversation_id,
+    event_type, turn_id, thread_id, **fields,
+):
+    return _event(
+        cur,user_id=user_id,instance_id=instance_id,
+        conversation_id=conversation_id,event_type=event_type,
+        source_id="conversation.dialogue.automation",
+        trust_level="TRUSTED_PLATFORM",
+        detail={
+            "thread_id":str(thread_id),"evidence_turn_id":str(turn_id),
+            "authority":"DISCUSSION_ONLY",
+            **fields,
+        },
+    )
+
+
+def _focus(
+    cur, *, user_id, instance_id, conversation_id,
+    turn_id, thread_id, current_focus,
+):
+    # Do not reassign an input which an explicit Dialogue command already
+    # bound to another thread. No correction of authoritative progress.
+    cur.execute(
+        """SELECT thread_id FROM dialogue_turn_links
+           WHERE turn_id=%s AND conversation_id=%s AND user_id=%s""",
+        (turn_id,conversation_id,user_id),
+    )
+    linked=cur.fetchone()
+    if linked is not None and linked["thread_id"]!=thread_id:
+        return False
+    _link_turn(cur,conversation_id,user_id,instance_id,thread_id,turn_id)
+    if current_focus!=thread_id and current_focus is not None:
+        cur.execute(
+            """UPDATE dialogue_threads
+               SET attention_status='RECENT',revision=revision+1,
+                   updated_at=clock_timestamp()
+               WHERE thread_id=%s AND conversation_id=%s AND user_id=%s
+                 AND attention_status='FOCUSED'""",
+            (current_focus,conversation_id,user_id),
+        )
+    cur.execute(
+        """UPDATE dialogue_threads
+           SET attention_status='FOCUSED',last_turn_id=%s,
+               revision=revision+1,updated_at=clock_timestamp()
+           WHERE thread_id=%s AND conversation_id=%s AND user_id=%s
+             AND instance_id=%s""",
+        (turn_id,thread_id,conversation_id,user_id,instance_id),
+    )
+    if current_focus!=thread_id:
+        cur.execute(
+            """UPDATE conversations SET focus_thread_id=%s
+               WHERE conversation_id=%s AND user_id=%s
+                 AND instance_id=%s""",
+            (thread_id,conversation_id,user_id,instance_id),
+        )
+    return True
+
+
+def advance_on_delivery(
+    cur, *, user_id: UUID, instance_id: UUID,
+    conversation_id: UUID, turn_id: UUID,
+    response_id: UUID, response_text: str, context_revision: int,
+) -> None:
+    """Called after delivery acknowledgment under the conversation lock.
+
+    An admitted user-intent signal can open/focus a bounded thread; a
+    delivered assistant question can become pending only on an AUTO thread.
+    The response must be delivered; generated-but-undelivered text has no
+    durable conversational-question effect.
+    """
+    cur.execute(
+        """SELECT focus_thread_id,last_input_turn_id,revision
+           FROM conversations
+           WHERE conversation_id=%s AND user_id=%s AND instance_id=%s""",
+        (conversation_id,user_id,instance_id),
+    )
+    conv=cur.fetchone()
+    # Normal sequence: the response was generated from context_revision,
+    # generating it incremented revision once, and the acknowledged
+    # delivery just incremented revision once more. Any intervening explicit
+    # dialogue command (or other state mutation) changes that sequence.
+    # Delivery itself still succeeds, but must not overwrite newer dialogue.
+    if (
+        conv is None or conv["last_input_turn_id"]!=turn_id
+        or conv["revision"] != context_revision + 2
+    ):
+        return
+    current=conv["focus_thread_id"]
+    cur.execute(
+        """SELECT thread_id FROM dialogue_turn_links
+           WHERE turn_id=%s AND conversation_id=%s AND user_id=%s""",
+        (turn_id,conversation_id,user_id),
+    )
+    linked=cur.fetchone()
+    if linked is not None and linked["thread_id"]!=current:
+        return
+    cur.execute(
+        """SELECT signal_id,intent_kind,label,related_signal_id
+           FROM conversation_intent_signals
+           WHERE turn_id=%s AND conversation_id=%s AND user_id=%s
+             AND instance_id=%s""",
+        (turn_id,conversation_id,user_id,instance_id),
+    )
+    signal=cur.fetchone()
+    target=None
+    new=False
+    if signal is not None and linked is None:
+        if signal["related_signal_id"] is not None:
+            # The Conversation Manager, not the model, resolves the
+            # source signal's existing thread via authentic turn evidence.
+            cur.execute(
+                """SELECT l.thread_id
+                   FROM conversation_intent_signals origin
+                   JOIN dialogue_turn_links l
+                     ON l.turn_id=origin.turn_id
+                    AND l.conversation_id=origin.conversation_id
+                    AND l.user_id=origin.user_id
+                   JOIN dialogue_threads d ON d.thread_id=l.thread_id
+                   WHERE origin.signal_id=%s AND origin.conversation_id=%s
+                     AND origin.user_id=%s AND origin.instance_id=%s
+                     AND d.instance_id=%s
+                     AND d.origin_kind='AUTO_SIGNAL'
+                   LIMIT 1""",
+                (signal["related_signal_id"],conversation_id,
+                 user_id,instance_id,instance_id),
+            )
+            match=cur.fetchone()
+            if match is not None:
+                target=match["thread_id"]
+        elif _starts_new_topic(signal["intent_kind"],signal["label"]):
+            # A fresh objective/topic request is a conversational subject,
+            # not an approved Goal. Exact title reuse prevents duplicates
+            # for repeated explicit requests; fuzzy matching is deferred.
+            title=(parse_explicit_topic_switch(signal["label"])
+                   or signal["label"].strip())[:160]
+            if title:
+                cur.execute(
+                    """SELECT thread_id FROM dialogue_threads
+                       WHERE conversation_id=%s AND user_id=%s
+                         AND instance_id=%s AND origin_kind='AUTO_SIGNAL'
+                         AND lower(title)=lower(%s)
+                       ORDER BY updated_at DESC LIMIT 2""",
+                    (conversation_id,user_id,instance_id,title),
+                )
+                matches=cur.fetchall()
+                if len(matches)==1:
+                    target=matches[0]["thread_id"]
+                elif len(matches)==0:
+                    target=uuid4()
+                    cur.execute(
+                        """INSERT INTO dialogue_threads (
+                             thread_id,conversation_id,user_id,instance_id,
+                             title,origin_turn_id,last_turn_id,origin_kind
+                           ) VALUES (%s,%s,%s,%s,%s,%s,%s,'AUTO_SIGNAL')""",
+                        (target,conversation_id,user_id,instance_id,
+                         title,turn_id,turn_id),
+                    )
+                    new=True
+    if target is not None:
+        if _focus(
+            cur,user_id=user_id,instance_id=instance_id,
+            conversation_id=conversation_id,turn_id=turn_id,
+            thread_id=target,current_focus=current,
+        ):
+            if new:
+                cur.execute(
+                    """INSERT INTO dialogue_referents (
+                         referent_id,conversation_id,thread_id,user_id,
+                         instance_id,kind,label,source_turn_id
+                       ) VALUES (%s,%s,%s,%s,%s,'TOPIC',%s,%s)""",
+                    (uuid4(),conversation_id,target,user_id,
+                     instance_id,title,turn_id),
+                )
+            _event_of_progress(
+                cur,user_id=user_id,instance_id=instance_id,
+                conversation_id=conversation_id,
+                event_type=(
+                    "conversation.dialogue.auto_thread_opened.v1"
+                    if new else "conversation.dialogue.auto_focused.v1"
+                ),
+                turn_id=turn_id,thread_id=target,
+                source_signal_id=str(signal["signal_id"]),
+            )
+            current=target
+
+    # Never create automatic questions on an explicitly managed thread.
+    if current is None:
+        return
+    cur.execute(
+        """SELECT origin_kind FROM dialogue_threads
+           WHERE thread_id=%s AND conversation_id=%s AND user_id=%s
+             AND instance_id=%s""",
+        (current,conversation_id,user_id,instance_id),
+    )
+    focused=cur.fetchone()
+    if focused is None or focused["origin_kind"]!="AUTO_SIGNAL":
+        return
+    question=_QUESTION.search(response_text)
+    if question is None or response_text.count("?")!=1:
+        return
+    label=question.group(1).strip()
+    if not label or len(label)>200:
+        return
+    is_decision=bool(_CHOICE_QUESTION.match(label))
+    act_kind="DECISION" if is_decision else "QUESTION"
+    origin_kind=(
+        "AUTO_DELIVERED_DECISION" if is_decision
+        else "AUTO_DELIVERED_QUESTION"
+    )
+    cur.execute(
+        """SELECT 1 FROM dialogue_pending_acts
+           WHERE thread_id=%s AND conversation_id=%s AND user_id=%s
+             AND status='PENDING' LIMIT 1""",
+        (current,conversation_id,user_id),
+    )
+    if cur.fetchone() is not None:
+        return
+    act_id=uuid4()
+    cur.execute(
+        """INSERT INTO dialogue_pending_acts (
+             act_id,conversation_id,thread_id,user_id,instance_id,
+             kind,label,source_response_id,origin_kind
+           ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+        (act_id,conversation_id,current,user_id,instance_id,
+         act_kind,label,response_id,origin_kind),
+    )
+    # A custom next action may have been explicitly set before the input
+    # that produced this question. Automatic observation can provide a hint
+    # when none exists, but must not overwrite a newer caller-owned action.
+    # Keep recording the delivered question as PENDING in either case.
+    auto_hint=(("Await choice: " if is_decision else "Await answer: ")+label)[:200]
+    cur.execute(
+        """UPDATE dialogue_threads
+           SET next_conversational_action=COALESCE(next_conversational_action,%s),
+               revision=revision+1,updated_at=clock_timestamp()
+           WHERE thread_id=%s AND conversation_id=%s AND user_id=%s
+             AND instance_id=%s""",
+        (auto_hint,current,conversation_id,user_id,instance_id),
+    )
+    _event_of_progress(
+        cur,user_id=user_id,instance_id=instance_id,
+        conversation_id=conversation_id,
+        event_type=(
+            "conversation.dialogue.auto_decision_offered.v1"
+            if is_decision else "conversation.dialogue.auto_question_offered.v1"
+        ),
+        turn_id=turn_id,thread_id=current,act_id=str(act_id),
+        response_id=str(response_id),
+    )
+
+
+def resolve_auto_question_on_ingress(
+    cur, *, user_id: UUID, instance_id: UUID,
+    conversation_id: UUID, turn_id: UUID,
+    turn_sequence: int, text: str,
+) -> None:
+    """Conservative discussion-only answer recognition at authenticated ingress.
+
+    A nonadjacent question, topic switch, literal ACK or user question is
+    never silently treated as answered. No DECISION or task state is changed.
+    """
+    value=text.strip()
+    simple=value.casefold().strip(" .!?")
+    if (not value or simple in _NOT_ANSWERS or "?" in value
+            or _CLEAR_SWITCH.match(value)):
+        return
+    interpretation=classify_intent(value)
+    if should_interpret_with_model(value):
+        # MVP-01B's primary inference can still identify this input as a
+        # new OBJECTIVE. Keep it unlinked until that proposal is admitted
+        # at response commit, then select its topic on delivery. Without
+        # a supported model signal, abstain instead of guessing that the
+        # message answered an unrelated pending question.
+        return
+    if interpretation and (
+        interpretation.kind in ("CORRECTION","HYPOTHETICAL","INSTRUCTION")
+        or _starts_new_topic(interpretation.kind,interpretation.label)
+    ):
+        # New subject requests must remain unlinked at ingress so the
+        # delivery adaptation can create/focus their own thread. Never
+        # resolve an unrelated earlier question as "answered".
+        return
+    cur.execute(
+        """SELECT c.focus_thread_id FROM conversations c
+           JOIN dialogue_threads t ON t.thread_id=c.focus_thread_id
+           WHERE c.conversation_id=%s AND c.user_id=%s
+             AND c.instance_id=%s AND t.origin_kind='AUTO_SIGNAL'""",
+        (conversation_id,user_id,instance_id),
+    )
+    row=cur.fetchone()
+    if row is None:
+        return
+    current=row["focus_thread_id"]
+    # MVP-01A has already persisted explicit references in the same
+    # authenticated ingress transaction. Do not mark a question on the
+    # focused thread ANSWERED when this turn references a different
+    # conversation thread: delivery must remain free to refocus it.
+    cur.execute(
+        """SELECT signal.related_signal_id, origin_link.thread_id AS referenced_thread
+           FROM conversation_intent_signals signal
+           LEFT JOIN conversation_intent_signals origin
+             ON origin.signal_id=signal.related_signal_id
+            AND origin.conversation_id=signal.conversation_id
+            AND origin.user_id=signal.user_id
+            AND origin.instance_id=signal.instance_id
+           LEFT JOIN dialogue_turn_links origin_link
+             ON origin_link.turn_id=origin.turn_id
+            AND origin_link.conversation_id=origin.conversation_id
+            AND origin_link.user_id=origin.user_id
+           WHERE signal.turn_id=%s AND signal.conversation_id=%s
+             AND signal.user_id=%s AND signal.instance_id=%s""",
+        (turn_id,conversation_id,user_id,instance_id),
+    )
+    reference=cur.fetchone()
+    if (reference is not None and reference["related_signal_id"] is not None
+            and reference["referenced_thread"]!=current):
+        # Unresolved references also abstain: treating them as an answer
+        # would make a potentially erroneous, irreversible turn link.
+        return
+    cur.execute(
+        """SELECT a.act_id,a.origin_kind,a.kind,a.label,t.sequence,
+                  r.delivery_status
+           FROM dialogue_pending_acts a
+           JOIN conversation_responses r
+             ON r.response_id=a.source_response_id
+            AND r.conversation_id=a.conversation_id
+            AND r.user_id=a.user_id
+           JOIN conversation_turns t ON t.turn_id=r.turn_id
+           WHERE a.thread_id=%s AND a.conversation_id=%s AND a.user_id=%s
+             AND a.instance_id=%s AND a.status='PENDING'
+           ORDER BY a.created_at,a.act_id LIMIT 2""",
+        (current,conversation_id,user_id,instance_id),
+    )
+    acts=cur.fetchall()
+    # The *whole* pending-act set must be unambiguous, including manually
+    # offered decisions/questions. Old, generated or competing acts are
+    # never silently answered by a free-text message.
+    if (len(acts)!=1
+            or acts[0]["origin_kind"]!="AUTO_DELIVERED_QUESTION"
+            or acts[0]["kind"]!="QUESTION"
+            or acts[0]["sequence"]!=turn_sequence-1
+            or acts[0]["delivery_status"]!="DELIVERED"):
+        return
+    _link_turn(cur,conversation_id,user_id,instance_id,current,turn_id)
+    cur.execute(
+        """UPDATE dialogue_pending_acts
+           SET status='RESOLVED',resolution_kind='ANSWERED',
+               resolution_turn_id=%s,updated_at=clock_timestamp()
+           WHERE act_id=%s AND status='PENDING'""",
+        (turn_id,acts[0]["act_id"]),
+    )
+    # A user-approved next action may have superseded the automatic
+    # "Await answer" hint after question delivery. Resolve the act and
+    # advance the turn, but clear only that exact auto-generated hint.
+    # Use the same 200-character bound as advance_on_delivery().
+    auto_hint=("Await answer: "+acts[0]["label"])[:200]
+    cur.execute(
+        """UPDATE dialogue_threads
+           SET last_turn_id=%s,
+               next_conversational_action=CASE
+                   WHEN next_conversational_action=%s THEN NULL
+                   ELSE next_conversational_action END,
+               revision=revision+1,updated_at=clock_timestamp()
+           WHERE thread_id=%s AND conversation_id=%s AND user_id=%s
+             AND instance_id=%s""",
+        (turn_id,auto_hint,current,conversation_id,user_id,instance_id),
+    )
+    _event_of_progress(
+        cur,user_id=user_id,instance_id=instance_id,
+        conversation_id=conversation_id,
+        event_type="conversation.dialogue.auto_question_answered.v1",
+        turn_id=turn_id,thread_id=current,act_id=str(acts[0]["act_id"]),
+    )

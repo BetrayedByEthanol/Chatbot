@@ -11,6 +11,25 @@ _OBSERVATION = re.compile(r"^(?:i (?:prepared|made|finished|tried|noticed|strugg
 _REQUEST = re.compile(r"^(?:can (?:you|we)|could (?:you|we)|would you|will you|please|help me|tell me|explain|how|what|why|when|where|yes,? please|let's)\b", re.I)
 _REFERENCE = re.compile(r"\b(that goal|this goal|our goal|previous goal|the plan|our plan|the goal|next step|start by|what we discussed|i meant)\b", re.I)
 
+# MVP-01C: a bounded, explicit conversational topic switch is a REQUEST,
+# not an instruction to execute tools or a user-authorized goal.
+_EXPLICIT_TOPIC_SWITCH = re.compile(
+    r"^(?:(?:switch|change)\s+(?:the\s+)?topic\s+to\s+"
+    r"|new\s+topic\s*:\s*)"
+    r"(?P<topic>[^\r\n.!?]{1,160})\s*[.!]?$",
+    re.I,
+)
+
+
+def parse_explicit_topic_switch(text: str) -> str | None:
+    """Return a stated topic, not an inferred topic or execution command."""
+    match = _EXPLICIT_TOPIC_SWITCH.fullmatch(text.strip())
+    if match is None:
+        return None
+    topic = match.group("topic").strip()
+    return topic if topic else None
+
+
 @dataclass(frozen=True)
 class IntentDraft:
     kind: str
@@ -34,6 +53,10 @@ def classify_intent(text: str) -> IntentDraft | None:
             kind, label, confidence = "REQUEST", original, .80
         else:
             kind, label, confidence = "OBJECTIVE", subject, .88
+    elif parse_explicit_topic_switch(value) is not None:
+        # Keep the exact user wording as source evidence. Dialogue routing
+        # extracts the named subject only after the REQUEST signal is stored.
+        kind, label, confidence = "REQUEST", original, .95
     elif _INSTRUCTION.match(value):
         kind, label, confidence = "INSTRUCTION", original, .86
     elif _OBSERVATION.match(value):
