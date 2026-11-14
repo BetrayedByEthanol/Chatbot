@@ -5,7 +5,8 @@ ALTER TABLE dialogue_threads
   CHECK (origin_kind IN ('EXPLICIT','AUTO_SIGNAL'));
 ALTER TABLE dialogue_pending_acts
   ADD COLUMN origin_kind text NOT NULL DEFAULT 'EXPLICIT'
-  CHECK (origin_kind IN ('EXPLICIT','AUTO_DELIVERED_QUESTION'));
+  CHECK (origin_kind IN ('EXPLICIT','AUTO_DELIVERED_QUESTION',
+                         'AUTO_DELIVERED_DECISION'));
 
 CREATE INDEX dialogue_auto_threads_by_title_idx
   ON dialogue_threads(conversation_id,user_id,instance_id,lower(title))
