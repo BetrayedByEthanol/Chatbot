@@ -94,6 +94,98 @@ def test_objective_creates_focused_topic_and_delivered_question(dsn):
     assert first.turn_id
 
 
+@pytest.mark.parametrize("next_action,expected_next_action", [
+    ("Summarize the agreed walking schedule",
+     "Summarize the agreed walking schedule"),
+    ("Await answer: A different follow-up?",
+     "Await answer: A different follow-up?"),
+    ("Await answer: Which day would work for you?", None),
+])
+def test_answer_resolves_auto_question_without_erasing_explicit_next_action(
+    dsn,next_action,expected_next_action,
+):
+    """A newer, explicitly set next action wins over an auto question hint."""
+    from persona_agent.dialogue_contracts import SetThreadProgressCommand
+    from persona_agent.dialogue_state import set_thread_progress
+
+    identity=seed_local_demo(dsn)
+    actor=TrustedActor(user_id=identity.user_id,source_id="mvp01c-next-action")
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        first=ingest_text(conn,actor,TextInputCommand(
+            conversation_id=identity.conversation_id,
+            instance_id=identity.instance_id,
+            expected_generation=identity.generation,
+            idempotency_key="walking",
+            text="I want to walk more.",
+        ))
+        reply=respond_to_text(
+            conn,actor,first.turn_id,
+            ReplyModel(("Which day would work for you?",)),
+        )
+        acknowledge_text_delivery(conn,actor,reply.response_id)
+
+    original=state(dsn,identity)
+    thread=original.focus_thread_id
+    question=original.pending_acts[0]
+    assert question.label=="Which day would work for you?"
+    assert original.threads[0].next_conversational_action==(
+        "Await answer: Which day would work for you?"
+    )
+
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        set_thread_progress(conn,actor,SetThreadProgressCommand(
+            conversation_id=identity.conversation_id,
+            instance_id=identity.instance_id,
+            expected_generation=identity.generation,
+            expected_revision=original.revision,
+            evidence_turn_id=first.turn_id,
+            idempotency_key="explicit-followup",
+            thread_id=thread,
+            resolution=Resolution.OPEN,
+            attention=Attention.FOCUSED,
+            next_conversational_action=next_action,
+        ))
+        answered=ingest_text(conn,actor,TextInputCommand(
+            conversation_id=identity.conversation_id,
+            instance_id=identity.instance_id,
+            expected_generation=identity.generation,
+            idempotency_key="answer",
+            text="Tuesday would work.",
+        ))
+
+    after=state(dsn,identity)
+    assert after.pending_acts==()
+    assert after.focus_thread_id==thread
+    assert after.threads[0].next_conversational_action==expected_next_action
+    assert after.threads[0].resolution_status==Resolution.OPEN
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            """SELECT status,resolution_kind,resolution_turn_id
+               FROM dialogue_pending_acts WHERE act_id=%s""",
+            (question.act_id,),
+        ).fetchone()==("RESOLVED","ANSWERED",answered.turn_id)
+        assert conn.execute(
+            """SELECT last_turn_id,next_conversational_action
+               FROM dialogue_threads WHERE thread_id=%s""",
+            (thread,),
+        ).fetchone()==(answered.turn_id,expected_next_action)
+        assert conn.execute(
+            """SELECT thread_id FROM dialogue_turn_links
+               WHERE turn_id=%s AND conversation_id=%s""",
+            (answered.turn_id,identity.conversation_id),
+        ).fetchone()==(thread,)
+        assert conn.execute(
+            """SELECT count(*) FROM events
+               WHERE event_type='conversation.dialogue.auto_question_answered.v1'
+                 AND payload->>'act_id'=%s""",
+            (str(question.act_id),),
+        ).fetchone()[0]==1
+        assert conn.execute(
+            """SELECT count(*) FROM goal_records WHERE user_id=%s""",
+            (identity.user_id,),
+        ).fetchone()[0]==0
+
+
 def test_topic_switch_preserves_independent_resolution_and_old_question(dsn):
     identity=seed_local_demo(dsn)
     harness=BehavioralAcceptanceHarness(dsn,identity,ReplyModel((
