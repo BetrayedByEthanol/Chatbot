@@ -36,6 +36,8 @@ def test_sessions_share_persona_but_not_conversation_and_survive_host_restart(ds
         "I want to eat healthier. Can you help me with this goal?",
         idempotency_key="mvp00a-goal-request",
     )
+    # A tentative objective is not sufficient to authorize durable goal creation.
+    assert harness.observe_state()["goals"] == 0
     harness.send(
         "Yes, please help me make this a lasting goal.",
         idempotency_key="mvp00a-goal-approval",
@@ -61,8 +63,6 @@ def test_sessions_share_persona_but_not_conversation_and_survive_host_restart(ds
     assert observed["conversations"] == 2
     assert observed["turns"] == 4
     assert observed["delivered_responses"] == 4
-    # Natural-language goal integration is not implemented by the test.
-    assert observed["goals"] == 0
 
 
 def test_existing_extraction_worker_accepts_input_evidence_across_sessions(dsn):
