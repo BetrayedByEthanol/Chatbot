@@ -117,6 +117,11 @@ auto-recorded dialogue acts **replaceable** by a later authorized explicit
 - Ingress answer resolution preserves explicitly customized next actions,
   including those with an `Await answer:` prefix for a different question.
   Only the exact automatic question hint is removed.
+- Delivery of a follow-up question or decision writes an automatic `Await …`
+  hint **only when `next_conversational_action` is NULL**. It still
+  durably registers the delivered pending act when an explicit next action
+  exists, but never overwrites that caller-owned instruction. The ingress
+  and delivery stages have independent regression checks for this precedence.
 - No generated-but-undelivered response can create pending questions.
 - Discussion topics and QUESTION/ANSWERED records never mean goal acceptance,
   permission, instruction execution, verified completion, or success.
