@@ -213,13 +213,15 @@ def _check_turn(step: dict, turn: dict, snapshot: dict) -> list[dict]:
 
 def run_scenario(
     dsn: str, scenario: dict, gateway,
-    *, run_tool_worker: bool = True,
+    *, run_tool_worker: bool = True, run_memory_worker: bool = True,
 ) -> dict:
     """Run ordinary model/tool conversations; return full evidence on failure."""
     scenario = validate_scenario(scenario)
     identity = seed_local_demo(dsn)
     observed_gateway = RecordingGateway(gateway)
     harness = BehavioralAcceptanceHarness(dsn, identity, observed_gateway)
+    if run_memory_worker:
+        harness.enable_explicit_memory_worker()
     report: dict[str, Any] = {
         "format_version": "mvp01e.1", "name":scenario["name"],
         "started_at":timestamp(), "synthetic":True,
@@ -288,6 +290,14 @@ def run_scenario(
                     "actual":{"claimed":lease is not None,"delivered":delivered},
                     "expected":{"claimed":True,"delivered":1},
                 })
+            if run_memory_worker:
+                recorded["memory_worker"] = harness.tick_explicit_memory_worker()
+                memory_state = capture_state(
+                    dsn,harness,turn_id=turn.turn_id,
+                    checkpoint="after_explicit_memory_worker",
+                )
+                memory_state["step_index"] = index
+                report["snapshots"].append(memory_state)
         except Exception as exc:
             report["errors"].append({
                 "step_index":index,"type":type(exc).__name__,
