@@ -270,13 +270,18 @@ def advance_on_delivery(
         (act_id,conversation_id,current,user_id,instance_id,
          act_kind,label,response_id,origin_kind),
     )
+    # A custom next action may have been explicitly set before the input
+    # that produced this question. Automatic observation can provide a hint
+    # when none exists, but must not overwrite a newer caller-owned action.
+    # Keep recording the delivered question as PENDING in either case.
+    auto_hint=(("Await choice: " if is_decision else "Await answer: ")+label)[:200]
     cur.execute(
         """UPDATE dialogue_threads
-           SET next_conversational_action=%s,revision=revision+1,
-               updated_at=clock_timestamp()
-           WHERE thread_id=%s AND conversation_id=%s AND user_id=%s""",
-        ((("Await choice: " if is_decision else "Await answer: ")+label)[:200],
-         current,conversation_id,user_id),
+           SET next_conversational_action=COALESCE(next_conversational_action,%s),
+               revision=revision+1,updated_at=clock_timestamp()
+           WHERE thread_id=%s AND conversation_id=%s AND user_id=%s
+             AND instance_id=%s""",
+        (auto_hint,current,conversation_id,user_id,instance_id),
     )
     _event_of_progress(
         cur,user_id=user_id,instance_id=instance_id,
