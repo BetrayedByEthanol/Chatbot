@@ -440,6 +440,19 @@ def prepare_text_context(
                             encoded=json.dumps(state,ensure_ascii=False)
                         if len(encoded)<=cap:
                             prompt+=head+encoded+"\n"
+            # P2-07: domain-owned, read-only emotion/relationship context.
+            # Explicit communication preferences precede optional simulated
+            # affect and tentative user-cue estimates. The whole block fits
+            # inside the existing prompt budget; never drop the latest input.
+            from .affect_context import persona_affect_context_block
+            affect_room=max_context_chars-len(prompt)-min(
+                len(history[-1].content),min(256,max_context_chars//4),
+            )-160
+            if affect_room>=140:
+                prompt+=persona_affect_context_block(
+                    cursor,actor.user_id,item["instance_id"],
+                    min(650,affect_room),
+                )
             # MVP-01A: bounded, non-authoritative intent discussion cues.
             # This is selective retrieval from the same conversation only.
             from .intent_interpretation import intent_context_block
@@ -454,19 +467,6 @@ def prepare_text_context(
                     turn_sequence=item["sequence"],
                     latest_text=history[-1].content,
                     max_chars=min(620,intent_room),
-                )
-            # P2-07: domain-owned, read-only emotion/relationship context.
-            # Explicit communication preferences precede optional simulated
-            # affect and tentative user-cue estimates. The whole block fits
-            # inside the existing prompt budget; never drop the latest input.
-            from .affect_context import persona_affect_context_block
-            affect_room=max_context_chars-len(prompt)-min(
-                len(history[-1].content),min(256,max_context_chars//4),
-            )-160
-            if affect_room>=140:
-                prompt+=persona_affect_context_block(
-                    cursor,actor.user_id,item["instance_id"],
-                    min(650,affect_room),
                 )
             # P2-02: Summary eligibility must refer to the oldest message
             # *actually retained* after character budgeting, not the initial
