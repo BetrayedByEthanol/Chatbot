@@ -124,6 +124,55 @@ def test_outbound_observer_receives_detached_payload(monkeypatch):
     assert seen[0]["messages"][0]["content"]=="Hello"
 
 
+
+def test_interpreted_run_exports_actual_augmented_request_in_zip(
+    dsn,tmp_path,monkeypatch,
+):
+    from persona_agent.model_gateway import OllamaChatGateway
+
+    captured=[]
+    class FakeResponse:
+        def __enter__(self):
+            return self
+        def __exit__(self,*args):
+            return False
+        def read(self,n=-1):
+            return BytesIO(json.dumps({
+                "message":{"role":"assistant","content":json.dumps({
+                    "reply":"What schedule might suit you?","intent":None,
+                })},
+            }).encode()).read(n)
+    def urlopen(request,timeout):
+        captured.append(json.loads(request.data))
+        return FakeResponse()
+
+    monkeypatch.setattr("persona_agent.model_gateway.urlopen",urlopen)
+    scenario={"name":"interpreted-prompt-evidence","steps":[
+        {"action":"session","name":"first"},
+        {"action":"message",
+         "text":"I've been thinking about walking more regularly."},
+    ]}
+    report=run_scenario(
+        dsn,scenario,OllamaChatGateway(model="outbound-test"),
+        run_memory_worker=False,
+    )
+    assert not report["errors"],report["errors"]
+    assert len(report["model_requests"])==len(captured)==1
+    sent=report["model_requests"][0]
+    assert sent["capture_boundary"]=="ollama.outbound"
+    assert sent["payload"]==captured[0]
+    assert sent["payload"]["format"]=="json"
+    assert "evidence_quote" in sent["messages"][0]["content"]
+    path=write_bundle(
+        report,scenario,tmp_path/"outbound.zip",
+        model="outbound-test",git_sha="test",migration_hashes={},
+    )
+    with ZipFile(path) as z:
+        export=json.loads(z.read("model_requests.json"))
+    assert export==report["model_requests"]
+    assert export[0]["payload"]==captured[0]
+
+
 def test_evaluation_uses_real_host_and_captures_each_state_boundary(dsn,tmp_path):
     model=SimpleModel()
     scenario={
