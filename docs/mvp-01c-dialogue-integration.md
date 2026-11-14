@@ -65,6 +65,12 @@ authoritative goal/task/procedure state is modified.
   new topic without resolving an unrelated pending question. When no
   admissible signal arrives, automatic answer resolution conservatively
   abstains rather than treating ambiguous text as an answer.
+- Before linking an adjacent answer, ingress also checks the already
+  persisted `related_signal_id` from MVP-01A. When a supported reference
+  points to a **different** thread (or has no resolved target), the input
+  remains unlinked and the previous question remains pending. Delivery can
+  then refocus the original referenced thread and associate any new question
+  with that topic rather than the unrelated current thread.
 - Automatic delivery adaptation is allowed only when conversation revision
   equals `conversation_responses.context_revision + 2`: the generation and
   delivery increments, with **no intervening explicit dialogue command**.
@@ -92,6 +98,10 @@ real-PostgreSQL regression verifies that model-eligible implicit language
 does not prematurely answer a pending question, either when the model
 subsequently supplies an OBJECTIVE (new topic) or supplies no reliable
 interpretation (abstain).
+A further PostgreSQL regression covers a cooking thread with an adjacent
+pending question followed by "Please suggest the next step for that goal.",
+where the `related_signal_id` references an older walking objective. The
+walking thread is restored on delivery; the cooking question stays pending.
 
 Run full Phase 0 PostgreSQL contract tests and the existing Phase 1 live
 Ollama acceptance workflow. Behavior remains intentionally narrow:
