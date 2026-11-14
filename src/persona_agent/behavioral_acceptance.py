@@ -36,6 +36,7 @@ _SCOPED_TABLES = {
     "goals": "goal_records",
     "goal_evidence": "goal_evidence",
     "reflections": "cognitive_reflections",
+    "intent_signals": "conversation_intent_signals",
     "intentions": "cognitive_intentions",
     "emotion_appraisals": "emotion_appraisals",
     "relationship_observations": "relationship_observations",
