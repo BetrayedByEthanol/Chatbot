@@ -30,7 +30,7 @@ from .conversation import (
 from .conversation_contracts import ModelMessage, ModelReply, TextInputCommand
 from .model_gateway import OllamaChatGateway
 from .observability import get_conversation_metrics
-from .response_decisions import decide_response
+from .response_orchestrator import respond_to_user_text
 from .operation_control import reap_stale_operations
 from .operation_scheduler import configure_resource_pool
 from .tool_contracts import RESOURCE_KEY, SlowTextToolCommand
@@ -118,37 +118,18 @@ class LocalAcceptanceSession:
                     text=text,
                 ),
             )
-        selected_mode=mode
-        selected_zone=timezone_name
-        if mode=="auto":
-            # Route the authenticated persisted input, not a model-generated
-            # command, unverified client text, or a synthetic user turn.
-            with self._connection() as conn:
-                with conn.cursor(row_factory=dict_row) as cur:
-                    cur.execute(
-                        """SELECT input_text FROM conversation_turns
-                           WHERE turn_id=%s AND conversation_id=%s
-                             AND instance_id=%s AND user_id=%s""",
-                        (entered.turn_id,self.identity.conversation_id,
-                         self.identity.instance_id,self.identity.user_id),
-                    )
-                    source=cur.fetchone()
-            if source is None:
-                raise RuntimeError("authenticated input vanished before routing")
-            decision=decide_response(
-                source["input_text"],default_timezone=timezone_name,
-            )
-            selected_mode={
-                "MODEL":"model","CLOCK":"time","TEXT_ANALYSIS":"analyze",
-            }[decision.route]
-            if decision.timezone_name is not None:
-                selected_zone=decision.timezone_name
         with self._connection() as conn:
-            if selected_mode=="time":
-                reply=respond_with_time(
-                    conn,self.actor,entered.turn_id,timezone_name=selected_zone,
+            if mode=="auto":
+                reply=respond_to_user_text(
+                    conn,self.actor,entered.turn_id,self.gateway,
+                    default_timezone=timezone_name,
+                    max_words=max_words,await_seconds=self.await_seconds,
                 )
-            elif selected_mode=="analyze":
+            elif mode=="time":
+                reply=respond_with_time(
+                    conn,self.actor,entered.turn_id,timezone_name=timezone_name,
+                )
+            elif mode=="analyze":
                 reply=respond_to_text_analysis(
                     conn,self.actor,
                     SlowTextToolCommand(turn_id=entered.turn_id,max_words=max_words),
