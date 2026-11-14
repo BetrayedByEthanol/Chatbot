@@ -80,6 +80,11 @@ def test_multi_turn_goal_discussion_is_not_approval_or_completion(dsn):
     assert "eat healthier" in model.calls[1][0].content
     assert "approved goals" in model.calls[1][0].content
     harness.restart_host()
+    samples=harness.observe_intent_signals()
+    assert [row["intent_kind"] for row in samples] == [
+        "OBJECTIVE","REQUEST","REQUEST",
+    ]
+    assert all(row["proposal_status"]=="UNREVIEWED" for row in samples)
 
     with psycopg.connect(dsn, autocommit=True) as conn:
         signals = conn.execute(
