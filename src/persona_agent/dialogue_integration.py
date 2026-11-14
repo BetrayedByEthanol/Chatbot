@@ -359,7 +359,7 @@ def resolve_auto_question_on_ingress(
         # would make a potentially erroneous, irreversible turn link.
         return
     cur.execute(
-        """SELECT a.act_id,a.origin_kind,a.kind,t.sequence,
+        """SELECT a.act_id,a.origin_kind,a.kind,a.label,t.sequence,
                   r.delivery_status
            FROM dialogue_pending_acts a
            JOIN conversation_responses r
@@ -390,12 +390,21 @@ def resolve_auto_question_on_ingress(
            WHERE act_id=%s AND status='PENDING'""",
         (turn_id,acts[0]["act_id"]),
     )
+    # A user-approved next action may have superseded the automatic
+    # "Await answer" hint after question delivery. Resolve the act and
+    # advance the turn, but clear only that exact auto-generated hint.
+    # Use the same 200-character bound as advance_on_delivery().
+    auto_hint=("Await answer: "+acts[0]["label"])[:200]
     cur.execute(
         """UPDATE dialogue_threads
-           SET last_turn_id=%s,next_conversational_action=NULL,
+           SET last_turn_id=%s,
+               next_conversational_action=CASE
+                   WHEN next_conversational_action=%s THEN NULL
+                   ELSE next_conversational_action END,
                revision=revision+1,updated_at=clock_timestamp()
-           WHERE thread_id=%s AND conversation_id=%s AND user_id=%s""",
-        (turn_id,current,conversation_id,user_id),
+           WHERE thread_id=%s AND conversation_id=%s AND user_id=%s
+             AND instance_id=%s""",
+        (turn_id,auto_hint,current,conversation_id,user_id,instance_id),
     )
     _event_of_progress(
         cur,user_id=user_id,instance_id=instance_id,
