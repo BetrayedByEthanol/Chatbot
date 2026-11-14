@@ -1,0 +1,141 @@
+{
+  "name": "mvp01e-human-conversation-v1",
+  "description": "Synthetic, unscripted assistant responses; three sessions with a same-session restart, context/correction and safe tool requests. Expectations cover contracts only.",
+  "steps": [
+    {
+      "action": "session",
+      "name": "daily_life_and_objectives"
+    },
+    {
+      "action": "message",
+      "text": "Hello! How are you today?"
+    },
+    {
+      "action": "message",
+      "text": "Today was quite stressful at work."
+    },
+    {
+      "action": "message",
+      "text": "I finally finished an important report."
+    },
+    {
+      "action": "message",
+      "text": "I've been thinking about walking more regularly."
+    },
+    {
+      "action": "message",
+      "text": "Maybe three times per week."
+    },
+    {
+      "action": "message",
+      "text": "Actually, twice per week would be better.",
+      "expect_intent": "CORRECTION"
+    },
+    {
+      "action": "message",
+      "text": "What would you recommend as a starting point?"
+    },
+    {
+      "action": "message",
+      "text": "Which days might work best?"
+    },
+    {
+      "action": "message",
+      "text": "Switch the topic to cooking.",
+      "expect_intent": "REQUEST"
+    },
+    {
+      "action": "message",
+      "text": "I made pasta for dinner yesterday.",
+      "expect_intent": "OBSERVATION"
+    },
+    {
+      "action": "message",
+      "text": "What ingredients would help me cook healthier meals?"
+    },
+    {
+      "action": "restart"
+    },
+    {
+      "action": "message",
+      "text": "What about that walking goal?"
+    },
+    {
+      "action": "session",
+      "name": "tools_and_procedures"
+    },
+    {
+      "action": "message",
+      "text": "Hello again!"
+    },
+    {
+      "action": "message",
+      "text": "What time is it in Berlin?",
+      "expect_model_id": "clock.now.v1"
+    },
+    {
+      "action": "message",
+      "text": "Count words in: alpha beta beta gamma",
+      "expect_model_id": "tool.initial.deferred.v1"
+    },
+    {
+      "action": "message",
+      "text": "Can you help me set up Nginx?"
+    },
+    {
+      "action": "message",
+      "text": "How do I create and configure a self-signed TLS certificate?"
+    },
+    {
+      "action": "message",
+      "text": "Can you run this for me?"
+    },
+    {
+      "action": "message",
+      "text": "No, please only explain the steps. Don't execute anything."
+    },
+    {
+      "action": "message",
+      "text": "Let's discuss my walking plan instead."
+    },
+    {
+      "action": "session",
+      "name": "continuity_and_feedback"
+    },
+    {
+      "action": "message",
+      "text": "Hi, I'm back."
+    },
+    {
+      "action": "message",
+      "text": "Do you remember what we discussed about walking?"
+    },
+    {
+      "action": "message",
+      "text": "I managed to walk yesterday."
+    },
+    {
+      "action": "message",
+      "text": "It rained today, so I skipped my walk."
+    },
+    {
+      "action": "message",
+      "text": "What could I do instead?"
+    },
+    {
+      "action": "message",
+      "text": "I prefer short, concrete explanations."
+    },
+    {
+      "action": "message",
+      "text": "What if I asked you to delete my data?"
+    },
+    {
+      "action": "restart"
+    },
+    {
+      "action": "message",
+      "text": "Could you summarize our discussion and suggest one next step?"
+    }
+  ]
+}

@@ -208,3 +208,7 @@ __marimo__/
 
 
 .idea
+
+# MVP-01E: local-only credentials and synthetic traces
+.env.e2e
+artifacts/

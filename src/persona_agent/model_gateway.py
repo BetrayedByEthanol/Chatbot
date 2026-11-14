@@ -6,8 +6,8 @@ database locks; callers may substitute an in-process deterministic fake.
 
 import json
 import socket
-from dataclasses import dataclass
-from typing import Sequence
+from dataclasses import dataclass, field
+from typing import Callable, Sequence
 
 from pydantic import ValidationError
 from urllib.error import HTTPError, URLError
@@ -24,6 +24,12 @@ class OllamaChatGateway:
     base_url: str = "http://127.0.0.1:11434"
     timeout_seconds: float = 25.0
     max_response_chars: int = 12000
+    # Optional evaluator hook: the fully composed Ollama request (including
+    # the structured intent instruction) at the outbound boundary.
+    # Supply a detached copy so observers cannot mutate the actual request.
+    request_observer: Callable[[dict], None] | None = field(
+        default=None, repr=False, compare=False,
+    )
 
     def __post_init__(self) -> None:
         if not (1 <= len(self.model) <= 128):
@@ -35,6 +41,8 @@ class OllamaChatGateway:
         if not (self.base_url.startswith("http://") or
                 self.base_url.startswith("https://")):
             raise ValueError("model endpoint must be HTTP(S)")
+        if self.request_observer is not None and not callable(self.request_observer):
+            raise TypeError("request_observer must be callable")
 
     def _chat(self, messages: Sequence[ModelMessage], *, json_mode: bool = False) -> str:
         if not messages:
@@ -55,6 +63,11 @@ class OllamaChatGateway:
             headers={"Content-Type": "application/json"},
             method="POST",
         )
+        # Read the *encoded* HTTP request after all augmentation. The
+        # evaluation receives an independent deserialization, so it cannot
+        # change the bytes about to be sent to Ollama.
+        if self.request_observer is not None:
+            self.request_observer(json.loads(request.data))
         try:
             with urlopen(request, timeout=self.timeout_seconds) as response:
                 payload = response.read(256_001)
