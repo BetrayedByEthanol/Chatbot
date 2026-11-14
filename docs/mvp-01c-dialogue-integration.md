@@ -58,6 +58,13 @@ authoritative goal/task/procedure state is modified.
 - A new subject request (e.g. "Help me cook dinner.") cannot satisfy a
   previous topic's adjacent pending question; it remains unlinked at ingress
   so delivery can focus/open the requested subject.
+- Inputs eligible for MVP-01B model interpretation (e.g. "Lately I've been
+  thinking about a regular walking routine.") also remain **unlinked at
+  ingress**, because the model might propose a new OBJECTIVE at response
+  commit. Delivery uses the persisted proposal, when present, to select the
+  new topic without resolving an unrelated pending question. When no
+  admissible signal arrives, automatic answer resolution conservatively
+  abstains rather than treating ambiguous text as an answer.
 - Automatic delivery adaptation is allowed only when conversation revision
   equals `conversation_responses.context_revision + 2`: the generation and
   delivery increments, with **no intervening explicit dialogue command**.
@@ -80,7 +87,11 @@ restart, topic switch, repeated objective, model-originated objective, manual
 thread ownership, delivered-only semantics and no domain side effects.
 Additional regressions assert a new cooking request cannot answer a walking
 question, and explicitly resolved progress wins over a reply generated before
-that explicit change but acknowledged afterward.
+that explicit change but acknowledged afterward. An additional parameterized
+real-PostgreSQL regression verifies that model-eligible implicit language
+does not prematurely answer a pending question, either when the model
+subsequently supplies an OBJECTIVE (new topic) or supplies no reliable
+interpretation (abstain).
 
 Run full Phase 0 PostgreSQL contract tests and the existing Phase 1 live
 Ollama acceptance workflow. Behavior remains intentionally narrow:
