@@ -9,7 +9,9 @@ import re
 from uuid import UUID, uuid4
 
 from .dialogue_state import _link_turn
-from .intent_interpretation import classify_intent, should_interpret_with_model
+from .intent_interpretation import (
+    classify_intent, parse_explicit_topic_switch, should_interpret_with_model,
+)
 from .conversation import _event
 
 _TOPIC_REQUEST = re.compile(
@@ -175,7 +177,8 @@ def advance_on_delivery(
             # A fresh objective/topic request is a conversational subject,
             # not an approved Goal. Exact title reuse prevents duplicates
             # for repeated explicit requests; fuzzy matching is deferred.
-            title=signal["label"].strip()[:160]
+            title=(parse_explicit_topic_switch(signal["label"])
+                   or signal["label"].strip())[:160]
             if title:
                 cur.execute(
                     """SELECT thread_id FROM dialogue_threads
@@ -212,7 +215,7 @@ def advance_on_delivery(
                          instance_id,kind,label,source_turn_id
                        ) VALUES (%s,%s,%s,%s,%s,'TOPIC',%s,%s)""",
                     (uuid4(),conversation_id,target,user_id,
-                     instance_id,signal["label"][:160],turn_id),
+                     instance_id,title,turn_id),
                 )
             _event_of_progress(
                 cur,user_id=user_id,instance_id=instance_id,
