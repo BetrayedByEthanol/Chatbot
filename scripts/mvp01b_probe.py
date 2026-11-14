@@ -10,6 +10,27 @@ from persona_agent.behavioral_acceptance import BehavioralAcceptanceHarness
 from persona_agent.model_gateway import OllamaChatGateway
 
 
+class ObservedModel:
+    """Diagnostic wrapper: same actual model calls, no fabricated proposal."""
+
+    def __init__(self, wrapped):
+        self.wrapped=wrapped
+        self.enriched_calls=0
+        self.candidates=[]
+
+    def generate(self,messages):
+        return self.wrapped.generate(messages)
+
+    def generate_interpreted(self,messages):
+        self.enriched_calls+=1
+        result=self.wrapped.generate_interpreted(messages)
+        self.candidates.append(
+            result.intent_candidate.model_dump(mode="json")
+            if result.intent_candidate else None
+        )
+        return result
+
+
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dsn",default=os.getenv("ACCEPTANCE_DATABASE_URL"))
@@ -20,9 +41,9 @@ def main(argv=None):
     if not args.dsn:
         parser.error("--dsn or ACCEPTANCE_DATABASE_URL is required")
     identity=seed_local_demo(args.dsn)
-    gateway=OllamaChatGateway(
+    gateway=ObservedModel(OllamaChatGateway(
         model=args.model,base_url=args.ollama_url,timeout_seconds=180,
-    )
+    ))
     host=BehavioralAcceptanceHarness(args.dsn,identity,gateway)
     host.begin_session("implicit-intent")
     messages=(
@@ -40,6 +61,8 @@ def main(argv=None):
         "turns_sent":len(messages),
         "delivered_responses":scoped["delivered_responses"],
         "model_proposals":[s for s in signals if s["epistemic_status"]=="MODEL_PROPOSED"],
+        "enriched_calls":gateway.enriched_calls,
+        "model_candidate_emissions":gateway.candidates,
         "natural_goal_approval":"MISSING" if scoped["goals"]==0 else "REVIEW",
         "reply_lengths":[len(turn.text) for turn in turns],
     }
@@ -50,6 +73,10 @@ def main(argv=None):
         "turns_sent":report["turns_sent"],
         "delivered_responses":report["delivered_responses"],
         "model_proposals":len(report["model_proposals"]),
+        "enriched_calls":report["enriched_calls"],
+        "parsed_model_candidates":sum(
+            c is not None for c in report["model_candidate_emissions"]
+        ),
         "natural_goal_approval":report["natural_goal_approval"],
         "reply_lengths":report["reply_lengths"],
     },indent=2))
