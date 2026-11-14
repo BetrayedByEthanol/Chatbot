@@ -36,6 +36,7 @@ _SCOPED_TABLES = {
     "goals": "goal_records",
     "goal_evidence": "goal_evidence",
     "reflections": "cognitive_reflections",
+    "intent_signals": "conversation_intent_signals",
     "intentions": "cognitive_intentions",
     "emotion_appraisals": "emotion_appraisals",
     "relationship_observations": "relationship_observations",
@@ -183,3 +184,31 @@ class BehavioralAcceptanceHarness:
                     )
                     counts["delivered_responses"] = cur.fetchone()["n"]
         return counts
+
+
+    def observe_intent_signals(self, *, limit: int = 128) -> list[dict]:
+        """Inspect synthetic, user-sourced proposals; never commit test truth."""
+        if not 1 <= limit <= 512:
+            raise ValueError("invalid observation limit")
+        with psycopg.connect(self.dsn, autocommit=True) as conn:
+            with conn.transaction():
+                conn.execute("SET TRANSACTION READ ONLY")
+                with conn.cursor(row_factory=dict_row) as cur:
+                    cur.execute(
+                        """SELECT conversation_id,turn_id,turn_sequence,
+                                  intent_kind,label,confidence,
+                                  related_signal_id,method_revision,
+                                  epistemic_status,proposal_status
+                           FROM conversation_intent_signals
+                           WHERE user_id=%s AND instance_id=%s
+                           ORDER BY created_at,conversation_id,turn_sequence
+                           LIMIT %s""",
+                        (self.identity.user_id,self.identity.instance_id,limit),
+                    )
+                    rows=cur.fetchall()
+        return [
+            {k: str(v) if isinstance(v, UUID) else (
+                float(v) if k=="confidence" else v
+            ) for k,v in item.items()}
+            for item in rows
+        ]

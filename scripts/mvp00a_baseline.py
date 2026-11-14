@@ -136,6 +136,9 @@ def main(argv=None):
         "explicit_memory_extraction": (
             "WORKING" if state["memories"] >= 1 else "MISSING"
         ),
+        "intent_signal_persistence": (
+            "WORKING" if state["intent_signals"] >= 3 else "MISSING"
+        ),
         "natural_goal_approval": (
             "WORKING" if state["goals"] >= 1 else "MISSING"
         ),
@@ -159,6 +162,7 @@ def main(argv=None):
         "state_counts": state,
         "contracts": contract_results,
         "worker_ticks": worker_ticks,
+        "intent_signal_samples": harness.observe_intent_signals(),
         "errors": errors,
         "transcript": transcript,
     }
@@ -167,7 +171,7 @@ def main(argv=None):
         args.report.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     print(json.dumps({
         key: value for key, value in report.items()
-        if key != "transcript"
+        if key not in ("transcript", "intent_signal_samples")
     }, indent=2))
     # Baseline behavioral gaps do NOT fail CI; runtime errors do.
     return 1 if errors or contract_results["persisted_text"] == "MISSING" else 0
