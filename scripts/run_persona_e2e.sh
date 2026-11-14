@@ -28,7 +28,7 @@ status_dir="$(mktemp -d)"
 status_file="$status_dir/publication.status"
 
 # An invocation-unique Compose project prevents teardown of other projects.
-project="persona-e2e-$(date +%s)-$"
+project="persona-e2e-$(date +%s)-$BASHPID"
 cleanup() {
   local result=$?
   trap - EXIT INT TERM
