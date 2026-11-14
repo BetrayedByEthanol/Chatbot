@@ -136,6 +136,9 @@ def main(argv=None):
         "explicit_memory_extraction": (
             "WORKING" if state["memories"] >= 1 else "MISSING"
         ),
+        "intent_signal_persistence": (
+            "WORKING" if state["intent_signals"] >= 3 else "MISSING"
+        ),
         "natural_goal_approval": (
             "WORKING" if state["goals"] >= 1 else "MISSING"
         ),
