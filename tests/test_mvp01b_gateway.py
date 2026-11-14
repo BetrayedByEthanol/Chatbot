@@ -83,6 +83,20 @@ def test_plain_text_fallback_does_not_require_second_request(monkeypatch):
     assert response.intent_candidate is None
 
 
+@pytest.mark.parametrize("raw,reply", [
+    ('"A short natural answer."',"A short natural answer."),
+    ('{"response":"Another natural answer.","intent":null}',"Another natural answer."),
+])
+def test_single_pass_small_model_reply_aliases(monkeypatch,raw,reply):
+    calls=_stub(monkeypatch,raw)
+    result=OllamaChatGateway(model="tiny").generate_interpreted([
+        ModelMessage("user","That sounds manageable."),
+    ])
+    assert len(calls)==1
+    assert result.text==reply
+    assert result.intent_candidate is None
+
+
 @pytest.mark.parametrize("raw",[
     "{}",
     "[]",
