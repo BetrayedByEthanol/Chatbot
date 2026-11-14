@@ -8,6 +8,8 @@ on:
       - "tests/test_phase3_integrated_acceptance.py"
       - "tests/test_phase4_integrated_acceptance.py"
       - "scripts/phase1_live_acceptance.py"
+      - "scripts/mvp00a_baseline.py"
+      - "tests/test_mvp00a_behavioral.py"
       - ".github/workflows/phase1-acceptance.yml"
   workflow_dispatch:
 
@@ -68,6 +70,15 @@ jobs:
           docker exec phase1-ollama ollama list
       - name: Exercise real model, transport, durable restart and worker
         run: python scripts/phase1_live_acceptance.py
+      - name: MVP-00A real-model longitudinal observational baseline
+        run: python scripts/mvp00a_baseline.py --report mvp00a-report.json
+      - name: Archive MVP-00A observational evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mvp00a-observational-baseline
+          path: mvp00a-report.json
+          if-no-files-found: ignore
       - name: Phase 4 cross-domain real PostgreSQL lifecycle drills
         env:
           TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/phase4cross
