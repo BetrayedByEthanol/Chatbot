@@ -150,6 +150,99 @@ def test_explicit_reference_refocuses_unique_existing_thread(dsn):
     assert by_id[cooking].resolution_status==Resolution.OPEN
 
 
+@pytest.mark.parametrize("switch", [
+    "Switch the topic to cooking.",
+    "Change the topic to cooking.",
+    "New topic: cooking.",
+])
+def test_explicit_topic_switch_is_admitted_and_routed_at_delivery(dsn, switch):
+    """Explicit switch wording must persist a signal before delivery routing."""
+    from persona_agent.intent_interpretation import (
+        classify_intent, parse_explicit_topic_switch,
+        should_interpret_with_model,
+    )
+
+    draft=classify_intent(switch)
+    assert draft is not None
+    assert draft.kind=="REQUEST"
+    assert draft.label==switch
+    assert parse_explicit_topic_switch(switch)=="cooking"
+    assert not should_interpret_with_model(switch)
+
+    class DeterministicModel(ReplyModel):
+        def generate_interpreted(self,messages):
+            raise AssertionError("explicit switches must not need model interpretation")
+
+    identity=seed_local_demo(dsn)
+    model=DeterministicModel((
+        "Which day would suit your walking plan?",
+        "What would you like to cook?",
+    ))
+    host=BehavioralAcceptanceHarness(dsn,identity,model)
+    host.begin_session("explicit-switch")
+    host.send("I want to walk more.",idempotency_key="walking")
+    walking_state=state(dsn,identity)
+    walking=walking_state.focus_thread_id
+    question=walking_state.pending_acts[0]
+    assert question.thread_id==walking
+
+    new_turn=host.send(switch,idempotency_key="switch")
+    active=state(dsn,identity)
+    assert len(active.threads)==2
+    assert active.focus_thread_id!=walking
+    assert active.threads[0].title=="cooking"
+    assert active.threads[0].attention_status==Attention.FOCUSED
+    assert active.pending_acts[0].thread_id==active.focus_thread_id
+    assert active.pending_acts[0].label=="What would you like to cook?"
+    assert len(active.pending_acts)==1
+
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        signal=conn.execute(
+            """SELECT intent_kind,label,epistemic_status,proposal_status,
+                      source_event_id,related_signal_id
+               FROM conversation_intent_signals
+               WHERE turn_id=%s AND conversation_id=%s
+                 AND user_id=%s AND instance_id=%s""",
+            (UUID(new_turn.turn_id),identity.conversation_id,
+             identity.user_id,identity.instance_id),
+        ).fetchone()
+        assert signal[0:4]==("REQUEST",switch,"RULE_INFERRED","UNREVIEWED")
+        assert signal[4] is not None
+        assert signal[5] is None
+        assert conn.execute(
+            """SELECT thread_id FROM dialogue_turn_links
+               WHERE turn_id=%s AND conversation_id=%s""",
+            (UUID(new_turn.turn_id),identity.conversation_id),
+        ).fetchone()==(active.focus_thread_id,)
+        assert conn.execute(
+            """SELECT status,resolution_kind,resolution_turn_id
+               FROM dialogue_pending_acts WHERE act_id=%s""",
+            (question.act_id,),
+        ).fetchone()==("PENDING",None,None)
+        assert conn.execute(
+            """SELECT count(*) FROM goal_records WHERE user_id=%s
+               AND instance_id=%s""",
+            (identity.user_id,identity.instance_id),
+        ).fetchone()[0]==0
+        assert conn.execute(
+            """SELECT count(*) FROM operations WHERE user_id=%s""",
+            (identity.user_id,),
+        ).fetchone()[0]==0
+    assert model.calls==2
+
+
+@pytest.mark.parametrize("text", [
+    "Switch the topic to", "New topic:", "What if I switched the topic to cooking?",
+])
+def test_incomplete_or_hypothetical_switch_is_not_a_new_topic_request(text):
+    from persona_agent.intent_interpretation import (
+        classify_intent, parse_explicit_topic_switch,
+    )
+    assert parse_explicit_topic_switch(text) is None
+    candidate=classify_intent(text)
+    assert candidate is None or candidate.kind!="REQUEST"
+
+
 def test_cross_thread_objective_reference_does_not_answer_cooking_question(dsn):
     """A referenced walking goal outranks the adjacent cooking question."""
     identity=seed_local_demo(dsn)
