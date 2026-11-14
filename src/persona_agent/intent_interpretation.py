@@ -145,3 +145,112 @@ def intent_context_block(
         if len(rendered) <= max_chars:
             return rendered
     return ""
+
+
+# Model interpretation is selective: skip ordinary, explicit, or hypothetical
+# text. The normal main model still generates the response in either route.
+_MODEL_INTERPRET_CUES = re.compile(
+    r"^(?:lately\b|recently\b|maybe (?:i|we)\b|"
+    r"i(?:'ve| have) been (?:thinking|considering|wondering)\b|"
+    r"i (?:wish|keep|ought)\b|"
+    r"it would be (?:nice|great|helpful)\b|"
+    r"it(?:'s| is) (?:time|probably time)\b|"
+    r"that (?:sounds|seems|could)\b|"
+    r"this (?:sounds|seems|could)\b|"
+    r"something i'd like\b|"
+    r"i could really use\b)",
+    re.I,
+)
+_ANAPHORA = re.compile(
+    r"\b(?:that|this|it|those|the goal|the plan|we discussed)\b",
+    re.I,
+)
+
+
+def should_interpret_with_model(text: str) -> bool:
+    """Use the primary response inference, not a second model pass."""
+    stripped = text.strip()
+    return (
+        3 <= len(stripped) <= 500
+        and classify_intent(stripped) is None
+        and bool(_MODEL_INTERPRET_CUES.match(stripped))
+    )
+
+
+def record_model_intent_on_response(
+    cur, *, user_id, instance_id, conversation_id,
+    turn_id, turn_sequence, input_text, source_event_id,
+    response_id, candidate,
+):
+    """Propose a source-grounded conversation cue inside a fenced reply commit.
+
+    The caller already owns the conversation row lock and has validated
+    selected generation, latest turn and revision. No LLM/tool work here.
+    """
+    from uuid import uuid4
+    from .conversation_contracts import ModelIntentCandidate
+
+    if type(candidate) is not ModelIntentCandidate or source_event_id is None:
+        return None
+    if not should_interpret_with_model(input_text):
+        return None
+    # Confidence is a model-reported heuristic, not a calibrated probability.
+    if candidate.confidence < 0.75 or candidate.kind == "INSTRUCTION":
+        return None
+    # Only verbatim evidence is admitted. Normalized, invented or cross-turn
+    # goal descriptions are rejected, even when proposed by the model.
+    if candidate.evidence_quote not in input_text:
+        return None
+    cur.execute(
+        """SELECT 1 FROM conversation_intent_signals
+           WHERE turn_id=%s AND user_id=%s AND instance_id=%s""",
+        (turn_id,user_id,instance_id),
+    )
+    if cur.fetchone() is not None:
+        return None
+    related = None
+    if (candidate.reference == "PRIOR_OBJECTIVE"
+            and candidate.kind in ("REQUEST","CORRECTION")
+            and _ANAPHORA.search(input_text)):
+        cur.execute(
+            """SELECT signal_id FROM conversation_intent_signals
+               WHERE conversation_id=%s AND user_id=%s AND instance_id=%s
+                 AND intent_kind='OBJECTIVE'
+                 AND turn_sequence<%s AND turn_sequence>=%s
+               ORDER BY turn_sequence DESC LIMIT 2""",
+            (conversation_id,user_id,instance_id,
+             turn_sequence,max(1,turn_sequence-3)),
+        )
+        matches=cur.fetchall()
+        if len(matches)==1:
+            related=matches[0]["signal_id"]
+    signal_id=uuid4()
+    cur.execute(
+        """INSERT INTO conversation_intent_signals (
+             signal_id,conversation_id,turn_id,user_id,instance_id,
+             turn_sequence,source_event_id,intent_kind,label,confidence,
+             method_revision,epistemic_status,source_response_id,
+             related_signal_id
+           ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
+                     'mvp01b.primary.1','MODEL_PROPOSED',%s,%s)""",
+        (signal_id,conversation_id,turn_id,user_id,instance_id,
+         turn_sequence,source_event_id,candidate.kind,
+         candidate.evidence_quote,candidate.confidence,response_id,related),
+    )
+    from .conversation import _event
+    _event(
+        cur,user_id=user_id,instance_id=instance_id,
+        conversation_id=conversation_id,
+        event_type="conversation.intent.model_signal_recorded.v1",
+        source_id="conversation.interpretation",
+        trust_level="TRUSTED_PLATFORM",
+        detail={
+            "turn_id":str(turn_id),"signal_id":str(signal_id),
+            "response_id":str(response_id),
+            "intent_kind":candidate.kind,
+            "related_signal_id":str(related) if related else None,
+            "method_revision":"mvp01b.primary.1",
+        },
+        correlation_id=source_event_id,
+    )
+    return signal_id
