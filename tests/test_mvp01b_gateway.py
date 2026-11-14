@@ -55,6 +55,44 @@ def test_single_call_structured_response_preserves_spoken_text(monkeypatch):
     assert "confidence" not in result.text
 
 
+def test_nonreferential_objective_prompt_requires_none_not_null(monkeypatch):
+    """Regression: instructions must not lead the model to send reference:null."""
+    evidence="Maybe I should run regularly."
+    calls=_stub(monkeypatch,json.dumps({
+        "reply":"That sounds doable.",
+        "intent":{
+            "kind":"OBJECTIVE",
+            "evidence_quote":evidence,
+            "confidence":0.9,
+            "reference":"NONE",
+        },
+    }))
+    result=OllamaChatGateway(model="small").generate_interpreted([
+        ModelMessage("user",evidence),
+    ])
+    assert len(calls)==1
+    prompt=calls[0]["messages"][0]["content"]
+    assert "otherwise set 'reference' to the string 'NONE' (never null)" in prompt
+    assert "Set 'intent' to null ONLY when" in prompt
+    assert result.text=="That sounds doable."
+    assert result.intent_candidate is not None
+    assert result.intent_candidate.kind=="OBJECTIVE"
+    assert result.intent_candidate.reference=="NONE"
+
+
+def test_absent_intent_uses_null_envelope_not_null_reference(monkeypatch):
+    calls=_stub(monkeypatch,json.dumps({
+        "reply":"Hello!",
+        "intent":None,
+    }))
+    result=OllamaChatGateway(model="small").generate_interpreted([
+        ModelMessage("user","Hello!"),
+    ])
+    assert len(calls)==1
+    assert result.text=="Hello!"
+    assert result.intent_candidate is None
+
+
 def test_malformed_optional_model_intent_does_not_cancel_valid_reply(monkeypatch):
     calls=_stub(monkeypatch,json.dumps({
         "reply":"Ordinary reply.",
