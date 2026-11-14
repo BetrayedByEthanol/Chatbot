@@ -54,6 +54,25 @@ All existing rows remain EXPLICIT. State stays conversation-scoped,
 evidence-linked, revisioned and owned by Conversation Manager; no
 authoritative goal/task/procedure state is modified.
 
+Migration `0035_dialogue_act_explicit_reconciliation.sql` makes
+auto-recorded dialogue acts **replaceable** by a later authorized explicit
+`offer_dialogue_act()` for the same delivered response:
+- Instead of a permanent `UNIQUE(source_response_id)`, PostgreSQL now
+  enforces one PENDING act per response and one EXPLICIT act per response.
+- In the existing revision-CAS and conversation-lock transaction, explicit
+  registration cancels the still-pending automatic act (retaining its
+  original ID, status, evidence and source response), then inserts the
+  authoritative explicit act with the caller's own ID and interpretation.
+- A matching inferred `next_conversational_action` is updated to the
+  explicit interpretation, but any unrelated manually changed next action
+  is preserved.
+- A separate `conversation.dialogue.auto_act_replaced.v1` event records
+  old and new act IDs. Retries replay the receipt, while competing explicit
+  registrations yield a domain `VersionConflict`, not a unique violation.
+- Previously canceled automatic acts no longer permanently reserve the
+  response ID. Previously registered explicit acts still prevent duplicates.
+
+
 ## Evidence and invariants
 
 - Replayed deliveries cannot create duplicate threads or questions.
@@ -85,6 +104,10 @@ authoritative goal/task/procedure state is modified.
   An explicitly resolved thread cannot be reopened or have its next action
   overwritten by an older generated question. The response can still be
   marked delivered.
+- Automatic pending question/decision detection never prevents an
+  authenticated explicit act from reinterpreting that same delivered
+  response. Only the explicit act remains pending after reconciliation;
+  historical automatic proposals are not deleted.
 - No generated-but-undelivered response can create pending questions.
 - Discussion topics and QUESTION/ANSWERED records never mean goal acceptance,
   permission, instruction execution, verified completion, or success.
