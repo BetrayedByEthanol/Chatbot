@@ -3,13 +3,13 @@ import re
 from dataclasses import dataclass
 
 _HYPOTHETICAL = re.compile(r"^(what if|hypothetically|suppose|imagine|for example|in a hypothetical|if i said|if i wanted|let's pretend)\b", re.I)
-_CORRECTION = re.compile(r"^(actually|correction:|i meant|no, i meant|to clarify|instead of)\b", re.I)
+_CORRECTION = re.compile(r"^(?:actually\b|correction\s*[:,-]|i meant\b|no, i meant\b|to clarify\b|instead of\b)", re.I)
 _OBJECTIVE = re.compile(r"^(?:i (?:want|need|hope|aim|intend|plan|am trying) to|i(?:'d| would) like to|my (?:goal|objective) is to)\s+(.+)$", re.I)
 _INFO = re.compile(r"^(know|find out|ask|check whether|understand why|understand how)\b", re.I)
 _INSTRUCTION = re.compile(r"^(?:please )?(?:remember that|always|never|don't|do not|from now on|stop sending)\b", re.I)
 _OBSERVATION = re.compile(r"^(?:i (?:prepared|made|finished|tried|noticed|struggled|failed|managed|completed|cooked|feel|felt|am feeling)\b|my (?:favorite|hobby)\b)", re.I)
 _REQUEST = re.compile(r"^(?:can (?:you|we)|could (?:you|we)|would you|will you|please|help me|tell me|explain|how|what|why|when|where|yes,? please|let's)\b", re.I)
-_REFERENCE = re.compile(r"\b(that goal|this goal|our goal|previous goal|the plan|our plan|next step|start by|what we discussed|i meant)\b", re.I)
+_REFERENCE = re.compile(r"\b(that goal|this goal|our goal|previous goal|the plan|our plan|the goal|next step|start by|what we discussed|i meant)\b", re.I)
 
 @dataclass(frozen=True)
 class IntentDraft:
