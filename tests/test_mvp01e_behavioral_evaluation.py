@@ -1,6 +1,10 @@
 """MVP-01E: non-destructive scenario validation, evidence and real SQL tests."""
 from io import BytesIO
+import os
 from pathlib import Path
+import re
+import shutil
+import subprocess
 from uuid import uuid4
 from zipfile import ZipFile
 import json
@@ -388,3 +392,158 @@ def test_failed_turn_observation_cannot_hide_original_exception(dsn,monkeypatch)
     assert result["transcript"][-1]["ingress_committed"] is True
     assert result["transcript"][-1]["turn_id"] is not None
     assert result["snapshots"]==[]
+
+
+@pytest.mark.parametrize("published,runner_exit,expect_teardown", [
+    (False, 1, False),  # ZIP could not be written: preserve postgres volume
+    (True, 1, True),    # Evaluated contract failure: valid ZIP, clean up
+    (True, 0, True),    # Successful run: valid ZIP, clean up
+    (False, 0, False), # Missing marker is unsafe even if runner exited zero
+])
+def test_compose_wrapper_preserves_evidence_on_failed_publication(
+    tmp_path, published, runner_exit, expect_teardown,
+):
+    """No Docker/DB required: simulate the exact runner-to-wrapper contract."""
+    root=Path(__file__).resolve().parents[1]
+    scripts=tmp_path/"scripts"
+    scripts.mkdir()
+    shutil.copy2(root/"scripts"/"run_persona_e2e.sh",
+                 scripts/"run_persona_e2e.sh")
+    shims=tmp_path/"bin"
+    shims.mkdir()
+    docker=shims/"docker"
+    docker.write_text(
+        "#!/bin/sh\n"
+        "printf 'docker %s\\n' \"$*\" >> \"$MOCK_LOG\"\n"
+        "exit 0\n"
+    )
+    docker.chmod(0o755)
+    python=shims/"python"
+    python.write_text(
+        "#!/bin/sh\n"
+        "printf 'python %s\\n' \"$*\" >> \"$MOCK_LOG\"\n"
+        "while [ \"$#\" -gt 0 ]; do\n"
+        "  if [ \"$1\" = \"--publication-status-file\" ]; then\n"
+        "    shift\n"
+        "    if [ \"$MOCK_PUBLISHED\" = yes ]; then\n"
+        "      printf 'PUBLISHED\\n' > \"$1\"\n"
+        "    fi\n"
+        "    break\n"
+        "  fi\n"
+        "  shift\n"
+        "done\n"
+        "exit \"$MOCK_RUNNER_EXIT\"\n"
+    )
+    python.chmod(0o755)
+    log=tmp_path/"calls.log"
+    env=os.environ.copy()
+    env.update({
+        "PATH":str(shims)+os.pathsep+env.get("PATH",""),
+        "MOCK_LOG":str(log),
+        "MOCK_PUBLISHED":"yes" if published else "no",
+        "MOCK_RUNNER_EXIT":str(runner_exit),
+        "E2E_POSTGRES_PASSWORD":"test-only",
+        "PERSONA_E2E_ADMIN_DSN":"dbname=postgres user=test",
+    })
+    result=subprocess.run(
+        ["bash",str(scripts/"run_persona_e2e.sh"),
+         "--report","artifacts/new-report.zip"],
+        cwd=tmp_path,env=env,text=True,capture_output=True,timeout=10,
+    )
+    assert result.returncode == (runner_exit if runner_exit else (
+        0 if published else 2
+    ))
+    commands=log.read_text().splitlines()
+    assert any(" up -d --wait" in x for x in commands)
+    assert any(x.startswith("python scripts/persona_e2e.py ")
+               and "--publication-status-file " in x for x in commands)
+    downs=[x for x in commands if " down -v " in x]
+    assert bool(downs) is expect_teardown
+    if not published:
+        assert "EVIDENCE NOT CONFIRMED" in result.stderr
+        match=re.search(r"preserving Compose project (persona-e2e-[^\\s]+)",
+                        result.stderr)
+        assert match is not None
+        assert match.group(1) in commands[0]
+    else:
+        assert "EVIDENCE NOT CONFIRMED" not in result.stderr
+
+
+def test_runner_publishes_marker_only_after_zip_written(tmp_path,monkeypatch):
+    """Publication failure skips both status signal and database teardown."""
+    import importlib.util
+    from contextlib import nullcontext
+
+    spec=importlib.util.spec_from_file_location(
+        "persona_e2e_publish_contract",
+        Path(__file__).resolve().parents[1]/"scripts"/"persona_e2e.py",
+    )
+    module=importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.chdir(tmp_path)
+    migrations=tmp_path/"migrations"
+    migrations.mkdir()
+    (migrations/"0001.sql").write_text("SELECT 1;")
+    scenario=tmp_path/"scenario.json"
+    scenario.write_text(json.dumps({"name":"sample","steps":[
+        {"action":"session","name":"one"},
+        {"action":"message","text":"Hello"},
+    ]}))
+    class FakeConnection:
+        def __enter__(self):
+            return self
+        def __exit__(self,*args):
+            pass
+        def transaction(self):
+            return nullcontext()
+        def execute(self,*args):
+            pass
+    monkeypatch.setattr(module.psycopg,"connect",lambda *args,**kwargs:FakeConnection())
+    monkeypatch.setattr(module,"create_isolated_database",
+                        lambda _:("persona_e2e_0000000000000000","synthetic-dsn"))
+    dropped=[]
+    monkeypatch.setattr(module,"drop_isolated_database",
+                        lambda *_:dropped.append(True))
+    monkeypatch.setattr(module,"OllamaChatGateway",lambda **kw: object())
+    monkeypatch.setattr(module,"git_revision",lambda:"local-test")
+    monkeypatch.setattr(module,"run_scenario",lambda *args:{
+        "format_version":"mvp01e.1","name":"sample",
+        "started_at":"now","completed_at":"now","passed":True,
+        "transcript":[],"snapshots":[],"checks":[],
+        "model_requests":[],"deliveries":[],"errors":[],
+    })
+    report=tmp_path/"review.zip"
+    marker=tmp_path/"publication.status"
+    argv=[
+        "--admin-dsn","dbname=postgres","--scenario",str(scenario),
+        "--report",str(report),"--publication-status-file",str(marker),
+    ]
+    def fail_publish(*args,**kwargs):
+        raise OSError("simulated full disk")
+    monkeypatch.setattr(module,"write_bundle",fail_publish)
+    with pytest.raises(OSError,match="full disk"):
+        module.run(argv)
+    assert not marker.exists()
+    assert not dropped
+
+    # A published ZIP with unsuccessful behavioral checks is still safe to
+    # clean up: publication status, rather than exit code, is the contract.
+    def successful_publish(report_obj,scenario_obj,destination,**kw):
+        destination.write_bytes(b"valid-test-bundle")
+    monkeypatch.setattr(module,"write_bundle",successful_publish)
+    assert module.run(argv)==0
+    assert report.exists()
+    assert marker.read_text()=="PUBLISHED\n"
+    assert dropped==[True]
+
+    # A valid ZIP without a publish marker is an uncertain state: retain DB.
+    marker.unlink()
+    dropped.clear()
+    def fail_marker(path):
+        raise OSError("status directory unwritable")
+    monkeypatch.setattr(module,"publish_status_file",fail_marker)
+    with pytest.raises(OSError,match="status directory"):
+        module.run(argv)
+    assert report.exists()
+    assert not marker.exists()
+    assert not dropped
