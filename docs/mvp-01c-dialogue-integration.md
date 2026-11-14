@@ -55,6 +55,15 @@ authoritative goal/task/procedure state is modified.
 
 - Replayed deliveries cannot create duplicate threads or questions.
 - Old replies delivered after a newer input cannot refocus dialogue.
+- A new subject request (e.g. "Help me cook dinner.") cannot satisfy a
+  previous topic's adjacent pending question; it remains unlinked at ingress
+  so delivery can focus/open the requested subject.
+- Automatic delivery adaptation is allowed only when conversation revision
+  equals `conversation_responses.context_revision + 2`: the generation and
+  delivery increments, with **no intervening explicit dialogue command**.
+  An explicitly resolved thread cannot be reopened or have its next action
+  overwritten by an older generated question. The response can still be
+  marked delivered.
 - No generated-but-undelivered response can create pending questions.
 - Discussion topics and QUESTION/ANSWERED records never mean goal acceptance,
   permission, instruction execution, verified completion, or success.
@@ -69,6 +78,9 @@ authoritative goal/task/procedure state is modified.
 normal acceptance host, automatic focus, pending questions, answer linkage,
 restart, topic switch, repeated objective, model-originated objective, manual
 thread ownership, delivered-only semantics and no domain side effects.
+Additional regressions assert a new cooking request cannot answer a walking
+question, and explicitly resolved progress wins over a reply generated before
+that explicit change but acknowledged afterward.
 
 Run full Phase 0 PostgreSQL contract tests and the existing Phase 1 live
 Ollama acceptance workflow. Behavior remains intentionally narrow:
