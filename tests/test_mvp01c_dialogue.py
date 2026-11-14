@@ -185,6 +185,58 @@ def test_answer_resolves_auto_question_without_erasing_explicit_next_action(
             (identity.user_id,),
         ).fetchone()[0]==0
 
+    # Regression for the *delivery* stage: the original ingress-only test
+    # could pass while a follow-up assistant question still overwrote the
+    # caller's custom action with its own "Await answer" hint.
+    followup_text="Which time would work for you?"
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        followup=respond_to_text(
+            conn,actor,answered.turn_id,ReplyModel((followup_text,)),
+        )
+        assert followup.delivery_status=="GENERATED"
+        assert state(dsn,identity).threads[0].next_conversational_action==(
+            expected_next_action
+        )
+        delivered=acknowledge_text_delivery(conn,actor,followup.response_id)
+        replay=acknowledge_text_delivery(conn,actor,followup.response_id)
+        assert delivered.delivery_status=="DELIVERED"
+        assert replay.replayed
+
+    after_delivery=state(dsn,identity)
+    expected_delivered_action=(
+        expected_next_action
+        if expected_next_action is not None
+        else "Await answer: "+followup_text
+    )
+    assert after_delivery.threads[0].next_conversational_action==(
+        expected_delivered_action
+    )
+    assert after_delivery.focus_thread_id==thread
+    assert len(after_delivery.pending_acts)==1
+    assert after_delivery.pending_acts[0].label==followup_text
+    assert after_delivery.pending_acts[0].source_response_id==followup.response_id
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            """SELECT status,resolution_kind,resolution_turn_id
+               FROM dialogue_pending_acts WHERE act_id=%s""",
+            (question.act_id,),
+        ).fetchone()==("RESOLVED","ANSWERED",answered.turn_id)
+        assert conn.execute(
+            """SELECT count(*) FROM dialogue_pending_acts
+               WHERE source_response_id=%s AND status='PENDING'""",
+            (followup.response_id,),
+        ).fetchone()[0]==1
+        assert conn.execute(
+            """SELECT count(*) FROM events
+               WHERE event_type='conversation.dialogue.auto_question_offered.v1'
+                 AND payload->>'response_id'=%s""",
+            (str(followup.response_id),),
+        ).fetchone()[0]==1
+        assert conn.execute(
+            """SELECT count(*) FROM goal_records WHERE user_id=%s""",
+            (identity.user_id,),
+        ).fetchone()[0]==0
+
 
 def test_topic_switch_preserves_independent_resolution_and_old_question(dsn):
     identity=seed_local_demo(dsn)
