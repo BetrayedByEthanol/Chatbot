@@ -122,6 +122,38 @@ def test_topic_switch_preserves_independent_resolution_and_old_question(dsn):
         assert q==("PENDING",None)
 
 
+def test_delivered_choice_is_a_pending_decision_not_automatic_consent(dsn):
+    identity=seed_local_demo(dsn)
+    host=BehavioralAcceptanceHarness(dsn,identity,ReplyModel((
+        "Would you prefer walking indoors or outdoors?",
+        "Okay, let's discuss what each would involve.",
+    )))
+    host.begin_session("choice")
+    host.send("I want to walk more.",idempotency_key="start")
+    first=state(dsn,identity)
+    assert len(first.pending_acts)==1
+    assert first.pending_acts[0].kind=="DECISION"
+    assert "Await choice:" in first.threads[0].next_conversational_action
+
+    # An unqualified acknowledgment does not resolve a decision and
+    # cannot make an approved Goal/Task state from ordinary conversation.
+    host.send("Okay",idempotency_key="not-approval")
+    after=state(dsn,identity)
+    assert [act.act_id for act in after.pending_acts]==[
+        first.pending_acts[0].act_id
+    ]
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            """SELECT origin_kind,status FROM dialogue_pending_acts
+               WHERE conversation_id=%s""",
+            (identity.conversation_id,),
+        ).fetchone()==("AUTO_DELIVERED_DECISION","PENDING")
+        assert conn.execute(
+            """SELECT count(*) FROM goal_records WHERE user_id=%s""",
+            (identity.user_id,),
+        ).fetchone()[0]==0
+
+
 def test_same_objective_reuses_topic_without_duplicating(dsn):
     identity=seed_local_demo(dsn)
     harness=BehavioralAcceptanceHarness(dsn,identity,ReplyModel((
