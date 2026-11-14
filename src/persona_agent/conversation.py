@@ -741,7 +741,8 @@ def acknowledge_text_delivery(connection: Connection, actor: TrustedActor,
             cursor.execute(
                 """
                 SELECT response_id,turn_id,conversation_id,instance_id,
-                       selection_generation,response_text,model_id,delivery_status
+                       selection_generation,context_revision,
+                       response_text,model_id,delivery_status
                 FROM conversation_responses WHERE response_id=%s AND user_id=%s
                 """,
                 (response_id,actor.user_id),
@@ -812,6 +813,7 @@ def acknowledge_text_delivery(connection: Connection, actor: TrustedActor,
                 cursor,user_id=actor.user_id,instance_id=row["instance_id"],
                 conversation_id=row["conversation_id"],turn_id=row["turn_id"],
                 response_id=response_id,response_text=row["response_text"],
+                context_revision=row["context_revision"],
             )
             return TextResponseResult(
                 response_id=row["response_id"],turn_id=row["turn_id"],
