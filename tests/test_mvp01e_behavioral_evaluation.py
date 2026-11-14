@@ -144,3 +144,59 @@ def test_partial_report_preserves_error_evidence(dsn,tmp_path):
     assert saved.exists()
     with ZipFile(saved) as z:
         assert json.loads(z.read("errors.json"))[0]["type"]=="RuntimeError"
+
+
+def test_isolated_database_lifecycle_refuses_arbitrary_drop(monkeypatch):
+    """Database deletion must be limited to the exact freshly generated name."""
+    import importlib.util
+    from types import SimpleNamespace
+
+    spec=importlib.util.spec_from_file_location(
+        "persona_e2e_cli",Path(__file__).resolve().parents[1]
+        /"scripts"/"persona_e2e.py",
+    )
+    module=importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    queries=[]
+    class Connection:
+        info=SimpleNamespace(dbname="postgres")
+        def __enter__(self):
+            return self
+        def __exit__(self,*args):
+            pass
+        def execute(self,statement):
+            queries.append(statement)
+    monkeypatch.setattr(module.psycopg,"connect",lambda *a,**kw:Connection())
+    monkeypatch.setattr(
+        module,"uuid4",lambda:__import__("uuid").UUID(int=1),
+    )
+    created,dsn=module.create_isolated_database("dbname=postgres user=local")
+    assert created=="persona_e2e_0000000000000000"
+    assert "persona_e2e_0000000000000000" in dsn
+    with pytest.raises(ValueError,match="refusing to drop"):
+        module.drop_isolated_database("dbname=postgres user=local","production")
+    assert len(queries)==1
+    module.drop_isolated_database("dbname=postgres user=local",created)
+    assert len(queries)==2
+
+
+def test_admin_dsn_must_target_postgres_maintenance_database(monkeypatch):
+    import importlib.util
+    from types import SimpleNamespace
+    spec=importlib.util.spec_from_file_location(
+        "persona_e2e_admin_guard",Path(__file__).resolve().parents[1]
+        /"scripts"/"persona_e2e.py",
+    )
+    module=importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    class Connection:
+        info=SimpleNamespace(dbname="production")
+        def __enter__(self):
+            return self
+        def __exit__(self,*args):
+            pass
+        def execute(self,*a):
+            raise AssertionError("must not issue destructive SQL")
+    monkeypatch.setattr(module.psycopg,"connect",lambda *a,**kw:Connection())
+    with pytest.raises(ValueError,match="maintenance DB"):
+        module.create_isolated_database("dbname=production user=local")
