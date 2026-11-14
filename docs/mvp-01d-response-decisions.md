@@ -12,9 +12,11 @@ not general model-directed tool use or final MVP-01 acceptance.
   Behavioral Acceptance Harness can continue exercising explicit model mode.
 - `LocalAcceptanceSession.message` first persists authenticated user input
   through existing `conversation.ingest_text`, selection checks, intent
-  signals and the durable input event. Routing examines the **stored input**
-  scoped by user, conversation and selected persona; it does not parse the
-  assistant response, web content, or a user-provided mode command.
+  signals and the durable input event. For auto mode it delegates to
+  `response_orchestrator.respond_to_user_text`: the **Conversation
+  Orchestrator**, not the transport adapter, owns the decision. It examines
+  the **stored input** scoped by authenticated user and persona; it does not
+  parse the assistant response, web content, or a user-provided mode command.
 - `response_decisions.decide_response` is deterministic and abstaining.
   It selects only two *already registered, READ_ONLY* capabilities:
   `clock.now.v1` and `text.statistics.v1`. The full-match grammar
