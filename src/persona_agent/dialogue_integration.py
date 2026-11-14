@@ -26,6 +26,11 @@ _CLEAR_SWITCH = re.compile(
     re.I,
 )
 _QUESTION = re.compile(r"(?:^|[.!]\s+)([^.!?\n]{4,180}\?)\s*$")
+_CHOICE_QUESTION = re.compile(
+    r"^(?:would you prefer|do you prefer|which (?:option|approach|plan) "
+    r"(?:would|do) you (?:choose|prefer))\b.*\bor\b",
+    re.I,
+)
 _NOT_ANSWERS = {"okay", "ok", "got it", "understood"}
 _YES_NO = {"yes", "no", "yes please", "no thanks", "sure"}
 
@@ -227,6 +232,12 @@ def advance_on_delivery(
     label=question.group(1).strip()
     if not label or len(label)>200:
         return
+    is_decision=bool(_CHOICE_QUESTION.match(label))
+    act_kind="DECISION" if is_decision else "QUESTION"
+    origin_kind=(
+        "AUTO_DELIVERED_DECISION" if is_decision
+        else "AUTO_DELIVERED_QUESTION"
+    )
     cur.execute(
         """SELECT 1 FROM dialogue_pending_acts
            WHERE thread_id=%s AND conversation_id=%s AND user_id=%s
@@ -240,22 +251,25 @@ def advance_on_delivery(
         """INSERT INTO dialogue_pending_acts (
              act_id,conversation_id,thread_id,user_id,instance_id,
              kind,label,source_response_id,origin_kind
-           ) VALUES (%s,%s,%s,%s,%s,'QUESTION',%s,%s,
-                     'AUTO_DELIVERED_QUESTION')""",
+           ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
         (act_id,conversation_id,current,user_id,instance_id,
-         label,response_id),
+         act_kind,label,response_id,origin_kind),
     )
     cur.execute(
         """UPDATE dialogue_threads
            SET next_conversational_action=%s,revision=revision+1,
                updated_at=clock_timestamp()
            WHERE thread_id=%s AND conversation_id=%s AND user_id=%s""",
-        (("Await answer: "+label)[:200],current,conversation_id,user_id),
+        ((("Await choice: " if is_decision else "Await answer: ")+label)[:200],
+         current,conversation_id,user_id),
     )
     _event_of_progress(
         cur,user_id=user_id,instance_id=instance_id,
         conversation_id=conversation_id,
-        event_type="conversation.dialogue.auto_question_offered.v1",
+        event_type=(
+            "conversation.dialogue.auto_decision_offered.v1"
+            if is_decision else "conversation.dialogue.auto_question_offered.v1"
+        ),
         turn_id=turn_id,thread_id=current,act_id=str(act_id),
         response_id=str(response_id),
     )
