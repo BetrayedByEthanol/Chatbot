@@ -453,21 +453,6 @@ def prepare_text_context(
                     cursor,actor.user_id,item["instance_id"],
                     min(650,affect_room),
                 )
-            # MVP-01A: bounded, non-authoritative intent discussion cues.
-            # This is selective retrieval from the same conversation only.
-            from .intent_interpretation import intent_context_block
-            intent_room=max_context_chars-len(prompt)-min(
-                len(history[-1].content),min(256,max_context_chars//4),
-            )-240
-            if intent_room>=180:
-                prompt+=intent_context_block(
-                    cursor,user_id=actor.user_id,
-                    instance_id=item["instance_id"],
-                    conversation_id=item["conversation_id"],
-                    turn_sequence=item["sequence"],
-                    latest_text=history[-1].content,
-                    max_chars=min(620,intent_room),
-                )
             # P2-02: Summary eligibility must refer to the oldest message
             # *actually retained* after character budgeting, not the initial
             # SQL LIMIT window. Otherwise older summarized ranges can vanish
@@ -486,6 +471,7 @@ def prepare_text_context(
             # prompt, but an identical topic retrieval budget must not issue
             # redundant historical queries during one foreground turn.
             topic_recall_cache={}
+            intent_context_cache={}
 
             def assemble_prompt(before_sequence: int) -> str:
                 content=base_prompt
@@ -536,6 +522,24 @@ def prepare_text_context(
                             recall_cap,
                         )
                     content+=topic_recall_cache[recall_cap]
+                # MVP-01A: lower-trust interpretive hints are considered
+                # AFTER established conversation/memory/affect context.
+                from .intent_interpretation import intent_context_block
+                intent_room=max_context_chars-len(content)-min(
+                    len(history[-1].content),min(256,max_context_chars//4),
+                )-80
+                if intent_room>=180:
+                    intent_cap=min(620,intent_room)
+                    if intent_cap not in intent_context_cache:
+                        intent_context_cache[intent_cap]=intent_context_block(
+                            cursor,user_id=actor.user_id,
+                            instance_id=item["instance_id"],
+                            conversation_id=item["conversation_id"],
+                            turn_sequence=item["sequence"],
+                            latest_text=history[-1].content,
+                            max_chars=intent_cap,
+                        )
+                    content+=intent_context_cache[intent_cap]
                 # Preserve the latest user input over any optional history.
                 if len(content)+len(history[-1].content)>max_context_chars:
                     content=(
