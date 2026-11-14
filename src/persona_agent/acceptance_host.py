@@ -30,6 +30,7 @@ from .conversation import (
 from .conversation_contracts import ModelMessage, ModelReply, TextInputCommand
 from .model_gateway import OllamaChatGateway
 from .observability import get_conversation_metrics
+from .response_orchestrator import respond_to_user_text
 from .operation_control import reap_stale_operations
 from .operation_scheduler import configure_resource_pool
 from .tool_contracts import RESOURCE_KEY, SlowTextToolCommand
@@ -101,10 +102,10 @@ class LocalAcceptanceSession:
 
     def message(
         self, *, text: str, idempotency_key: str,
-        mode: str="model", timezone_name: str="UTC",
+        mode: str="auto", timezone_name: str="UTC",
         max_words: int=5,
     ) -> dict:
-        if mode not in ("model","time","analyze"):
+        if mode not in ("auto","model","time","analyze"):
             raise ValueError("unknown message mode")
         with self._connection() as conn:
             entered=ingest_text(
@@ -118,7 +119,13 @@ class LocalAcceptanceSession:
                 ),
             )
         with self._connection() as conn:
-            if mode=="time":
+            if mode=="auto":
+                reply=respond_to_user_text(
+                    conn,self.actor,entered.turn_id,self.gateway,
+                    default_timezone=timezone_name,
+                    max_words=max_words,await_seconds=self.await_seconds,
+                )
+            elif mode=="time":
                 reply=respond_with_time(
                     conn,self.actor,entered.turn_id,timezone_name=timezone_name,
                 )
@@ -380,7 +387,7 @@ def serve_jsonl(session: LocalAcceptanceSession, lines) -> None:
                 session.message(
                     text=packet["text"],
                     idempotency_key=packet["idempotency_key"],
-                    mode=packet.get("mode","model"),
+                    mode=packet.get("mode","auto"),
                     timezone_name=packet.get("timezone","UTC"),
                     max_words=packet.get("max_words",5),
                 )
