@@ -122,9 +122,23 @@ class OllamaChatGateway:
             if len(raw) > self.max_response_chars:
                 raise ModelUnavailable("oversized plain model fallback")
             return ModelReply(model_id=self.model, text=raw)
+        if isinstance(envelope, str):
+            # Some small models produce a JSON string rather than an object.
+            # It is still a safe conversational reply, without metadata.
+            if not envelope.strip() or len(envelope.strip()) > self.max_response_chars:
+                raise ModelUnavailable("structured model reply has no response text")
+            return ModelReply(model_id=self.model, text=envelope.strip())
         if not isinstance(envelope, dict):
             raise ModelUnavailable("structured model reply must be an object")
         reply = envelope.get("reply")
+        if not isinstance(reply, str):
+            # Tolerate a valid plain reply under a common alternate field;
+            # never render the entire JSON envelope to the user.
+            reply = next(
+                (envelope[key] for key in ("response", "answer")
+                 if isinstance(envelope.get(key), str)),
+                None,
+            )
         if not isinstance(reply, str) or not reply.strip():
             raise ModelUnavailable("structured model reply has no response text")
         reply = reply.strip()
