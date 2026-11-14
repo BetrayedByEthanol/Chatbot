@@ -307,7 +307,8 @@ def resolve_auto_question_on_ingress(
         return
     current=row["focus_thread_id"]
     cur.execute(
-        """SELECT a.act_id
+        """SELECT a.act_id,a.origin_kind,a.kind,t.sequence,
+                  r.delivery_status
            FROM dialogue_pending_acts a
            JOIN conversation_responses r
              ON r.response_id=a.source_response_id
@@ -316,14 +317,18 @@ def resolve_auto_question_on_ingress(
            JOIN conversation_turns t ON t.turn_id=r.turn_id
            WHERE a.thread_id=%s AND a.conversation_id=%s AND a.user_id=%s
              AND a.instance_id=%s AND a.status='PENDING'
-             AND a.origin_kind='AUTO_DELIVERED_QUESTION'
-             AND r.delivery_status='DELIVERED'
-             AND t.sequence=%s
            ORDER BY a.created_at,a.act_id LIMIT 2""",
-        (current,conversation_id,user_id,instance_id,turn_sequence-1),
+        (current,conversation_id,user_id,instance_id),
     )
     acts=cur.fetchall()
-    if len(acts)!=1:
+    # The *whole* pending-act set must be unambiguous, including manually
+    # offered decisions/questions. Old, generated or competing acts are
+    # never silently answered by a free-text message.
+    if (len(acts)!=1
+            or acts[0]["origin_kind"]!="AUTO_DELIVERED_QUESTION"
+            or acts[0]["kind"]!="QUESTION"
+            or acts[0]["sequence"]!=turn_sequence-1
+            or acts[0]["delivery_status"]!="DELIVERED"):
         return
     _link_turn(cur,conversation_id,user_id,instance_id,current,turn_id)
     cur.execute(
