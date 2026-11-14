@@ -119,14 +119,28 @@ these belong to MVP-02/03/04.
   and after registered tool and explicit-memory worker ticks. Queries run
   with PostgreSQL `REPEATABLE READ READ ONLY`; no cross-tenant export.
   Each table has its total count and `truncated` flag if over 500 rows.
-- `model_requests.json`: the *actual* prompt/context sent to Ollama, so a
-  missing reference can be diagnosed at context construction rather than
-  attributed to generation blindly.
+- `model_requests.json`: the **outbound Ollama JSON request**
+  recorded in `OllamaChatGateway._chat()` *after* all gateway augmentation.
+  Includes structured-mode `format=json`, the exact inserted intent-extraction
+  system instruction, selected model, stream setting, and complete sent
+  messages. `capture_boundary=ollama.outbound` identifies this evidence;
+  deterministic test gateways are explicitly marked
+  `pre_gateway_unverified` and are not claimed to show the outbound prompt.
+  Observers receive detached copies and cannot modify the sent request.
+  Review missing references at context construction vs. gateway augmentation.
 - `delivery_events.json`: real host output and late tool follow-ups.
 - `evaluation.json`: per-turn deterministic checks for persisted/delivered
   responses, expected registered tool/intent signals where unambiguous,
   authorized Goal isolation and asynchronous follow-up completion.
 - `errors.json`: first failed step and bounded exception evidence.
+  A model inference failure after authenticated ingress adds a
+  `message_failed` transcript entry correlated using the persisted
+  idempotency receipt. `after_failed_turn` captures its committed
+  user input, intent signals, dialogue state, turn trace and durable events
+  before database teardown. If observation itself fails, that secondary
+  error is recorded **after** the original failure, without replacing it.
+  Ingress failures without a committed receipt are labeled
+  `ingress_committed=false`; no phantom turn is invented.
 
 Some application observations and SQL table snapshots are taken in separate
 transactions; each SQL-table group is internally consistent, but the entire
