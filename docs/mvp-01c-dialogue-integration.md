@@ -24,10 +24,13 @@ This is conversation progress, not a task/procedure/goal engine.
    (OPEN/RESOLVED/ABANDONED). Repeating an exactly matching auto topic
    reuses its thread. An ambiguous reference is never guessed.
 5. A single, bounded, delivered assistant question may be tracked as
-   QUESTION pending on an automatically managed thread. Its source is the
-   **delivered response**, and it cannot authorize a goal, decision, tool or
-   procedure outcome. On a clear adjacent user reaction, its discussion status
-   can change to ANSWERED; neither goals nor tasks change.
+   QUESTION pending on an automatically managed thread. Explicit
+   either/or choice prompts can instead be tracked as a pending DECISION,
+   **never automatically approved**. Their source is the **delivered
+   response**, and neither kind can authorize a goal, tool, or procedure
+   outcome. On a clear adjacent user reaction, a QUESTION may change
+   to ANSWERED; a DECISION remains pending for explicit domain-safe
+   resolution. Neither goals nor tasks change.
 6. All thread changes, turn links and events/outbox are committed in the
    existing short PostgreSQL ingress/delivery transaction. No new background
    service, no additional model pass, and no database lock during inference.
@@ -69,7 +72,8 @@ thread ownership, delivered-only semantics and no domain side effects.
 
 Run full Phase 0 PostgreSQL contract tests and the existing Phase 1 live
 Ollama acceptance workflow. Behavior remains intentionally narrow:
-- No automatic DECISION resolution; a conversational yes is never goal consent.
+- DECISION prompts are tracked only for clear either/or requests, never
+  automatically resolved; a conversational yes is never goal consent.
 - A broad or implicit topic without a high-precision signal can continue in
   recent conversation but is not guaranteed a new persistent thread.
 - No fuzzy topic identity matching across weeks/sessions.
