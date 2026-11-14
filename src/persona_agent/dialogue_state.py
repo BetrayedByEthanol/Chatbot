@@ -276,6 +276,80 @@ def offer_dialogue_act(connection: Connection, actor: TrustedActor,
         source=cur.fetchone()
         if source is None or source["turn_id"]!=command.evidence_turn_id:
             raise VersionConflict("pending act requires delivered current response")
+        # An automatically observed QUESTION/DECISION is tentative. A later
+        # authenticated explicit offer for that same delivered response
+        # supersedes the automatic interpretation, without erasing its
+        # original act_id, source_response_id or event provenance.
+        #
+        # The conversation row is already locked and revision-fenced by
+        # _change(). The partial unique indexes additionally guarantee one
+        # pending act and at most one explicit registration per response.
+        cur.execute(
+            """SELECT act_id,thread_id,kind,label,status,origin_kind
+               FROM dialogue_pending_acts
+               WHERE source_response_id=%s AND conversation_id=%s
+                 AND user_id=%s AND instance_id=%s
+               ORDER BY created_at,act_id FOR UPDATE""",
+            (command.source_response_id,command.conversation_id,
+             actor.user_id,command.instance_id),
+        )
+        previous=cur.fetchall()
+        if any(row["origin_kind"]=="EXPLICIT" for row in previous):
+            raise VersionConflict("response already has an explicit dialogue act")
+        for prior in previous:
+            if prior["act_id"]==command.act_id:
+                raise VersionConflict("explicit act identifier already exists")
+            if prior["origin_kind"] not in (
+                "AUTO_DELIVERED_QUESTION","AUTO_DELIVERED_DECISION"
+            ):
+                raise VersionConflict("response has an unsupported dialogue act")
+            if prior["thread_id"]!=command.thread_id:
+                raise VersionConflict("automatic act belongs to another thread")
+            if prior["status"]=="PENDING":
+                cur.execute(
+                    """UPDATE dialogue_pending_acts
+                       SET status='CANCELLED',resolution_turn_id=%s,
+                           updated_at=clock_timestamp()
+                       WHERE act_id=%s AND status='PENDING'""",
+                    (command.evidence_turn_id,prior["act_id"]),
+                )
+            # An automatic "Await ..." hint must not survive after its
+            # meaning has been explicitly corrected. Preserve unrelated
+            # explicitly set next actions instead of blindly overwriting.
+            old_prefix=(
+                "Await choice: " if prior["kind"]=="DECISION"
+                else "Await answer: "
+            )
+            new_prefix={
+                DialogueActKind.DECISION:"Await choice: ",
+                DialogueActKind.QUESTION:"Await answer: ",
+                DialogueActKind.ACKNOWLEDGMENT:"Await acknowledgment: ",
+            }[command.kind]
+            cur.execute(
+                """UPDATE dialogue_threads
+                   SET next_conversational_action=%s,revision=revision+1,
+                       updated_at=clock_timestamp()
+                   WHERE thread_id=%s AND conversation_id=%s AND user_id=%s
+                     AND instance_id=%s AND next_conversational_action=%s""",
+                ((new_prefix+command.label)[:200],command.thread_id,
+                 command.conversation_id,actor.user_id,command.instance_id,
+                 (old_prefix+prior["label"])[:200]),
+            )
+            _event(
+                cur,user_id=actor.user_id,instance_id=command.instance_id,
+                conversation_id=command.conversation_id,
+                event_type="conversation.dialogue.auto_act_replaced.v1",
+                source_id=actor.source_id,trust_level="AUTHENTICATED_USER",
+                detail={
+                    "thread_id":str(command.thread_id),
+                    "response_id":str(command.source_response_id),
+                    "automatic_act_id":str(prior["act_id"]),
+                    "explicit_act_id":str(command.act_id),
+                    "previous_status":prior["status"],
+                    "evidence_turn_id":str(command.evidence_turn_id),
+                    "authority":"DISCUSSION_ONLY",
+                },
+            )
         cur.execute(
             """INSERT INTO dialogue_pending_acts(
                 act_id,conversation_id,thread_id,user_id,instance_id,
