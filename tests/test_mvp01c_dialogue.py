@@ -182,6 +182,129 @@ def test_delivered_choice_is_a_pending_decision_not_automatic_consent(dsn):
         ).fetchone()[0]==0
 
 
+def test_new_topic_request_does_not_answer_old_pending_question(dsn):
+    """A request to cook dinner is not an answer to a walking question."""
+    identity=seed_local_demo(dsn)
+    model=ReplyModel((
+        "Which day would suit your walking plan?",
+        "What ingredients do you have for dinner?",
+    ))
+    host=BehavioralAcceptanceHarness(dsn,identity,model)
+    host.begin_session("new-topic-is-not-an-answer")
+
+    host.send("I want to walk more.",idempotency_key="walking")
+    previous=state(dsn,identity)
+    walk=previous.focus_thread_id
+    question=previous.pending_acts[0]
+    assert question.label=="Which day would suit your walking plan?"
+
+    second=host.send("Help me cook dinner.",idempotency_key="dinner")
+    current=state(dsn,identity)
+    assert len(current.threads)==2
+    assert current.focus_thread_id!=walk
+    assert {act.act_id for act in current.pending_acts}=={
+        act.act_id for act in current.pending_acts
+        if act.thread_id==current.focus_thread_id
+    }
+    assert len(current.pending_acts)==1
+    assert current.pending_acts[0].label=="What ingredients do you have for dinner?"
+
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        old=conn.execute(
+            """SELECT status,resolution_kind,resolution_turn_id
+               FROM dialogue_pending_acts WHERE act_id=%s""",
+            (question.act_id,),
+        ).fetchone()
+        assert old==("PENDING",None,None)
+        new_thread=conn.execute(
+            """SELECT l.thread_id,t.title
+               FROM dialogue_turn_links l
+               JOIN dialogue_threads t ON t.thread_id=l.thread_id
+               WHERE l.turn_id=%s AND l.conversation_id=%s""",
+            (UUID(second.turn_id),identity.conversation_id),
+        ).fetchone()
+        assert new_thread==(current.focus_thread_id,"Help me cook dinner.")
+        assert conn.execute(
+            """SELECT count(*) FROM goal_records WHERE user_id=%s""",
+            (identity.user_id,),
+        ).fetchone()[0]==0
+
+
+def test_explicit_thread_progress_between_generation_and_delivery_wins(dsn):
+    """Delivery succeeds but does not revert an intervening explicit change."""
+    from persona_agent.dialogue_contracts import SetThreadProgressCommand
+    from persona_agent.dialogue_state import set_thread_progress
+
+    identity=seed_local_demo(dsn)
+    auth=TrustedActor(user_id=identity.user_id,source_id="mvp01c-explicit")
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        initial=ingest_text(conn,auth,TextInputCommand(
+            conversation_id=identity.conversation_id,
+            instance_id=identity.instance_id,
+            expected_generation=identity.generation,
+            idempotency_key="first-topic",
+            text="I want to walk more.",
+        ))
+        first_reply=respond_to_text(
+            conn,auth,initial.turn_id,ReplyModel(("We can discuss walking.",)),
+        )
+        acknowledge_text_delivery(conn,auth,first_reply.response_id)
+
+    initial_state=state(dsn,identity)
+    thread=initial_state.focus_thread_id
+    assert thread is not None
+    assert initial_state.pending_acts==()
+
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        second=ingest_text(conn,auth,TextInputCommand(
+            conversation_id=identity.conversation_id,
+            instance_id=identity.instance_id,
+            expected_generation=identity.generation,
+            idempotency_key="next-turn",
+            text="Tuesday might work.",
+        ))
+        generated=respond_to_text(
+            conn,auth,second.turn_id,
+            ReplyModel(("Which day would you like to start?",)),
+        )
+
+    after_generation=state(dsn,identity)
+    explicit=SetThreadProgressCommand(
+        conversation_id=identity.conversation_id,
+        instance_id=identity.instance_id,
+        expected_generation=identity.generation,
+        expected_revision=after_generation.revision,
+        evidence_turn_id=second.turn_id,
+        idempotency_key="explicit-resolution",
+        thread_id=thread,
+        resolution=Resolution.RESOLVED,
+        attention=Attention.FOCUSED,
+        next_conversational_action=None,
+    )
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        applied=set_thread_progress(conn,auth,explicit)
+        delivered=acknowledge_text_delivery(conn,auth,generated.response_id)
+    assert applied.revision==after_generation.revision+1
+    assert delivered.delivery_status=="DELIVERED"
+
+    restored=state(dsn,identity)
+    assert restored.focus_thread_id==thread
+    assert restored.threads[0].resolution_status==Resolution.RESOLVED
+    assert restored.threads[0].next_conversational_action is None
+    assert restored.pending_acts==()
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            """SELECT count(*) FROM dialogue_pending_acts
+               WHERE source_response_id=%s""",
+            (generated.response_id,),
+        ).fetchone()[0]==0
+        assert conn.execute(
+            """SELECT delivery_status FROM conversation_responses
+               WHERE response_id=%s""",
+            (generated.response_id,),
+        ).fetchone()==("DELIVERED",)
+
+
 def test_same_objective_reuses_topic_without_duplicating(dsn):
     identity=seed_local_demo(dsn)
     harness=BehavioralAcceptanceHarness(dsn,identity,ReplyModel((
