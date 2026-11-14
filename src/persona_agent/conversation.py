@@ -236,6 +236,14 @@ def ingest_text(connection: Connection, actor: TrustedActor,
                 detail=detail,
                 correlation_id=receipt_id,
             )
+            # MVP-01A: tentative interpretation in the same short input
+            # transaction. Never writes goals, instructions or permissions.
+            from .intent_interpretation import record_intent_on_ingress
+            record_intent_on_ingress(
+                cursor,user_id=actor.user_id,instance_id=command.instance_id,
+                conversation_id=command.conversation_id,turn_id=turn_id,
+                turn_sequence=seq,source_event_id=event_id,text=command.text,
+            )
             result = TextInputResult(
                 conversation_id=command.conversation_id,
                 turn_id=turn_id,event_id=event_id,sequence=seq,
@@ -432,6 +440,21 @@ def prepare_text_context(
                             encoded=json.dumps(state,ensure_ascii=False)
                         if len(encoded)<=cap:
                             prompt+=head+encoded+"\n"
+            # MVP-01A: bounded, non-authoritative intent discussion cues.
+            # This is selective retrieval from the same conversation only.
+            from .intent_interpretation import intent_context_block
+            intent_room=max_context_chars-len(prompt)-min(
+                len(history[-1].content),min(256,max_context_chars//4),
+            )-240
+            if intent_room>=180:
+                prompt+=intent_context_block(
+                    cursor,user_id=actor.user_id,
+                    instance_id=item["instance_id"],
+                    conversation_id=item["conversation_id"],
+                    turn_sequence=item["sequence"],
+                    latest_text=history[-1].content,
+                    max_chars=min(620,intent_room),
+                )
             # P2-07: domain-owned, read-only emotion/relationship context.
             # Explicit communication preferences precede optional simulated
             # affect and tentative user-cue estimates. The whole block fits
