@@ -469,6 +469,124 @@ def test_model_proposed_objective_joins_same_dialogue_flow(dsn):
         ).fetchone()[0]==0
 
 
+@pytest.mark.parametrize("model_proposes_objective", [True, False])
+def test_model_eligible_input_does_not_answer_unrelated_pending_question(
+    dsn, model_proposes_objective,
+):
+    """Defer answer linkage until the model's current-turn intent is known."""
+    from persona_agent.conversation_contracts import ModelIntentCandidate
+    from persona_agent.intent_interpretation import (
+        classify_intent, should_interpret_with_model,
+    )
+
+    implicit="Lately I've been thinking about a regular walking routine."
+    assert classify_intent(implicit) is None
+    assert should_interpret_with_model(implicit)
+
+    class Model:
+        def __init__(self):
+            self.plain_calls=0
+            self.interpreted_calls=0
+
+        def generate(self,messages):
+            self.plain_calls+=1
+            return ModelReply(
+                model_id="mvp01c-test",
+                text="What dish would you like to cook first?",
+            )
+
+        def generate_interpreted(self,messages):
+            self.interpreted_calls+=1
+            assert messages[-1].content==implicit
+            return ModelReply(
+                model_id="mvp01c-test",
+                text="Which day would you like to walk?",
+                intent_candidate=(
+                    ModelIntentCandidate(
+                        kind="OBJECTIVE",evidence_quote=implicit,
+                        confidence=0.94,reference="NONE",
+                    ) if model_proposes_objective else None
+                ),
+            )
+
+    identity=seed_local_demo(dsn)
+    model=Model()
+    host=BehavioralAcceptanceHarness(dsn,identity,model)
+    host.begin_session("pending-followed-by-model-eligible")
+    host.send("I want to cook more.",idempotency_key="cook")
+    initial=state(dsn,identity)
+    cooking_thread=initial.focus_thread_id
+    cooking_question=initial.pending_acts[0].act_id
+    assert initial.pending_acts[0].label=="What dish would you like to cook first?"
+
+    actor=TrustedActor(user_id=identity.user_id,source_id="mvp01c-model")
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        turn=ingest_text(conn,actor,TextInputCommand(
+            conversation_id=identity.conversation_id,
+            instance_id=identity.instance_id,
+            expected_generation=identity.generation,
+            idempotency_key="implicit-walk",
+            text=implicit,
+        ))
+        # The earlier question must stay pending even before the model
+        # has produced/validated its interpretation for this input.
+        assert conn.execute(
+            """SELECT status,resolution_turn_id FROM dialogue_pending_acts
+               WHERE act_id=%s""",
+            (cooking_question,),
+        ).fetchone()==("PENDING",None)
+        assert conn.execute(
+            """SELECT count(*) FROM dialogue_turn_links
+               WHERE turn_id=%s AND conversation_id=%s""",
+            (turn.turn_id,identity.conversation_id),
+        ).fetchone()[0]==0
+
+        reply=respond_to_text(conn,actor,turn.turn_id,model)
+        assert reply.delivery_status=="GENERATED"
+        # A generated but not yet delivered response does not move focus.
+        assert state(dsn,identity).focus_thread_id==cooking_thread
+        acknowledge_text_delivery(conn,actor,reply.response_id)
+
+    active=state(dsn,identity)
+    assert model.plain_calls==1
+    assert model.interpreted_calls==1
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            """SELECT status,resolution_kind,resolution_turn_id
+               FROM dialogue_pending_acts WHERE act_id=%s""",
+            (cooking_question,),
+        ).fetchone()==("PENDING",None,None)
+        if model_proposes_objective:
+            assert len(active.threads)==2
+            assert active.focus_thread_id!=cooking_thread
+            assert len(active.pending_acts)==1
+            assert active.pending_acts[0].label=="Which day would you like to walk?"
+            assert conn.execute(
+                """SELECT thread_id FROM dialogue_turn_links
+                   WHERE turn_id=%s AND conversation_id=%s""",
+                (turn.turn_id,identity.conversation_id),
+            ).fetchone()==(active.focus_thread_id,)
+            assert conn.execute(
+                """SELECT intent_kind,epistemic_status
+                   FROM conversation_intent_signals WHERE turn_id=%s""",
+                (turn.turn_id,),
+            ).fetchone()==("OBJECTIVE","MODEL_PROPOSED")
+        else:
+            # No evidence means no automatic answer and no invented topic.
+            assert len(active.threads)==1
+            assert active.focus_thread_id==cooking_thread
+            assert len(active.pending_acts)==1
+            assert active.pending_acts[0].act_id==cooking_question
+            assert conn.execute(
+                """SELECT count(*) FROM dialogue_turn_links WHERE turn_id=%s""",
+                (turn.turn_id,),
+            ).fetchone()[0]==0
+        assert conn.execute(
+            """SELECT count(*) FROM goal_records WHERE user_id=%s""",
+            (identity.user_id,),
+        ).fetchone()[0]==0
+
+
 def test_multiple_sessions_do_not_share_dialogue_focus(dsn):
     identity=seed_local_demo(dsn)
     harness=BehavioralAcceptanceHarness(dsn,identity,ReplyModel((
