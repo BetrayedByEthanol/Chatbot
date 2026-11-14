@@ -241,6 +241,43 @@ def _check_turn(step: dict, turn: dict, snapshot: dict) -> list[dict]:
     return checks
 
 
+def _committed_input_receipt(
+    dsn: str, harness: BehavioralAcceptanceHarness, idempotency_key: str,
+) -> dict | None:
+    """Find only this authenticated ingress receipt, never an earlier turn.
+
+    An inference failure can occur *after* ingest_text commits its event,
+    intent signal and pending user turn, but before the host returns an ID.
+    The durable command receipt provides an exact idempotency-key correlation
+    without rerunning ingress or assuming the last turn is this attempt.
+    """
+    from .conversation import _INPUT_COMMAND
+
+    identity = harness.active_identity
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        with conn.transaction():
+            conn.execute("SET TRANSACTION READ ONLY")
+            with conn.cursor(row_factory=dict_row) as cur:
+                cur.execute(
+                    """SELECT result_json, event_id FROM command_receipts
+                       WHERE user_id=%s AND instance_id=%s
+                         AND command_type=%s AND idempotency_key=%s""",
+                    (identity.user_id, identity.instance_id,
+                     _INPUT_COMMAND, idempotency_key),
+                )
+                row = cur.fetchone()
+    if row is None or not isinstance(row["result_json"], dict):
+        return None
+    result = row["result_json"]
+    if str(result.get("conversation_id")) != str(identity.conversation_id):
+        return None
+    return {
+        "turn_id":str(result["turn_id"]),
+        "source_event_id":str(row["event_id"]),
+        "sequence":result["sequence"],
+    }
+
+
 def run_scenario(
     dsn: str, scenario: dict, gateway,
     *, run_tool_worker: bool = True, run_memory_worker: bool = True,
@@ -261,6 +298,7 @@ def run_scenario(
         "model_requests":observed_gateway.requests, "deliveries":harness.deliveries,
     }
     for index, step in enumerate(scenario["steps"]):
+        recorded_message = False
         try:
             action = step["action"]
             if action == "session":
@@ -290,6 +328,7 @@ def run_scenario(
                 "model_id":turn.model_id,"replayed":turn.replayed,
             }
             report["transcript"].append(recorded)
+            recorded_message = True
             current = capture_state(
                 dsn,harness,turn_id=turn.turn_id,checkpoint="after_delivery",
             )
@@ -329,10 +368,39 @@ def run_scenario(
                 memory_state["step_index"] = index
                 report["snapshots"].append(memory_state)
         except Exception as exc:
+            # Preserve the original failure first. Neither receipt lookup
+            # nor evidence collection may mask it if observation also fails.
             report["errors"].append({
                 "step_index":index,"type":type(exc).__name__,
                 "message":str(exc)[:1000],
             })
+            if step["action"] == "message" and not recorded_message:
+                key = f"mvp01e-{index:04d}"
+                failed = {
+                    "index":index, "action":"message_failed",
+                    "conversation_id":str(harness.active_identity.conversation_id),
+                    "input":step["text"],"idempotency_key":key,
+                    "assistant":None,"turn_id":None,"ingress_committed":False,
+                    "error_type":type(exc).__name__,
+                }
+                report["transcript"].append(failed)
+                try:
+                    receipt = _committed_input_receipt(dsn,harness,key)
+                    if receipt is not None:
+                        failed.update(receipt)
+                        failed["ingress_committed"] = True
+                        snapshot = capture_state(
+                            dsn,harness,turn_id=receipt["turn_id"],
+                            checkpoint="after_failed_turn",
+                        )
+                        snapshot["step_index"] = index
+                        report["snapshots"].append(snapshot)
+                except Exception as observation_exc:
+                    report["errors"].append({
+                        "step_index":index, "phase":"failure_observation",
+                        "type":type(observation_exc).__name__,
+                        "message":str(observation_exc)[:1000],
+                    })
             break
     report["completed_at"] = timestamp()
     report["passed"] = (
