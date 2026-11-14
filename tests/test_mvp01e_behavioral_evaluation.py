@@ -1,4 +1,5 @@
 """MVP-01E: non-destructive scenario validation, evidence and real SQL tests."""
+from io import BytesIO
 from pathlib import Path
 from uuid import uuid4
 from zipfile import ZipFile
@@ -47,6 +48,80 @@ class SimpleModel:
 def test_evaluation_scenario_rejects_unsafe_or_invalid_steps(invalid):
     with pytest.raises(ValueError):
         validate_scenario(invalid)
+
+
+
+def test_ollama_interpreted_trace_equals_real_augmented_http_payload(monkeypatch):
+    """The outbound JSON, not the upstream pre-interpreted messages, is evidence."""
+    from persona_agent.conversation_contracts import ModelMessage
+    from persona_agent.model_gateway import OllamaChatGateway
+
+    captured=[]
+    class FakeResponse:
+        def __enter__(self):
+            return self
+        def __exit__(self,*args):
+            return False
+        def read(self,n=-1):
+            return BytesIO(json.dumps({
+                "message":{"role":"assistant","content":json.dumps({
+                    "reply":"That sounds achievable.","intent":None,
+                })},
+            }).encode()).read(n)
+
+    def urlopen(request,timeout):
+        captured.append(json.loads(request.data))
+        return FakeResponse()
+
+    monkeypatch.setattr("persona_agent.model_gateway.urlopen",urlopen)
+    observer=RecordingGateway(OllamaChatGateway(model="observed-model"))
+    reply=observer.generate_interpreted([
+        ModelMessage("system","Preserve selected persona."),
+        ModelMessage("user","I've been thinking about walking more regularly."),
+    ])
+    assert reply.text=="That sounds achievable."
+    assert len(captured)==len(observer.requests)==1
+    trace=observer.requests[0]
+    assert trace["capture_boundary"]=="ollama.outbound"
+    assert trace["route"]=="generate_interpreted"
+    assert trace["payload"]==captured[0]
+    assert trace["payload"]["format"]=="json"
+    assert trace["payload"]["model"]=="observed-model"
+    assert trace["messages"]==captured[0]["messages"]
+    assert len(trace["messages"])==3
+    assert trace["messages"][0]["role"]=="system"
+    assert "evidence_quote" in trace["messages"][0]["content"]
+    assert "intent" in trace["messages"][0]["content"]
+    assert trace["messages"][1]["content"]=="Preserve selected persona."
+    assert trace["messages"][-1]["content"]==(
+        "I've been thinking about walking more regularly."
+    )
+
+
+def test_outbound_observer_receives_detached_payload(monkeypatch):
+    """An evaluator cannot edit the HTTP request by mutating its observation."""
+    from persona_agent.conversation_contracts import ModelMessage
+    from persona_agent.model_gateway import OllamaChatGateway
+
+    seen=[]
+    def mutate_copy(payload):
+        payload["messages"][0]["content"]="INJECTED"
+    class FakeResponse:
+        def __enter__(self):
+            return self
+        def __exit__(self,*args):
+            return False
+        def read(self,n=-1):
+            return BytesIO(json.dumps({
+                "message":{"role":"assistant","content":"Hello"}
+            }).encode()).read(n)
+    def urlopen(request,timeout):
+        seen.append(json.loads(request.data))
+        return FakeResponse()
+    monkeypatch.setattr("persona_agent.model_gateway.urlopen",urlopen)
+    gateway=OllamaChatGateway(model="test",request_observer=mutate_copy)
+    gateway.generate([ModelMessage("user","Hello")])
+    assert seen[0]["messages"][0]["content"]=="Hello"
 
 
 def test_evaluation_uses_real_host_and_captures_each_state_boundary(dsn,tmp_path):
@@ -137,6 +212,20 @@ def test_partial_report_preserves_error_evidence(dsn,tmp_path):
     result=run_scenario(dsn,scenario,FailingModel())
     assert not result["passed"]
     assert result["errors"][0]["type"]=="RuntimeError"
+    failed=result["transcript"][-1]
+    assert failed["action"]=="message_failed"
+    assert failed["input"]=="Hello"
+    assert failed["assistant"] is None
+    assert failed["ingress_committed"] is True
+    assert failed["turn_id"] is not None
+    state=result["snapshots"][-1]
+    assert state["checkpoint"]=="after_failed_turn"
+    assert state["source_turn_id"]==failed["turn_id"]
+    assert state["application"]["turn_trace"]["response_status"] is None
+    assert any(str(row["turn_id"])==failed["turn_id"]
+               for row in state["database"]["conversation_turns"]["rows"])
+    assert state["database"]["conversation_responses"]["count"]==0
+    assert state["database"]["events"]["count"]>=1
     saved=write_bundle(
         result,scenario,tmp_path/"failure.zip",
         model="test-model",git_sha=None,migration_hashes={},
@@ -144,6 +233,9 @@ def test_partial_report_preserves_error_evidence(dsn,tmp_path):
     assert saved.exists()
     with ZipFile(saved) as z:
         assert json.loads(z.read("errors.json"))[0]["type"]=="RuntimeError"
+        assert json.loads(z.read("transcript.json"))[-1]["ingress_committed"]
+        assert json.loads(z.read("state_snapshots.json"))[-1][
+            "checkpoint"]=="after_failed_turn"
 
 
 def test_isolated_database_lifecycle_refuses_arbitrary_drop(monkeypatch):
@@ -200,3 +292,50 @@ def test_admin_dsn_must_target_postgres_maintenance_database(monkeypatch):
     monkeypatch.setattr(module.psycopg,"connect",lambda *a,**kw:Connection())
     with pytest.raises(ValueError,match="maintenance DB"):
         module.create_isolated_database("dbname=production user=local")
+
+def test_failed_interpreted_turn_keeps_input_and_event_evidence(dsn):
+    class FailingModel:
+        def generate_interpreted(self,messages):
+            raise RuntimeError("inference failed after durable ingress")
+        def generate(self,messages):
+            raise AssertionError("should use interpreted path")
+    scenario={"name":"failure-with-intent","steps":[
+        {"action":"session","name":"a"},
+        {"action":"message",
+         "text":"I've been thinking about walking more regularly."},
+    ]}
+    report=run_scenario(dsn,scenario,FailingModel(),run_memory_worker=False)
+    assert report["errors"][0]["type"]=="RuntimeError"
+    entry=report["transcript"][-1]
+    assert entry["ingress_committed"] is True
+    assert entry["turn_id"]
+    state=report["snapshots"][-1]
+    assert state["checkpoint"]=="after_failed_turn"
+    assert state["application"]["turn_trace"]["turn_id"]==entry["turn_id"]
+    assert state["database"]["conversation_turns"]["count"]==1
+    assert state["database"]["events"]["count"]>=1
+    assert state["database"]["conversation_responses"]["count"]==0
+
+
+def test_failed_turn_observation_cannot_hide_original_exception(dsn,monkeypatch):
+    class FailingModel:
+        def generate(self,messages):
+            raise RuntimeError("original generation failure")
+    def cannot_observe(*args,**kwargs):
+        raise ValueError("snapshot also failed")
+    monkeypatch.setattr(
+        "persona_agent.behavioral_evaluation.capture_state",cannot_observe,
+    )
+    scenario={"name":"double-failure","steps":[
+        {"action":"session","name":"a"},
+        {"action":"message","text":"I want to walk more."},
+    ]}
+    result=run_scenario(dsn,scenario,FailingModel(),run_memory_worker=False)
+    assert not result["passed"]
+    assert result["errors"][0]["type"]=="RuntimeError"
+    assert "original generation failure" in result["errors"][0]["message"]
+    assert result["errors"][1]["phase"]=="failure_observation"
+    assert result["errors"][1]["type"]=="ValueError"
+    assert result["transcript"][-1]["ingress_committed"] is True
+    assert result["transcript"][-1]["turn_id"] is not None
+    assert result["snapshots"]==[]
