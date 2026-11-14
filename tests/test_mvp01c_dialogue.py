@@ -150,6 +150,107 @@ def test_explicit_reference_refocuses_unique_existing_thread(dsn):
     assert by_id[cooking].resolution_status==Resolution.OPEN
 
 
+def test_cross_thread_objective_reference_does_not_answer_cooking_question(dsn):
+    """A referenced walking goal outranks the adjacent cooking question."""
+    identity=seed_local_demo(dsn)
+    model=ReplyModel((
+        "A short walk each morning could be a good starting point.",
+        "What ingredients do you have available?",
+        "Would you like to plan a short walk for tomorrow?",
+    ))
+    host=BehavioralAcceptanceHarness(dsn,identity,model)
+    host.begin_session("cross-thread-reference")
+    host.send("I want to walk more.",idempotency_key="walking-objective")
+    original=state(dsn,identity)
+    walking=original.focus_thread_id
+    assert walking is not None
+    assert original.pending_acts==()
+
+    host.send(
+        "Let's discuss cooking instead.",idempotency_key="cooking-topic",
+    )
+    cooking_state=state(dsn,identity)
+    cooking=cooking_state.focus_thread_id
+    assert cooking is not None and cooking!=walking
+    assert len(cooking_state.pending_acts)==1
+    cooking_question=cooking_state.pending_acts[0]
+    assert cooking_question.label=="What ingredients do you have available?"
+
+    text="Please suggest the next step for that goal."
+    auth=TrustedActor(user_id=identity.user_id,source_id="mvp01c-reference-test")
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        entered=ingest_text(
+            conn,auth,TextInputCommand(
+                conversation_id=identity.conversation_id,
+                instance_id=identity.instance_id,
+                expected_generation=identity.generation,
+                idempotency_key="reference-walking",
+                text=text,
+            ),
+        )
+        signal=conn.execute(
+            """SELECT intent_kind,related_signal_id FROM conversation_intent_signals
+               WHERE conversation_id=%s AND user_id=%s AND instance_id=%s
+                 AND turn_id=%s""",
+            (identity.conversation_id,identity.user_id,
+             identity.instance_id,entered.turn_id),
+        ).fetchone()
+        assert signal[0]=="REQUEST"
+        assert signal[1] is not None
+        referenced=conn.execute(
+            """SELECT linked.thread_id
+               FROM conversation_intent_signals source
+               JOIN dialogue_turn_links linked ON linked.turn_id=source.turn_id
+               WHERE source.signal_id=%s AND source.conversation_id=%s
+                 AND source.user_id=%s AND source.instance_id=%s""",
+            (signal[1],identity.conversation_id,
+             identity.user_id,identity.instance_id),
+        ).fetchone()
+        assert referenced==(walking,)
+        assert conn.execute(
+            """SELECT status,resolution_kind,resolution_turn_id
+               FROM dialogue_pending_acts WHERE act_id=%s""",
+            (cooking_question.act_id,),
+        ).fetchone()==("PENDING",None,None)
+        # The input must remain unlinked until persisted reference resolution
+        # has selected the original walking thread on delivery.
+        assert conn.execute(
+            """SELECT count(*) FROM dialogue_turn_links
+               WHERE turn_id=%s AND conversation_id=%s""",
+            (entered.turn_id,identity.conversation_id),
+        ).fetchone()[0]==0
+
+        response=respond_to_text(conn,auth,entered.turn_id,model)
+        assert response.delivery_status=="GENERATED"
+        assert state(dsn,identity).focus_thread_id==cooking
+        acknowledge_text_delivery(conn,auth,response.response_id)
+
+    active=state(dsn,identity)
+    assert len(active.threads)==2
+    assert active.focus_thread_id==walking
+    assert len(active.pending_acts)==1
+    assert active.pending_acts[0].label==(
+        "Would you like to plan a short walk for tomorrow?"
+    )
+    assert all(a.thread_id==walking for a in active.pending_acts)
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            """SELECT status,resolution_kind,resolution_turn_id
+               FROM dialogue_pending_acts WHERE act_id=%s""",
+            (cooking_question.act_id,),
+        ).fetchone()==("PENDING",None,None)
+        assert conn.execute(
+            """SELECT thread_id FROM dialogue_turn_links
+               WHERE turn_id=%s AND conversation_id=%s""",
+            (entered.turn_id,identity.conversation_id),
+        ).fetchone()==(walking,)
+        assert conn.execute(
+            """SELECT count(*) FROM goal_records WHERE user_id=%s
+               AND instance_id=%s""",
+            (identity.user_id,identity.instance_id),
+        ).fetchone()[0]==0
+
+
 def test_delivered_choice_is_a_pending_decision_not_automatic_consent(dsn):
     identity=seed_local_demo(dsn)
     host=BehavioralAcceptanceHarness(dsn,identity,ReplyModel((
