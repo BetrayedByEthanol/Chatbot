@@ -271,6 +271,14 @@ def ingest_text(connection: Connection, actor: TrustedActor,
                     conversation_id=command.conversation_id,turn_id=turn_id,
                     text=command.text,source_id=actor.source_id,
                 )
+            # MVP-01C: resolve only an adjacent, uniquely pending automatic
+            # conversational question; never accept goals or decisions here.
+            from .dialogue_integration import resolve_auto_question_on_ingress
+            resolve_auto_question_on_ingress(
+                cursor,user_id=actor.user_id,instance_id=command.instance_id,
+                conversation_id=command.conversation_id,turn_id=turn_id,
+                turn_sequence=seq,text=command.text,
+            )
             return result
 
 
@@ -795,6 +803,15 @@ def acknowledge_text_delivery(connection: Connection, actor: TrustedActor,
                 event_type="conversation.response.delivered.v1",
                 source_id=actor.source_id,trust_level="AUTHENTICATED_USER",
                 detail={"response_id":str(response_id),"turn_id":str(row["turn_id"])},
+            )
+            # MVP-01C: adapt discussion state only after actual delivery.
+            # The enclosing short transaction owns the conversation lock;
+            # generated or stale output never creates pending questions.
+            from .dialogue_integration import advance_on_delivery
+            advance_on_delivery(
+                cursor,user_id=actor.user_id,instance_id=row["instance_id"],
+                conversation_id=row["conversation_id"],turn_id=row["turn_id"],
+                response_id=response_id,response_text=row["response_text"],
             )
             return TextResponseResult(
                 response_id=row["response_id"],turn_id=row["turn_id"],
