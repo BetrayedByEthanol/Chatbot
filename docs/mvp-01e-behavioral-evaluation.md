@@ -41,6 +41,19 @@ source .env.e2e
 docker compose -f compose.e2e.yaml -p persona-e2e-mvp01 up -d --wait
 ```
 
+**Optional single-command execution:** Once `.env.e2e` is configured,
+you can replace the separate Compose startup, Python invocation and
+Compose shutdown commands below with:
+
+```bash
+bash scripts/run_persona_e2e.sh --report artifacts/mvp01e-review.zip
+```
+
+This wrapper creates an invocation-unique Compose project, starts the isolated
+PostgreSQL service, invokes the runner, and removes the Compose project and
+volumes on exit (including failed runs). It rejects `--keep-db`: use the
+direct CLI and manual Compose lifecycle for debugging.
+
 PostgreSQL 16 binds only to `127.0.0.1:55433` by default. The runner
 requires an administrative DSN that connects to this **isolated server's**
 `postgres` maintenance database. Do not use a production cluster, even
