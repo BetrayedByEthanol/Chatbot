@@ -109,10 +109,11 @@ Phase 0–4 tests and can be incorporated into later longitudinal scenarios.
 Integrate one bounded, validated interpretation path at the Conversation
 Manager boundary:
 
-`User states an objective → intent proposal → clarification/approval dialogue
-→ domain-owned goal proposal/authorized command`.
+`User states an objective → selective intent interpretation →
+context-aware clarification → validated goal-discussion proposal`.
 
-Start with an explicit goal-discussion signal and correction handling, then
-add selective tool routing. Keep rules/classifiers optional and ensure one
-interactive model inference remains the common path. Do not let a model
-directly create goals or override authorization/versions.
+Start with explicit objective/clarification signals, correction handling and
+selective tool routing. MVP-01A does **not** directly create or approve goals:
+MVP-03 will route an authorized confirmation through the existing Goal owner.
+Keep optional rules/classifiers selective; preserve one main interactive model
+inference and all authority/version guards.
