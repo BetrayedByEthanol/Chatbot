@@ -41,10 +41,23 @@ class ModelMessage:
     content: str
 
 
+class ModelIntentCandidate(BaseModel):
+    """Tentative model interpretation; source evidence is independently checked."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    kind: Literal["OBJECTIVE", "REQUEST", "INSTRUCTION", "CORRECTION",
+                  "OBSERVATION", "HYPOTHETICAL"]
+    evidence_quote: str = Field(min_length=3, max_length=200)
+    confidence: float = Field(ge=0, le=1)
+    reference: Literal["NONE", "PRIOR_OBJECTIVE"] = "NONE"
+
+
 @dataclass(frozen=True)
 class ModelReply:
     model_id: str
     text: str
+    intent_candidate: ModelIntentCandidate | None = None
 
 
 @dataclass(frozen=True)

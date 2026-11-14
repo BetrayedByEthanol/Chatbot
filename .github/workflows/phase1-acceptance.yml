@@ -9,6 +9,9 @@ on:
       - "tests/test_phase4_integrated_acceptance.py"
       - "scripts/phase1_live_acceptance.py"
       - "scripts/mvp00a_baseline.py"
+      - "scripts/mvp01b_probe.py"
+      - "tests/test_mvp01b_model_intent.py"
+      - "tests/test_mvp01b_gateway.py"
       - "tests/test_mvp00a_behavioral.py"
       - ".github/workflows/phase1-acceptance.yml"
   workflow_dispatch:
@@ -78,6 +81,15 @@ jobs:
         with:
           name: mvp00a-observational-baseline
           path: mvp00a-report.json
+          if-no-files-found: ignore
+      - name: MVP-01B real-model implicit intent observational probe
+        run: python scripts/mvp01b_probe.py --report mvp01b-report.json
+      - name: Archive MVP-01B model-assisted intent evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mvp01b-model-intent
+          path: mvp01b-report.json
           if-no-files-found: ignore
       - name: Phase 4 cross-domain real PostgreSQL lifecycle drills
         env:
