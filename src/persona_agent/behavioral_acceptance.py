@@ -12,6 +12,7 @@ import psycopg
 from psycopg.rows import dict_row
 
 from .acceptance_host import HostIdentity, LocalAcceptanceSession
+from .event_delivery import dispatch_outbox
 from .memory_extraction import (
     register_extraction_consumer, run_extraction_tick,
 )
@@ -64,6 +65,7 @@ class BehavioralAcceptanceHarness:
         self.turns: list[ObservedTurn] = []
         self._session_name: str | None = None
         self._host: LocalAcceptanceSession | None = None
+        self._extraction_consumer: str | None = None
 
     @property
     def active_identity(self) -> HostIdentity:
@@ -129,14 +131,28 @@ class BehavioralAcceptanceHarness:
 
     def enable_explicit_memory_worker(self) -> None:
         """Subscribe the already-implemented extraction consumer."""
+        if self._extraction_consumer is not None:
+            return
+        consumer_id = "mvp00a-extraction-" + uuid4().hex
         with psycopg.connect(self.dsn, autocommit=True) as conn:
-            register_extraction_consumer(conn)
+            # Existing pending outbox messages are not part of this fixture.
+            # They are dispatched through the normal durable event system.
+            for _ in range(100):
+                if dispatch_outbox(conn, limit=1000) == 0:
+                    break
+            else:
+                raise RuntimeError("outbox backlog exceeded acceptance setup bound")
+            register_extraction_consumer(conn, consumer_id=consumer_id)
+        self._extraction_consumer = consumer_id
 
     def tick_explicit_memory_worker(self) -> dict[str, int]:
         """Run existing authorized asynchronous processing; no test-side writes."""
+        if self._extraction_consumer is None:
+            raise RuntimeError("memory worker is not subscribed")
         with psycopg.connect(self.dsn, autocommit=True) as conn:
             result = run_extraction_tick(
                 conn, worker_id="mvp-00a-explicit-memory",
+                consumer_id=self._extraction_consumer,
             )
         return dict(vars(result))
 
