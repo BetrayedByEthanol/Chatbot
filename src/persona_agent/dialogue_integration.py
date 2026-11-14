@@ -34,6 +34,13 @@ _CHOICE_QUESTION = re.compile(
 _NOT_ANSWERS = {"okay", "ok", "got it", "understood"}
 
 
+def _starts_new_topic(kind: str, label: str) -> bool:
+    """Shared ingress/delivery gate: a topic request is not an answer."""
+    return kind == "OBJECTIVE" or (
+        kind == "REQUEST" and bool(_TOPIC_REQUEST.match(label))
+    )
+
+
 def _event_of_progress(
     cur, *, user_id, instance_id, conversation_id,
     event_type, turn_id, thread_id, **fields,
@@ -96,7 +103,7 @@ def _focus(
 def advance_on_delivery(
     cur, *, user_id: UUID, instance_id: UUID,
     conversation_id: UUID, turn_id: UUID,
-    response_id: UUID, response_text: str,
+    response_id: UUID, response_text: str, context_revision: int,
 ) -> None:
     """Called after delivery acknowledgment under the conversation lock.
 
@@ -106,14 +113,21 @@ def advance_on_delivery(
     durable conversational-question effect.
     """
     cur.execute(
-        """SELECT focus_thread_id,last_input_turn_id FROM conversations
+        """SELECT focus_thread_id,last_input_turn_id,revision
+           FROM conversations
            WHERE conversation_id=%s AND user_id=%s AND instance_id=%s""",
         (conversation_id,user_id,instance_id),
     )
     conv=cur.fetchone()
-    # Old responses may be acknowledged for historical delivery, but never
-    # hijack conversational focus after a newer user input.
-    if conv is None or conv["last_input_turn_id"]!=turn_id:
+    # Normal sequence: the response was generated from context_revision,
+    # generating it incremented revision once, and the acknowledged
+    # delivery just incremented revision once more. Any intervening explicit
+    # dialogue command (or other state mutation) changes that sequence.
+    # Delivery itself still succeeds, but must not overwrite newer dialogue.
+    if (
+        conv is None or conv["last_input_turn_id"]!=turn_id
+        or conv["revision"] != context_revision + 2
+    ):
         return
     current=conv["focus_thread_id"]
     cur.execute(
@@ -157,9 +171,7 @@ def advance_on_delivery(
             match=cur.fetchone()
             if match is not None:
                 target=match["thread_id"]
-        elif (signal["intent_kind"]=="OBJECTIVE"
-              or (signal["intent_kind"]=="REQUEST"
-                  and _TOPIC_REQUEST.match(signal["label"]))):
+        elif _starts_new_topic(signal["intent_kind"],signal["label"]):
             # A fresh objective/topic request is a conversational subject,
             # not an approved Goal. Exact title reuse prevents duplicates
             # for repeated explicit requests; fuzzy matching is deferred.
@@ -291,9 +303,13 @@ def resolve_auto_question_on_ingress(
             or _CLEAR_SWITCH.match(value)):
         return
     interpretation=classify_intent(value)
-    if interpretation and interpretation.kind in (
-        "OBJECTIVE","CORRECTION","HYPOTHETICAL","INSTRUCTION"
+    if interpretation and (
+        interpretation.kind in ("CORRECTION","HYPOTHETICAL","INSTRUCTION")
+        or _starts_new_topic(interpretation.kind,interpretation.label)
     ):
+        # New subject requests must remain unlinked at ingress so the
+        # delivery adaptation can create/focus their own thread. Never
+        # resolve an unrelated earlier question as "answered".
         return
     cur.execute(
         """SELECT c.focus_thread_id FROM conversations c
