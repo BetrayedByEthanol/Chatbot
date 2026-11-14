@@ -329,6 +329,32 @@ def resolve_auto_question_on_ingress(
     if row is None:
         return
     current=row["focus_thread_id"]
+    # MVP-01A has already persisted explicit references in the same
+    # authenticated ingress transaction. Do not mark a question on the
+    # focused thread ANSWERED when this turn references a different
+    # conversation thread: delivery must remain free to refocus it.
+    cur.execute(
+        """SELECT signal.related_signal_id, origin_link.thread_id AS referenced_thread
+           FROM conversation_intent_signals signal
+           LEFT JOIN conversation_intent_signals origin
+             ON origin.signal_id=signal.related_signal_id
+            AND origin.conversation_id=signal.conversation_id
+            AND origin.user_id=signal.user_id
+            AND origin.instance_id=signal.instance_id
+           LEFT JOIN dialogue_turn_links origin_link
+             ON origin_link.turn_id=origin.turn_id
+            AND origin_link.conversation_id=origin.conversation_id
+            AND origin_link.user_id=origin.user_id
+           WHERE signal.turn_id=%s AND signal.conversation_id=%s
+             AND signal.user_id=%s AND signal.instance_id=%s""",
+        (turn_id,conversation_id,user_id,instance_id),
+    )
+    reference=cur.fetchone()
+    if (reference is not None and reference["related_signal_id"] is not None
+            and reference["referenced_thread"]!=current):
+        # Unresolved references also abstain: treating them as an answer
+        # would make a potentially erroneous, irreversible turn link.
+        return
     cur.execute(
         """SELECT a.act_id,a.origin_kind,a.kind,t.sequence,
                   r.delivery_status
