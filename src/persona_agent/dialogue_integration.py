@@ -102,14 +102,24 @@ def advance_on_delivery(
     durable conversational-question effect.
     """
     cur.execute(
-        """SELECT focus_thread_id FROM conversations
+        """SELECT focus_thread_id,last_input_turn_id FROM conversations
            WHERE conversation_id=%s AND user_id=%s AND instance_id=%s""",
         (conversation_id,user_id,instance_id),
     )
     conv=cur.fetchone()
-    if conv is None:
+    # Old responses may be acknowledged for historical delivery, but never
+    # hijack conversational focus after a newer user input.
+    if conv is None or conv["last_input_turn_id"]!=turn_id:
         return
     current=conv["focus_thread_id"]
+    cur.execute(
+        """SELECT thread_id FROM dialogue_turn_links
+           WHERE turn_id=%s AND conversation_id=%s AND user_id=%s""",
+        (turn_id,conversation_id,user_id),
+    )
+    linked=cur.fetchone()
+    if linked is not None and linked["thread_id"]!=current:
+        return
     cur.execute(
         """SELECT signal_id,intent_kind,label,related_signal_id
            FROM conversation_intent_signals
@@ -120,7 +130,7 @@ def advance_on_delivery(
     signal=cur.fetchone()
     target=None
     new=False
-    if signal is not None:
+    if signal is not None and linked is None:
         if signal["related_signal_id"] is not None:
             # The Conversation Manager, not the model, resolves the
             # source signal's existing thread via authentic turn evidence.
