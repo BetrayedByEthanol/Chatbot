@@ -499,6 +499,182 @@ def test_explicit_thread_progress_between_generation_and_delivery_wins(dsn):
         ).fetchone()==("DELIVERED",)
 
 
+@pytest.mark.parametrize("auto_reply,auto_origin,explicit_kind,explicit_label", [
+    (
+        "Which day would suit your walking plan?",
+        "AUTO_DELIVERED_QUESTION",
+        "DECISION",
+        "Choose indoor or outdoor walking",
+    ),
+    (
+        "Would you prefer morning or evening?",
+        "AUTO_DELIVERED_DECISION",
+        "QUESTION",
+        "Which day would suit you?",
+    ),
+])
+def test_explicit_offer_replaces_automatic_act_without_losing_provenance(
+    dsn,auto_reply,auto_origin,explicit_kind,explicit_label,
+):
+    """A delivered auto proposal must not block its explicit correction."""
+    from persona_agent.dialogue_contracts import (
+        DialogueActKind, OfferDialogueActCommand,
+    )
+    from persona_agent.dialogue_state import offer_dialogue_act
+    from persona_agent.runtime import VersionConflict
+
+    identity=seed_local_demo(dsn)
+    auth=TrustedActor(
+        user_id=identity.user_id,source_id="mvp01c-reconcile",
+    )
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        first=ingest_text(conn,auth,TextInputCommand(
+            conversation_id=identity.conversation_id,
+            instance_id=identity.instance_id,
+            expected_generation=identity.generation,
+            idempotency_key="automatic-source",
+            text="I want to walk more.",
+        ))
+        response=respond_to_text(
+            conn,auth,first.turn_id,ReplyModel((auto_reply,)),
+        )
+        acknowledge_text_delivery(conn,auth,response.response_id)
+    auto_state=state(dsn,identity)
+    thread=auto_state.focus_thread_id
+    assert thread is not None
+    assert len(auto_state.pending_acts)==1
+    automatic=auto_state.pending_acts[0]
+    explicit_id=uuid4()
+    command=OfferDialogueActCommand(
+        conversation_id=identity.conversation_id,
+        instance_id=identity.instance_id,
+        expected_generation=identity.generation,
+        expected_revision=auto_state.revision,
+        evidence_turn_id=first.turn_id,
+        idempotency_key="correct-auto-interpretation",
+        thread_id=thread,
+        act_id=explicit_id,
+        source_response_id=response.response_id,
+        kind=DialogueActKind(explicit_kind),
+        label=explicit_label,
+    )
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        accepted=offer_dialogue_act(conn,auth,command)
+        replay=offer_dialogue_act(conn,auth,command)
+        assert replay.replayed and replay.event_id==accepted.event_id
+        assert accepted.thread_id==thread
+
+    active=state(dsn,identity)
+    assert [a.act_id for a in active.pending_acts]==[explicit_id]
+    assert active.pending_acts[0].kind==DialogueActKind(explicit_kind)
+    assert active.pending_acts[0].label==explicit_label
+    prefix="Await choice: " if explicit_kind=="DECISION" else "Await answer: "
+    assert active.threads[0].next_conversational_action==(
+        prefix+explicit_label
+    )
+
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        rows=conn.execute(
+            """SELECT act_id,origin_kind,kind,label,status,
+                      resolution_kind,resolution_turn_id
+               FROM dialogue_pending_acts
+               WHERE source_response_id=%s AND conversation_id=%s
+               ORDER BY created_at,act_id""",
+            (response.response_id,identity.conversation_id),
+        ).fetchall()
+        by_id={row[0]:row for row in rows}
+        assert len(by_id)==2
+        old=by_id[automatic.act_id]
+        assert old[1]==auto_origin
+        assert old[4:] == ("CANCELLED",None,first.turn_id)
+        corrected=by_id[explicit_id]
+        assert corrected[1:]==(
+            "EXPLICIT",explicit_kind,explicit_label,"PENDING",None,None,
+        )
+        assert conn.execute(
+            """SELECT count(*) FROM events
+               WHERE event_type='conversation.dialogue.auto_act_replaced.v1'
+                 AND payload->>'automatic_act_id'=%s
+                 AND payload->>'explicit_act_id'=%s""",
+            (str(automatic.act_id),str(explicit_id)),
+        ).fetchone()[0]==1
+        assert conn.execute(
+            """SELECT count(*) FROM goal_records WHERE user_id=%s""",
+            (identity.user_id,),
+        ).fetchone()[0]==0
+
+    # Re-registration under a fresh revision is a domain conflict, not a
+    # PostgreSQL UNIQUE violation; explicit registration wins once.
+    alternate=command.model_copy(update={
+        "act_id":uuid4(),
+        "expected_revision":active.revision,
+        "idempotency_key":"different-explicit-offer",
+    })
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        with pytest.raises(VersionConflict,match="already has an explicit"):
+            offer_dialogue_act(conn,auth,alternate)
+
+
+def test_cancelled_automatic_act_does_not_reserve_response_forever(dsn):
+    from persona_agent.dialogue_contracts import (
+        DialogueActKind, OfferDialogueActCommand,
+        ResolveDialogueActCommand,
+    )
+    from persona_agent.dialogue_state import (
+        offer_dialogue_act, resolve_dialogue_act,
+    )
+
+    identity=seed_local_demo(dsn)
+    auth=TrustedActor(user_id=identity.user_id,source_id="mvp01c-cancel")
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        first=ingest_text(conn,auth,TextInputCommand(
+            conversation_id=identity.conversation_id,
+            instance_id=identity.instance_id,
+            expected_generation=identity.generation,
+            idempotency_key="auto-before-cancel",
+            text="I want to walk more.",
+        ))
+        reply=respond_to_text(
+            conn,auth,first.turn_id,
+            ReplyModel(("Which day should we start?",)),
+        )
+        acknowledge_text_delivery(conn,auth,reply.response_id)
+        pending=state(dsn,identity).pending_acts[0]
+        resolve_dialogue_act(conn,auth,ResolveDialogueActCommand(
+            conversation_id=identity.conversation_id,
+            instance_id=identity.instance_id,
+            expected_generation=identity.generation,
+            expected_revision=state(dsn,identity).revision,
+            evidence_turn_id=first.turn_id,
+            idempotency_key="cancel-inferred",
+            act_id=pending.act_id,outcome=None,cancel=True,
+        ))
+        explicit_id=uuid4()
+        offer_dialogue_act(conn,auth,OfferDialogueActCommand(
+            conversation_id=identity.conversation_id,
+            instance_id=identity.instance_id,
+            expected_generation=identity.generation,
+            expected_revision=state(dsn,identity).revision,
+            evidence_turn_id=first.turn_id,
+            idempotency_key="explicit-after-cancel",
+            thread_id=state(dsn,identity).focus_thread_id,
+            act_id=explicit_id,source_response_id=reply.response_id,
+            kind=DialogueActKind.DECISION,label="Choose an exercise plan",
+        ))
+    active=state(dsn,identity)
+    assert [a.act_id for a in active.pending_acts]==[explicit_id]
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            """SELECT status FROM dialogue_pending_acts WHERE act_id=%s""",
+            (pending.act_id,),
+        ).fetchone()==("CANCELLED",)
+        assert conn.execute(
+            """SELECT origin_kind,status FROM dialogue_pending_acts
+               WHERE act_id=%s""",
+            (explicit_id,),
+        ).fetchone()==("EXPLICIT","PENDING")
+
+
 def test_same_objective_reuses_topic_without_duplicating(dsn):
     identity=seed_local_demo(dsn)
     harness=BehavioralAcceptanceHarness(dsn,identity,ReplyModel((
