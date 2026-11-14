@@ -49,10 +49,30 @@ Compose shutdown commands below with:
 bash scripts/run_persona_e2e.sh --report artifacts/mvp01e-review.zip
 ```
 
-This wrapper creates an invocation-unique Compose project, starts the isolated
-PostgreSQL service, invokes the runner, and removes the Compose project and
-volumes on exit (including failed runs). It rejects `--keep-db`: use the
-direct CLI and manual Compose lifecycle for debugging.
+This wrapper creates an invocation-unique Compose project, starts isolated
+PostgreSQL, and passes a fresh private `--publication-status-file` path to
+the runner. The runner atomically writes `PUBLISHED` **only after** ZIP
+publication succeeds, before dropping its generated database. The wrapper
+removes the Compose project and volumes **only when this signal exists**;
+a nonzero exit from failed scenario assertions still cleans up when the
+diagnostic ZIP was successfully written.
+
+If ZIP publication fails (unwritable destination, full disk, interruption,
+or failed publication-status write), the marker is absent, and the wrapper
+**preserves the Compose service and PostgreSQL volume** for recovery. It
+prints the unique Compose project name and manual inspection/cleanup commands.
+Do not run `down -v` until the evidence is recovered:
+
+```bash
+docker compose -f compose.e2e.yaml -p <printed-project-name> ps
+# Inspect/recover the retained database; then, only when safe:
+docker compose -f compose.e2e.yaml -p <printed-project-name> down -v
+```
+
+The wrapper rejects `--keep-db` and caller-supplied
+`--publication-status-file` to protect the cleanup protocol. For debugging,
+use the direct Python CLI and manual Compose lifecycle. Unknown publication
+status is treated as **not safe to delete**, even if the runner exits zero.
 
 PostgreSQL 16 binds only to `127.0.0.1:55433` by default. The runner
 requires an administrative DSN that connects to this **isolated server's**
@@ -82,11 +102,16 @@ docker compose -f compose.e2e.yaml -p persona-e2e-mvp01 down -v
 For debugging, pass `--keep-db`. The runner prints the generated DB name
 and preserves it; it never drops a database by arbitrary user-supplied name.
 When a setup or conversation step fails, it still writes a partial diagnostic
-ZIP and then cleans up the generated database. If the ZIP cannot be saved,
-cleanup is skipped to preserve evidence.
+ZIP and then cleans up the generated database. If the ZIP cannot be saved **or
+its publication marker cannot be written**, both database cleanup and wrapper
+Compose teardown are skipped to preserve evidence. The marker is internal
+to the wrapper and does not appear inside the ZIP.
 
 Exit status 0 = deterministic contract checks passed; 1 = observed failures
-or scenario exceptions; 2 = cleanup failure. Conversational quality is
+or scenario exceptions; 2 = cleanup failure. Publication errors raise a
+nonzero error, with the database and Compose stack retained by default.
+A nonzero exit does **not** determine whether evidence was published:
+the private marker is the only cleanup authorization. Conversational quality is
 **always human-review pending**, regardless of exit status. If setup fails
 before a database was created, no DB is dropped.
 
