@@ -19,6 +19,9 @@ This is conversation progress, not a task/procedure/goal engine.
    conversation thread when the subject is high-precision:
    - explicit objective;
    - explicit request to start/help with a topic;
+   - direct "Switch the topic to …", "Change the topic to …" and
+     "New topic: …" commands, recorded as evidence-linked REQUEST signals
+     during ingress; the stated subject becomes the thread title;
    - a unique existing objective directly referenced by an intent signal.
 4. Topic attention is FOCUSED or RECENT independent of resolution status
    (OPEN/RESOLVED/ABANDONED). Repeating an exactly matching auto topic
@@ -58,6 +61,11 @@ authoritative goal/task/procedure state is modified.
 - A new subject request (e.g. "Help me cook dinner.") cannot satisfy a
   previous topic's adjacent pending question; it remains unlinked at ingress
   so delivery can focus/open the requested subject.
+- Explicit topic-switch commands are recognized deterministically, before
+  response generation. They produce a user-sourced, unapproved REQUEST
+  signal with the original input as evidence. No additional LLM pass is
+  needed. The old topic's pending question remains pending, and the
+  assistant's new question belongs to the newly focused topic.
 - Inputs eligible for MVP-01B model interpretation (e.g. "Lately I've been
   thinking about a regular walking routine.") also remain **unlinked at
   ingress**, because the model might propose a new OBJECTIVE at response
