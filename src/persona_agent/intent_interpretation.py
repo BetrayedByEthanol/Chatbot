@@ -109,7 +109,7 @@ def intent_context_block(
 ):
     """Small evidence-anchored context view; never authorizes an action."""
     import json
-    if max_chars < 180:
+    if max_chars < 180 or classify_intent(latest_text) is None:
         return ""
     cur.execute(
         """SELECT signal_id,intent_kind,label,turn_sequence,related_signal_id
