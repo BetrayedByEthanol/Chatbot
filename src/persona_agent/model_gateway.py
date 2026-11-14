@@ -57,17 +57,17 @@ class OllamaChatGateway:
         }
         if json_mode:
             request_payload["format"] = "json"
-        # Observe only after every gateway transformation. This is exactly
-        # the JSON payload sent to Ollama, not the upstream prompt received
-        # by generate_interpreted(). No DB transaction spans this callback.
-        if self.request_observer is not None:
-            self.request_observer(json.loads(json.dumps(request_payload)))
         request = Request(
             self.base_url.rstrip("/") + "/api/chat",
             data=json.dumps(request_payload).encode("utf-8"),
             headers={"Content-Type": "application/json"},
             method="POST",
         )
+        # Read the *encoded* HTTP request after all augmentation. The
+        # evaluation receives an independent deserialization, so it cannot
+        # change the bytes about to be sent to Ollama.
+        if self.request_observer is not None:
+            self.request_observer(json.loads(request.data))
         try:
             with urlopen(request, timeout=self.timeout_seconds) as response:
                 payload = response.read(256_001)
