@@ -29,6 +29,7 @@ from .operation_contracts import (
 from .operation_scheduler import claim_operation, enqueue_operation
 from .operation_control import complete_operation, fail_operation
 from .runtime import IdempotencyConflict, PermissionDenied, StaleSelection
+from .response_decisions import explicit_analysis_payload
 from .tool_contracts import (
     RESOURCE_KEY, SLOW_TOOL, TIME_TOOL, SlowTextToolCommand,
     ToolCallResult, ToolFollowup, ToolAuthorizationError, ToolResultNotReady,
@@ -293,7 +294,12 @@ def run_one_text_tool(
         return lease
     try:
         # External dependency injection MUST happen without database locks.
-        text=executor(payload["input_text"],payload["tool_config"]["max_words"])
+        # Auto-routed natural requests have an explicit, delimited payload.
+        # Legacy operator-selected analysis of unprefixed text is unchanged.
+        # The source is always the persisted authenticated user turn.
+        source=payload["input_text"]
+        analysis_text=explicit_analysis_payload(source) or source
+        text=executor(analysis_text,payload["tool_config"]["max_words"])
         if not isinstance(text,str) or not 1<=len(text)<=12000:
             raise ValueError("tool returned invalid text")
     except Exception as exc:
