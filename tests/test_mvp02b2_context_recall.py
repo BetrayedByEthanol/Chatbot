@@ -143,6 +143,33 @@ def test_historical_correction_and_tentative_cadence_remain_ordered(dsn):
         ).fetchone()[0]==0
 
 
+@pytest.mark.parametrize("query", [DIRECT, PARAPHRASE])
+def test_recall_preserves_tentative_preference_not_finalized_goal(dsn, query):
+    """Both recall routes must convey source uncertainty to the real model.
+
+    CaptureModel cannot prove the model follows the instruction; target-model
+    behavioral acceptance additionally grades the reply wording.
+    """
+    host,model=fresh_host(dsn)
+    host.begin_session("old")
+    source=host.send(SOURCE,idempotency_key="source")
+    host.send(NOTE,idempotency_key="tentative")
+    host.send(CORRECTION,idempotency_key="correct-twice")
+    final=host.send(LATEST_CORRECTION,idempotency_key="correct-once")
+    host.begin_session("new")
+    host.restart_host()
+    host.send(query,idempotency_key="recall")
+    prompt=system(model)
+    assert "Prior-session user statements" in prompt
+    assert "Reflect tentative language" in prompt
+    assert "not settled plans or approved goals without explicit user commitment" in prompt
+    assert "'maybe', 'would be better'" in prompt
+    assert SOURCE in prompt and source.turn_id in prompt
+    assert LATEST_CORRECTION in prompt and final.turn_id in prompt
+    assert prompt.index(NOTE)<prompt.index(CORRECTION)<prompt.index(LATEST_CORRECTION)
+    assert sum(len(message.content) for message in model.contexts[-1])<=12000
+
+
 def test_latest_of_two_successive_corrections_wins_within_lookahead(dsn):
     host,model=fresh_host(dsn)
     host.begin_session("old")

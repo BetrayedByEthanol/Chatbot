@@ -72,6 +72,30 @@ privacy and retention labels. Regex filtering is a conservative safeguard,
 **not comprehensive sensitive-content classification**. Broad archival
 recall should remain limited until a stronger source-level policy exists.
 
+## Post-acceptance recall certainty calibration
+
+The qwen2.5:7b MVP-02B.2 review confirmed correct retrieved evidence and
+three → twice → once/week ordering, but the assistant described the user's
+"once per week would be better" as a schedule they had "settled on." That
+overstates the user's epistemic commitment.
+
+The existing historical `USER_REPORTED` context heading now explicitly
+instructs the model to preserve tentative wording ("maybe", "would be
+better"). Corrections replace an earlier **suggestion** without implying a
+final decision, approved Goal, accepted plan, or user commitment. Explicit
+commitments remain distinct and must be supported by user source wording.
+
+This is **prompt-only** calibration in the existing Conversation-owned
+historical recall context, used for direct and independently paraphrased
+recall. It does not mutate Memory, Goals, Conversation state, authorization
+or operation scheduling, and it is not a general model-output verifier.
+
+The PostgreSQL-backed regression checks actual assembled source-linked
+model context for both recall routes; the target-model scenario's human
+review prompts now explicitly reject "settled on" and similar unsupported
+commitment wording. Another real-model ZIP is necessary to verify response
+calibration.
+
 ## Tests and E2E
 
 ```sh
