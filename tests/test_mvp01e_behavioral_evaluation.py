@@ -413,9 +413,9 @@ def test_compose_wrapper_checks_semantic_flags_before_startup(
     bin_dir.mkdir()
     docker=bin_dir/"docker"
     docker.write_text(
-        "#!/bin/sh\\n"
-        'printf "docker %s\\\\n" "$*" >> "$MOCK_LOG"\\n'
-        "exit 37\\n",
+        "#!/bin/sh\n"
+        'printf "docker %s\\n" "$*" >> "$MOCK_LOG"\n'
+        "exit 37\n",
     )
     docker.chmod(0o755)
     log=tmp_path/"docker-calls.log"
