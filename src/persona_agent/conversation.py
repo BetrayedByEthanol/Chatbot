@@ -725,6 +725,18 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
                 or conversation["last_input_turn_id"]!=context.turn_id
             ):
                 raise StaleConversation("model response was superseded by newer dialogue")
+            # MVP-01F.4: use only the persisted authenticated user input and
+            # bounded prior user messages to enforce unavailable-capability
+            # claims. Model output is untrusted, including conditional offers.
+            # Do not run another LLM or hold a lock during model inference.
+            from .capability_claim_enforcement import enforce_capability_claims
+            enforcement=enforce_capability_claims(
+                scoped["input_text"],text,
+                recent_user_texts=tuple(
+                    m.content for m in context.messages[:-1] if m.role=="user"
+                ),
+            )
+            text=enforcement.text
             response_id=uuid4()
             cursor.execute(
                 """
@@ -755,6 +767,19 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
                 source_id="conversation.runtime",trust_level="TRUSTED_PLATFORM",
                 detail={"turn_id":str(context.turn_id),"response_id":str(response_id)},
             )
+            if enforcement.reason is not None:
+                _event(
+                    cursor,user_id=actor.user_id,instance_id=context.instance_id,
+                    conversation_id=context.conversation_id,
+                    event_type="conversation.response.capability_claim_blocked.v1",
+                    source_id="conversation.runtime",trust_level="TRUSTED_PLATFORM",
+                    detail={
+                        "turn_id":str(context.turn_id),
+                        "response_id":str(response_id),
+                        "reason":enforcement.reason,
+                        "policy_revision":enforcement.policy_revision,
+                    },
+                )
             from .intent_interpretation import (
                 conservative_implicit_objective, record_intent_on_ingress,
                 record_model_intent_on_response,
