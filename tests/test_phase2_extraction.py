@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 psycopg = pytest.importorskip("psycopg")
+from psycopg.rows import dict_row
 
 from persona_agent.contracts import TrustedActor
 from persona_agent.conversation import ingest_text
@@ -657,7 +658,7 @@ def test_later_conflict_retargets_to_new_revision_for_explicit_approval(dsn):
                WHERE user_id=%s AND instance_id=%s AND predicate_key='favorite_drink'""",
             (user,instance),
         ).fetchone()==("coffee",2)
-        with conn.cursor() as cur:
+        with conn.cursor(row_factory=dict_row) as cur:
             context=contextual_memory_block(
                 cur,user,instance,"Do you remember my favorite drink?",650,
             )
@@ -756,7 +757,7 @@ def test_matching_conflict_becomes_revision_scoped_corroboration(dsn):
             """SELECT status,target_version FROM memory_extraction_candidates
                WHERE candidate_id=%s""",(matching.candidate_id,),
         ).fetchone()==("CONFLICT",1)
-        with conn.cursor() as cur:
+        with conn.cursor(row_factory=dict_row) as cur:
             context=contextual_memory_block(
                 cur,user,instance,"Do you remember my favorite drink?",650,
             )
