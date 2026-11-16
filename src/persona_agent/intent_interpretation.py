@@ -119,7 +119,8 @@ def conservative_implicit_objective(text: str) -> IntentDraft | None:
     )):
         return None
     return IntentDraft(
-        "OBJECTIVE", value[:200], 0.85, "mvp01f2.routine_fallback.1",
+        "OBJECTIVE", text.strip()[:200], 0.85,
+        "mvp01f2.routine_fallback.1",
     )
 
 
