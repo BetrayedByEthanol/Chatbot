@@ -327,7 +327,8 @@ def prepare_text_context(
             cursor.execute(
                 """
                 SELECT t.conversation_id,t.instance_id,t.selection_generation,
-                       t.status,t.sequence,c.revision,c.last_input_turn_id,
+                       t.status,t.sequence,t.created_at AS turn_at,
+                       c.revision,c.last_input_turn_id,
                        c.focus_thread_id,c.summary_watermark,p.stable_key,i.label
                 FROM conversation_turns t
                 JOIN conversations c ON c.conversation_id=t.conversation_id
@@ -584,6 +585,7 @@ def prepare_text_context(
                                     cursor,user_id=actor.user_id,
                                     instance_id=item["instance_id"],
                                     conversation_id=item["conversation_id"],
+                                    before_at=item["turn_at"],
                                     latest_text=history[-1].content,
                                     max_chars=retrieval_cap,
                                 )
