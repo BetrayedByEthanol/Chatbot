@@ -220,4 +220,6 @@ def test_newer_unresolved_explicit_conflict_suppresses_stale_memory_recall(dsn):
               idempotency_key="conflicted-recall")
     prompt=ordinary.requests[-1][0].content
     assert "[PREFERENCE] user.enjoys_gardening: yes" not in prompt
+    assert "newer user-reported correction" in prompt
+    assert "Do not assert the old value" in prompt
     assert host.observe_state()["goals"]==0
