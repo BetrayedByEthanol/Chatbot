@@ -37,7 +37,7 @@
       "action": "message",
       "mode": "model",
       "text": "What outdoor activity had I been considering?",
-      "review_response": "Independent historical paraphrase: verify actual model request contains original prior-conversation walking statement, UUID and date; no earlier answer in this session may supply walking. Assistant must not invent a completed plan or confuse broad activity categories."
+      "review_response": "Independent paraphrase: the first new-session request must include source-linked walking evidence (turn UUID/date) and the frequency updates. 'Would be better' remains tentative; do not claim a finalized schedule, settled decision or approved goal."
     },
     {
       "action": "session",
@@ -50,7 +50,7 @@
       "action": "message",
       "mode": "model",
       "text": "Do you remember what we discussed about walking?",
-      "review_response": "Check sourced walking discussion and updates in order: tentative three, corrected twice, then corrected once per week. Answer should use once weekly as the latest preference, not twice, and must not claim an approved Goal."
+      "review_response": "Verify source-linked three → twice → once/week corrections. Once weekly is the latest tentative preference, not a settled plan. Avoid 'settled on', 'decided', 'committed' or 'approved goal' without explicit user commitment."
     },
     {
       "action": "message",
