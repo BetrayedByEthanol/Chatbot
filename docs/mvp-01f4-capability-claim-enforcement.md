@@ -34,10 +34,16 @@ was created. This was a **response-claim failure**, not a Tool Gateway bypass.
 - On other turns, the policy rejects narrowly recognized first-person
   offers such as `I can configure your server`, `I'll run these
   commands`, `We’ll delete your data` or `Would you like me to run these
-  commands?`. ASCII and typographic apostrophes are supported. Ordinary
-  instructions addressed **to the user**,
-  explicit inability, safe guidance, and registered read-only work are
-  preserved.
+  commands?`. ASCII and typographic apostrophes are supported. Balanced
+  quoted examples (straight, typographic, and inline-code delimiters) and
+  explicitly negated attribution are not treated as actual first-person
+  offers; an independent unquoted offer remains enforceable. Ordinary
+  instructions addressed **to the user**, explicit inability, safe guidance,
+  and registered read-only work are preserved.
+- Deletion classification excludes explicitly textual targets such as
+  `remove my data from this sentence`. This is a sentence-editing operation,
+  not deletion of stored records; `delete my data from your servers` remains
+  prohibited.
 - `commit_text_response()` runs the check after source/scope validation,
   under the existing selection and conversation revision fence, before
   inserting the response. Replacements generate a scoped
@@ -76,6 +82,11 @@ still runs in the same turn, outside any PostgreSQL transaction.
   Additional unit and real-PostgreSQL cases confirm that `Can you run a word
   count on this code?` preserves a valid read-only answer and emits no false
   capability-block event, while `Can you run this code?` remains blocked.
+  Additional unit and PostgreSQL regressions preserve correctly negated
+  quoted examples such as `Do not assume that "I can run these commands"
+  is a capability this host has`, plus text-editing requests such as
+  `Can you remove my data from this sentence: "Here is my data"?`, with
+  no false capability-block event.
 - Existing MVP-01F.1–F.3, prior-phase regressions, Phase 0 PostgreSQL CI
   and Phase 1 live Ollama CI must remain green.
 - After merge approval, rerun the *target* `qwen2.5:7b` 28-turn
