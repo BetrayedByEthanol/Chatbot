@@ -96,6 +96,26 @@ def test_historical_correction_and_tentative_cadence_remain_ordered(dsn):
         ).fetchone()[0]==0
 
 
+def test_older_matching_source_still_recovers_correction(dsn):
+    host,model=fresh_host(dsn)
+    host.begin_session("old")
+    source=host.send(SOURCE,idempotency_key="original")
+    host.send(NOTE,idempotency_key="note")
+    correction=host.send(CORRECTION,idempotency_key="correction")
+    # A second, newer lexical hit must not hide correction evidence linked
+    # to the earlier walking discussion.
+    host.send(
+        "I took another walk yesterday.",
+        idempotency_key="recent-walk",
+    )
+    host.begin_session("new")
+    host.send(DIRECT,idempotency_key="recall")
+    prompt=system(model)
+    assert source.turn_id in prompt
+    assert correction.turn_id in prompt
+    assert CORRECTION in prompt
+
+
 def test_paraphrase_recalls_correction_without_direct_recall_first(dsn):
     host,model=fresh_host(dsn)
     host.begin_session("old")
