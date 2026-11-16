@@ -24,6 +24,16 @@ after inference the P0 DB-only handler revalidates the lease, immutable source
 and selection generation before writing the candidate. No DB transaction
 is open during LLM network inference.
 
+**Response readiness is not a processing failure.** If the input turn is
+still `PENDING` when the background worker claims it, the P0 delivery is
+parked as `DEFERRED` without spending bounded failure retries. On each
+subsequent worker tick, a scoped query resumes only parked deliveries whose
+turn is `RESPONDED` or `SUPERSEDED` and whose persona is selected. A
+superseded turn is acknowledged without inference. This recovers across
+worker restarts and prevents a slow foreground response from permanently
+blocking subsequent events in the same stream. Genuine model/network
+failures continue using bounded retries.
+
 The proposal schema and strict independent gate allow only
 `user.enjoys_<non-sensitive allowlisted activity> = yes|no`, an exact full
 user-input evidence quote, bounded input text, and a safe topic/value.
@@ -53,8 +63,11 @@ touching Memory. None of these actions is authorized for the model.
 
 A current `memory_records` value remains **authoritative in PostgreSQL**
 until user-approved correction, but the scoped memory search/query omits the
-slot when a **newer source-linked unresolved P2-04 conflict** targets its
-current version. This prevents an assistant from confidently asserting an
+slot when a **newer source-linked unresolved P2-04 conflict** disputes its
+current value. A candidate may still target an *older version* after the
+user approves an earlier correction; recall checks source chronology and
+value disagreement against the present Memory revision without requiring
+`list_extraction_conflicts()` to reconcile the candidate first. This prevents an assistant from confidently asserting an
 old preference while awaiting correction, without silently rewriting history.
 Non-conflicting memories remain searchable. The user may inspect pending
 conflicts and explicitly approve a correction using P2-04's existing API.
