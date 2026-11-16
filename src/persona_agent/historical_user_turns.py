@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime
 from uuid import UUID
 
 from .memory_retrieval import _terms, is_historical_recall_query
@@ -42,7 +43,8 @@ _MAX_QUOTE = 380
 
 def historical_user_turn_context_block(
     cur, *, user_id: UUID, instance_id: UUID,
-    conversation_id: UUID, latest_text: str, max_chars: int,
+    conversation_id: UUID, before_at: datetime,
+    latest_text: str, max_chars: int,
 ) -> str:
     """Read only prior, responding user turns under an existing scoped txn.
 
@@ -71,11 +73,18 @@ def historical_user_turn_context_block(
            FROM conversation_turns t
            WHERE t.user_id=%s AND t.instance_id=%s
              AND t.conversation_id<>%s
+             AND t.created_at<%s
              AND t.status='RESPONDED'
              AND NOT EXISTS (
                  SELECT 1 FROM memory_revisions mr
                  WHERE mr.user_id=t.user_id AND mr.instance_id=t.instance_id
                    AND mr.source_turn_id=t.turn_id
+             )
+             AND NOT EXISTS (
+                 SELECT 1 FROM memory_extraction_candidates candidate
+                 WHERE candidate.user_id=t.user_id
+                   AND candidate.instance_id=t.instance_id
+                   AND candidate.source_turn_id=t.turn_id
              )
              AND to_tsvector('english', t.input_text)
                  @@ websearch_to_tsquery('english', %s)
@@ -84,7 +93,7 @@ def historical_user_turn_context_block(
                websearch_to_tsquery('english', %s)
            ) DESC, t.created_at DESC, t.turn_id
            LIMIT %s""",
-        (user_id, instance_id, conversation_id,
+        (user_id, instance_id, conversation_id, before_at,
          query, query, _MAX_CANDIDATES),
     )
     rows = cur.fetchall()
