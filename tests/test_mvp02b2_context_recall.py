@@ -6,16 +6,19 @@ noncommittal; assertions inspect the actual context before generation.
 import pytest
 
 psycopg=pytest.importorskip("psycopg")
+from psycopg.rows import dict_row
 
 from persona_agent.acceptance_host import seed_local_demo
 from persona_agent.behavioral_acceptance import BehavioralAcceptanceHarness
 from persona_agent.conversation_contracts import ModelReply
+from persona_agent.historical_user_turns import historical_user_turn_context_block
 
 PARAPHRASE="What outdoor activity had I been considering?"
 DIRECT="Do you remember what we discussed about walking?"
 SOURCE="I've been thinking about walking more regularly."
 NOTE="Maybe three times per week."
 CORRECTION="Actually, twice per week would be better."
+LATEST_CORRECTION="Actually, once per week would be better."
 
 
 class InspectModel:
@@ -94,6 +97,74 @@ def test_historical_correction_and_tentative_cadence_remain_ordered(dsn):
             "AND instance_id=%s",
             (host.identity.user_id,host.identity.instance_id),
         ).fetchone()[0]==0
+
+
+def test_latest_of_two_successive_corrections_wins_within_lookahead(dsn):
+    host,model=fresh_host(dsn)
+    host.begin_session("old")
+    source=host.send(SOURCE,idempotency_key="source")
+    note=host.send(NOTE,idempotency_key="note")
+    first=host.send(CORRECTION,idempotency_key="first-correction")
+    latest=host.send(
+        LATEST_CORRECTION,idempotency_key="latest-correction",
+    )
+    host.begin_session("new")
+    host.restart_host()
+    host.send(DIRECT,idempotency_key="recall")
+    prompt=system(model)
+    for turn,text in (
+        (source,SOURCE),(note,NOTE),(first,CORRECTION),
+        (latest,LATEST_CORRECTION),
+    ):
+        assert text in prompt
+        assert turn.turn_id in prompt
+    assert (prompt.index(SOURCE)<prompt.index(NOTE)
+            <prompt.index(CORRECTION)<prompt.index(LATEST_CORRECTION))
+    assert "USER_REPORTED discussion update" in prompt
+
+
+def test_latest_correction_survives_tight_context_budget(dsn):
+    host,model=fresh_host(dsn)
+    original=host.begin_session("old")
+    host.send(SOURCE,idempotency_key="source")
+    host.send(NOTE,idempotency_key="note")
+    host.send(CORRECTION,idempotency_key="first-correction")
+    host.send(LATEST_CORRECTION,idempotency_key="latest-correction")
+    host.begin_session("new")
+    recall=host.send(DIRECT,idempotency_key="recall")
+    # Use the same read-only retrieval contract with a deliberately smaller
+    # optional prompt budget. The old cadence must not be shown without
+    # the last correction when the entire chain does not fit.
+    with psycopg.connect(dsn,autocommit=True,row_factory=dict_row) as conn:
+        with conn.transaction():
+            conn.execute("SET TRANSACTION READ ONLY")
+            at=conn.execute(
+                "SELECT created_at FROM conversation_turns "
+                "WHERE turn_id=%s AND user_id=%s AND instance_id=%s",
+                (recall.turn_id,original.user_id,original.instance_id),
+            ).fetchone()["created_at"]
+            def retrieve(max_chars):
+                with conn.cursor(row_factory=dict_row) as cur:
+                    return historical_user_turn_context_block(
+                        cur,user_id=original.user_id,
+                        instance_id=original.instance_id,
+                        conversation_id=host.active_identity.conversation_id,
+                        before_at=at,latest_text=DIRECT,max_chars=max_chars,
+                    )
+            full=retrieve(1100)
+            assert all(item in full for item in (
+                SOURCE,NOTE,CORRECTION,LATEST_CORRECTION,
+            ))
+            lines=full.splitlines(keepends=True)
+            assert len(lines)==5  # header, source, note, two corrections
+            short_budget=sum(len(lines[i]) for i in (0,1,4))+4
+            assert short_budget<len(full)
+            constrained=retrieve(short_budget)
+    assert SOURCE in constrained
+    assert LATEST_CORRECTION in constrained
+    assert NOTE not in constrained
+    assert CORRECTION not in constrained
+    assert len(constrained)<=short_budget
 
 
 def test_older_matching_source_still_recovers_correction(dsn):
