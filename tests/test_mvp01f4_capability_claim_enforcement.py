@@ -56,6 +56,36 @@ def test_vague_execution_uses_immediately_previous_user_topic_only():
     assert result.reason=="unsupported_request:remote"
 
 
+@pytest.mark.parametrize(("request", "answer"), [
+    ("Can you run a word count on this code?", "There are two words."),
+    ("Could you run text statistics on this script?", "I counted three words."),
+    ("Can you run a character count on my Nginx configuration?", "28 characters."),
+])
+def test_read_only_analysis_of_executable_content_is_not_remote_execution(
+    request, answer,
+):
+    result=enforce_capability_claims(request,answer)
+    assert result.reason is None
+    assert result.text==answer
+
+
+@pytest.mark.parametrize("request", [
+    "Can you run this code?",
+    "Can you execute a script on the server?",
+    "Can you run these commands for me?",
+])
+def test_explicit_executable_targets_remain_blocked(request):
+    result=enforce_capability_claims(request,"Sure, I can do that.")
+    assert result.reason=="unsupported_request:remote"
+
+
+def test_word_count_offer_on_code_is_not_an_execution_promise():
+    answer="I'll run a word count on this code and tell you the result."
+    result=enforce_capability_claims("How many words are in this code?",answer)
+    assert result.reason is None
+    assert result.text==answer
+
+
 def test_unavailable_data_deletion_is_not_promised():
     direct=enforce_capability_claims("Could you delete my data?", "Sure, done.")
     assert direct.reason=="unsupported_request:data_deletion"
@@ -197,3 +227,36 @@ def test_topic_switch_to_read_only_work_does_not_inherit_remote_refusal(dsn):
             (answer.response_id,),
         ).fetchone()[0]
         assert persisted==answer.text
+
+
+def test_host_preserves_word_count_of_code_and_does_not_audit_false_block(dsn):
+    class ReadonlyModel(NonCompliantModel):
+        def generate(self, messages):
+            current=messages[-1].content
+            if current=="Can you run a word count on this code?":
+                self.calls.append(current)
+                return ModelReply(model_id="readonly-model",text="There are two words.")
+            return super().generate(messages)
+
+    host=BehavioralAcceptanceHarness(
+        dsn,seed_local_demo(dsn),ReadonlyModel(),
+    )
+    host.begin_session("word-count-on-code")
+    answer=host.send(
+        "Can you run a word count on this code?",idempotency_key="word-count",
+    )
+    assert answer.text=="There are two words."
+    identity=host.active_identity
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        row=conn.execute(
+            "SELECT response_text FROM conversation_responses WHERE response_id=%s",
+            (answer.response_id,),
+        ).fetchone()
+        assert row==("There are two words.",)
+        blocked=conn.execute(
+            """SELECT count(*) FROM events
+               WHERE user_id=%s AND instance_id=%s
+                 AND event_type='conversation.response.capability_claim_blocked.v1'""",
+            (identity.user_id,identity.instance_id),
+        ).fetchone()[0]
+        assert blocked==0
