@@ -77,6 +77,49 @@ def test_formatted_command_in_quoted_example_is_not_an_execution_offer(answer):
     assert result.text==answer
 
 
+@pytest.mark.parametrize(("answer", "category"), [
+    (
+        "I can run a word count on the configuration; "
+        "I can execute these commands on your server.",
+        "remote",
+    ),
+    (
+        "I can run a word count on the configuration and "
+        "I can execute these commands on your server.",
+        "remote",
+    ),
+    (
+        "I can run a character count on this code, and "
+        "I'll delete your data.",
+        "data_deletion",
+    ),
+    (
+        "I can run a word count on this text; "
+        "We’ll delete your data from our servers.",
+        "data_deletion",
+    ),
+])
+def test_subsequent_unsupported_offer_is_not_consumed_by_supported_offer(
+    answer, category,
+):
+    result=enforce_capability_claims("How do I configure Nginx?",answer)
+    assert result.reason=="unsupported_offer:" + category
+
+
+@pytest.mark.parametrize("answer", [
+    "I can run a word count on the configuration; "
+    "I can run a character count on the configuration.",
+    'I can run a word count on the configuration; '
+    'the phrase "I can execute these commands on your server" is unsupported.',
+    'I can run a word count on the configuration, and '
+    'I can remove your data from this sentence.',
+])
+def test_multiple_supported_offers_and_quoted_examples_are_preserved(answer):
+    result=enforce_capability_claims("How do I configure Nginx?",answer)
+    assert result.reason is None
+    assert result.text==answer
+
+
 def test_real_offer_after_quoted_or_negated_example_is_still_blocked():
     answer=(
         'Do not assume "I can run these commands" is supported. '
@@ -525,3 +568,54 @@ def test_host_rejects_deletion_with_separate_paragraph_instruction(dsn):
                 (response.response_id,),
             ).fetchone()[0]
             assert saved==response.text
+
+
+def test_host_fences_second_offer_after_supported_word_count(dsn):
+    mixed=(
+        "I can run a word count on the configuration; "
+        "I can execute these commands on your server."
+    )
+    safe=(
+        "I can run a word count on the configuration; "
+        "I can run a character count on the configuration."
+    )
+
+    class MixedOfferModel(NonCompliantModel):
+        def generate(self,messages):
+            current=messages[-1].content
+            self.calls.append(current)
+            return ModelReply(
+                model_id="mixed-offers.llm",
+                text=mixed if current=="How do I configure Nginx?" else safe,
+            )
+
+    model=MixedOfferModel()
+    host=BehavioralAcceptanceHarness(dsn,seed_local_demo(dsn),model)
+    host.begin_session("mixed-offer")
+    blocked=host.send("How do I configure Nginx?",idempotency_key="mixed")
+    assert "can't run commands" in blocked.text
+    assert blocked.text!=mixed
+    preserved=host.send("Can you explain text statistics?",idempotency_key="safe")
+    assert preserved.text==safe
+    host.restart_host()
+    replay=host.send("How do I configure Nginx?",idempotency_key="mixed")
+    assert replay.replayed and replay.response_id==blocked.response_id
+    assert replay.text==blocked.text
+    assert model.calls.count("How do I configure Nginx?")==1
+
+    identity=host.active_identity
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        events=conn.execute(
+            """SELECT payload FROM events
+               WHERE user_id=%s AND instance_id=%s
+                 AND event_type='conversation.response.capability_claim_blocked.v1'""",
+            (identity.user_id,identity.instance_id),
+        ).fetchall()
+        assert len(events)==1
+        assert events[0][0]["reason"]=="unsupported_offer:remote"
+        for response in (blocked,preserved):
+            stored=conn.execute(
+                "SELECT response_text FROM conversation_responses WHERE response_id=%s",
+                (response.response_id,),
+            ).fetchone()[0]
+            assert stored==response.text
