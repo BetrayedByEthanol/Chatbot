@@ -10,7 +10,9 @@ from psycopg.rows import dict_row
 
 from persona_agent.acceptance_host import seed_local_demo
 from persona_agent.behavioral_acceptance import BehavioralAcceptanceHarness
-from persona_agent.conversation_contracts import ModelReply
+from persona_agent.conversation import ingest_text
+from persona_agent.conversation_contracts import ModelReply,TextInputCommand
+from persona_agent.contracts import TrustedActor
 from persona_agent.historical_user_turns import historical_user_turn_context_block
 
 PARAPHRASE="What outdoor activity had I been considering?"
@@ -212,6 +214,63 @@ def test_topic_switch_blocks_unrelated_frequency_correction(dsn):
     assert SOURCE in prompt
     assert CORRECTION not in prompt
     assert "Switch the topic to cooking" not in prompt
+
+
+@pytest.mark.parametrize("unanswered", [
+    "Switch the topic to cooking.",
+    "Maybe three times per week.",
+])
+def test_superseded_intermediate_turn_blocks_correction_lookahead(
+    dsn, unanswered,
+):
+    """A pending user turn must stay a continuity barrier after supersession.
+
+    Exercise normal authenticated ingest rather than changing status via
+    fixture SQL: the next user command supersedes an unanswered turn.
+    """
+    host,model=fresh_host(dsn)
+    identity=host.begin_session("old")
+    source=host.send(SOURCE,idempotency_key="walking-source")
+    actor=TrustedActor(
+        user_id=identity.user_id,source_id="mvp02b2-supersession",
+    )
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        unfinished=ingest_text(
+            conn,actor,TextInputCommand(
+                conversation_id=identity.conversation_id,
+                instance_id=identity.instance_id,
+                expected_generation=identity.generation,
+                idempotency_key="unanswered-intermediate-"+str(len(unanswered)),
+                text=unanswered,
+            ),
+        )
+        assert conn.execute(
+            "SELECT status FROM conversation_turns WHERE turn_id=%s",
+            (unfinished.turn_id,),
+        ).fetchone()[0]=="PENDING"
+
+    correction=host.send(CORRECTION,idempotency_key="newer-correction")
+    with psycopg.connect(dsn,autocommit=True,row_factory=dict_row) as conn:
+        rows=conn.execute(
+            "SELECT sequence,input_text,status FROM conversation_turns "
+            "WHERE conversation_id=%s AND user_id=%s AND instance_id=%s "
+            "ORDER BY sequence",
+            (identity.conversation_id,identity.user_id,identity.instance_id),
+        ).fetchall()
+    assert [(row["input_text"],row["status"]) for row in rows]==[
+        (SOURCE,"RESPONDED"),
+        (unanswered,"SUPERSEDED"),
+        (CORRECTION,"RESPONDED"),
+    ]
+
+    host.begin_session("new")
+    host.restart_host()
+    host.send(DIRECT,idempotency_key="recalled-walking")
+    prompt=system(model)
+    assert SOURCE in prompt and source.turn_id in prompt
+    assert CORRECTION not in prompt
+    assert correction.turn_id not in prompt
+    assert unanswered not in prompt
 
 
 def test_unrelated_intermediate_turn_blocks_correction_lookahead(dsn):
