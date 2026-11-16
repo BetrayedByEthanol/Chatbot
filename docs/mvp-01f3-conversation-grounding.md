@@ -56,8 +56,14 @@ not recovery of a prior plan, and it does not create or approve a Goal.
 
 - If a unique current-conversation OBJECTIVE is already linked, the
   existing reference resolver refocuses it on delivery (MVP-01F.2).
-- If one or more matching threads exist but a named reference was not
-  uniquely resolved, **abstain** rather than invent a duplicate or guess.
+- If a previous explicit named request already created exactly one
+  OPEN `AUTO_SIGNAL` thread with the **exact normalized title**, refocus
+  that thread after delivery, even though its originating signal was
+  `REQUEST` rather than `OBJECTIVE`. This exact-title reuse must precede
+  the broader, conservative keyword-ambiguity check.
+- If multiple identical titles match, or a broader related topic exists
+  without a unique exact match, **abstain** rather than invent a duplicate
+  or guess.
 - If there are no matching current-conversation threads, a clear switch
   creates the requested discussion subject.
 - A question like `What about that walking goal?` remains a reference,
@@ -81,6 +87,10 @@ New `tests/test_mvp01f3_conversation_grounding.py` exercises:
   or Operations are created.
 - The existing MVP-01F.2 ambiguous same-session reference tests must
   continue to pass; no duplicate topic on ambiguous reference.
+- An explicit `walking plan` discussion opened from a `REQUEST`,
+  switched to cooking, then named again after host restart: refocus the
+  exact same thread, keep only two threads, persist the expected turn link
+  and focus event, and create no approved Goal. Two exact matches abstain.
 
 `scenarios/mvp01e_conversation.json` now asserts that the explicit
 new-session switch focuses walking, and adds human-review prompts for
