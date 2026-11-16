@@ -1,0 +1,57 @@
+{
+  "name": "mvp02b2-independent-paraphrase-and-correction-v1",
+  "description": "Real-model review: paraphrase must be the FIRST user question in a fresh session; separate direct recall must recover source-linked frequency correction without turning a tentative discussion into an approved goal.",
+  "steps": [
+    {
+      "action": "session",
+      "name": "original_walking_discussion"
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "I've been thinking about walking more regularly."
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "Maybe three times per week."
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "Actually, twice per week would be better."
+    },
+    {
+      "action": "restart"
+    },
+    {
+      "action": "session",
+      "name": "independent_paraphrase"
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "What outdoor activity had I been considering?",
+      "review_response": "Independent historical paraphrase: verify actual model request contains original prior-conversation walking statement, UUID and date; no earlier answer in this session may supply walking. Assistant must not invent a completed plan or confuse broad activity categories."
+    },
+    {
+      "action": "session",
+      "name": "corrected_frequency"
+    },
+    {
+      "action": "restart"
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "Do you remember what we discussed about walking?",
+      "review_response": "Verify original walking source and chronological tentative three-times then correction to twice weekly. Both notes remain user-reported discussion, not an approved Goal. Model must avoid claiming three times as the final preference or inventing an approved schedule."
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "What if I wanted to start next month instead?",
+      "review_response": "A hypothetical is not an approved goal or completed external action; response should be concise and grounded in the actual current topic."
+    }
+  ]
+}
