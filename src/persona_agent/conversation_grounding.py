@@ -57,7 +57,7 @@ def grounding_context_block(
             "Do not assert you remember details of an earlier plan unless "
             "source-linked user evidence is actually supplied in this "
             "model context. If missing, ask what the user wants to do "
-            "with the plan. A topic switch does not approve a Goal.\\n"
+            "with the plan. A topic switch does not approve a Goal.\n"
         )
         return note if len(note)<=max_chars else ""
     if mode=="RECALL":
