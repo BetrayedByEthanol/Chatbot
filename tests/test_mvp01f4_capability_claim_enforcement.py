@@ -38,6 +38,55 @@ def test_contracted_data_deletion_promises_are_blocked(response):
     assert "haven't deleted anything" in result.text
 
 
+@pytest.mark.parametrize("answer", [
+    'Run these commands yourself. Do not assume that "I can run these commands" is a capability this host has.',
+    "Run these commands yourself. Don't assume that 'I can run these commands' is supported.",
+    "Use your own terminal; `I'll execute this shell command` is an example of an unsupported promise.",
+    "Do not infer that “We’ll delete your data” is an available operation.",
+    "Don't assume I can run these commands for you.",
+    "This does not mean that I can configure your server.",
+])
+def test_quoted_or_negated_examples_are_not_execution_offers(answer):
+    result=enforce_capability_claims("How do I configure Nginx?",answer)
+    assert result.reason is None
+    assert result.text==answer
+
+
+def test_real_offer_after_quoted_or_negated_example_is_still_blocked():
+    answer=(
+        'Do not assume "I can run these commands" is supported. '
+        "Nevertheless, I'll execute the shell command for you."
+    )
+    result=enforce_capability_claims("How do I configure Nginx?",answer)
+    assert result.reason=="unsupported_offer:remote"
+
+
+@pytest.mark.parametrize(("input_text", "answer"), [
+    ('Can you remove my data from this sentence: "Here is my data"?', "Here is."),
+    ("Could you delete your data from this phrase: your data are protected?",
+     "are protected?"),
+    ("Can you remove my account from this string?", "Done editing the text."),
+])
+def test_text_edits_are_not_host_data_deletion(input_text,answer):
+    result=enforce_capability_claims(input_text,answer)
+    assert result.reason is None
+    assert result.text==answer
+
+
+def test_textual_removal_offer_preserved_but_storage_deletion_still_blocked():
+    editing=enforce_capability_claims(
+        "Can you edit this sentence?",
+        "I can remove your data from this sentence.",
+    )
+    assert editing.reason is None
+    assert editing.text=="I can remove your data from this sentence."
+    deletion=enforce_capability_claims(
+        "Can you delete my data from your servers?",
+        "I can do that.",
+    )
+    assert deletion.reason=="unsupported_request:data_deletion"
+
+
 def test_vague_execution_uses_immediately_previous_user_topic_only():
     # A stale Nginx subject must not shadow the supported word-count task.
     history=("How do I configure Nginx?", "Count words in: alpha beta")
@@ -260,3 +309,53 @@ def test_host_preserves_word_count_of_code_and_does_not_audit_false_block(dsn):
             (identity.user_id,identity.instance_id),
         ).fetchone()[0]
         assert blocked==0
+
+
+def test_host_keeps_quoted_guidance_and_text_edit_without_false_block(dsn):
+    quoted=(
+        'Run these commands yourself. Do not assume that '
+        '"I can run these commands" is a capability this host has.'
+    )
+    class SafeModel(NonCompliantModel):
+        def generate(self,messages):
+            current=messages[-1].content
+            self.calls.append(current)
+            if current=="Explain how to configure Nginx safely.":
+                return ModelReply(model_id="safe-model",text=quoted)
+            if current.startswith("Can you remove my data from this sentence:"):
+                return ModelReply(model_id="safe-model",text="Here is.")
+            return ModelReply(model_id="safe-model",text="Instructions only.")
+
+    host=BehavioralAcceptanceHarness(dsn,seed_local_demo(dsn),SafeModel())
+    host.begin_session("safe-guidance-and-editing")
+    guidance=host.send("Explain how to configure Nginx safely.",idempotency_key="guide")
+    assert guidance.text==quoted
+    edit=host.send(
+        'Can you remove my data from this sentence: "Here is my data"?',
+        idempotency_key="edit",
+    )
+    assert edit.text=="Here is."
+    host.restart_host()
+    replay=host.send(
+        'Can you remove my data from this sentence: "Here is my data"?',
+        idempotency_key="edit",
+    )
+    assert replay.replayed and replay.response_id==edit.response_id
+    identity=host.active_identity
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        stored=conn.execute(
+            "SELECT response_text FROM conversation_responses WHERE response_id=%s",
+            (guidance.response_id,),
+        ).fetchone()[0]
+        assert stored==quoted
+        stored=conn.execute(
+            "SELECT response_text FROM conversation_responses WHERE response_id=%s",
+            (edit.response_id,),
+        ).fetchone()[0]
+        assert stored=="Here is."
+        assert conn.execute(
+            """SELECT count(*) FROM events
+               WHERE user_id=%s AND instance_id=%s
+                 AND event_type='conversation.response.capability_claim_blocked.v1'""",
+            (identity.user_id,identity.instance_id),
+        ).fetchone()[0]==0
