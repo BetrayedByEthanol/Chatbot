@@ -82,6 +82,7 @@ class ModelMemoryTick:
     abstained: int
     deferred: int
     retry_pending: int
+    invalid_model_output: int
 
 
 class ModelInputNotReady(Exception):
@@ -253,7 +254,7 @@ def run_model_memory_tick(
             break
     reap_expired_claims(connection,limit=100)
     _resume_selected(connection,consumer_id,max_deliveries)
-    processed=proposed_count=abstained=deferred=retry_pending=0
+    processed=proposed_count=abstained=deferred=retry_pending=invalid=0
     for _ in range(max_deliveries):
         lease=claim_delivery(
             connection,consumer_id=consumer_id,worker_id=worker_id,
@@ -270,7 +271,14 @@ def run_model_memory_tick(
                     and parse_explicit_claim(source["input_text"]) is None):
                 reply=model.generate(_prompt(source["input_text"]))
                 model_id=reply.model_id
-                draft=_validated_draft(reply.text,source["input_text"])
+                try:
+                    draft=_validated_draft(reply.text,source["input_text"])
+                except ValueError:
+                    # Invalid or ungrounded model output is a terminal
+                    # abstention for THIS source: it must never poison
+                    # the durable per-stream delivery order.
+                    invalid+=1
+                    draft=None
             inserted=[]
             def commit(cur,envelope):
                 if draft is not None:
@@ -301,6 +309,7 @@ def run_model_memory_tick(
                 pass
     return ModelMemoryTick(
         dispatched,processed,proposed_count,abstained,deferred,retry_pending,
+        invalid,
     )
 
 
