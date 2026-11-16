@@ -14,7 +14,9 @@ optional typed OBJECTIVE. This utterance already selects the one-pass
 `generate_interpreted` route.
 
 - Continue invoking the normal single model request.
-- If an admissible model signal was persisted, keep it unchanged.
+- If a model OBJECTIVE is admissible, retain its original provenance.
+  If the model instead offers a non-OBJECTIVE label on this tightly
+  recognized routine input, let the source-grounded rule prevail.
 - Otherwise, the *authenticated input* may produce a narrow
   `mvp01f2.routine_fallback.1` `RULE_INFERRED` `OBJECTIVE` signal
   for explicitly self-referential recurring-activity expressions such
