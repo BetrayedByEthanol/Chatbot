@@ -111,39 +111,50 @@ def historical_user_turn_context_block(
     # All SQL parameters are bound. English stemming matches "walk" and
     # "walking"; query terms are extracted words, not user-authored operators.
     query = " OR ".join(terms[:6])
+    # Limit/rank under the existing GIN index *before* computing a
+    # potentially expensive headline on large original user turns.
     cur.execute(
-        """SELECT t.turn_id, t.created_at, t.input_text,
-                  ts_headline(
-                      'english', t.input_text,
-                      websearch_to_tsquery('english', %s),
-                      'MaxFragments=1, MaxWords=45, MinWords=5, '
-                      'StartSel=[[[, StopSel=]]]'
-                  ) AS highlighted
-           FROM conversation_turns t
-           WHERE t.user_id=%s AND t.instance_id=%s
-             AND t.conversation_id<>%s
-             AND t.created_at<%s
-             AND t.status='RESPONDED'
-             AND NOT EXISTS (
-                 SELECT 1 FROM memory_revisions mr
-                 WHERE mr.user_id=t.user_id AND mr.instance_id=t.instance_id
-                   AND mr.source_turn_id=t.turn_id
-             )
-             AND NOT EXISTS (
-                 SELECT 1 FROM memory_extraction_candidates candidate
-                 WHERE candidate.user_id=t.user_id
-                   AND candidate.instance_id=t.instance_id
-                   AND candidate.source_turn_id=t.turn_id
-             )
-             AND to_tsvector('english', t.input_text)
-                 @@ websearch_to_tsquery('english', %s)
-           ORDER BY ts_rank_cd(
-               to_tsvector('english', t.input_text),
-               websearch_to_tsquery('english', %s)
-           ) DESC, t.created_at DESC, t.turn_id
-           LIMIT %s""",
+        """WITH candidates AS MATERIALIZED (
+               SELECT t.turn_id, t.created_at, t.input_text,
+                      ts_rank_cd(
+                          to_tsvector('english', t.input_text),
+                          websearch_to_tsquery('english', %s)
+                      ) AS relevance
+               FROM conversation_turns t
+               WHERE t.user_id=%s AND t.instance_id=%s
+                 AND t.conversation_id<>%s
+                 AND t.created_at<%s
+                 AND t.status='RESPONDED'
+                 AND NOT EXISTS (
+                     SELECT 1 FROM memory_revisions mr
+                     WHERE mr.user_id=t.user_id
+                       AND mr.instance_id=t.instance_id
+                       AND mr.source_turn_id=t.turn_id
+                 )
+                 AND NOT EXISTS (
+                     SELECT 1 FROM memory_extraction_candidates candidate
+                     WHERE candidate.user_id=t.user_id
+                       AND candidate.instance_id=t.instance_id
+                       AND candidate.source_turn_id=t.turn_id
+                 )
+                 AND to_tsvector('english', t.input_text)
+                     @@ websearch_to_tsquery('english', %s)
+               ORDER BY relevance DESC, t.created_at DESC, t.turn_id
+               LIMIT %s
+           )
+           SELECT c.turn_id, c.created_at, c.input_text,
+                  CASE WHEN char_length(c.input_text)<=%s
+                       THEN c.input_text
+                       ELSE ts_headline(
+                           'english', c.input_text,
+                           websearch_to_tsquery('english', %s),
+                           'MaxFragments=1, MaxWords=45, MinWords=5, '
+                           'StartSel=[[[, StopSel=]]]'
+                       ) END AS highlighted
+           FROM candidates c
+           ORDER BY c.relevance DESC, c.created_at DESC, c.turn_id""",
         (query, user_id, instance_id, conversation_id, before_at,
-         query, query, _MAX_CANDIDATES),
+         query, _MAX_CANDIDATES, _MAX_QUOTE, query),
     )
     rows = cur.fetchall()
     head = (
