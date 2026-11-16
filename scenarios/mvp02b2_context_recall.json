@@ -1,6 +1,6 @@
 {
   "name": "mvp02b2-independent-paraphrase-and-correction-v1",
-  "description": "Real-model review: paraphrase must be the FIRST user question in a fresh session; separate direct recall must recover source-linked frequency correction without turning a tentative discussion into an approved goal.",
+  "description": "Real-model review: an independent first-message paraphrase, followed by source-linked, successive frequency corrections. Neither tentative wording nor older cadence may be mistaken for an approved Goal.",
   "steps": [
     {
       "action": "session",
@@ -20,6 +20,11 @@
       "action": "message",
       "mode": "model",
       "text": "Actually, twice per week would be better."
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "Actually, once per week would be better."
     },
     {
       "action": "restart"
@@ -45,7 +50,7 @@
       "action": "message",
       "mode": "model",
       "text": "Do you remember what we discussed about walking?",
-      "review_response": "Verify original walking source and chronological tentative three-times then correction to twice weekly. Both notes remain user-reported discussion, not an approved Goal. Model must avoid claiming three times as the final preference or inventing an approved schedule."
+      "review_response": "Verify original walking statement plus three chronological frequency updates: tentative three, corrected twice, then latest corrected once per week. Model must identify once per week as the latest user preference, avoid presenting twice as current, and avoid treating the discussion as an approved Goal."
     },
     {
       "action": "message",
