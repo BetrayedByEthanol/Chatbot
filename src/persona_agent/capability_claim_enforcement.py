@@ -76,8 +76,7 @@ _OFFER = re.compile(
     r"|(?:would|do)\s+you\s+(?:like|want)\s+(?:me|us)\s+to\s+"
     r"|(?:should|shall)\s+(?:i|we)\s+"
     r"|let\s+(?:me|us)\s+"
-    r")(?P<action>run|execute|install|deploy|configure|delete|erase|remove)\b"
-    r"(?P<object>[^.!?\n]{0,110})",
+    r")(?P<action>run|execute|install|deploy|configure|delete|erase|remove)\b",
     re.I,
 )
 
@@ -211,16 +210,26 @@ def enforce_capability_claims(
                 )
 
     masked_examples = _mask_quoted_examples(model_text)
-    # Match against the original output so Markdown/quoted command objects
-    # remain available. Only the *start of an offer* must be unquoted;
-    # a quoted example of an offer is not an actual offer.
-    for match in _OFFER.finditer(model_text):
+    # Find offer *starts*, not full offer/object spans. A supported offer
+    # must never consume a later unsupported one in the same sentence.
+    # Keep object text from the original response (including inline code),
+    # but stop it at the next offer or clause boundary before classifying.
+    offers = tuple(_OFFER.finditer(model_text))
+    for index, match in enumerate(offers):
         if masked_examples[match.start()] == " ":
             continue
         if _is_negated_offer(masked_examples, match.start()):
             continue
+        next_start = (
+            offers[index + 1].start() if index + 1 < len(offers)
+            else len(model_text)
+        )
+        end = min(next_start, match.end() + 110)
+        object_text = re.split(
+            r"[.!?;\n]", model_text[match.end():end], maxsplit=1,
+        )[0]
         category = _category(
-            match.group("action"), match.group("object"),
+            match.group("action"), object_text,
             remote_context=remote_context or bool(_REMOTE_TOPIC.search(cleaned)),
         )
         if category:
