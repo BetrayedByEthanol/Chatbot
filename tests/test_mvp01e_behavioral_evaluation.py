@@ -226,8 +226,9 @@ def test_evaluation_uses_real_host_and_captures_each_state_boundary(dsn,tmp_path
         assert set(z.namelist())=={
             "manifest.json","scenario.json","transcript.json",
             "state_snapshots.json","model_requests.json",
-            "interpretation_diagnostics.json","review_items.json",
-            "delivery_events.json","evaluation.json","errors.json",
+            "interpretation_diagnostics.json","semantic_diagnostics.json",
+            "review_items.json","delivery_events.json","evaluation.json",
+            "errors.json",
         }
         manifest=json.loads(z.read("manifest.json"))
         assert manifest["contract_passed"]
