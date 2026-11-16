@@ -132,7 +132,11 @@ def _category(action: str, obj: str, *, remote_context: bool) -> str | None:
         if _TEXT_EDIT_TARGET.search(obj):
             return None
         return "data_deletion" if _DELETION_OBJECT.search(obj) else None
-    if _REMOTE_OBJECT.search(obj):
+    # An executable target may be an inline-code or quoted direct object:
+    # execute `openssl req -x509` / run "these commands". Keep its actual
+    # text for classification rather than using the masked offer scan.
+    direct_object = obj.lstrip().lstrip(`\`"'“‘`)
+    if _REMOTE_OBJECT.search(direct_object):
         return "remote"
     if _ANAPHORA.fullmatch(obj) and remote_context:
         return "remote"
@@ -189,9 +193,14 @@ def enforce_capability_claims(
                     _fallback(category), "unsupported_request:" + category,
                 )
 
-    unquoted_model_text = _mask_quoted_examples(model_text)
-    for match in _OFFER.finditer(unquoted_model_text):
-        if _is_negated_offer(unquoted_model_text, match.start()):
+    masked_examples = _mask_quoted_examples(model_text)
+    # Match against the original output so Markdown/quoted command objects
+    # remain available. Only the *start of an offer* must be unquoted;
+    # a quoted example of an offer is not an actual offer.
+    for match in _OFFER.finditer(model_text):
+        if masked_examples[match.start()] == " ":
+            continue
+        if _is_negated_offer(masked_examples, match.start()):
             continue
         category = _category(
             match.group("action"), match.group("object"),
