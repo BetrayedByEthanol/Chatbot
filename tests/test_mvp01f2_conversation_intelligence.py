@@ -6,7 +6,7 @@ import psycopg
 from persona_agent.behavioral_acceptance import BehavioralAcceptanceHarness
 from persona_agent.behavioral_evaluation import run_scenario
 from persona_agent.acceptance_host import seed_local_demo
-from persona_agent.conversation_contracts import ModelReply
+from persona_agent.conversation_contracts import ModelIntentCandidate, ModelReply
 from persona_agent.dialogue_state import load_active_dialogue
 from persona_agent.contracts import TrustedActor
 from persona_agent.capability_claim_context import capability_claim_context
@@ -150,3 +150,33 @@ def test_capability_grounding_is_selective_and_tracks_registered_tools(dsn):
     assert all("Trusted host capability boundary:" not in p for p in prompts[:2])
     assert all("Trusted host capability boundary:" in p for p in prompts[2:])
     assert result["snapshots"][-1]["database"]["operations"]["count"]==0
+
+
+def test_wrong_model_label_cannot_shadow_grounded_routine_objective(dsn):
+    class MisclassifyingModel(OnePass):
+        def generate_interpreted(self,messages):
+            self.requests.append(("interpreted",tuple(messages)))
+            return ModelReply(
+                model_id="misclassified",text="Okay.",
+                intent_candidate=ModelIntentCandidate(
+                    kind="OBSERVATION",evidence_quote=WALKING,
+                    confidence=0.93,reference="NONE",
+                ),
+            )
+    report=run_scenario(
+        dsn,{"name":"misclassified-objective","steps":[
+            {"action":"session","name":"first"},
+            {"action":"message","text":WALKING,
+             "expect_intent":"OBJECTIVE","expect_focus_contains":"walking"},
+        ]},MisclassifyingModel(),run_memory_worker=False,
+    )
+    assert not report["errors"],report["errors"]
+    assert report["passed"],[c for c in report["checks"] if not c["pass"]]
+    signals=report["snapshots"][-1]["database"]["conversation_intent_signals"]["rows"]
+    assert len(signals)==1
+    assert signals[0]["intent_kind"]=="OBJECTIVE"
+    assert signals[0]["epistemic_status"]=="RULE_INFERRED"
+    assert signals[0]["source_response_id"] is None
+    assert report["interpretation_diagnostics"][0][
+        "admission"]=="RULE_FALLBACK_PERSISTED"
+    assert report["snapshots"][-1]["database"]["goal_records"]["count"]==0
