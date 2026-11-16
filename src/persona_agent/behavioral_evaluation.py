@@ -93,6 +93,24 @@ def validate_scenario(value: Any) -> dict:
                 "OBSERVATION", "INSTRUCTION", None,
             ):
                 raise ValueError("unknown expected intent kind")
+            if "expect_related_intent" in step and step[
+                "expect_related_intent"
+            ] not in ("OBJECTIVE", "REQUEST", "CORRECTION"):
+                raise ValueError("invalid related intent expectation")
+            if "expect_focus_contains" in step and (
+                not isinstance(step["expect_focus_contains"], str)
+                or not 1 <= len(step["expect_focus_contains"]) <= 80
+            ):
+                raise ValueError("invalid focus expectation")
+            if "expect_no_new_operations" in step and type(
+                step["expect_no_new_operations"]
+            ) is not bool:
+                raise ValueError("expect_no_new_operations must be boolean")
+            if "review_response" in step and (
+                not isinstance(step["review_response"], str)
+                or not 1 <= len(step["review_response"]) <= 300
+            ):
+                raise ValueError("review_response must be a short instruction")
             message_count += 1
         else:
             raise ValueError("unsupported scenario action")
@@ -242,33 +260,70 @@ def capture_state(
     }
 
 
-def _intent_from_snapshot(snapshot: dict, turn_id: str) -> str | None:
-    for row in snapshot["database"]["conversation_intent_signals"]["rows"]:
-        if str(row["turn_id"]) == turn_id:
-            return row["intent_kind"]
-    return None
+def _signals_for_turn(snapshot: dict, turn_id: str) -> list[dict]:
+    return [
+        row for row in snapshot["database"]["conversation_intent_signals"]["rows"]
+        if str(row["turn_id"]) == turn_id
+    ]
 
 
-def _check_turn(step: dict, turn: dict, snapshot: dict) -> list[dict]:
+def _check_turn(
+    step: dict, turn: dict, snapshot: dict, *,
+    previous_operations: int | None = None,
+) -> list[dict]:
+    """Outcome-based assertions: no model-text substring guessing.
+
+    A failed deterministic behavioral assertion is reported, not hidden by
+    successful response-delivery contracts. Interpretation stays tentative.
+    """
     checks = []
-    def record(name, passed, actual, expected):
+
+    def record(name, passed, actual, expected, category="behavioral"):
         checks.append({
-            "check": name, "pass": bool(passed),
-            "actual": actual, "expected": expected,
+            "check":name, "category":category, "pass":bool(passed),
+            "actual":actual, "expected":expected,
         })
+
     trace = snapshot["application"]["turn_trace"]
-    record("response_delivered",trace["response_status"] == "DELIVERED",
-           trace["response_status"],"DELIVERED")
+    record("response_delivered",trace["response_status"]=="DELIVERED",
+           trace["response_status"],"DELIVERED",category="contract")
     if "expect_model_id" in step:
-        record("route",turn["model_id"] == step["expect_model_id"],
-               turn["model_id"],step["expect_model_id"])
+        record("route",turn["model_id"]==step["expect_model_id"],
+               turn["model_id"],step["expect_model_id"],category="contract")
+    signals = _signals_for_turn(snapshot,turn["turn_id"])
     if "expect_intent" in step:
-        observed = _intent_from_snapshot(snapshot, turn["turn_id"])
-        record("intent",observed == step["expect_intent"],
-               observed,step["expect_intent"])
-    # All MVP-01E scenario objectives are discussions, never authorized goals.
+        kinds = [row["intent_kind"] for row in signals]
+        expected=step["expect_intent"]
+        record("intent",expected in kinds if expected else not kinds,
+               kinds,expected)
+    if "expect_related_intent" in step:
+        by_id={
+            str(row["signal_id"]):row
+            for row in snapshot["database"]["conversation_intent_signals"]["rows"]
+        }
+        resolved=[
+            by_id[str(row["related_signal_id"])]["intent_kind"]
+            for row in signals
+            if row.get("related_signal_id") is not None
+            and str(row["related_signal_id"]) in by_id
+        ]
+        record("related_intent",step["expect_related_intent"] in resolved,
+               resolved,step["expect_related_intent"])
+    if "expect_focus_contains" in step:
+        dialogue=snapshot["application"]["dialogue"]
+        focused=next((
+            row["title"] for row in dialogue["threads"]
+            if str(row["thread_id"])==str(dialogue["focus_thread_id"])
+        ),None)
+        expected=step["expect_focus_contains"]
+        record("focused_topic",focused is not None
+               and expected.casefold() in focused.casefold(),focused,expected)
+    if step.get("expect_no_new_operations"):
+        total=snapshot["database"]["operations"]["count"]
+        record("no_new_operations",previous_operations is not None
+               and total==previous_operations,total,previous_operations)
     count = snapshot["application"]["counts"]["goals"]
-    record("no_unapproved_goal",count == 0,count,0)
+    record("no_unapproved_goal",count == 0,count,0,category="contract")
     return checks
 
 
