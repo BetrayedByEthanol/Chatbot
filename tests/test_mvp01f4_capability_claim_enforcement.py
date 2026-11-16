@@ -98,6 +98,37 @@ def test_text_edits_are_not_host_data_deletion(input_text,answer):
     assert result.text==answer
 
 
+@pytest.mark.parametrize("input_text", [
+    "Can you delete my data from your servers and summarize the result in this paragraph?",
+    "Could you remove my files from your server and explain what happened in this sentence?",
+    "Can you erase my data from your servers and write the details in this text?",
+    "Can you delete my data from the database and document it in this paragraph?",
+])
+def test_deletion_with_unrelated_text_output_instruction_is_not_exempt(input_text):
+    result=enforce_capability_claims(input_text,"Sure, I will take care of it.")
+    assert result.reason=="unsupported_request:data_deletion"
+    assert "haven't deleted anything" in result.text
+
+
+@pytest.mark.parametrize("answer", [
+    "I can delete your data from our servers and describe the process in this paragraph.",
+    "I'll remove your files from your servers and summarize in this sentence.",
+    "We’ll erase your account from the server and explain it in the text.",
+])
+def test_unsolicited_deletion_offer_with_text_output_instruction_is_blocked(answer):
+    result=enforce_capability_claims("How would that work?",answer)
+    assert result.reason=="unsupported_offer:data_deletion"
+    assert "haven't deleted anything" in result.text
+
+
+def test_followup_stored_deletion_cannot_hide_behind_initial_text_edit():
+    result=enforce_capability_claims(
+        "Can you remove my data from this sentence and then delete my data from your servers?",
+        "Sure, done.",
+    )
+    assert result.reason=="unsupported_request:data_deletion"
+
+
 def test_textual_removal_offer_preserved_but_storage_deletion_still_blocked():
     editing=enforce_capability_claims(
         "Can you edit this sentence?",
@@ -434,3 +465,63 @@ def test_host_blocks_inline_code_offer_but_preserves_quoted_example(dsn):
             (retained.response_id,),
         ).fetchone()[0]
         assert saved_guidance==guidance
+
+
+def test_host_rejects_deletion_with_separate_paragraph_instruction(dsn):
+    user_request=(
+        "Can you delete my data from your servers and summarize "
+        "the result in this paragraph?"
+    )
+    unsolicited=(
+        "I can delete your data from our servers and "
+        "describe the process in this paragraph."
+    )
+
+    class OverpromisingModel(NonCompliantModel):
+        def generate(self,messages):
+            current=messages[-1].content
+            self.calls.append(current)
+            if current==user_request:
+                return ModelReply(model_id="unreliable.llm",text="Sure, I will take care of it.")
+            if current=="Explain account deletion.":
+                return ModelReply(model_id="unreliable.llm",text=unsolicited)
+            if current.startswith("Can you remove my data from this sentence:"):
+                return ModelReply(model_id="unreliable.llm",text="Here is.")
+            return ModelReply(model_id="unreliable.llm",text="Guidance only.")
+
+    host=BehavioralAcceptanceHarness(dsn,seed_local_demo(dsn),OverpromisingModel())
+    host.begin_session("paragraph-instruction-not-deletion-target")
+    direct=host.send(user_request,idempotency_key="direct")
+    assert "haven't deleted anything" in direct.text
+    offered=host.send("Explain account deletion.",idempotency_key="offer")
+    assert "haven't deleted anything" in offered.text
+    edit=host.send(
+        'Can you remove my data from this sentence: "Here is my data"?',
+        idempotency_key="text-edit",
+    )
+    assert edit.text=="Here is."
+    host.restart_host()
+    replay=host.send(user_request,idempotency_key="direct")
+    assert replay.replayed and replay.response_id==direct.response_id
+    assert replay.text==direct.text
+
+    identity=host.active_identity
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        events=conn.execute(
+            """SELECT payload FROM events
+               WHERE user_id=%s AND instance_id=%s
+                 AND event_type='conversation.response.capability_claim_blocked.v1'
+               ORDER BY stream_sequence""",
+            (identity.user_id,identity.instance_id),
+        ).fetchall()
+        assert len(events)==2
+        assert [row[0]["reason"] for row in events]==[
+            "unsupported_request:data_deletion",
+            "unsupported_offer:data_deletion",
+        ]
+        for response in (direct,offered,edit):
+            saved=conn.execute(
+                "SELECT response_text FROM conversation_responses WHERE response_id=%s",
+                (response.response_id,),
+            ).fetchone()[0]
+            assert saved==response.text
