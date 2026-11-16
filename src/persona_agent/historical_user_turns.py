@@ -183,6 +183,62 @@ def _correction_followups(
     return tuple((*notes,*corrections)) if corrections else ()
 
 
+def _eligible_activity_types(
+    cur, *, user_id: UUID, instance_id: UUID, conversation_id: UUID,
+    before_at: datetime, query: str,
+) -> set[str]:
+    """Classify eligible activity sources BEFORE ranking/limiting quotations.
+
+    Stream through the same scoped, privacy-filtered candidate population as
+    the ordinary retrieval query. Stop immediately on a second activity type.
+    A server-side cursor avoids loading unlimited historical text into RAM;
+    absence of a second category is established only after exhausting scope.
+    """
+    from psycopg.rows import dict_row
+
+    found: set[str] = set()
+    with cur.connection.cursor(
+        name="mvp02b2_activity_ambiguity", row_factory=dict_row,
+    ) as scan:
+        scan.execute(
+            """SELECT t.input_text
+               FROM conversation_turns t
+               WHERE t.user_id=%s AND t.instance_id=%s
+                 AND t.conversation_id<>%s AND t.created_at<%s
+                 AND t.status='RESPONDED'
+                 AND NOT EXISTS (
+                     SELECT 1 FROM memory_revisions mr
+                     WHERE mr.user_id=t.user_id
+                       AND mr.instance_id=t.instance_id
+                       AND mr.source_turn_id=t.turn_id
+                 )
+                 AND NOT EXISTS (
+                     SELECT 1 FROM memory_extraction_candidates candidate
+                     WHERE candidate.user_id=t.user_id
+                       AND candidate.instance_id=t.instance_id
+                       AND candidate.source_turn_id=t.turn_id
+                 )
+                 AND to_tsvector('english', t.input_text)
+                     @@ websearch_to_tsquery('english', %s)""",
+            (user_id, instance_id, conversation_id, before_at, query),
+        )
+        while True:
+            batch=scan.fetchmany(64)
+            if not batch:
+                break
+            for row in batch:
+                text=row["input_text"]
+                if _SENSITIVE.search(text):
+                    continue
+                found.update(
+                    kind for kind,pattern in _ACTIVITY_CUES.items()
+                    if pattern.search(text)
+                )
+                if len(found)>1:
+                    return found
+    return found
+
+
 def historical_user_turn_context_block(
     cur, *, user_id: UUID, instance_id: UUID,
     conversation_id: UUID, before_at: datetime,
@@ -220,6 +276,16 @@ def historical_user_turn_context_block(
     # All SQL parameters are bound. English stemming matches "walk" and
     # "walking"; query terms are extracted words, not user-authored operators.
     query = " OR ".join(terms[:6])
+    if paraphrase is not None:
+        # Do not infer uniqueness from a relevance-limited 16-row sample:
+        # an older, eligible second activity must still force abstention.
+        activity_types=_eligible_activity_types(
+            cur,user_id=user_id,instance_id=instance_id,
+            conversation_id=conversation_id,before_at=before_at,query=query,
+        )
+        if len(activity_types)!=1:
+            return ""
+        activity=next(iter(activity_types))
     # Limit/rank under the existing GIN index *before* computing a
     # potentially expensive headline on large original user turns.
     cur.execute(
@@ -272,16 +338,8 @@ def historical_user_turn_context_block(
         if not _SENSITIVE.search(row["input_text"])
     ]
     if paraphrase is not None:
-        # A broad label can match several incompatible past activities.
-        # Do not make a best-guess selection from ambiguous evidence.
-        activity_types={
-            kind for row in rows for kind,pattern in _ACTIVITY_CUES.items()
-            if pattern.search(row["input_text"])
-        }
-        if len(activity_types)!=1:
-            return ""
-        # Keep only the identified activity's matching source turns.
-        activity=next(iter(activity_types))
+        # Uniqueness was established across all eligible historical turns,
+        # not merely the bounded quote candidates.
         rows=[row for row in rows
               if _ACTIVITY_CUES[activity].search(row["input_text"])]
     head = (
