@@ -6,7 +6,7 @@ before the expensive E2E Compose/database/model pipeline is started.
 import json
 from pathlib import Path
 
-from persona_agent.behavioral_evaluation import validate_scenario
+from persona_agent.scenario_validation import validate_scenario
 
 
 SCENARIO = (
