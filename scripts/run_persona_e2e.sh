@@ -22,6 +22,30 @@ for arg in "$@"; do
   esac
 done
 
+# Reject invalid scenario content before starting a disposable Compose
+# project. Reuse the actual Python validator as the single contract owner.
+# A preflight failure has produced no report and no service to preserve.
+python - "$@" <<'PY'
+import argparse
+import json
+from pathlib import Path
+import sys
+
+from persona_agent.behavioral_evaluation import validate_scenario
+
+parser = argparse.ArgumentParser(add_help=False)
+parser.add_argument(
+    "--scenario", type=Path,
+    default=Path("scenarios/mvp01e_conversation.json"),
+)
+args, _ = parser.parse_known_args(sys.argv[1:])
+try:
+    validate_scenario(json.loads(args.scenario.read_text(encoding="utf-8")))
+except (OSError, ValueError) as exc:
+    print(f"Invalid E2E scenario {args.scenario}: {exc}", file=sys.stderr)
+    raise SystemExit(2)
+PY
+
 # The Python process alone knows whether ZIP publication succeeded.
 # An invocation-private marker cannot be fabricated by a prior run.
 status_dir="$(mktemp -d)"
