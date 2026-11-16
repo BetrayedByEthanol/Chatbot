@@ -713,9 +713,13 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
                 source_id="conversation.runtime",trust_level="TRUSTED_PLATFORM",
                 detail={"turn_id":str(context.turn_id),"response_id":str(response_id)},
             )
+            from .intent_interpretation import (
+                conservative_implicit_objective, record_intent_on_ingress,
+                record_model_intent_on_response,
+            )
+            admitted = None
             if generated.intent_candidate is not None:
-                from .intent_interpretation import record_model_intent_on_response
-                record_model_intent_on_response(
+                admitted = record_model_intent_on_response(
                     cursor,user_id=actor.user_id,
                     instance_id=context.instance_id,
                     conversation_id=context.conversation_id,
@@ -725,6 +729,22 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
                     source_event_id=scoped["source_input_event_id"],
                     response_id=response_id,candidate=generated.intent_candidate,
                 )
+            # MVP-01F.2: the model can omit or misclassify an unmistakable
+            # routine intention. Use one narrow, evidence-grounded fallback
+            # only when no candidate was admitted. The same response commit
+            # fences it; this never approves a Goal or adds another LLM pass.
+            if admitted is None:
+                draft = conservative_implicit_objective(scoped["input_text"])
+                if draft is not None:
+                    record_intent_on_ingress(
+                        cursor,user_id=actor.user_id,
+                        instance_id=context.instance_id,
+                        conversation_id=context.conversation_id,
+                        turn_id=context.turn_id,
+                        turn_sequence=scoped["sequence"],
+                        source_event_id=scoped["source_input_event_id"],
+                        text=scoped["input_text"],draft=draft,
+                    )
             return TextResponseResult(
                 response_id=response_id,turn_id=context.turn_id,
                 text=text,model_id=generated.model_id,delivery_status="GENERATED",
