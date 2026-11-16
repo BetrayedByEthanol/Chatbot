@@ -63,15 +63,23 @@ def _fresh_named_discussion(
     if title is None:
         return None
     keyword=title.split(" ",1)[0]
+    # Only for preventing duplicate creation, treat a nominal gerund
+    # ("walking") and the corresponding verb ("walk") as one possible
+    # topic. This does NOT claim that they are a uniquely resolved goal.
+    root=keyword[:-3] if keyword.endswith("ing") and len(keyword)>6 else keyword
     cur.execute(
         """SELECT title FROM dialogue_threads
            WHERE conversation_id=%s AND user_id=%s AND instance_id=%s
              AND origin_kind='AUTO_SIGNAL'
-           ORDER BY updated_at DESC LIMIT 64""",
+           ORDER BY updated_at DESC LIMIT 65""",
         (conversation_id,user_id,instance_id),
     )
-    if any(re.search(r"\b"+re.escape(keyword)+r"\b",
-                     row["title"],re.I) for row in cur.fetchall()):
+    existing=cur.fetchall()
+    if len(existing)>64 or any(
+        re.search(r"\b"+re.escape(root)+r"[a-z]*\b",row["title"],re.I)
+        for row in existing
+    ):
+        # If the bounded evidence is incomplete, also abstain.
         return None
     # A direct switch in a fresh conversation means "discuss the topic",
     # not "we have recovered and verified an earlier plan".
