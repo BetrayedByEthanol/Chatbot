@@ -82,6 +82,26 @@ def test_semantic_claim_rejects_invalid_metadata(field,value):
         _claim(**{field:value})
 
 
+def test_specialist_classifier_can_abstain_on_unhandled_dimensions():
+    # An independent temporal-only model should not invent a statement type,
+    # dialogue intent, or modality to satisfy this shared output contract.
+    turn=uuid4()
+    batch=_batch(
+        source_turn_id=turn,
+        classifier_id="hf.temporal-only",
+        claims=(_claim(
+            statement_type="UNKNOWN",
+            temporal_scope="PAST_EVENT",
+            modality="UNKNOWN",
+            pragmatic_function="UNKNOWN",
+            topic_label=None,
+        ),),
+    )
+    assert validate_semantic_evidence(
+        batch,source_turn_id=turn,source_text="I enjoy gardening.",
+    ).claims[0].statement_type=="UNKNOWN"
+
+
 def test_semantic_annotation_abstention_and_metadata_constraints():
     with pytest.raises(ValidationError):
         _batch(claims=(),abstention_reason=None)
