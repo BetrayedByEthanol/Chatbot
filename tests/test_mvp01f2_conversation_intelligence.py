@@ -87,8 +87,8 @@ def test_real_host_walking_frequency_correction_and_topic_return(dsn):
 def test_ambiguous_named_objective_does_not_guess_or_refocus(dsn):
     host=BehavioralAcceptanceHarness(dsn,seed_local_demo(dsn),OnePass())
     host.begin_session("ambiguous")
-    host.send("I want to walk more.",idempotency_key="w1")
-    host.send("I want to walk with friends.",idempotency_key="w2")
+    host.send("I want to practice walking daily.",idempotency_key="w1")
+    host.send("I want to track walking habits.",idempotency_key="w2")
     host.send("Switch the topic to cooking.",idempotency_key="cook")
     host.send("What about that walking goal?",idempotency_key="reference")
     with psycopg.connect(dsn,autocommit=True) as conn:
