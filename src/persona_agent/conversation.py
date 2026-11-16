@@ -523,11 +523,13 @@ def prepare_text_context(
             from .summary_memory import summary_context_block, episode_context_block
             from .memory import contextual_memory_block
             from .memory_retrieval import topic_recall_block
+            from .historical_user_turns import historical_user_turn_context_block
 
             # The summary-cutoff convergence loop may rebuild the system
-            # prompt, but an identical topic retrieval budget must not issue
+            # prompt, but identical retrieval budgets must not issue
             # redundant historical queries during one foreground turn.
             topic_recall_cache={}
+            historical_turn_cache={}
             intent_context_cache={}
 
             def assemble_prompt(before_sequence: int) -> str:
@@ -543,6 +545,7 @@ def prepare_text_context(
                     )
                     content+=compact
                     optional_budget-=len(compact)
+                episode=""
                 if optional_budget>=220:
                     episode=episode_context_block(
                         cursor,actor.user_id,item["instance_id"],
@@ -557,11 +560,35 @@ def prepare_text_context(
                         min(256,max_context_chars//4),
                     ),
                 )
+                memory=""
                 if recall_budget>=180:
-                    content+=contextual_memory_block(
+                    memory=contextual_memory_block(
                         cursor,actor.user_id,item["instance_id"],
                         history[-1].content,recall_budget,
                     )
+                    content+=memory
+                # MVP-02B.1: only when the existing Memory/episode routes
+                # supply no evidence, try bounded source-linked user turns
+                # from PREVIOUS conversations. This fallback cannot write
+                # memory or turn a user quote into an instruction.
+                if not memory and not episode:
+                    remaining=max_context_chars-len(content)-min(
+                        len(history[-1].content),
+                        min(256,max_context_chars//4),
+                    )-80
+                    if remaining>=210:
+                        retrieval_cap=min(1100,remaining)
+                        if retrieval_cap not in historical_turn_cache:
+                            historical_turn_cache[retrieval_cap]=(
+                                historical_user_turn_context_block(
+                                    cursor,user_id=actor.user_id,
+                                    instance_id=item["instance_id"],
+                                    conversation_id=item["conversation_id"],
+                                    latest_text=history[-1].content,
+                                    max_chars=retrieval_cap,
+                                )
+                            )
+                        content+=historical_turn_cache[retrieval_cap]
                 # P2-05: a focused dialogue reference such as "What about
                 # that?" can recover relevant older user-reported memories
                 # and evidence-linked episodes. Ordinary input makes no
