@@ -50,6 +50,32 @@ _MIN_CONTEXT = 210
 _MAX_CANDIDATES = 16
 _MAX_HITS = 3
 _MAX_QUOTE = 380
+_HIGHLIGHT_START = "[[["
+_HIGHLIGHT_END = "]]]"
+
+
+def _matching_excerpt(statement: str, highlighted: str) -> str:
+    """Return a bounded source passage centered on a PostgreSQL FTS match.
+
+    PostgreSQL ts_headline uses the SAME 'english' stemming/query as the
+    candidate search (e.g. walking -> walk). A prefix or naive Python
+    substring cannot reliably locate inflected hits. If highlighting fails,
+    abstain rather than offer unrelated introductory text as evidence.
+    """
+    if len(statement) <= _MAX_QUOTE:
+        return statement
+    start = highlighted.find(_HIGHLIGHT_START)
+    if start < 0:
+        return ""
+    raw = highlighted.replace(_HIGHLIGHT_START, "").replace(
+        _HIGHLIGHT_END, ""
+    )
+    # Allow room for the abridgment label itself.
+    room = _MAX_QUOTE - len(" [abridged]")
+    left = max(0, start - room // 3)
+    window = raw[left:left + room]
+    # Even in long, multi-topic turns the matched lexeme must remain in view.
+    return window.strip() + " [abridged]"
 
 
 def historical_user_turn_context_block(
@@ -81,7 +107,13 @@ def historical_user_turn_context_block(
     # "walking"; query terms are extracted words, not user-authored operators.
     query = " OR ".join(terms[:6])
     cur.execute(
-        """SELECT t.turn_id, t.created_at, t.input_text
+        """SELECT t.turn_id, t.created_at, t.input_text,
+                  ts_headline(
+                      'english', t.input_text,
+                      websearch_to_tsquery('english', %s),
+                      'MaxFragments=1, MaxWords=45, MinWords=5, '
+                      'StartSel=[[[, StopSel=]]]'
+                  ) AS highlighted
            FROM conversation_turns t
            WHERE t.user_id=%s AND t.instance_id=%s
              AND t.conversation_id<>%s
@@ -105,7 +137,7 @@ def historical_user_turn_context_block(
                websearch_to_tsquery('english', %s)
            ) DESC, t.created_at DESC, t.turn_id
            LIMIT %s""",
-        (user_id, instance_id, conversation_id, before_at,
+        (query, user_id, instance_id, conversation_id, before_at,
          query, query, _MAX_CANDIDATES),
     )
     rows = cur.fetchall()
@@ -123,9 +155,9 @@ def historical_user_turn_context_block(
         statement = row["input_text"]
         if _SENSITIVE.search(statement):
             continue
-        quote = statement[:_MAX_QUOTE]
-        if len(quote) < len(statement):
-            quote += " [abridged]"
+        quote = _matching_excerpt(statement, row["highlighted"])
+        if not quote:
+            continue
         line = (
             f"USER_REPORTED source turn {row['turn_id']} "
             f"on {row['created_at'].date().isoformat()}: "
