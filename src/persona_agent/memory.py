@@ -410,7 +410,7 @@ def contextual_memory_block(cur, user_id: UUID, instance_id: UUID,
     )
     caution=(
         "A newer user-reported correction to a matching preference is "
-        "unresolved. Do not assert the old value; ask for clarification.\\n"
+        "unresolved. Do not assert the old value; ask for clarification.\n"
     ) if cur.fetchone() is not None else ""
     block=head
     if caution and len(block)+len(caution)<=max_chars:
