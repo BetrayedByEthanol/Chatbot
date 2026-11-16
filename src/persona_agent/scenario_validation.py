@@ -45,6 +45,10 @@ def validate_scenario(value: Any) -> dict:
                 raise ValueError("message requires an active session and text")
             if step.get("mode", "auto") not in ("auto", "model", "time", "analyze"):
                 raise ValueError("invalid message mode")
+            if "expect_model_memory_proposed" in step and type(
+                step["expect_model_memory_proposed"]
+            ) is not bool:
+                raise ValueError("model-memory proposal expectation must be boolean")
             if "expect_model_id" in step and not isinstance(
                 step["expect_model_id"], str
             ):
