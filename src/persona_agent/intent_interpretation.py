@@ -131,6 +131,21 @@ def is_named_objective_reference(text: str) -> bool:
     ) is not None
 
 
+def explicit_unresolved_named_topic(text: str) -> str | None:
+    """Explicit discussion switch, not a generic request for past recall.
+
+    The caller must verify that no matching topic is already present
+    in this conversation. A found but ambiguous topic is NOT a new topic.
+    """
+    value=text.strip().replace("’","'")
+    match=_NAMED_GOAL_REFERENCE.fullmatch(value)
+    if match is None or not re.match(
+        r"^let(?:'s| us) (?:discuss|talk about)\b",value,re.I,
+    ):
+        return None
+    return match.group("name").casefold() + " plan"
+
+
 def _unique_active_objective(
     cur, user_id, instance_id, conversation_id, sequence, *, window: int,
 ):
