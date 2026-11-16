@@ -1,6 +1,6 @@
 """MVP-02C.2: reviewed async model candidates and conflict-safe recall."""
 import json
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 psycopg=pytest.importorskip("psycopg")
@@ -91,7 +91,7 @@ def test_reviewed_model_candidate_requires_authenticated_approval(dsn):
     pending=call(dsn,list_model_memory_candidates,actor,identity.instance_id)
     assert len(pending)==1
     candidate=pending[0]
-    assert candidate.source_turn_id==source.turn_id
+    assert candidate.source_turn_id==UUID(source.turn_id)
     assert candidate.source_quote=="I've gotten into gardening lately."
     assert (candidate.memory_kind,candidate.predicate_key,
             candidate.value_text)==("PREFERENCE","enjoys_gardening","yes")
@@ -107,7 +107,7 @@ def test_reviewed_model_candidate_requires_authenticated_approval(dsn):
     ).replayed
     assert call(dsn,list_model_memory_candidates,actor,identity.instance_id)==()
     found=call(dsn,search_memories,actor,identity.instance_id,"gardening")
-    assert len(found)==1 and found[0].source_turn_id==source.turn_id
+    assert len(found)==1 and found[0].source_turn_id==UUID(source.turn_id)
     assert found[0].value_text=="yes"
 
     host.begin_session("new")
