@@ -24,6 +24,15 @@ merged MVP-02A strict XFAIL on `main`.
   `memory_extraction_candidates` are excluded to avoid bypassing Memory's
   corrections, pending conflicts, retractions or privacy decisions; a
   matching Memory record must go through Memory's normal view.
+- Query routing words (`remember`, `remind`, `know`, etc.) are removed
+  by matching and stripping the explicit recall-request prefix **before**
+  deriving lexical topic terms. A request with no actual topic, e.g.
+  `Can you remind me?`, abstains rather than matching arbitrary past
+  reminders. PostgreSQL `ts_headline` uses the same English FTS query to
+  locate the matching passage in each selected historical turn. The
+  rendered 380-character excerpt is centered around that passage and
+  labeled `[abridged]` when it omits source text; unrelated opening
+  paragraphs must not obscure a late matching phrase.
 - A rendered quotation is labeled `USER_REPORTED` and includes the original
   immutable turn UUID and source date. It is historical evidence of what
   was said—not verified current truth, a Goal, a procedure or authorization.
@@ -64,7 +73,13 @@ python -m pytest -q tests/test_mvp02a_cross_session_recall.py \
 - Tests cover English-stemmed topical recall, ordinary and irrelevant input
   abstention, restricted sensitive input, correction precedence, no
   reintroduction of a Memory revision's source, tenant isolation, context
-  budget, old-session provenance and idempotent restart replay.
+  budget, old-session provenance and idempotent restart replay. Additional
+  regressions cover matches beyond character 380 of a long source turn,
+  `walking` → `walk` stemming, and excluding `know`/`remind` from
+  candidate selection and no-topic requests. The earlier MVP-01F.3
+  grounding expectation has been updated: same-conversation grounding still
+  abstains when empty, while separately labeled historical source evidence
+  may now be present in the same prompt.
 - Full PostgreSQL and existing real Ollama workflows remain required PR
   checks; MVP-02 E2E target-model acceptance is a separate human review.
 - Run the existing scenario after merge approval using:
