@@ -1,0 +1,271 @@
+"""MVP-01F.4: bounded, deterministic enforcement of unavailable host claims.
+
+The direct Tool Gateway has no shell, remote-server mutation, or data-deletion
+capability. A registered tool would not by itself grant execution permission.
+This guard protects conversational claims, not tool admission.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+import re
+from typing import Sequence
+
+
+_REMOTE_TOPIC = re.compile(
+    r"\b(?:nginx|tls|ssl|certificate|server|ssh|shell|terminal|sudo|"
+    r"bash|script|command(?:s)?|openssl|deploy(?:ment)?|install(?:ation)?)\b",
+    re.I,
+)
+_REQUEST = re.compile(
+    r"^(?:(?:please|hey|so|okay|ok)[,\s]+)*"
+    r"(?:(?:can|could|would|will)\s+you(?:\s+please)?|"
+    r"(?:please\s+)?(?:go ahead and|just))\s+"
+    r"(?P<action>run|execute|install|deploy|configure|delete|erase|remove)\b"
+    r"(?P<object>[^\n]{0,160})[?.!]?\s*$",
+    re.I,
+)
+_HYPOTHETICAL_DELETION = re.compile(
+    r"^what\s+if\s+(?:i|we)\s+(?:asked|requested|wanted)\s+"
+    r"(?:you\s+to\s+|that\s+you\s+)"
+    r"(?:delete|erase|remove)\s+(?:my|our|the)\s+"
+    r"(?:data|account|files|records)[?.!]?\s*$",
+    re.I,
+)
+_DELETION_OBJECT = re.compile(
+    r"\b(?:my|your|our|user|all|the)\s+(?:data|account|files|records)\b", re.I,
+)
+# "Remove my data from this sentence" is text editing, not deletion of
+# stored user data. Match the *entire deletion target prefix*: a later,
+# separate output instruction ("...from your servers and summarize in this
+# paragraph") must never convert a stored-data deletion into text editing.
+_TEXT_EDIT_TARGET = re.compile(
+    r"^\s*(?:my|your|our|user|all|the)\s+"
+    r"(?:data|account|files|records)\s+(?:from|in)\s+"
+    r"(?:(?:this|that|the|following|my|your)\s+)?"
+    r"(?:sentence|paragraph|text|string|phrase|quotation|quote|passage|example)\b",
+    re.I,
+)
+# When an explicitly textual edit is followed by a distinct destructive
+# command, do not allow the first clause to exempt the second.
+_FOLLOWUP_DELETION = re.compile(
+    r"\b(?:and|then|also)\s+(?:(?:then|please|also)\s+)*"
+    r"(?:delete|erase|remove)\s+(?:my|your|our|user|all|the)\s+"
+    r"(?:data|account|files|records)\b",
+    re.I,
+)
+# The requested operation is determined by its direct object, not by
+# incidental nouns in the data being analyzed. "Run a word count on this
+# code" asks for statistics; "run this code" asks for code execution.
+# This intentionally abstains on unfamiliar or ambiguous constructions.
+_REMOTE_OBJECT = re.compile(
+    r"^\s*(?:(?:a|an|the|this|that|these|those|my|your|our)\s+){0,3}"
+    r"(?:command(?:s)?|script(?:s)?|code|nginx|server|ssh|shell|"
+    r"terminal|sudo|openssl|certificate|software|app(?:lication)?)\b",
+    re.I,
+)
+_ANAPHORA = re.compile(
+    r"^\s*(?:this|that|these|those|it)(?:\s+for\s+me)?\s*[?.!]?\s*$", re.I,
+)
+# Explicit text-statistics operations remain read-only even when the content
+# being analyzed happens to be a script, command, server configuration, etc.
+_READ_ONLY_STATISTICS = re.compile(
+    r"^\s*(?:(?:please|can\s+you|could\s+you|would\s+you)\s+)?"
+    r"(?:(?:count|calculate|compute)\s+(?:the\s+)?"
+    r"(?:words?|characters?|lines?|tokens?)\b|"
+    r"(?:run|perform|calculate|compute)\s+(?:(?:a|the)\s+)?"
+    r"(?:word|character|line|token)\s+count\b|"
+    r"(?:run|perform)\s+text\s+statistics\b|"
+    r"how\s+many\s+(?:words|characters|lines|tokens)\b)",
+    re.I,
+)
+# Model promises/offers to carry out commands; excludes "I can't run" and
+# "I can help you run" (guidance, not personal execution).
+_OFFER = re.compile(
+    r"\b(?:"
+    r"(?:(?:i|we)\s+(?:(?:can|could|will|would|shall|might)\s+|"
+    r"(?:am|are)\s+able\s+to\s+)"
+    r"|(?:i|we)(?:'ll|’ll)\s*)"
+    r"|(?:would|do)\s+you\s+(?:like|want)\s+(?:me|us)\s+to\s+"
+    r"|(?:should|shall)\s+(?:i|we)\s+"
+    r"|let\s+(?:me|us)\s+"
+    r")(?P<action>run|execute|install|deploy|configure|delete|erase|remove)\b",
+    re.I,
+)
+
+# A first-person phrase in a quoted example is not a model offer. Mask only
+# balanced quoted/code spans, preserving positions and any unquoted text.
+# Apostrophes *inside* words are not quotation delimiters (I'll / We’ll).
+_QUOTE_END = {'"': '"', "“": "”", "'": "'", "‘": "’", "`": "`"}
+_NEGATED_OFFER_PREFIX = re.compile(
+    r"\b(?:(?:do\s+not|don't|never|should\s+not|shouldn't)\s+"
+    r"(?:assume|believe|infer|claim|think)|"
+    r"(?:does\s+not|doesn't|do\s+not|don't|cannot|can't)\s+"
+    r"(?:mean|imply|indicate)|not\s+(?:claiming|saying))"
+    r"(?:\s+that)?\s*$",
+    re.I,
+)
+
+
+def _mask_quoted_examples(text: str) -> str:
+    """Mask balanced quotes without treating English contractions as quotes."""
+    masked = list(text)
+    position = 0
+    while position < len(text):
+        opener = text[position]
+        closer = _QUOTE_END.get(opener)
+        if closer is None or (
+            opener == "'" and position > 0 and text[position - 1].isalnum()
+        ):
+            position += 1
+            continue
+        end = position + 1
+        while end < len(text):
+            if text[end] == closer and not (
+                closer in ("'", "’")
+                and text[end - 1].isalnum()
+                and end + 1 < len(text) and text[end + 1].isalnum()
+            ):
+                break
+            end += 1
+        if end == len(text):
+            position += 1  # unmatched quote must not hide subsequent claims
+            continue
+        masked[position:end + 1] = " " * (end + 1 - position)
+        position = end + 1
+    return "".join(masked)
+
+
+def _is_negated_offer(text: str, start: int) -> bool:
+    # Inspect only the current sentence/clause. Earlier denials must not
+    # suppress a later independent promise in the same response.
+    clause = re.split(r"[.!?;\n]", text[max(0, start - 180):start])[-1]
+    return bool(_NEGATED_OFFER_PREFIX.search(clause))
+
+
+@dataclass(frozen=True)
+class CapabilityEnforcement:
+    text: str
+    reason: str | None = None
+    policy_revision: str = "mvp01f4.1"
+
+
+def _category(action: str, obj: str, *, remote_context: bool) -> str | None:
+    if action.lower() in ("delete", "erase", "remove"):
+        # The editing exemption applies only when the deletion object is
+        # immediately scoped to a textual target. A later mention of
+        # "in this paragraph" is not a target of the earlier delete.
+        textual_edit = _TEXT_EDIT_TARGET.match(obj)
+        if textual_edit and not _FOLLOWUP_DELETION.search(
+            obj[textual_edit.end():]
+        ):
+            return None
+        return "data_deletion" if _DELETION_OBJECT.search(obj) else None
+    # An executable target may be an inline-code or quoted direct object:
+    # execute `openssl req -x509` / run "these commands". Keep its actual
+    # text for classification rather than using the masked offer scan.
+    direct_object = obj.lstrip().lstrip(chr(96) + chr(34) + chr(39) + "“‘")
+    if _REMOTE_OBJECT.search(direct_object):
+        return "remote"
+    if _ANAPHORA.fullmatch(obj) and remote_context:
+        return "remote"
+    return None
+
+
+def _prior_remote_context(prior_user_text: str) -> bool:
+    """Use the previous *operation*, not incidental nouns, for 'run this'.
+
+    The explicit-request classifier already distinguishes running code from
+    computing text statistics on code. Reuse that decision first; otherwise
+    protect recognizable read-only statistics requests before falling back
+    to technical-topic context for instructional questions about Nginx/TLS.
+    """
+    prior = prior_user_text.strip()
+    request = _REQUEST.fullmatch(prior)
+    if request:
+        return _category(
+            request.group("action"), request.group("object"),
+            remote_context=False,
+        ) == "remote"
+    if _READ_ONLY_STATISTICS.match(prior):
+        return False
+    return bool(_REMOTE_TOPIC.search(prior))
+
+
+def _fallback(category: str) -> str:
+    if category == "data_deletion":
+        return (
+            "I can't delete your data through this host; no data-deletion "
+            "capability is available. I can explain the available steps, "
+            "but I haven't deleted anything."
+        )
+    return (
+        "I can't run commands or make changes on your server from this "
+        "host. I can walk you through the steps and help interpret the "
+        "results, but I haven't executed anything."
+    )
+
+
+def enforce_capability_claims(
+    user_text: str, model_text: str, *, recent_user_texts: Sequence[str] = (),
+) -> CapabilityEnforcement:
+    """Apply narrow checks before response persistence; never issue operations.
+
+    A clear request for an unavailable operation is handled irrespective of
+    model compliance. Other replies are changed only if they offer a matching
+    unauthorized action. Routine technical guidance is preserved.
+
+    A future executable tool requires a reviewed, capability-specific policy
+    and authorization contract, not simply bypassing these checks.
+    """
+    # Resolve deictic requests ("run this") only against the immediately
+    # preceding user topic. Older Nginx context must not shadow a newer
+    # read-only request (e.g. word statistics).
+    prior_user_text = recent_user_texts[-1] if recent_user_texts else ""
+    remote_context = _prior_remote_context(prior_user_text)
+    cleaned = user_text.strip()
+    if not cleaned.startswith(('"', "'", "“", "‘")):
+        # A hypothetical is not a deletion command. Nevertheless, it must
+        # never receive a promise that this host can perform the deletion.
+        if _HYPOTHETICAL_DELETION.fullmatch(cleaned):
+            return CapabilityEnforcement(
+                _fallback("data_deletion"), "unsupported_hypothetical:data_deletion",
+            )
+        request = _REQUEST.fullmatch(cleaned)
+        if request:
+            category = _category(
+                request.group("action"), request.group("object"),
+                remote_context=remote_context,
+            )
+            if category:
+                return CapabilityEnforcement(
+                    _fallback(category), "unsupported_request:" + category,
+                )
+
+    masked_examples = _mask_quoted_examples(model_text)
+    # Find offer *starts*, not full offer/object spans. A supported offer
+    # must never consume a later unsupported one in the same sentence.
+    # Keep object text from the original response (including inline code),
+    # but stop it at the next offer or clause boundary before classifying.
+    offers = tuple(_OFFER.finditer(model_text))
+    for index, match in enumerate(offers):
+        if masked_examples[match.start()] == " ":
+            continue
+        if _is_negated_offer(masked_examples, match.start()):
+            continue
+        next_start = (
+            offers[index + 1].start() if index + 1 < len(offers)
+            else len(model_text)
+        )
+        end = min(next_start, match.end() + 110)
+        object_text = re.split(
+            r"[.!?;\n]", model_text[match.end():end], maxsplit=1,
+        )[0]
+        category = _category(
+            match.group("action"), object_text,
+            remote_context=remote_context or bool(_REMOTE_TOPIC.search(cleaned)),
+        )
+        if category:
+            return CapabilityEnforcement(
+                _fallback(category), "unsupported_offer:" + category,
+            )
+    return CapabilityEnforcement(model_text)
