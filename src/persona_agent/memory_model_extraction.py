@@ -24,13 +24,13 @@ from .conversation import _require_actor
 from .conversation_contracts import ModelMessage, TextModelGateway
 from .event_delivery import (
     claim_delivery, defer_delivery, dispatch_outbox, process_delivery,
-    reap_expired_claims, retry_delivery, subscribe, StaleDelivery,
+    reap_expired_claims, resume_deferred, retry_delivery, subscribe, StaleDelivery,
 )
 from .memory import _admit_memory_in_transaction
 from .memory_contracts import AdmitMemoryCommand, MemoryWriteResult
 from .memory_extraction import (
     _BLOCKED, _INPUT_EVENT, _SAFE_HOBBIES, _source,
-    _supported_safe_claim, _resume_selected, InactiveExtraction,
+    _supported_safe_claim, InactiveExtraction,
     parse_explicit_claim,
 )
 from .model_gateway import OllamaChatGateway
@@ -237,6 +237,39 @@ def _persist_proposal(cur,event,source,proposed:PreferenceProposal,model_id:str)
     return cur.fetchone() is not None
 
 
+def _resume_ready_model_deliveries(
+    connection: Connection, consumer_id: str, limit: int,
+) -> None:
+    """Resume parked deliveries only after their source becomes terminal.
+
+    A pending response may outlive the event consumer's three-attempt retry
+    budget. DEFERRED does not retry or fail; this bounded query is run on
+    every worker tick, including after process restart. Inactive personas
+    remain deferred until reselected. Superseded turns are resumed to ACK
+    without proposing a memory.
+    """
+    with connection.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            """SELECT d.delivery_id
+               FROM event_deliveries d
+               JOIN events e ON e.event_id=d.event_id
+               JOIN conversation_turns t
+                 ON t.turn_id::text=e.payload->>'turn_id'
+                AND t.conversation_id::text=e.payload->>'conversation_id'
+                AND t.user_id=e.user_id AND t.instance_id=e.instance_id
+               JOIN persona_selection p ON p.user_id=e.user_id
+               WHERE d.consumer_id=%s AND d.status='DEFERRED'
+                 AND e.event_type=%s AND t.status IN ('RESPONDED','SUPERSEDED')
+                 AND p.instance_id=e.instance_id
+                 AND p.mode IN ('FOREGROUND','BACKGROUND')
+               ORDER BY e.recorded_at,d.delivery_id LIMIT %s""",
+            (consumer_id,_INPUT_EVENT,limit),
+        )
+        ready=[r["delivery_id"] for r in cur.fetchall()]
+    for delivery_id in ready:
+        resume_deferred(connection,consumer_id=consumer_id,delivery_id=delivery_id)
+
+
 def run_model_memory_tick(
     connection:Connection,model:TextModelGateway,*,
     consumer_id:str=MODEL_MEMORY_CONSUMER,worker_id:str="model-memory",
@@ -253,7 +286,7 @@ def run_model_memory_tick(
         if not batch:
             break
     reap_expired_claims(connection,limit=100)
-    _resume_selected(connection,consumer_id,max_deliveries)
+    _resume_ready_model_deliveries(connection,consumer_id,max_deliveries)
     processed=proposed_count=abstained=deferred=retry_pending=invalid=0
     for _ in range(max_deliveries):
         lease=claim_delivery(
@@ -291,7 +324,10 @@ def run_model_memory_tick(
                 proposed_count+=1
             else:
                 abstained+=1
-        except InactiveExtraction:
+        except (InactiveExtraction, ModelInputNotReady):
+            # This is a readiness wait, not a failure. Do not spend the
+            # normal retry budget while the foreground model is running.
+            # The next tick resumes it only after the turn is terminal.
             try:
                 defer_delivery(connection,lease)
                 deferred+=1
