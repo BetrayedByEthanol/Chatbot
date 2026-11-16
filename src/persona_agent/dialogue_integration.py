@@ -50,6 +50,27 @@ def _starts_new_topic(kind: str, label: str) -> bool:
     )
 
 
+def _unique_named_discussion(
+    cur, *, user_id, instance_id, conversation_id, title,
+) -> UUID | None:
+    """Reuse one exact, OPEN, conversation-local discussion thread.
+
+    Request-originated named discussions have no OBJECTIVE signal, so
+    related_signal_id cannot resolve them. Exact matching precedes the
+    broader topic-keyword ambiguity gate; two exact matches abstain.
+    """
+    cur.execute(
+        """SELECT thread_id FROM dialogue_threads
+           WHERE conversation_id=%s AND user_id=%s AND instance_id=%s
+             AND origin_kind='AUTO_SIGNAL' AND resolution_status='OPEN'
+             AND lower(title)=lower(%s)
+           ORDER BY thread_id LIMIT 2""",
+        (conversation_id,user_id,instance_id,title),
+    )
+    matches=cur.fetchall()
+    return matches[0]["thread_id"] if len(matches)==1 else None
+
+
 def _fresh_named_discussion(
     cur, *, user_id, instance_id, conversation_id, label,
 ) -> str | None:
@@ -217,50 +238,63 @@ def advance_on_delivery(
             if match is not None:
                 target=match["thread_id"]
         else:
-            # Named-topic switches with no matching objective in *this*
-            # conversation can start a new subject. Explicit named requests
-            # with multiple matching current topics continue to abstain.
-            named_new=(
-                _fresh_named_discussion(
-                    cur,user_id=user_id,instance_id=instance_id,
-                    conversation_id=conversation_id,label=signal["label"],
-                ) if signal["intent_kind"]=="REQUEST" else None
+            # The previously-created named discussion may originate from a
+            # REQUEST, not an OBJECTIVE. Reuse an exact OPEN thread before
+            # considering the broader, ambiguous keyword match.
+            named_title=(
+                explicit_unresolved_named_topic(signal["label"])
+                if signal["intent_kind"]=="REQUEST" else None
             )
-            if not (_starts_new_topic(signal["intent_kind"],signal["label"])
-                    or named_new is not None):
-                named_new=None
-            # A fresh objective/topic request is a conversational subject,
-            # not an approved Goal. Exact title reuse prevents duplicates.
-            title=(
-                parse_explicit_topic_switch(signal["label"])
-                or named_new
-                or (signal["label"].strip()
-                    if _starts_new_topic(signal["intent_kind"],signal["label"])
-                    else "")
-            )[:160]
-            if title:
-                cur.execute(
-                    """SELECT thread_id FROM dialogue_threads
-                       WHERE conversation_id=%s AND user_id=%s
-                         AND instance_id=%s AND origin_kind='AUTO_SIGNAL'
-                         AND lower(title)=lower(%s)
-                       ORDER BY updated_at DESC LIMIT 2""",
-                    (conversation_id,user_id,instance_id,title),
+            if named_title is not None:
+                target=_unique_named_discussion(
+                    cur,user_id=user_id,instance_id=instance_id,
+                    conversation_id=conversation_id,title=named_title,
                 )
-                matches=cur.fetchall()
-                if len(matches)==1:
-                    target=matches[0]["thread_id"]
-                elif len(matches)==0:
-                    target=uuid4()
+            if target is None:
+                # Only when there is no exact match may an explicit named
+                # switch open a fresh subject. Matching other topics (or an
+                # incomplete scan) still causes a conservative abstention.
+                named_new=(
+                    _fresh_named_discussion(
+                        cur,user_id=user_id,instance_id=instance_id,
+                        conversation_id=conversation_id,label=signal["label"],
+                    ) if named_title is not None else None
+                )
+                if not (_starts_new_topic(signal["intent_kind"],signal["label"])
+                        or named_new is not None):
+                    named_new=None
+                # A fresh objective/topic request is a conversational
+                # subject, never an approved Goal.
+                title=(
+                    parse_explicit_topic_switch(signal["label"])
+                    or named_new
+                    or (signal["label"].strip()
+                        if _starts_new_topic(signal["intent_kind"],signal["label"])
+                        else "")
+                )[:160]
+                if title:
                     cur.execute(
-                        """INSERT INTO dialogue_threads (
-                             thread_id,conversation_id,user_id,instance_id,
-                             title,origin_turn_id,last_turn_id,origin_kind
-                           ) VALUES (%s,%s,%s,%s,%s,%s,%s,'AUTO_SIGNAL')""",
-                        (target,conversation_id,user_id,instance_id,
-                         title,turn_id,turn_id),
+                        """SELECT thread_id FROM dialogue_threads
+                           WHERE conversation_id=%s AND user_id=%s
+                             AND instance_id=%s AND origin_kind='AUTO_SIGNAL'
+                             AND lower(title)=lower(%s)
+                           ORDER BY updated_at DESC LIMIT 2""",
+                        (conversation_id,user_id,instance_id,title),
                     )
-                    new=True
+                    matches=cur.fetchall()
+                    if len(matches)==1:
+                        target=matches[0]["thread_id"]
+                    elif len(matches)==0:
+                        target=uuid4()
+                        cur.execute(
+                            """INSERT INTO dialogue_threads (
+                                 thread_id,conversation_id,user_id,instance_id,
+                                 title,origin_turn_id,last_turn_id,origin_kind
+                               ) VALUES (%s,%s,%s,%s,%s,%s,%s,'AUTO_SIGNAL')""",
+                            (target,conversation_id,user_id,instance_id,
+                             title,turn_id,turn_id),
+                        )
+                        new=True
     if target is not None:
         if _focus(
             cur,user_id=user_id,instance_id=instance_id,
