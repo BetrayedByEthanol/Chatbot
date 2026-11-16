@@ -34,6 +34,14 @@ def test_grounding_view_quotes_only_first_party_input_and_preserves_time():
     assert grounding_mode("Could you summarize our discussion?")=="SUMMARY"
     assert grounding_mode("Do you remember what we discussed about walking?")=="RECALL"
     assert grounding_mode("Let's discuss walking.") is None
+    assert grounding_mode(
+        "Let's discuss my walking plan instead."
+    )=="NAMED_DISCUSSION"
+    named=grounding_context_block(
+        "Let's discuss my walking plan instead.",[],max_chars=800,
+    )
+    assert "Named discussion request" in named
+    assert "Do not assert you remember details" in named
     assert explicit_unresolved_named_topic(
         "Let's discuss my walking plan instead."
     )=="walking plan"
@@ -92,6 +100,7 @@ def test_fresh_cross_session_named_switch_creates_discussion_not_false_recall(ds
     # No source-backed cross-session plan is silently injected into this
     # new conversation: this is a new subject, not recovered memory.
     prompt=model.calls[-1][0].content
+    assert "Named discussion request" in prompt
     assert "I want to walk more regularly." not in prompt
     with psycopg.connect(dsn,autocommit=True) as conn:
         after=load_active_dialogue(
