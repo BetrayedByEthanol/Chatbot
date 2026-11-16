@@ -18,10 +18,12 @@ merged MVP-02A strict XFAIL on `main`.
   explicit-recall gate avoid unconstrained context growth.
 - The SQL uses bound parameters, a status gate
   (`conversation_turns.status='RESPONDED'`), exact user/persona scope,
-  *different conversation ID*, index-backed English stemming and ranked
-  source dates. Historical turns cited in any `memory_revisions` row are
-  excluded to avoid bypassing Memory's corrections, retractions or privacy
-  decisions; a matching Memory record must go through Memory's normal view.
+  *different conversation ID*, a source timestamp strictly earlier than
+  the authenticated current user turn, index-backed English stemming and
+  ranked source dates. Historical turns cited in `memory_revisions` or
+  `memory_extraction_candidates` are excluded to avoid bypassing Memory's
+  corrections, pending conflicts, retractions or privacy decisions; a
+  matching Memory record must go through Memory's normal view.
 - A rendered quotation is labeled `USER_REPORTED` and includes the original
   immutable turn UUID and source date. It is historical evidence of what
   was said—not verified current truth, a Goal, a procedure or authorization.
