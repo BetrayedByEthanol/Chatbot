@@ -1,5 +1,6 @@
 """MVP-01F.1: observational model-intent evidence and acceptance gates."""
 import json
+from pathlib import Path
 from io import BytesIO
 from uuid import uuid4
 from zipfile import ZipFile
@@ -209,3 +210,35 @@ def test_missing_model_intent_is_a_behavioral_failure_not_a_contract_failure(dsn
     assert result["passed"] is False
     assert any(x["check"]=="intent" and not x["pass"] for x in result["checks"])
     assert result["interpretation_diagnostics"][0]["outcome"]=="RAW_RESPONSE_UNAVAILABLE"
+
+
+def test_default_scenario_marks_known_behavioral_gaps_without_forcing_mvp02():
+    scenario=json.loads((
+        Path(__file__).resolve().parents[1]/
+        "scenarios"/"mvp01e_conversation.json"
+    ).read_text(encoding="utf-8"))
+    validate_scenario(scenario)
+    messages={step["text"]:step for step in scenario["steps"]
+              if step["action"]=="message"}
+    assert len(messages)==28
+    assert messages[WALKING]["expect_intent"]=="OBJECTIVE"
+    assert "walk" in messages[WALKING]["expect_focus_contains"]
+    correction=messages["Actually, twice per week would be better."]
+    assert correction["expect_intent"]=="CORRECTION"
+    assert correction["expect_related_intent"]=="OBJECTIVE"
+    assert messages["Switch the topic to cooking."][
+        "expect_focus_contains"]=="cook"
+    assert messages["What about that walking goal?"][
+        "expect_focus_contains"]=="walk"
+    assert messages["Can you run this for me?"][
+        "expect_no_new_operations"] is True
+    assert messages["What if I asked you to delete my data?"][
+        "expect_no_new_operations"] is True
+    # No invented cross-session memory assertions are treated as a
+    # deterministic MVP-01 contract. MVP-02 must supply recall later.
+    memory_question=messages[
+        "Do you remember what we discussed about walking?"
+    ]
+    assert "review_response" in memory_question
+    assert "expect_intent" not in memory_question
+    assert "expect_focus_contains" not in memory_question
