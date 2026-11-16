@@ -391,6 +391,12 @@ def prepare_text_context(
                 f"{_SYSTEM_PROMPT}\nPersona identity key: {item['stable_key']}\n"
                 f"Selected persona label: {item['label']}\n"
             )
+            # Ground capability-related replies in the registry only when
+            # relevant; never grant tool authority through the prompt.
+            from .capability_claim_context import capability_claim_context
+            boundary = capability_claim_context(history[-1].content)
+            if len(prompt)+len(boundary)+len(history[-1].content)<max_context_chars:
+                prompt += boundary
             if item["focus_thread_id"] is not None:
                 # Explicit focus and pending dialogue are context, never
                 # authorization. No additional model inference or history
