@@ -10,6 +10,9 @@ from persona_agent.conversation_contracts import ModelIntentCandidate, ModelRepl
 from persona_agent.dialogue_state import load_active_dialogue
 from persona_agent.contracts import TrustedActor
 from persona_agent.capability_claim_context import capability_claim_context
+from persona_agent.conversation import ingest_text, prepare_text_context
+from persona_agent.conversation_contracts import TextInputCommand
+from persona_agent.intent_interpretation import resolved_objective_context_block
 from persona_agent.intent_interpretation import (
     conservative_implicit_objective, classify_intent, should_interpret_with_model,
 )
@@ -180,3 +183,142 @@ def test_wrong_model_label_cannot_shadow_grounded_routine_objective(dsn):
     assert report["interpretation_diagnostics"][0][
         "admission"]=="RULE_FALLBACK_PERSISTED"
     assert report["snapshots"][-1]["database"]["goal_records"]["count"]==0
+
+
+def test_resolved_named_objective_is_present_at_inference_before_refocus(dsn):
+    """The old objective is outside recent verbatim history, yet model sees it.
+
+    Reading the target context is not a durable focus update. It must remain
+    cooking while the reply is being generated, then switch upon delivery.
+    """
+    class ContextModel(OnePass):
+        def __init__(self):
+            super().__init__()
+            self.final_context=None
+            self.focus_during_inference=None
+
+        def generate(self,messages):
+            if messages[-1].content=="What about that walking goal?":
+                self.final_context=tuple(messages)
+                with psycopg.connect(dsn,autocommit=True) as conn:
+                    row=conn.execute(
+                        """SELECT d.title FROM conversations c
+                           JOIN dialogue_threads d
+                             ON d.thread_id=c.focus_thread_id
+                           WHERE c.conversation_id=%s""",
+                        (host.active_identity.conversation_id,),
+                    ).fetchone()
+                    self.focus_during_inference=row[0]
+            return super().generate(messages)
+
+    model=ContextModel()
+    host=BehavioralAcceptanceHarness(dsn,seed_local_demo(dsn),model)
+    host.begin_session("long-topic-reentry")
+    host.send(WALKING,idempotency_key="walk")
+    host.send("Maybe three times per week.",idempotency_key="frequency")
+    host.send("Actually, twice per week would be better.",idempotency_key="correction")
+    host.send("Switch the topic to cooking.",idempotency_key="cook")
+    for i in range(16):
+        host.send(
+            f"The weather is pleasant this afternoon, note {i}.",
+            idempotency_key=f"weather-{i}",
+        )
+    host.restart_host()
+    host.send("What about that walking goal?",idempotency_key="reentry")
+    assert model.final_context is not None
+    prompt=model.final_context[0].content
+    assert "Resolved prior conversation reference" in prompt
+    assert WALKING in prompt
+    assert "Actually, twice per week would be better." in prompt
+    assert "Switch the topic to cooking." not in prompt.split(
+        "Resolved prior conversation reference",1,
+    )[1].split("Stored dialogue metadata",1)[0]
+    assert model.focus_during_inference=="cooking"
+    assert all(WALKING not in x.content for x in model.final_context[1:])
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        active=load_active_dialogue(
+            conn,TrustedActor(
+                user_id=host.active_identity.user_id,
+                source_id="mvp01f2-reference-review",
+            ),host.active_identity.conversation_id,
+        )
+        focused=next(x.title for x in active.threads
+                     if x.thread_id==active.focus_thread_id)
+        assert "walking" in focused.lower()
+        assert conn.execute(
+            "SELECT count(*) FROM goal_records WHERE user_id=%s",
+            (host.active_identity.user_id,),
+        ).fetchone()[0]==0
+
+
+def test_bounded_context_without_premature_focus_or_history_leak(dsn):
+    model=OnePass()
+    host=BehavioralAcceptanceHarness(dsn,seed_local_demo(dsn),model)
+    host.begin_session("bounded-target")
+    host.send(WALKING,idempotency_key="walk")
+    host.send("Switch the topic to cooking.",idempotency_key="cook")
+    for i in range(15):
+        host.send(
+            f"The weather seems nice today, observation {i}.",
+            idempotency_key=f"gap-{i}",
+        )
+
+    identity=host.active_identity
+    actor=TrustedActor(user_id=identity.user_id,source_id="mvp01f2-bounded")
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        admitted=ingest_text(
+            conn,actor,TextInputCommand(
+                conversation_id=identity.conversation_id,
+                instance_id=identity.instance_id,
+                expected_generation=identity.generation,
+                idempotency_key="resume-walking",
+                text="What about that walking goal?",
+            ),
+        )
+        context=prepare_text_context(
+            conn,actor,admitted.turn_id,
+            max_turns=12,max_context_chars=2200,
+        )
+        assert context.messages[-1].content=="What about that walking goal?"
+        joined="".join(m.content for m in context.messages)
+        assert len(joined)<=2200
+        assert "Resolved prior conversation reference" in context.messages[0].content
+        assert WALKING in context.messages[0].content
+        assert all(WALKING not in m.content for m in context.messages[1:])
+        active=load_active_dialogue(conn,actor,identity.conversation_id)
+        assert next(x.title for x in active.threads
+                    if x.thread_id==active.focus_thread_id)=="cooking"
+        assert conn.execute(
+            """SELECT count(*) FROM dialogue_turn_links
+               WHERE turn_id=%s""",(admitted.turn_id,),
+        ).fetchone()[0]==0
+
+
+def test_ambiguous_reference_omits_resolved_context(dsn):
+    model=OnePass()
+    host=BehavioralAcceptanceHarness(dsn,seed_local_demo(dsn),model)
+    host.begin_session("reference-is-ambiguous")
+    host.send("I want to practice walking daily.",idempotency_key="w1")
+    host.send("I want to track walking habits.",idempotency_key="w2")
+    host.send("Switch the topic to cooking.",idempotency_key="cook")
+    identity=host.active_identity
+    actor=TrustedActor(user_id=identity.user_id,source_id="mvp01f2-ambiguous")
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        admitted=ingest_text(conn,actor,TextInputCommand(
+            conversation_id=identity.conversation_id,
+            instance_id=identity.instance_id,
+            expected_generation=identity.generation,
+            idempotency_key="reference-ambiguous",
+            text="What about that walking goal?",
+        ))
+        context=prepare_text_context(conn,actor,admitted.turn_id)
+        assert "Resolved prior conversation reference" not in (
+            context.messages[0].content
+        )
+        assert resolved_objective_context_block(
+            conn.cursor(),user_id=identity.user_id,
+            instance_id=identity.instance_id,
+            conversation_id=identity.conversation_id,
+            turn_id=admitted.turn_id,latest_text="What about that walking goal?",
+            max_chars=1100,
+        )==""
