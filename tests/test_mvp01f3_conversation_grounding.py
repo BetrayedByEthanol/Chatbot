@@ -241,14 +241,14 @@ def test_repeated_named_request_refocuses_same_request_origin_thread(dsn):
         assert conn.execute(
             """SELECT count(*) FROM events
                WHERE event_type='conversation.dialogue.auto_thread_opened.v1'
-                 AND conversation_id=%s""",
-            (identity.conversation_id,),
+                 AND user_id=%s AND instance_id=%s""",
+            (identity.user_id,identity.instance_id),
         ).fetchone()[0]==2  # walking and cooking, never duplicate walking
         assert conn.execute(
             """SELECT count(*) FROM events
                WHERE event_type='conversation.dialogue.auto_focused.v1'
-                 AND conversation_id=%s""",
-            (identity.conversation_id,),
+                 AND user_id=%s AND instance_id=%s""",
+            (identity.user_id,identity.instance_id),
         ).fetchone()[0]>=1
         assert conn.execute(
             "SELECT count(*) FROM goal_records WHERE user_id=%s",
