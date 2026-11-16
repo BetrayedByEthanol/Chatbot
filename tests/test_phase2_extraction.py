@@ -210,8 +210,7 @@ def test_natural_preferences_are_scoped_recallable_and_conflicts_need_approval(d
     candidates=call(dsn,list_extraction_conflicts,actor(user),instance)
     assert len(candidates)==1
     conflict=candidates[0]
-    assert (conflict.predicate_key if hasattr(conflict,"predicate_key") else
-            conflict.proposed_value)=="no"
+    assert conflict.proposed_value=="no"
     assert conflict.current_value=="yes"
     assert conflict.source_turn_id==negative.turn_id
     assert call(dsn,search_memories,actor(user),instance,"gardening")[
