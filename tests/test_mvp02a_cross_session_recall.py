@@ -1,7 +1,7 @@
 """MVP-02A: behavioral recall baseline through the real conversation host.
 
-The expected missing historical-evidence contract is strict XFAIL until
-MVP-02B wires authenticated source-turn recall into context assembly.
+The former strict XFAIL is now an enforced PASS contract: MVP-02B must
+surface an authenticated prior-session source-turn citation to the model.
 Do not satisfy it by seeding Memory/Goals or injecting fake model context.
 """
 import json
@@ -125,13 +125,6 @@ def test_authentic_source_is_durable_and_not_same_conversation(baseline_report):
     }
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "MVP-02B missing integration: unstructured prior-session user turns "
-        "are not retrieved as provenance-linked model context"
-    ),
-)
 def test_recall_context_contains_prior_user_source_and_provenance(baseline_report):
     """Desired contract: source + turn ID + date available BEFORE inference."""
     report = baseline_report
