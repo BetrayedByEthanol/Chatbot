@@ -19,17 +19,17 @@ from .semantic_contracts import (
 _ACTIVITY = r"(?P<topic>gardening|reading|walking)"
 # Ordered, anchored expressions: only statements supported by the baseline.
 _RULES = (
-    (re.compile(rf"^I don't enjoy {_ACTIVITY} anymore\\.$", re.I),
+    (re.compile(rf"^I don't enjoy {_ACTIVITY} anymore\.$", re.I),
      "PREFERENCE", "CURRENT", "ASSERTED", "CORRECTING"),
-    (re.compile(rf"^I used to enjoy {_ACTIVITY}\\.$", re.I),
+    (re.compile(rf"^I used to enjoy {_ACTIVITY}\.$", re.I),
      "PREFERENCE", "PAST_HABITUAL", "ASSERTED", "INFORMING"),
-    (re.compile(rf"^I enjoyed {_ACTIVITY} yesterday\\.$", re.I),
+    (re.compile(rf"^I enjoyed {_ACTIVITY} yesterday\.$", re.I),
      "EXPERIENCE", "PAST_EVENT", "ASSERTED", "INFORMING"),
-    (re.compile(rf"^Maybe I should go {_ACTIVITY} tomorrow\\.$", re.I),
+    (re.compile(rf"^Maybe I should go {_ACTIVITY} tomorrow\.$", re.I),
      "INTENTION", "FUTURE", "TENTATIVE", "INFORMING"),
-    (re.compile(rf"^I've gotten into {_ACTIVITY} lately\\.$", re.I),
+    (re.compile(rf"^I've gotten into {_ACTIVITY} lately\.$", re.I),
      "PREFERENCE", "CURRENT", "ASSERTED", "INFORMING"),
-    (re.compile(rf"^I (?:really )?(?:enjoy|like|love) {_ACTIVITY}\\.$", re.I),
+    (re.compile(rf"^I (?:really )?(?:enjoy|like|love) {_ACTIVITY}\.$", re.I),
      "PREFERENCE", "CURRENT", "ASSERTED", "INFORMING"),
 )
 
