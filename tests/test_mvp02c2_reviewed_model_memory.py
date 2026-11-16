@@ -155,7 +155,8 @@ def test_invalid_model_proposal_is_not_persisted(dsn):
             conn,MemoryProposer(conn,output="unsafe"),
             consumer_id=consumer,
         )
-    assert result.retry_pending==1 and result.proposed==0
+    assert result.processed==1 and result.invalid_model_output==1
+    assert result.retry_pending==0 and result.proposed==0
     actor=TrustedActor(user_id=identity.user_id,source_id="reviewer")
     assert call(dsn,list_model_memory_candidates,actor,identity.instance_id)==()
     assert call(dsn,search_memories,actor,identity.instance_id,"gardening")==()
