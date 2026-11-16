@@ -89,6 +89,10 @@ def test_fresh_cross_session_named_switch_creates_discussion_not_false_recall(ds
         "Let's discuss my walking plan instead.",
         idempotency_key="newwalking",
     )
+    # No source-backed cross-session plan is silently injected into this
+    # new conversation: this is a new subject, not recovered memory.
+    prompt=model.calls[-1][0].content
+    assert "I want to walk more regularly." not in prompt
     with psycopg.connect(dsn,autocommit=True) as conn:
         after=load_active_dialogue(
             conn,TrustedActor(user_id=prev.user_id,source_id="f3-after"),
