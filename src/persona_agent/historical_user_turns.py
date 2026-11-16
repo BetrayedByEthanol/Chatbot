@@ -106,8 +106,10 @@ def _correction_followups(
 ) -> tuple[dict, ...]:
     """Return only nearby frequency corrections tied to one source topic.
 
-    This deliberately does not copy arbitrary adjacent user messages. A
-    correction with a linked objective signal must point to this anchor.
+    The bounded lookahead reads every intervening sequence position,
+    including PENDING and SUPERSEDED turns. Non-responded turns are hard
+    continuity barriers, never silently skipped. A correction with a linked
+    objective signal must point to this anchor.
     Otherwise, a tightly adjacent sequence of frequency-only statements
     is the maximum safe inference (labeled as unverified discussion).
     """
@@ -116,7 +118,7 @@ def _correction_followups(
         parse_explicit_topic_switch,
     )
     cur.execute(
-        """SELECT t.turn_id,t.created_at,t.input_text,t.sequence,
+        """SELECT t.turn_id,t.created_at,t.input_text,t.sequence,t.status,
                   signal.intent_kind,signal.related_signal_id,
                   origin.signal_id AS origin_signal_id,
                   EXISTS (
@@ -139,7 +141,7 @@ def _correction_followups(
             AND origin.instance_id=t.instance_id
            WHERE t.conversation_id=%s AND t.user_id=%s AND t.instance_id=%s
              AND t.sequence>%s AND t.sequence<=%s
-             AND t.created_at<%s AND t.status='RESPONDED'
+             AND t.created_at<%s
            ORDER BY t.sequence LIMIT 3""",
         (anchor["turn_id"],anchor["conversation_id"],user_id,instance_id,
          anchor["sequence"],anchor["sequence"]+3,before_at),
@@ -148,7 +150,8 @@ def _correction_followups(
     corrections=[]
     for row in cur.fetchall():
         text=row["input_text"].strip()
-        if (parse_explicit_topic_switch(text) is not None
+        if (row["status"] != "RESPONDED"
+                or parse_explicit_topic_switch(text) is not None
                 or _SENSITIVE.search(text)
                 or row["has_memory_revision"]
                 or row["has_memory_candidate"]):
