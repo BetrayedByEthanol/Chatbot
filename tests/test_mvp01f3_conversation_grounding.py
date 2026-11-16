@@ -185,3 +185,103 @@ def test_unresolved_gerund_reference_to_existing_verb_topic_does_not_duplicate(d
         assert len(current.threads)==2
         assert next(t.title for t in current.threads
                     if t.thread_id==current.focus_thread_id)=="cooking"
+
+
+def test_repeated_named_request_refocuses_same_request_origin_thread(dsn):
+    """The initial named thread is REQUEST-originated, not an OBJECTIVE.
+
+    Repeating its exact named discussion after another topic and host
+    restart must reuse the persisted thread rather than abstaining.
+    """
+    model=CapturingModel()
+    host=BehavioralAcceptanceHarness(dsn,seed_local_demo(dsn),model)
+    host.begin_session("repeat-named")
+    first=host.send(
+        "Let's discuss my walking plan instead.",idempotency_key="walking-1",
+    )
+    identity=host.active_identity
+    actor=TrustedActor(user_id=identity.user_id,source_id="f3-repeat")
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        before=load_active_dialogue(conn,actor,identity.conversation_id)
+        walk=before.focus_thread_id
+        assert len(before.threads)==1
+        assert before.threads[0].title=="walking plan"
+        assert walk is not None
+        row=conn.execute(
+            """SELECT intent_kind,related_signal_id
+               FROM conversation_intent_signals WHERE turn_id=%s""",
+            (first.turn_id,),
+        ).fetchone()
+        assert row==("REQUEST",None)
+
+    host.send("Switch the topic to cooking.",idempotency_key="cooking")
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        intermediate=load_active_dialogue(conn,actor,identity.conversation_id)
+        assert intermediate.focus_thread_id!=walk
+        assert len(intermediate.threads)==2
+
+    host.restart_host()
+    second=host.send(
+        "Let's discuss my walking plan instead.",idempotency_key="walking-2",
+    )
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        after=load_active_dialogue(conn,actor,identity.conversation_id)
+        assert after.focus_thread_id==walk
+        assert len(after.threads)==2
+        assert sum(x.title=="walking plan" for x in after.threads)==1
+        assert conn.execute(
+            """SELECT thread_id FROM dialogue_turn_links
+               WHERE turn_id=%s""",(second.turn_id,),
+        ).fetchone()[0]==walk
+        assert conn.execute(
+            """SELECT intent_kind,related_signal_id
+               FROM conversation_intent_signals WHERE turn_id=%s""",
+            (second.turn_id,),
+        ).fetchone()==("REQUEST",None)
+        assert conn.execute(
+            """SELECT count(*) FROM events
+               WHERE event_type='conversation.dialogue.auto_thread_opened.v1'
+                 AND conversation_id=%s""",
+            (identity.conversation_id,),
+        ).fetchone()[0]==2  # walking and cooking, never duplicate walking
+        assert conn.execute(
+            """SELECT count(*) FROM events
+               WHERE event_type='conversation.dialogue.auto_focused.v1'
+                 AND conversation_id=%s""",
+            (identity.conversation_id,),
+        ).fetchone()[0]>=1
+        assert conn.execute(
+            "SELECT count(*) FROM goal_records WHERE user_id=%s",
+            (identity.user_id,),
+        ).fetchone()[0]==0
+
+
+def test_named_thread_exact_match_precedes_broader_keyword_abstention():
+    """Duplicate exact matches remain ambiguous; one exact match is reused."""
+    from uuid import uuid4
+    from persona_agent.dialogue_integration import _unique_named_discussion
+
+    thread=uuid4()
+    class Cur:
+        def __init__(self, matches):
+            self.matches=matches
+            self.query=None
+            self.parameters=None
+        def execute(self, sql, params):
+            self.query,self.parameters=sql,params
+        def fetchall(self):
+            return [{"thread_id":item} for item in self.matches]
+    scope=(uuid4(),uuid4(),uuid4())
+    named={
+        "conversation_id":scope[0],"user_id":scope[1],
+        "instance_id":scope[2],"title":"walking plan",
+    }
+    one=Cur([thread])
+    assert _unique_named_discussion(one,**named)==thread
+    assert "resolution_status='OPEN'" in one.query
+    assert "lower(title)=lower(%s)" in one.query
+    assert one.parameters==(*scope,"walking plan")
+    assert _unique_named_discussion(Cur([]),**named) is None
+    assert _unique_named_discussion(
+        Cur([thread,uuid4()]),**named,
+    ) is None
