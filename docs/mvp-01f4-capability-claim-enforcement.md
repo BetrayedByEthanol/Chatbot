@@ -38,10 +38,13 @@ was created. This was a **response-claim failure**, not a Tool Gateway bypass.
   quoted examples (straight, typographic, and inline-code delimiters) and
   explicitly negated attribution are not treated as actual first-person
   offers; an independent unquoted offer remains enforceable. Detection
-  matches the original model output and uses quote masking *only* to exclude
-  offer starts inside examples. This retains inline-code or quoted objects
-  of genuine offers, e.g. `I can execute \`openssl req -x509\` on your
-  server`, instead of erasing the execution target before classification.
+  matches each offer **start** independently in the original model output
+  and uses quote masking *only* to exclude offer starts inside examples.
+  For each candidate, the examined object stops at the next offer or clause
+  boundary, retaining inline-code or quoted objects of genuine offers such
+  as `I can execute \`openssl req -x509\` on your server`.
+  A supported offer (`I can run a word count...`) cannot consume a later
+  unsupported offer (`I can execute these commands...`) in the same sentence.
   Ordinary
   instructions addressed **to the user**, explicit inability, safe guidance,
   and registered read-only work are preserved.
@@ -97,6 +100,11 @@ still runs in the same turn, outside any PostgreSQL transaction.
   executable targets in **unquoted** first-person offers are blocked while
   quoted examples containing the same inline-code commands are preserved,
   including a PostgreSQL response-persistence and replay regression.
+  Mixed-offer unit tests verify that a supported word-count offer followed
+  by unsupported server execution or data deletion is still blocked, while
+  multiple safe offers and quoted examples pass through. A PostgreSQL host
+  regression verifies the blocked second offer, durable evidence, replay
+  and preservation of a distinct safe reply.
   Text-editing scope regressions verify that separate summarization
   instructions cannot exempt direct stored-data deletion requests or
   unsolicited model offers; ordinary sentence editing still passes through.
