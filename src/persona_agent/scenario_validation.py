@@ -8,6 +8,44 @@ from __future__ import annotations
 from typing import Any
 import re
 
+from typing import get_args
+from .semantic_contracts import (
+    StatementType, TemporalScope, Modality, PragmaticFunction,
+)
+
+_SEMANTIC_LABELS = {
+    "statement_type": set(get_args(StatementType)),
+    "temporal_scope": set(get_args(TemporalScope)),
+    "modality": set(get_args(Modality)),
+    "pragmatic_function": set(get_args(PragmaticFunction)),
+}
+
+
+def _validate_expected_semantics(expected, text: str) -> None:
+    if not isinstance(expected,list) or len(expected)>4:
+        raise ValueError("expect_semantics must be a list of at most four claims")
+    for claim in expected:
+        if not isinstance(claim,dict) or not claim:
+            raise ValueError("expected semantic claims must be nonempty objects")
+        if set(claim)-set(_SEMANTIC_LABELS)-{"topic_label","evidence_quote"}:
+            raise ValueError("unknown semantic expectation field")
+        for key,allowed in _SEMANTIC_LABELS.items():
+            if key in claim and (
+                not isinstance(claim[key],str) or claim[key] not in allowed
+            ):
+                raise ValueError("invalid semantic label: "+key)
+        if "topic_label" in claim and (
+            not isinstance(claim["topic_label"],str)
+            or not 2<=len(claim["topic_label"])<=80
+        ):
+            raise ValueError("invalid semantic topic label")
+        if "evidence_quote" in claim and (
+            not isinstance(claim["evidence_quote"],str)
+            or not claim["evidence_quote"] in text
+        ):
+            raise ValueError("expected evidence quote is not in source input")
+
+
 
 def validate_scenario(value: Any) -> dict:
     if not isinstance(value, dict) or not isinstance(value.get("name"), str):
@@ -45,6 +83,8 @@ def validate_scenario(value: Any) -> dict:
                 raise ValueError("message requires an active session and text")
             if step.get("mode", "auto") not in ("auto", "model", "time", "analyze"):
                 raise ValueError("invalid message mode")
+            if "expect_semantics" in step:
+                _validate_expected_semantics(step["expect_semantics"],text)
             if "expect_model_memory_proposed" in step and type(
                 step["expect_model_memory_proposed"]
             ) is not bool:

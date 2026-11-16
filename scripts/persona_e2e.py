@@ -94,6 +94,10 @@ def run(argv=None) -> int:
         help="Enable reviewed model-memory proposals and scripted user review",
     )
     parser.add_argument(
+        "--semantic-diagnostics",action="store_true",
+        help="Record read-only Stage A semantic classification predictions",
+    )
+    parser.add_argument(
         "--keep-db",action="store_true",
         help="Keep the newly created database for debugging (no teardown)",
     )
@@ -109,6 +113,9 @@ def run(argv=None) -> int:
     scenario = validate_scenario(
         json.loads(args.scenario.read_text(encoding="utf-8"))
     )
+    if (not args.semantic_diagnostics
+            and any("expect_semantics" in step for step in scenario["steps"])):
+        parser.error("scenario semantic expectations require --semantic-diagnostics")
     paths = sorted(Path("migrations").glob("*.sql"))
     if not paths:
         parser.error("no migration files found; run from repository root")
@@ -131,6 +138,7 @@ def run(argv=None) -> int:
         result = run_scenario(
             dsn,scenario,gateway,
             run_model_memory_worker=args.model_memory_worker,
+            run_semantic_diagnostics=args.semantic_diagnostics,
         )
     except Exception as exc:
         # Produce a partial evidence bundle even on setup or model failures.

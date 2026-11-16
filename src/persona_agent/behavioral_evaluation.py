@@ -28,6 +28,7 @@ from .behavioral_diagnostics import describe_interpretation, resolve_interpretat
 from .contracts import TrustedActor
 from .dialogue_state import load_active_dialogue
 from .model_gateway import OllamaChatGateway
+from .semantic_contracts import SemanticClassifier
 from .observability import get_turn_trace
 from .tool_gateway import run_one_text_tool
 
@@ -304,13 +305,36 @@ def _committed_input_receipt(
     }
 
 
+def _compare_semantic_expectations(expected: list[dict], diagnostic: dict) -> bool:
+    """Label accuracy is behavioral evidence, never an admission contract."""
+    batch=diagnostic.get("batch")
+    if diagnostic["status"]=="ERROR" or not isinstance(batch,dict):
+        return False
+    claims=batch["claims"]
+    return len(expected)==len(claims) and all(
+        all(observed.get(key)==value for key,value in item.items())
+        for item,observed in zip(expected,claims)
+    )
+
+
 def run_scenario(
     dsn: str, scenario: dict, gateway,
     *, run_tool_worker: bool = True, run_memory_worker: bool = True,
     run_model_memory_worker: bool = False,
+    run_semantic_diagnostics: bool = False,
+    semantic_classifier: SemanticClassifier | None = None,
 ) -> dict:
     """Run ordinary model/tool conversations; return full evidence on failure."""
     scenario = validate_scenario(scenario)
+    if semantic_classifier is not None and not run_semantic_diagnostics:
+        raise ValueError("semantic classifier supplied without diagnostics mode")
+    if not run_semantic_diagnostics and any(
+        "expect_semantics" in step for step in scenario["steps"]
+    ):
+        raise ValueError("semantic expectations require --semantic-diagnostics")
+    if run_semantic_diagnostics and semantic_classifier is None:
+        from .semantic_classification import RuleSemanticClassifier
+        semantic_classifier = RuleSemanticClassifier()
     identity = seed_local_demo(dsn)
     observed_gateway = RecordingGateway(gateway)
     harness = BehavioralAcceptanceHarness(dsn, identity, observed_gateway)
@@ -333,6 +357,8 @@ def run_scenario(
         "transcript":[], "snapshots":[], "checks":[], "errors":[],
         "review_items":[],
         "interpretation_diagnostics":observed_gateway.interpretations,
+        "semantic_diagnostics":[],
+        "semantic_diagnostics_enabled":run_semantic_diagnostics,
         "model_requests":observed_gateway.requests, "deliveries":harness.deliveries,
     }
     for index, step in enumerate(scenario["steps"]):
@@ -412,6 +438,42 @@ def run_scenario(
             )
             current["step_index"] = index
             report["snapshots"].append(current)
+            # Stage A classification is evaluated in shadow AFTER delivery:
+            # no inference latency or model output can affect this response.
+            # Classifier proposals never write Memory, Goals or Dialogue.
+            if run_semantic_diagnostics:
+                from .semantic_classification import diagnostic_for_turn
+                diagnostic=diagnostic_for_turn(
+                    semantic_classifier,text=step["text"],
+                    source_turn_id=UUID(turn.turn_id),
+                )
+                diagnostic.update({
+                    "step_index":index,
+                    "conversation_id":recorded["conversation_id"],
+                })
+                report["semantic_diagnostics"].append(diagnostic)
+                recorded["semantic_diagnostic_status"]=diagnostic["status"]
+                report["checks"].append({
+                    "step_index":index,
+                    "check":"semantic_candidate_contract",
+                    "category":"contract",
+                    "pass":diagnostic["status"]!="ERROR",
+                    "actual":diagnostic["status"],
+                    "expected":"ANNOTATED or ABSTAINED",
+                })
+                if "expect_semantics" in step:
+                    report["checks"].append({
+                        "step_index":index,
+                        "check":"semantic_labels",
+                        "category":"behavioral",
+                        "pass":_compare_semantic_expectations(
+                            step["expect_semantics"],diagnostic,
+                        ),
+                        "actual":(
+                            diagnostic.get("batch",{}).get("claims",[])
+                        ),
+                        "expected":step["expect_semantics"],
+                    })
             if len(observed_gateway.interpretations)>interpretation_before:
                 item=observed_gateway.interpretations[-1]
                 item.update({
@@ -570,6 +632,9 @@ def write_bundle(
         "behavioral_accepted":None,
         "conversational_quality":"NOT_AUTOMATICALLY_GRADED",
         "snapshot_row_limit":TABLE_ROW_LIMIT,
+        "semantic_diagnostics_enabled":report.get(
+            "semantic_diagnostics_enabled",False,
+        ),
         "warnings":[
             "Contains full synthetic conversations and model prompt context.",
             "Do not upload a bundle created using real user data.",
@@ -582,6 +647,7 @@ def write_bundle(
         "state_snapshots.json":report["snapshots"],
         "model_requests.json":report["model_requests"],
         "interpretation_diagnostics.json":report.get("interpretation_diagnostics",[]),
+        "semantic_diagnostics.json":report.get("semantic_diagnostics",[]),
         "review_items.json":report.get("review_items",[]),
         "delivery_events.json":report["deliveries"],
         "evaluation.json":{
