@@ -7,6 +7,10 @@ from zipfile import ZipFile
 
 import pytest
 
+# The no-PostgreSQL CI pass deliberately uninstalls psycopg. This test module
+# exercises the real DB-backed acceptance harness; skip it in that pass.
+pytest.importorskip("psycopg")
+
 from persona_agent.behavioral_diagnostics import describe_interpretation
 from persona_agent.behavioral_evaluation import (
     _check_turn, run_scenario, validate_scenario, write_bundle,
