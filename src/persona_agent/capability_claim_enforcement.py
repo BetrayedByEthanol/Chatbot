@@ -24,6 +24,13 @@ _REQUEST = re.compile(
     r"(?P<object>[^\n]{0,160})[?.!]?\s*$",
     re.I,
 )
+_HYPOTHETICAL_DELETION = re.compile(
+    r"^what\\s+if\\s+(?:i|we)\\s+(?:asked|requested|wanted)\\s+"
+    r"(?:you\\s+to\\s+|that\\s+you\\s+)"
+    r"(?:delete|erase|remove)\\s+(?:my|our|the)\\s+"
+    r"(?:data|account|files|records)[?.!]?\\s*$",
+    re.I,
+)
 _DELETION_OBJECT = re.compile(
     r"\b(?:my|your|our|user|all|the)\s+(?:data|account|files|records)\b", re.I,
 )
@@ -97,6 +104,12 @@ def enforce_capability_claims(
     remote_context = bool(_REMOTE_TOPIC.search(nearby))
     cleaned = user_text.strip()
     if not cleaned.startswith(('"', "'", "“", "‘")):
+        # A hypothetical is not a deletion command. Nevertheless, it must
+        # never receive a promise that this host can perform the deletion.
+        if _HYPOTHETICAL_DELETION.fullmatch(cleaned):
+            return CapabilityEnforcement(
+                _fallback("data_deletion"), "unsupported_hypothetical:data_deletion",
+            )
         request = _REQUEST.fullmatch(cleaned)
         if request:
             category = _category(
