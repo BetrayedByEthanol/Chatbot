@@ -37,7 +37,7 @@
       "action": "message",
       "mode": "model",
       "text": "What outdoor activity had I been considering?",
-      "review_response": "Independent paraphrase: the first new-session request must include source-linked walking evidence (turn UUID/date) and the frequency updates. 'Would be better' remains tentative; do not claim a finalized schedule, settled decision or approved goal."
+      "review_response": "Verify sourced walking and all frequency corrections. 'Twice per week would be better' was tentative: reject 'decided twice weekly' or other unsupported commitments. Latest once/week is also a preference, not a finalized plan or approved goal."
     },
     {
       "action": "session",

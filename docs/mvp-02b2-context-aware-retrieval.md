@@ -96,6 +96,22 @@ review prompts now explicitly reject "settled on" and similar unsupported
 commitment wording. Another real-model ZIP is necessary to verify response
 calibration.
 
+### Follow-up: intermediate-correction certainty
+
+The calibration review on `qwen2.5:7b` still said the user **"decided twice
+a week"** when the source was **"Actually, twice per week would be
+better."** Both the intermediate twice-weekly and latest once-weekly
+statements remain preferences. The historical context guidance now applies
+noncommitment wording to **every** sourced statement, explicitly rejecting
+"decided", "settled on", "agreed" and "committed" absent user confirmation.
+A correction changes an earlier suggestion; it does not authorize or finalize
+a plan. This remains a prompt-only change, not another state subsystem.
+
+The existing two-route PostgreSQL grounding regression checks this guidance
+and all source-linked frequency turns, and the target-model scenario now
+calls out the intermediate "decided twice" failure. Human review remains
+necessary to confirm actual model wording.
+
 ## Tests and E2E
 
 ```sh
