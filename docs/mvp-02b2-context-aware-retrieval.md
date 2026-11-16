@@ -22,14 +22,20 @@ authoritative domain objects.
 2. **Correction-aware local context.** For up to the three best matching
    historical source turns, inspect at most the next three *responded* user
    turns of each in that **same** conversation. Deduplicate follow-up turn
-   UUIDs across overlapping windows. Only a contiguous, tightly specified weekly
-   frequency note followed by an explicit weekly frequency correction is
-   eligible. Budget the correction chain atomically: never emit a tentative
-   older frequency without its later correction. If space is insufficient
-   for the full chain, prefer the last correction alone. Stop at unrelated messages or a topic switch. If Conversation
-   owns a linked correction signal, require the link to target the selected
-   source. Include each reported update in chronological order, with its
-   own source UUID and date and a `USER_REPORTED` epistemic label.
+   UUIDs across overlapping windows. Only contiguous, tightly specified
+   weekly-frequency notes followed by one or more explicit weekly-frequency
+   corrections are eligible. The lookahead scans **all three positions**
+   rather than returning after the first correction; where multiple valid
+   corrections occur, the final one supersedes earlier cadence suggestions.
+   Budget the correction chain atomically: never emit a tentative older
+   frequency without its subsequent corrections. If space is insufficient
+   for the full chain, include **only the last correction**. Stop at
+   unrelated messages, topic switches, privacy exclusions or invalid
+   provenance. If Conversation owns a linked correction signal, require it
+   to target the selected source; if a later frequency correction fails
+   linkage validation, abstain from showing outdated earlier corrections.
+   Include each rendered user update in chronological order, with its own
+   turn UUID and date and a `USER_REPORTED` epistemic label.
 3. **Preserve existing fences.** The initial candidate query still requires
    the selected authenticated `(user_id, instance_id)`, a previous
    conversation ID, input timestamp earlier than the current turn,
@@ -66,7 +72,9 @@ python -m pytest -q tests/test_mvp02b_historical_user_turns.py \
 
 New integration scenarios assert: a standalone paraphrase as the **first**
 new-session query; ambiguity abstention when walking and hiking both
-qualify; chronological note + correction with source UUIDs; independent
+qualify; chronological note and correction with source UUIDs; **two
+successive corrections within the three-turn window**; latest-only
+correction rendering when the optional prompt budget is tight; independent
 paraphrase with correction; topic-switch and unrelated-message stop rules;
 no inadvertent retrieval for ordinary exercise questions; cross-user
 isolation; corrected evidence from a source displaced by a newer matching
