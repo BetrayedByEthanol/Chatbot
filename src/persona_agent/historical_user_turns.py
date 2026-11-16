@@ -145,6 +145,7 @@ def _correction_followups(
          anchor["sequence"],anchor["sequence"]+3,before_at),
     )
     notes=[]
+    corrections=[]
     for row in cur.fetchall():
         text=row["input_text"].strip()
         if (parse_explicit_topic_switch(text) is not None
@@ -152,22 +153,31 @@ def _correction_followups(
                 or row["has_memory_revision"]
                 or row["has_memory_candidate"]):
             break
-        # Do not jump over unrelated conversation and attribute its later
-        # corrections to the retrieved topic.
+        # Keep only a contiguous frequency discussion. Notes before the
+        # first correction are tentative; a new note after a correction
+        # starts another discussion rather than silently overriding it.
         if _FREQUENCY_NOTE.fullmatch(text):
+            if corrections:
+                break
             notes.append(row)
             continue
         if _FREQUENCY_CORRECTION.fullmatch(text):
             if (row["intent_kind"] != "CORRECTION"
                     or (row["related_signal_id"] is not None
                         and row["related_signal_id"] != row["origin_signal_id"])):
-                break
+                # A later unlinked correction might supersede an earlier
+                # one. Abstain rather than returning an outdated cadence.
+                return ()
             # The source row may be an unclassified aspiration. Without a
-            # linked signal, only a contiguous frequency note/correction
-            # sequence is admitted; no unrelated dialogue is skipped.
-            return tuple((*notes, row))
+            # linked signal, only contiguous frequency-only statements
+            # are admitted; no unrelated dialogue is skipped.
+            corrections.append(row)
+            continue
         break
-    return ()
+    # All eligible corrections (including successive amendments) remain
+    # in chronological order. Rendering may drop older notes/corrections
+    # only when it can still preserve the last known correction.
+    return tuple((*notes,*corrections)) if corrections else ()
 
 
 def historical_user_turn_context_block(
