@@ -19,11 +19,14 @@ authoritative domain objects.
    model receives **only source-linked historical statements**, never an
    asserted inferred activity. If multiple different activity categories
    match, retrieval abstains instead of choosing arbitrarily.
-2. **Correction-aware local context.** For the best matching historical
-   source turn, inspect at most its next three *responded* user turns in
-   that **same** conversation. Only a contiguous, tightly specified weekly
+2. **Correction-aware local context.** For up to the three best matching
+   historical source turns, inspect at most the next three *responded* user
+   turns of each in that **same** conversation. Deduplicate follow-up turn
+   UUIDs across overlapping windows. Only a contiguous, tightly specified weekly
    frequency note followed by an explicit weekly frequency correction is
-   eligible. Stop at unrelated messages or a topic switch. If Conversation
+   eligible. Budget the correction chain atomically: never emit a tentative
+   older frequency without its later correction. If space is insufficient
+   for the full chain, prefer the last correction alone. Stop at unrelated messages or a topic switch. If Conversation
    owns a linked correction signal, require the link to target the selected
    source. Include each reported update in chronological order, with its
    own source UUID and date and a `USER_REPORTED` epistemic label.
@@ -66,7 +69,8 @@ new-session query; ambiguity abstention when walking and hiking both
 qualify; chronological note + correction with source UUIDs; independent
 paraphrase with correction; topic-switch and unrelated-message stop rules;
 no inadvertent retrieval for ordinary exercise questions; cross-user
-isolation; and prompt-budget conservation.
+isolation; corrected evidence from a source displaced by a newer matching
+turn; and prompt-budget conservation.
 
 ```sh
 bash scripts/run_persona_e2e.sh \
