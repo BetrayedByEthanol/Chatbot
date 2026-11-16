@@ -34,10 +34,15 @@ _HYPOTHETICAL_DELETION = re.compile(
 _DELETION_OBJECT = re.compile(
     r"\b(?:my|your|our|user|all|the)\s+(?:data|account|files|records)\b", re.I,
 )
+# The requested operation is determined by its direct object, not by
+# incidental nouns in the data being analyzed. "Run a word count on this
+# code" asks for statistics; "run this code" asks for code execution.
+# This intentionally abstains on unfamiliar or ambiguous constructions.
 _REMOTE_OBJECT = re.compile(
-    r"\b(?:command(?:s)?|script(?:s)?|code|nginx|server|ssh|shell|"
-    r"terminal|sudo|openssl|certificate|software|app(?:lication)?|"
-    r"on\s+(?:my|our|the)\s+(?:server|machine|computer))\b", re.I,
+    r"^\s*(?:(?:a|an|the|this|that|these|those|my|your|our)\s+){0,3}"
+    r"(?:command(?:s)?|script(?:s)?|code|nginx|server|ssh|shell|"
+    r"terminal|sudo|openssl|certificate|software|app(?:lication)?)\b",
+    re.I,
 )
 _ANAPHORA = re.compile(
     r"^\s*(?:this|that|these|those|it)(?:\s+for\s+me)?\s*[?.!]?\s*$", re.I,
