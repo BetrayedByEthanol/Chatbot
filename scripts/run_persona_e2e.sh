@@ -38,9 +38,18 @@ parser.add_argument(
     "--scenario", type=Path,
     default=Path("scenarios/mvp01e_conversation.json"),
 )
+parser.add_argument("--semantic-diagnostics", action="store_true")
 args, _ = parser.parse_known_args(sys.argv[1:])
 try:
-    validate_scenario(json.loads(args.scenario.read_text(encoding="utf-8")))
+    scenario = validate_scenario(
+        json.loads(args.scenario.read_text(encoding="utf-8"))
+    )
+    if (not args.semantic_diagnostics
+            and any("expect_semantics" in step
+                    for step in scenario["steps"])):
+        raise ValueError(
+            "scenario semantic expectations require --semantic-diagnostics"
+        )
 except (OSError, ValueError) as exc:
     print(f"Invalid E2E scenario {args.scenario}: {exc}", file=sys.stderr)
     raise SystemExit(2)
