@@ -39,7 +39,7 @@ TABLES = (
     "conversation_intent_signals", "dialogue_threads",
     "dialogue_pending_acts", "dialogue_turn_links", "dialogue_referents",
     "conversation_tool_calls", "conversation_assistant_followups",
-    "memory_records", "goal_records", "cognitive_reflections",
+    "memory_records", "memory_model_candidates", "goal_records", "cognitive_reflections",
     "cognitive_intentions", "emotion_appraisals",
     "relationship_observations", "operations", "events",
 )
@@ -307,6 +307,7 @@ def _committed_input_receipt(
 def run_scenario(
     dsn: str, scenario: dict, gateway,
     *, run_tool_worker: bool = True, run_memory_worker: bool = True,
+    run_model_memory_worker: bool = False,
 ) -> dict:
     """Run ordinary model/tool conversations; return full evidence on failure."""
     scenario = validate_scenario(scenario)
@@ -315,6 +316,15 @@ def run_scenario(
     harness = BehavioralAcceptanceHarness(dsn, identity, observed_gateway)
     if run_memory_worker:
         harness.enable_explicit_memory_worker()
+    model_memory_consumer = None
+    if run_model_memory_worker:
+        from uuid import uuid4
+        from .memory_model_extraction import register_model_memory_consumer
+        model_memory_consumer = "mvp02c2-e2e-" + uuid4().hex
+        with psycopg.connect(dsn,autocommit=True) as conn:
+            register_model_memory_consumer(
+                conn,consumer_id=model_memory_consumer,
+            )
     report: dict[str, Any] = {
         "format_version": "mvp01e.1", "name":scenario["name"],
         "started_at":timestamp(), "synthetic":True,
@@ -344,6 +354,41 @@ def run_scenario(
                     "index":index,"action":"restart",
                     "conversation_id":str(harness.active_identity.conversation_id),
                 })
+                continue
+            if action == "approve_model_memory":
+                from .memory_model_extraction import (
+                    list_model_memory_candidates,approve_model_memory_candidate,
+                )
+                identity=harness.active_identity
+                actor=TrustedActor(
+                    user_id=identity.user_id,source_id="mvp02c2-e2e-user-review",
+                )
+                with psycopg.connect(dsn,autocommit=True) as conn:
+                    candidates=[
+                        c for c in list_model_memory_candidates(
+                            conn,actor,identity.instance_id,
+                        ) if c.predicate_key==step["predicate_key"]
+                    ]
+                    if len(candidates)!=1:
+                        raise ValueError(
+                            "expected exactly one reviewable model-memory candidate"
+                        )
+                    result=approve_model_memory_candidate(
+                        conn,actor,candidates[0].candidate_id,
+                        expected_generation=identity.generation,
+                    )
+                report["transcript"].append({
+                    "index":index,"action":"approve_model_memory",
+                    "candidate_id":str(candidates[0].candidate_id),
+                    "predicate_key":step["predicate_key"],
+                    "memory_id":str(result.memory_id),"version":result.version,
+                })
+                snap=capture_state(
+                    dsn,harness,turn_id=None,
+                    checkpoint="after_explicit_model_memory_approval",
+                )
+                snap["step_index"]=index
+                report["snapshots"].append(snap)
                 continue
             previous_operations=(
                 report["snapshots"][-1]["database"]["operations"]["count"]
@@ -419,6 +464,30 @@ def run_scenario(
                 )
                 memory_state["step_index"] = index
                 report["snapshots"].append(memory_state)
+            if run_model_memory_worker:
+                from .memory_model_extraction import run_model_memory_tick
+                with psycopg.connect(dsn,autocommit=True) as conn:
+                    model_tick=run_model_memory_tick(
+                        conn,observed_gateway,
+                        consumer_id=model_memory_consumer,
+                        worker_id="mvp02c2-e2e-model-memory",
+                    )
+                recorded["model_memory_worker"]=vars(model_tick)
+                model_state=capture_state(
+                    dsn,harness,turn_id=turn.turn_id,
+                    checkpoint="after_reviewed_model_memory_worker",
+                )
+                model_state["step_index"]=index
+                report["snapshots"].append(model_state)
+                if "expect_model_memory_proposed" in step:
+                    actual=model_tick.proposed==1
+                    report["checks"].append({
+                        "step_index":index,
+                        "check":"model_memory_proposal",
+                        "pass":actual==step["expect_model_memory_proposed"],
+                        "actual":actual,
+                        "expected":step["expect_model_memory_proposed"],
+                    })
         except Exception as exc:
             # Preserve the original failure first. Neither receipt lookup
             # nor evidence collection may mask it if observation also fails.

@@ -1,0 +1,60 @@
+{
+  "name": "mvp02c2-reviewed-model-memory-v1",
+  "description": "Model proposes lower-trust natural preference from source; only explicit authenticated user review admits it. Newer deterministic contradictions suppress stale current-value recall while review is unresolved.",
+  "steps": [
+    {
+      "action": "session",
+      "name": "initial_natural_source"
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "I've gotten into gardening lately.",
+      "expect_model_memory_proposed": true,
+      "review_response": "Verify the second, background model call proposes a source-quoted preference for gardening. Before scripted user review, only a PENDING_REVIEW proposal exists: no Memory record, Goal or operation was created."
+    },
+    {
+      "action": "approve_model_memory",
+      "predicate_key": "enjoys_gardening"
+    },
+    {
+      "action": "restart"
+    },
+    {
+      "action": "session",
+      "name": "independent_structured_memory_recall"
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "Do you remember what I said about gardening?",
+      "expect_model_memory_proposed": false,
+      "review_response": "Confirm Memory-owned user.enjoys_gardening=yes, source turn UUID and user approval in PostgreSQL. Response should recall self-reported enjoyment without inventing completed routines or Goals."
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "Maybe I'll try hiking next month.",
+      "expect_model_memory_proposed": false,
+      "review_response": "This future possibility must not create a Memory proposal, approved Goal or operation."
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "I don't enjoy gardening anymore.",
+      "expect_model_memory_proposed": false,
+      "review_response": "Deterministic user-sourced contradiction must create a reviewable conflict without overwriting the approved yes memory. Subsequent recall must not confidently assert the old preference."
+    },
+    {
+      "action": "session",
+      "name": "conflict_aware_new_session"
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "Do you remember whether I enjoy gardening?",
+      "expect_model_memory_proposed": false,
+      "review_response": "An unresolved newer contradiction suppresses the older yes memory from prompt retrieval. The assistant must not confidently claim the user currently enjoys gardening."
+    }
+  ]
+}

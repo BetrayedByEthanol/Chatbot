@@ -6,6 +6,7 @@ before container creation, and validation remains testable without Psycopg.
 from __future__ import annotations
 
 from typing import Any
+import re
 
 
 def validate_scenario(value: Any) -> dict:
@@ -30,6 +31,13 @@ def validate_scenario(value: Any) -> dict:
         elif action == "restart":
             if not active:
                 raise ValueError("restart requires an active session")
+        elif action == "approve_model_memory":
+            # An explicitly scripted authenticated user action in a
+            # disposable E2E fixture, never an automatic model decision.
+            predicate = step.get("predicate_key")
+            if (not active or not isinstance(predicate, str)
+                    or not re.fullmatch(r"enjoys_[a-z_]{3,45}", predicate)):
+                raise ValueError("model-memory approval requires active session and predicate")
         elif action == "message":
             text = step.get("text")
             if (not active or not isinstance(text, str)
@@ -37,6 +45,10 @@ def validate_scenario(value: Any) -> dict:
                 raise ValueError("message requires an active session and text")
             if step.get("mode", "auto") not in ("auto", "model", "time", "analyze"):
                 raise ValueError("invalid message mode")
+            if "expect_model_memory_proposed" in step and type(
+                step["expect_model_memory_proposed"]
+            ) is not bool:
+                raise ValueError("model-memory proposal expectation must be boolean")
             if "expect_model_id" in step and not isinstance(
                 step["expect_model_id"], str
             ):

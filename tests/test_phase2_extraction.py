@@ -5,13 +5,14 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 psycopg = pytest.importorskip("psycopg")
+from psycopg.rows import dict_row
 
 from persona_agent.contracts import TrustedActor
 from persona_agent.conversation import ingest_text
 from persona_agent.conversation_contracts import TextInputCommand
 from persona_agent.event_delivery import dispatch_outbox
 from persona_agent.lifecycle import SwitchPersonaCommand, switch_persona
-from persona_agent.memory import admit_memory, search_memories
+from persona_agent.memory import admit_memory, contextual_memory_block, search_memories
 from persona_agent.memory_contracts import AdmitMemoryCommand
 from persona_agent.memory_extraction import (
     approve_extraction_conflict, list_extraction_conflicts,
@@ -213,8 +214,15 @@ def test_natural_preferences_are_scoped_recallable_and_conflicts_need_approval(d
     assert conflict.proposed_value=="no"
     assert conflict.current_value=="yes"
     assert conflict.source_turn_id==negative.turn_id
-    assert call(dsn,search_memories,actor(user),instance,"gardening")[
-        0].value_text=="yes"
+    # The authoritative yes revision remains in PostgreSQL, but pending
+    # newer user corrections are not offered as current recall.
+    assert call(dsn,search_memories,actor(user),instance,"gardening")==()
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT value_text FROM memory_records WHERE user_id=%s "
+            "AND instance_id=%s AND predicate_key='enjoys_gardening'",
+            (user,instance),
+        ).fetchone()[0]=="yes"
 
     # User-owned conflict approval is versioned and source linked.
     approved=call(
@@ -318,8 +326,12 @@ def test_duplicate_corroboration_conflict_and_user_reviewed_correction(dsn):
     assert conflict.proposed_value=="coffee" and conflict.current_value=="tea"
     assert conflict.expected_version==1
     assert conflict.source_turn_id==conflict_turn.turn_id
-    hits=call(dsn,search_memories,actor(user),instance,"favorite drink")
-    assert hits[0].value_text=="tea" and hits[0].version==1
+    assert call(dsn,search_memories,actor(user),instance,"favorite drink")==()
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT value_text,version FROM memory_records WHERE memory_id=%s",
+            (conflict.memory_id,),
+        ).fetchone()==("tea",1)
     with psycopg.connect(dsn,autocommit=True) as conn:
         support=conn.execute(
             """SELECT version,source_turn_id FROM memory_claim_support
@@ -633,6 +645,27 @@ def test_later_conflict_retargets_to_new_revision_for_explicit_approval(dsn):
         expected_generation=1,expected_version=1,
     )
     assert first.version==2
+    # The later water claim still targets v1: the read-side must assess
+    # its newer source and value against authoritative v2, *without*
+    # first triggering review-queue reconciliation.
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            """SELECT status,target_version FROM memory_extraction_candidates
+               WHERE source_turn_id=%s""",(water.turn_id,),
+        ).fetchone()==("CONFLICT",1)
+        assert conn.execute(
+            """SELECT value_text,version FROM memory_records
+               WHERE user_id=%s AND instance_id=%s AND predicate_key='favorite_drink'""",
+            (user,instance),
+        ).fetchone()==("coffee",2)
+        with conn.cursor(row_factory=dict_row) as cur:
+            context=contextual_memory_block(
+                cur,user,instance,"Do you remember my favorite drink?",650,
+            )
+    assert call(dsn,search_memories,actor(user),instance,"favorite drink")==()
+    assert "newer user-reported correction" in context
+    assert "Do not assert the old value" in context
+    assert "user.favorite_drink: coffee" not in context
     updated=call(dsn,list_extraction_conflicts,actor(user),instance)
     assert len(updated)==1
     assert updated[0].candidate_id==later.candidate_id
@@ -679,6 +712,10 @@ def test_earlier_conflict_is_retired_when_newer_evidence_wins(dsn):
         dsn,approve_extraction_conflict,actor(user),new_candidate.candidate_id,
         expected_generation=1,expected_version=1,
     ).version==2
+    # The earlier coffee proposal is older than the authoritative
+    # water revision and must not suppress the updated preference.
+    assert call(dsn,search_memories,actor(user),instance,"favorite drink")[
+        0].value_text=="water"
     assert call(dsn,list_extraction_conflicts,actor(user),instance)==()
     with psycopg.connect(dsn,autocommit=True) as conn:
         assert conn.execute(
@@ -713,6 +750,20 @@ def test_matching_conflict_becomes_revision_scoped_corroboration(dsn):
         dsn,approve_extraction_conflict,actor(user),old_candidate.candidate_id,
         expected_generation=1,expected_version=1,
     )
+    # The second coffee claim is still on v1, but agrees with the
+    # authoritative v2 value; it must not suppress it.
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            """SELECT status,target_version FROM memory_extraction_candidates
+               WHERE candidate_id=%s""",(matching.candidate_id,),
+        ).fetchone()==("CONFLICT",1)
+        with conn.cursor(row_factory=dict_row) as cur:
+            context=contextual_memory_block(
+                cur,user,instance,"Do you remember my favorite drink?",650,
+            )
+    assert call(dsn,search_memories,actor(user),instance,"favorite drink")[
+        0].value_text=="coffee"
+    assert "newer user-reported correction" not in context
     assert call(dsn,list_extraction_conflicts,actor(user),instance)==()
     with psycopg.connect(dsn,autocommit=True) as conn:
         assert conn.execute(
