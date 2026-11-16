@@ -17,10 +17,44 @@ def test_clear_remote_execution_request_cannot_be_accepted_by_model():
     "I can configure your server for you.",
     "I will execute the shell command.",
     "Let me run those commands for you.",
+    "I'll run these commands for you.",
+    "I’ll execute the shell command.",
+    "We'll configure your server for you.",
+    "We’ll install software on your server.",
 ])
 def test_unprompted_or_conditional_execution_offers_are_blocked(response):
     result=enforce_capability_claims("How do I configure Nginx?", response)
     assert result.reason=="unsupported_offer:remote"
+
+@pytest.mark.parametrize("response", [
+    "I'll delete your data.",
+    "I’ll erase your data.",
+    "We'll remove your files.",
+    "We’ll delete your data.",
+])
+def test_contracted_data_deletion_promises_are_blocked(response):
+    result=enforce_capability_claims("What happens to my account?", response)
+    assert result.reason=="unsupported_offer:data_deletion"
+    assert "haven't deleted anything" in result.text
+
+
+def test_vague_execution_uses_immediately_previous_user_topic_only():
+    # A stale Nginx subject must not shadow the supported word-count task.
+    history=("How do I configure Nginx?", "Count words in: alpha beta")
+    answer="There are two words."
+    result=enforce_capability_claims(
+        "Can you run this for me?", answer, recent_user_texts=history,
+    )
+    assert result.reason is None
+    assert result.text==answer
+
+    # Reverse order: the current server topic should still be enforced.
+    switched=("Count words in: alpha beta", "How do I configure Nginx?")
+    result=enforce_capability_claims(
+        "Can you run this for me?", answer, recent_user_texts=switched,
+    )
+    assert result.reason=="unsupported_request:remote"
+
 
 def test_unavailable_data_deletion_is_not_promised():
     direct=enforce_capability_claims("Could you delete my data?", "Sure, done.")
@@ -129,3 +163,37 @@ def test_real_host_blocks_unavailable_claims_and_replays_committed_response(dsn)
             "unsupported_request:data_deletion",
         ]
     assert model.calls.count("Can you run this for me?")==1
+
+
+def test_topic_switch_to_read_only_work_does_not_inherit_remote_refusal(dsn):
+    class ContextAwareModel(NonCompliantModel):
+        def generate(self,messages):
+            if messages[-1].content=="Can you run this for me?":
+                self.calls.append(messages[-1].content)
+                return ModelReply(model_id="safe-model", text="There are two words.")
+            return super().generate(messages)
+
+    model=ContextAwareModel()
+    host=BehavioralAcceptanceHarness(dsn,seed_local_demo(dsn),model)
+    host.begin_session("topic-shift")
+    host.send("How do I configure Nginx?",idempotency_key="nginx")
+    host.send("Count words in: alpha beta",idempotency_key="words")
+    answer=host.send("Can you run this for me?",idempotency_key="run")
+    assert answer.text=="There are two words."
+    host.restart_host()
+    replay=host.send("Can you run this for me?",idempotency_key="run")
+    assert replay.replayed
+    assert replay.response_id==answer.response_id
+    identity=host.active_identity
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            """SELECT count(*) FROM events
+               WHERE user_id=%s AND instance_id=%s
+                 AND event_type='conversation.response.capability_claim_blocked.v1'""",
+            (identity.user_id,identity.instance_id),
+        ).fetchone()[0]==1  # unsolicited "I can configure your server" earlier
+        persisted=conn.execute(
+            "SELECT response_text FROM conversation_responses WHERE response_id=%s",
+            (answer.response_id,),
+        ).fetchone()[0]
+        assert persisted==answer.text
