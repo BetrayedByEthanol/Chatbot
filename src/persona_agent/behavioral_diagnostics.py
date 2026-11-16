@@ -65,9 +65,23 @@ def resolve_interpretation(
     if turn is None:
         record["admission"]="TURN_NOT_IN_BOUNDED_SNAPSHOT"
         return
+    fallback = next((
+        x for x in turn_signals if
+        x.get("method_revision")=="mvp01f2.routine_fallback.1"
+        and x.get("epistemic_status")=="RULE_INFERRED"
+    ),None)
+    if fallback is not None:
+        record["rule_fallback"]={
+            "signal_id":str(fallback["signal_id"]),
+            "method_revision":fallback["method_revision"],
+            "intent_kind":fallback["intent_kind"],
+        }
     candidate_data=record.get("candidate")
     if candidate_data is None:
-        record["admission"]="NO_VALID_MODEL_CANDIDATE"
+        record["admission"]=(
+            "RULE_FALLBACK_PERSISTED" if fallback is not None
+            else "NO_VALID_MODEL_CANDIDATE"
+        )
         return
     candidate=ModelIntentCandidate.model_validate(candidate_data)
     reason=diagnose_model_candidate_gate(
@@ -75,7 +89,10 @@ def resolve_interpretation(
     )
     record["gate_reason"]=reason
     if reason!="VALID":
-        record["admission"]="GATE_REJECTED"
+        record["admission"]=(
+            "GATE_REJECTED_RULE_FALLBACK_PERSISTED" if fallback is not None
+            else "GATE_REJECTED"
+        )
     elif any(x.get("source_response_id") is not None for x in turn_signals):
         record["admission"]="MODEL_SIGNAL_PERSISTED"
     elif turn_signals:
