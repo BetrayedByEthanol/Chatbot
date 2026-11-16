@@ -1,0 +1,47 @@
+{
+  "name": "mvp02a-cross-session-recall-baseline-v1",
+  "description": "Baseline only: source-linked recall of an ordinary, non-allowlisted walking discussion across two conversations and host restarts. Existing MVP-01 checks do not grade memory correctness; see focused MVP-02A regression and human review.",
+  "steps": [
+    {
+      "action": "session",
+      "name": "walking_discussion"
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "I've been thinking about walking more regularly."
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "I haven't settled on a particular walking schedule."
+    },
+    {
+      "action": "restart"
+    },
+    {
+      "action": "session",
+      "name": "return_visit"
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "Hello again."
+    },
+    {
+      "action": "restart"
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "Do you remember what we discussed about walking?",
+      "review_response": "Check the actual model context for the prior-session user statement and source-turn provenance. A correct answer recalls only interest in walking more regularly and no agreed schedule; if evidence is missing, acknowledge uncertainty rather than inventing facts."
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "What outdoor activity had I been considering?",
+      "review_response": "Paraphrase-recall diagnostic: check whether the prior user statement is provided as source evidence. Do not score an unsupported guess as memory retrieval."
+    }
+  ]
+}
