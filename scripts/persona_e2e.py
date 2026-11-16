@@ -90,6 +90,10 @@ def run(argv=None) -> int:
         ),
     )
     parser.add_argument(
+        "--model-memory-worker",action="store_true",
+        help="Enable reviewed model-memory proposals and scripted user review",
+    )
+    parser.add_argument(
         "--keep-db",action="store_true",
         help="Keep the newly created database for debugging (no teardown)",
     )
@@ -124,7 +128,10 @@ def run(argv=None) -> int:
         gateway = OllamaChatGateway(
             model=args.model,base_url=args.ollama_url,timeout_seconds=180,
         )
-        result = run_scenario(dsn,scenario,gateway)
+        result = run_scenario(
+            dsn,scenario,gateway,
+            run_model_memory_worker=args.model_memory_worker,
+        )
     except Exception as exc:
         # Produce a partial evidence bundle even on setup or model failures.
         if result is None:
