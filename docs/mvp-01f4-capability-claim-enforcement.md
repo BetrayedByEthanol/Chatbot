@@ -45,10 +45,12 @@ was created. This was a **response-claim failure**, not a Tool Gateway bypass.
   Ordinary
   instructions addressed **to the user**, explicit inability, safe guidance,
   and registered read-only work are preserved.
-- Deletion classification excludes explicitly textual targets such as
-  `remove my data from this sentence`. This is a sentence-editing operation,
-  not deletion of stored records; `delete my data from your servers` remains
-  prohibited.
+- Deletion classification exempts only explicitly textual **direct
+  deletion targets** such as `remove my data from this sentence`, rather
+  than matching `in this paragraph` anywhere in a subsequent instruction.
+  `delete my data from your servers and summarize the result in this
+  paragraph` remains prohibited. A second destructive clause following
+  an initial text-editing clause also defeats the exemption.
 - `commit_text_response()` runs the check after source/scope validation,
   under the existing selection and conversation revision fence, before
   inserting the response. Replacements generate a scoped
@@ -95,6 +97,11 @@ still runs in the same turn, outside any PostgreSQL transaction.
   executable targets in **unquoted** first-person offers are blocked while
   quoted examples containing the same inline-code commands are preserved,
   including a PostgreSQL response-persistence and replay regression.
+  Text-editing scope regressions verify that separate summarization
+  instructions cannot exempt direct stored-data deletion requests or
+  unsolicited model offers; ordinary sentence editing still passes through.
+  A PostgreSQL host test asserts two blocked events, truthful persisted
+  replies, valid text-edit persistence and idempotent restart replay.
 - Existing MVP-01F.1–F.3, prior-phase regressions, Phase 0 PostgreSQL CI
   and Phase 1 live Ollama CI must remain green.
 - After merge approval, rerun the *target* `qwen2.5:7b` 28-turn
