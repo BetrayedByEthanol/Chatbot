@@ -1,0 +1,115 @@
+{
+  "name": "mvp02c3-stage-a-shadow-semantic-classification",
+  "description": "Read-only, opt-in Stage A classification diagnostics. No model selection, persistence, or domain decisions are driven by these labels.",
+  "steps": [
+    {
+      "action": "session",
+      "name": "source-classification"
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "Hello.",
+      "expect_semantics": [],
+      "review_response": "Unsupported greeting must abstain; no inferred personal claim."
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "I enjoy gardening.",
+      "expect_semantics": [
+        {
+          "statement_type": "PREFERENCE",
+          "temporal_scope": "CURRENT",
+          "modality": "ASSERTED",
+          "pragmatic_function": "INFORMING",
+          "topic_label": "gardening"
+        }
+      ]
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "I enjoyed gardening yesterday.",
+      "expect_semantics": [
+        {
+          "statement_type": "EXPERIENCE",
+          "temporal_scope": "PAST_EVENT",
+          "modality": "ASSERTED",
+          "pragmatic_function": "INFORMING",
+          "topic_label": "gardening"
+        }
+      ],
+      "review_response": "Past event is not evidence that the user no longer enjoys gardening generally."
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "I used to enjoy gardening.",
+      "expect_semantics": [
+        {
+          "statement_type": "PREFERENCE",
+          "temporal_scope": "PAST_HABITUAL",
+          "modality": "ASSERTED",
+          "pragmatic_function": "INFORMING",
+          "topic_label": "gardening"
+        }
+      ]
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "I don't enjoy gardening anymore.",
+      "expect_semantics": [
+        {
+          "statement_type": "PREFERENCE",
+          "temporal_scope": "CURRENT",
+          "modality": "ASSERTED",
+          "pragmatic_function": "CORRECTING",
+          "topic_label": "gardening"
+        }
+      ],
+      "review_response": "Correction annotation alone must not approve any memory revision."
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "Maybe I should go walking tomorrow.",
+      "expect_semantics": [
+        {
+          "statement_type": "INTENTION",
+          "temporal_scope": "FUTURE",
+          "modality": "TENTATIVE",
+          "pragmatic_function": "INFORMING",
+          "topic_label": "walking"
+        }
+      ],
+      "review_response": "Tentative future intention must not be promoted into an approved goal."
+    },
+    {
+      "action": "session",
+      "name": "later-session"
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "I've gotten into gardening lately.",
+      "expect_semantics": [
+        {
+          "statement_type": "PREFERENCE",
+          "temporal_scope": "CURRENT",
+          "modality": "ASSERTED",
+          "pragmatic_function": "INFORMING",
+          "topic_label": "gardening"
+        }
+      ]
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "I used to enjoy gardening, but now I find it frustrating.",
+      "expect_semantics": [],
+      "review_response": "The narrow reference classifier abstains on multi-claim sentences; future model-assisted decomposition is not active in this increment."
+    }
+  ]
+}
