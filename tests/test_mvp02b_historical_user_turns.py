@@ -76,8 +76,56 @@ def test_no_unprompted_or_irrelevant_historical_recall(dsn):
     assert "Prior-session user statements" not in system(model)
     h.send("Do you remember?", idempotency_key="unspecified")
     assert "Prior-session user statements" not in system(model)
+    h.send("Can you remind me?", idempotency_key="vague-reminder")
+    assert "Prior-session user statements" not in system(model)
     h.send("I remember walking yesterday.", idempotency_key="statement")
     assert "Prior-session user statements" not in system(model)
+
+
+def test_long_turn_excerpt_retains_late_stemmed_match_and_source(dsn):
+    h, model = host(dsn)
+    h.begin_session("source")
+    prefix = "The earlier details concern a long unrelated account. " * 12
+    statement = prefix + "At the end I finally took an evening walk."
+    assert len(prefix) > 380
+    source = h.send(statement, idempotency_key="long-source")
+    h.begin_session("return")
+    h.send("Do you remember walking?", idempotency_key="recall")
+    prompt = system(model)
+    assert "Prior-session user statements" in prompt
+    assert source.turn_id in prompt
+    assert "evening walk" in prompt
+    assert "[abridged]" in prompt
+    assert prefix not in prompt
+    # The headline highlight markers are internal retrieval scaffolding.
+    assert "[[[" not in prompt and "]]]" not in prompt
+
+
+def test_recall_prefix_words_never_become_search_topics(dsn):
+    h, model = host(dsn)
+    h.begin_session("source")
+    h.send(
+        "I know which movie our friends recommended.",
+        idempotency_key="knowledge",
+    )
+    h.send(
+        "Please remind me which movie it was.",
+        idempotency_key="reminder",
+    )
+    walking = h.send(
+        "I started walking regularly after work.",
+        idempotency_key="walking",
+    )
+    h.begin_session("return")
+    h.send("Can you remind me?", idempotency_key="vague")
+    assert "Prior-session user statements" not in system(model)
+    h.send("What do you know about walking?", idempotency_key="topic")
+    prompt = system(model)
+    assert "Prior-session user statements" in prompt
+    assert "started walking regularly" in prompt
+    assert walking.turn_id in prompt
+    assert "I know which movie" not in prompt
+    assert "Please remind me which movie" not in prompt
 
 
 def test_sensitive_raw_turn_not_promoted_to_persistent_recall_context(dsn):
