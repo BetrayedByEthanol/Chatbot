@@ -29,9 +29,13 @@ authoritative domain objects.
    corrections occur, the final one supersedes earlier cadence suggestions.
    Budget the correction chain atomically: never emit a tentative older
    frequency without its subsequent corrections. If space is insufficient
-   for the full chain, include **only the last correction**. Stop at
-   unrelated messages, topic switches, privacy exclusions or invalid
-   provenance. If Conversation owns a linked correction signal, require it
+   for the full chain, include **only the last correction**. Read **all
+   intervening sequence positions**, including `PENDING` and
+   `SUPERSEDED` turns, and stop at any non-`RESPONDED` turn. This
+   prevents a superseded topic switch or frequency note from being
+   silently skipped when a later correction is associated with the
+   original discussion. Also stop at unrelated messages, responded topic
+   switches, privacy exclusions or invalid provenance. If Conversation owns a linked correction signal, require it
    to target the selected source; if a later frequency correction fails
    linkage validation, abstain from showing outdated earlier corrections.
    Include each rendered user update in chronological order, with its own
@@ -78,7 +82,9 @@ correction rendering when the optional prompt budget is tight; independent
 paraphrase with correction; topic-switch and unrelated-message stop rules;
 no inadvertent retrieval for ordinary exercise questions; cross-user
 isolation; corrected evidence from a source displaced by a newer matching
-turn; and prompt-budget conservation.
+turn; **superseded intervening topic switches and frequency notes** via
+normal authenticated ingress and supersession (without test-side status
+mutation); and prompt-budget conservation.
 
 ```sh
 bash scripts/run_persona_e2e.sh \
