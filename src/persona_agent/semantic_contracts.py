@@ -11,7 +11,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-StatementType = Literal["FACT", "PREFERENCE", "EXPERIENCE", "INTENTION", "OPINION"]
+StatementType = Literal["FACT", "PREFERENCE", "EXPERIENCE", "INTENTION", "OPINION", "UNKNOWN"]
 TemporalScope = Literal[
     "CURRENT", "HABITUAL", "PAST_EVENT", "PAST_HABITUAL", "FUTURE", "UNSPECIFIED",
 ]
@@ -26,11 +26,13 @@ AbstentionReason = Literal["NO_SUPPORTED_CLAIM", "AMBIGUOUS", "OUT_OF_SCOPE"]
 
 
 class SemanticClaim(BaseModel):
-    """One user-reported proposition, NOT an authoritative accepted fact."""
+    """One source span with partial advisory labels, never accepted knowledge."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     evidence_quote: str = Field(min_length=3, max_length=1000)
+    # Specialized classifiers may explicitly return UNKNOWN in dimensions
+    # outside their competence; no label may be fabricated to fill the schema.
     statement_type: StatementType
     temporal_scope: TemporalScope
     modality: Modality
