@@ -159,59 +159,59 @@ def _admit_memory_in_transaction(cur, actor: TrustedActor,
     Reused by reviewed model candidates so approval and candidate status
     commit atomically; no model work is performed while locks are held.
     """
+    cur.execute(
+        "SELECT 1 FROM persona_instances WHERE user_id=%s AND id=%s",
+        (actor.user_id,command.instance_id),
+    )
+    if cur.fetchone() is None:
+        raise PermissionDenied("memory instance outside authenticated scope")
+    receipt_id,prior=_receipt(cur,actor,command.instance_id,_ADMIT,command)
+    if prior is not None:
+        return prior
+    _selection(cur,actor,command.instance_id,command.expected_generation)
+    source=_evidence(cur,actor,command.instance_id,command.conversation_id,
+                     command.evidence_turn_id,command.evidence_quote)
+    memory_id=uuid4()
+    cur.execute(
+        """INSERT INTO memory_records(
+             memory_id,user_id,instance_id,memory_kind,subject_key,
+             predicate_key,value_text,confidence,privacy_class,
+             source_conversation_id,source_turn_id,source_turn_at,
+             source_quote,source_id
+           ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'NORMAL',%s,%s,%s,%s,%s)
+           ON CONFLICT(user_id,instance_id,memory_kind,subject_key,predicate_key)
+           DO NOTHING RETURNING memory_id""",
+        (memory_id,actor.user_id,command.instance_id,command.memory_kind,
+         command.subject_key,command.predicate_key,command.value_text,
+         command.confidence,command.conversation_id,command.evidence_turn_id,
+         source["created_at"],command.evidence_quote,source["source_id"]),
+    )
+    if cur.fetchone() is None:
         cur.execute(
-            "SELECT 1 FROM persona_instances WHERE user_id=%s AND id=%s",
-            (actor.user_id,command.instance_id),
+            """SELECT memory_id,version,value_text,record_status
+               FROM memory_records WHERE user_id=%s AND instance_id=%s
+                 AND memory_kind=%s AND subject_key=%s AND predicate_key=%s
+               FOR UPDATE""",
+            (actor.user_id,command.instance_id,command.memory_kind,
+             command.subject_key,command.predicate_key),
         )
-        if cur.fetchone() is None:
-            raise PermissionDenied("memory instance outside authenticated scope")
-        receipt_id,prior=_receipt(cur,actor,command.instance_id,_ADMIT,command)
-        if prior is not None:
-            return prior
-        _selection(cur,actor,command.instance_id,command.expected_generation)
-        source=_evidence(cur,actor,command.instance_id,command.conversation_id,
-                         command.evidence_turn_id,command.evidence_quote)
-        memory_id=uuid4()
-        cur.execute(
-            """INSERT INTO memory_records(
-                 memory_id,user_id,instance_id,memory_kind,subject_key,
-                 predicate_key,value_text,confidence,privacy_class,
-                 source_conversation_id,source_turn_id,source_turn_at,
-                 source_quote,source_id
-               ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'NORMAL',%s,%s,%s,%s,%s)
-               ON CONFLICT(user_id,instance_id,memory_kind,subject_key,predicate_key)
-               DO NOTHING RETURNING memory_id""",
-            (memory_id,actor.user_id,command.instance_id,command.memory_kind,
-             command.subject_key,command.predicate_key,command.value_text,
-             command.confidence,command.conversation_id,command.evidence_turn_id,
-             source["created_at"],command.evidence_quote,source["source_id"]),
-        )
-        if cur.fetchone() is None:
-            cur.execute(
-                """SELECT memory_id,version,value_text,record_status
-                   FROM memory_records WHERE user_id=%s AND instance_id=%s
-                     AND memory_kind=%s AND subject_key=%s AND predicate_key=%s
-                   FOR UPDATE""",
-                (actor.user_id,command.instance_id,command.memory_kind,
-                 command.subject_key,command.predicate_key),
-            )
-            old=cur.fetchone()
-            if old is None or old["record_status"]!="ACTIVE" or (
-                old["value_text"]!=command.value_text
-            ):
-                raise MemoryConflict("different or retracted memory requires explicit revision")
-            return _finish(cur,receipt_id,MemoryWriteResult(
-                memory_id=old["memory_id"],version=old["version"],unchanged=True,
-            ))
-        event_id=_event(
-            cur,actor,command.instance_id,memory_id,1,
-            "memory.record.admitted.v1",command.evidence_turn_id,receipt_id,
-        )
-        _revision(cur,actor,command,memory_id,1,"ADMIT",command.value_text,
-                  "ACTIVE",command.confidence,source,event_id)
+        old=cur.fetchone()
+        if old is None or old["record_status"]!="ACTIVE" or (
+            old["value_text"]!=command.value_text
+        ):
+            raise MemoryConflict("different or retracted memory requires explicit revision")
         return _finish(cur,receipt_id,MemoryWriteResult(
-            memory_id=memory_id,version=1,event_id=event_id,
+            memory_id=old["memory_id"],version=old["version"],unchanged=True,
         ))
+    event_id=_event(
+        cur,actor,command.instance_id,memory_id,1,
+        "memory.record.admitted.v1",command.evidence_turn_id,receipt_id,
+    )
+    _revision(cur,actor,command,memory_id,1,"ADMIT",command.value_text,
+              "ACTIVE",command.confidence,source,event_id)
+    return _finish(cur,receipt_id,MemoryWriteResult(
+        memory_id=memory_id,version=1,event_id=event_id,
+    ))
 
 
 def admit_memory(connection: Connection, actor: TrustedActor,
