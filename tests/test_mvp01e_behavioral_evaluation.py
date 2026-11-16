@@ -517,7 +517,7 @@ def test_runner_publishes_marker_only_after_zip_written(tmp_path,monkeypatch):
                         lambda *_:dropped.append(True))
     monkeypatch.setattr(module,"OllamaChatGateway",lambda **kw: object())
     monkeypatch.setattr(module,"git_revision",lambda:"local-test")
-    monkeypatch.setattr(module,"run_scenario",lambda *args:{
+    monkeypatch.setattr(module,"run_scenario",lambda *args,**kwargs:{
         "format_version":"mvp01e.1","name":"sample",
         "started_at":"now","completed_at":"now","passed":True,
         "transcript":[],"snapshots":[],"checks":[],
