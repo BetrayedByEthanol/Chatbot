@@ -25,7 +25,10 @@ was created. This was a **response-claim failure**, not a Tool Gateway bypass.
   authorized shell, server mutation or data deletion adapter.
 - Explicit requests for server command execution or data deletion receive a
   truthful, concise instruction-only fallback, even if a model replies
-  `Sure` or makes an unusual unsupported promise. For the vague reference
+  `Sure` or makes an unusual unsupported promise. Execution classification
+  examines the requested direct object (e.g., `run this code`), not every
+  noun in its arguments. A read-only operation such as `run a word count on
+  this code` must not be mistaken for code execution. For the vague reference
   `run this`, the immediately preceding user topic must establish the
   server/command context. Otherwise the policy abstains.
 - On other turns, the policy rejects narrowly recognized first-person
@@ -70,6 +73,9 @@ still runs in the same turn, outside any PostgreSQL transaction.
   apostrophe forms in unsolicited contracted promises, and confirms
   `Nginx → word count → run this` preserves the read-only response while
   `word count → Nginx → run this` rejects unavailable execution.
+  Additional unit and real-PostgreSQL cases confirm that `Can you run a word
+  count on this code?` preserves a valid read-only answer and emits no false
+  capability-block event, while `Can you run this code?` remains blocked.
 - Existing MVP-01F.1–F.3, prior-phase regressions, Phase 0 PostgreSQL CI
   and Phase 1 live Ollama CI must remain green.
 - After merge approval, rerun the *target* `qwen2.5:7b` 28-turn
