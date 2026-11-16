@@ -24,6 +24,7 @@ from psycopg.rows import dict_row
 
 from .acceptance_host import seed_local_demo
 from .behavioral_acceptance import BehavioralAcceptanceHarness
+from .behavioral_diagnostics import describe_interpretation, resolve_interpretation
 from .contracts import TrustedActor
 from .dialogue_state import load_active_dialogue
 from .model_gateway import OllamaChatGateway
@@ -111,6 +112,8 @@ class RecordingGateway:
 
     def __init__(self, inner):
         self.requests: list[dict] = []
+        self.raw_outputs: list[dict] = []
+        self.interpretations: list[dict] = []
         self._outbound_capture = isinstance(inner, OllamaChatGateway)
         if self._outbound_capture:
             previous_observer = inner.request_observer
@@ -129,8 +132,20 @@ class RecordingGateway:
                 if previous_observer is not None:
                     previous_observer(payload)
 
+            previous_response_observer = inner.response_observer
+
+            def capture_response(raw, json_mode):
+                self.raw_outputs.append({
+                    "raw":raw, "json_mode":bool(json_mode),
+                })
+                if previous_response_observer is not None:
+                    previous_response_observer(raw,json_mode)
+
             # Immutable clone: do not mutate a production gateway instance.
-            self.inner = replace(inner, request_observer=capture)
+            self.inner = replace(
+                inner, request_observer=capture,
+                response_observer=capture_response,
+            )
         else:
             self.inner = inner
 
@@ -153,7 +168,23 @@ class RecordingGateway:
         if method is None:
             return self.generate(messages)
         self._record_pre_gateway(messages, "generate_interpreted")
-        return method(messages)
+        before = len(self.raw_outputs)
+        try:
+            reply = method(messages)
+        except Exception as exc:
+            # Preserve the original gateway error, even if raw JSON was bad.
+            raw = self.raw_outputs[-1]["raw"] if len(self.raw_outputs)>before else None
+            self.interpretations.append({
+                "at":timestamp(), **describe_interpretation(raw),
+                "gateway_error_type":type(exc).__name__,
+            })
+            raise
+        raw = self.raw_outputs[-1]["raw"] if len(self.raw_outputs)>before else None
+        self.interpretations.append({
+            "at":timestamp(),
+            **describe_interpretation(raw,reply.intent_candidate),
+        })
+        return reply
 
 
 def capture_state(
