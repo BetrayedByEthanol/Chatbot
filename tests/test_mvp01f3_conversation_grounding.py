@@ -151,3 +151,24 @@ def test_recall_and_summary_prompt_uses_user_evidence_not_model_fabrications(dsn
             "SELECT count(*) FROM goal_records WHERE user_id=%s",
             (identity.user_id,),
         ).fetchone()[0]==0
+
+
+def test_unresolved_gerund_reference_to_existing_verb_topic_does_not_duplicate(dsn):
+    model=CapturingModel()
+    host=BehavioralAcceptanceHarness(dsn,seed_local_demo(dsn),model)
+    host.begin_session("no-duplicate")
+    host.send("I want to walk more.",idempotency_key="objective")
+    host.send("Switch the topic to cooking.",idempotency_key="cooking")
+    host.send("Let's discuss my walking plan instead.",idempotency_key="switch")
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        identity=host.active_identity
+        current=load_active_dialogue(
+            conn,TrustedActor(user_id=identity.user_id,source_id="f3-no-duplicate"),
+            identity.conversation_id,
+        )
+        # The current named resolver intentionally abstains on the unmatched
+        # wording "walk"/"walking". Without a unique match, never create
+        # a second allegedly restored objective or new duplicate topic.
+        assert len(current.threads)==2
+        assert next(t.title for t in current.threads
+                    if t.thread_id==current.focus_thread_id)=="cooking"
