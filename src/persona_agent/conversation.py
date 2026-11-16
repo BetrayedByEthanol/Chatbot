@@ -397,6 +397,27 @@ def prepare_text_context(
             boundary = capability_claim_context(history[-1].content)
             if len(prompt)+len(boundary)+len(history[-1].content)<max_context_chars:
                 prompt += boundary
+            # MVP-01F.2: the authenticated ingress already resolved a
+            # named objective reference. Put its source and discussion
+            # evidence into THIS response's context, before optionally
+            # retrieving memories or presenting the old focused thread.
+            # This does not change focus ahead of delivery acknowledgment.
+            from .intent_interpretation import resolved_objective_context_block
+            reserve=min(
+                len(history[-1].content),min(256,max_context_chars//4),
+            )
+            reference_room=min(
+                1100,max_context_chars//3,
+                max_context_chars-len(prompt)-reserve-160,
+            )
+            if reference_room>=220:
+                prompt+=resolved_objective_context_block(
+                    cursor,user_id=actor.user_id,
+                    instance_id=item["instance_id"],
+                    conversation_id=item["conversation_id"],
+                    turn_id=turn_id,latest_text=history[-1].content,
+                    max_chars=reference_room,
+                )
             if item["focus_thread_id"] is not None:
                 # Explicit focus and pending dialogue are context, never
                 # authorization. No additional model inference or history
