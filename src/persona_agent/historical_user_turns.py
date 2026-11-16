@@ -44,10 +44,10 @@ _EXPLICIT_RECALL = re.compile(
 # semantic facts: return nothing if more than one activity type qualifies.
 # Broad embedding retrieval belongs to a separately evaluated increment.
 _RETROSPECTIVE_ACTIVITY = re.compile(
-    r"^\\s*what (?P<concept>outdoor activit(?:y|ies)|exercise) "
+    r"^\s*what (?P<concept>outdoor activit(?:y|ies)|exercise) "
     r"(?:had i been|was i|did i) "
     r"(?:considering|planning|thinking about|mention(?:ing)?)"
-    r"(?:\\s+recently)?\\s*\\?\\s*$",
+    r"(?:\s+recently)?\s*\?\s*$",
     re.I,
 )
 _ACTIVITY_TERMS = {
@@ -56,10 +56,10 @@ _ACTIVITY_TERMS = {
     "exercise": ("walk", "hike", "cycle", "jog"),
 }
 _ACTIVITY_CUES = {
-    "walk": re.compile(r"\\bwalk(?:ing|ed|s)?\\b", re.I),
-    "hike": re.compile(r"\\bhik(?:e|es|ed|ing)\\b", re.I),
-    "cycle": re.compile(r"\\bcycl(?:e|es|ed|ing)\\b", re.I),
-    "jog": re.compile(r"\\bjogg?(?:ed|ing)?\\b|\\bjogs?\\b", re.I),
+    "walk": re.compile(r"\bwalk(?:ing|ed|s)?\b", re.I),
+    "hike": re.compile(r"\bhik(?:e|es|ed|ing)\b", re.I),
+    "cycle": re.compile(r"\bcycl(?:e|es|ed|ing)\b", re.I),
+    "jog": re.compile(r"\bjogg?(?:ed|ing)?\b|\bjogs?\b", re.I),
 }
 
 _GENERIC = frozenset({
@@ -295,7 +295,7 @@ def historical_user_turn_context_block(
                     f"USER_REPORTED discussion update source turn "
                     f"{follow['turn_id']} on "
                     f"{follow['created_at'].date().isoformat()}: "
-                    +json.dumps(statement,ensure_ascii=False)+"\\n"
+                    +json.dumps(statement,ensure_ascii=False)+"\n"
                 )
                 if len(result)+len(follow_line)>max_chars:
                     break
