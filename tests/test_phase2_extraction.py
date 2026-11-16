@@ -749,6 +749,20 @@ def test_matching_conflict_becomes_revision_scoped_corroboration(dsn):
         dsn,approve_extraction_conflict,actor(user),old_candidate.candidate_id,
         expected_generation=1,expected_version=1,
     )
+    # The second coffee claim is still on v1, but agrees with the
+    # authoritative v2 value; it must not suppress it.
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            """SELECT status,target_version FROM memory_extraction_candidates
+               WHERE candidate_id=%s""",(matching.candidate_id,),
+        ).fetchone()==("CONFLICT",1)
+        with conn.cursor() as cur:
+            context=contextual_memory_block(
+                cur,user,instance,"Do you remember my favorite drink?",650,
+            )
+    assert call(dsn,search_memories,actor(user),instance,"favorite drink")[
+        0].value_text=="coffee"
+    assert "newer user-reported correction" not in context
     assert call(dsn,list_extraction_conflicts,actor(user),instance)==()
     with psycopg.connect(dsn,autocommit=True) as conn:
         assert conn.execute(
