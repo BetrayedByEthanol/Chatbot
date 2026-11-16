@@ -1,0 +1,57 @@
+{
+  "name": "mvp02c1-natural-preference-memory-v1",
+  "description": "Real-model, normal-host natural preference acquisition and source-linked cross-session recall. Deterministic event worker owns admission and corrections remain reviewable, never auto-approved.",
+  "steps": [
+    {
+      "action": "session",
+      "name": "initial_preferences"
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "I enjoy gardening.",
+      "review_response": "A first-person activity preference is a reported preference, not an approved Goal, completed activity or habitual schedule."
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "I really like gardening."
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "I enjoy reading."
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "Maybe I should go walking tomorrow.",
+      "review_response": "A tentative future activity must not become an approved Goal or durable fact; it is not a supported preference-memory admission."
+    },
+    {
+      "action": "restart"
+    },
+    {
+      "action": "session",
+      "name": "fresh_session_memory_recall"
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "Do you remember what I said about gardening?",
+      "review_response": "Check actual model request for Memory-owned user.enjoys_gardening=yes and original source-turn UUID. Reply should say the user reported enjoying gardening, not that a routine or Goal was completed."
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "Do you remember what I said about reading?",
+      "review_response": "Check request for the independently stored user.enjoys_reading=yes preference; do not conflate gardening and reading or invent a schedule."
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "I don't enjoy gardening anymore.",
+      "review_response": "A contradiction may be proposed for explicit review, but must not silently overwrite the authoritative yes-valued preference. No approved Goal or external operation."
+    }
+  ]
+}
