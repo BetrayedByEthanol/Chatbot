@@ -298,24 +298,23 @@ def historical_user_turn_context_block(
         result += line
         count += 1
         if count == 1:
-            # Preserve tentative frequency updates in their original order
-            # when the discussion actually contains a correction. Every
-            # follow-up must be a separate authenticated historical turn.
-            for follow in _correction_followups(
+            # A tentative earlier cadence is NEVER emitted without the
+            # subsequent correction. Budget the whole chain atomically;
+            # if necessary, prioritize the most recent explicit correction.
+            followups=_correction_followups(
                 cur,row,user_id=user_id,instance_id=instance_id,before_at=before_at,
-            ):
-                statement=follow["input_text"]
-                if _SENSITIVE.search(statement):
-                    continue
-                follow_line=(
-                    f"USER_REPORTED discussion update source turn "
-                    f"{follow['turn_id']} on "
-                    f"{follow['created_at'].date().isoformat()}: "
-                    +json.dumps(statement,ensure_ascii=False)+"\n"
-                )
-                if len(result)+len(follow_line)>max_chars:
-                    break
-                result+=follow_line
+            )
+            follow_lines=[
+                f"USER_REPORTED discussion update source turn "
+                f"{follow['turn_id']} on "
+                f"{follow['created_at'].date().isoformat()}: "
+                +json.dumps(follow["input_text"],ensure_ascii=False)+"\n"
+                for follow in followups
+            ]
+            if follow_lines and len(result)+sum(map(len,follow_lines))<=max_chars:
+                result+="".join(follow_lines)
+            elif follow_lines and len(result)+len(follow_lines[-1])<=max_chars:
+                result+=follow_lines[-1]
         if count >= _MAX_HITS:
             break
     return result if count else ""
