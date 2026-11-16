@@ -160,8 +160,10 @@ def test_real_gateway_interpretation_evidence_and_acceptance(
     )
     assert not report["errors"],report["errors"]
     assert report["contract_passed"] is True
-    assert report["behavioral_checks_passed"] is signal_expected
-    assert report["passed"] is signal_expected
+    # MVP-01F.2: an unmistakable routine input can create a rule-inferred
+    # signal when the model returns null or an unsupported candidate.
+    assert report["behavioral_checks_passed"] is True
+    assert report["passed"] is True
     assert report["behavioral_accepted"] is None
     assert report["requires_human_review"]
     assert len(report["review_items"])==1
@@ -173,7 +175,8 @@ def test_real_gateway_interpretation_evidence_and_acceptance(
     assert diagnostic["step_index"]==1
     assert diagnostic["admission"]==(
         "MODEL_SIGNAL_PERSISTED" if signal_expected else
-        "NO_VALID_MODEL_CANDIDATE" if intent is None else "GATE_REJECTED"
+        "RULE_FALLBACK_PERSISTED" if intent is None else
+        "GATE_REJECTED_RULE_FALLBACK_PERSISTED"
     )
     if gate_reason:
         assert diagnostic["gate_reason"]==gate_reason
@@ -192,12 +195,12 @@ def test_real_gateway_interpretation_evidence_and_acceptance(
     assert evidence==report["interpretation_diagnostics"]
     assert review==report["review_items"]
     assert evaluation["contract_passed"] is True
-    assert evaluation["behavioral_checks_passed"] is signal_expected
+    assert evaluation["behavioral_checks_passed"] is True
     assert evaluation["behavioral_accepted"] is None
     assert manifest["contract_passed"] is True
 
 
-def test_missing_model_intent_is_a_behavioral_failure_not_a_contract_failure(dsn):
+def test_missing_model_intent_uses_conservative_source_grounded_fallback(dsn):
     class NoIntentModel:
         def generate_interpreted(self,messages):
             return ModelReply("stub","We could walk more.",intent_candidate=None)
@@ -210,10 +213,11 @@ def test_missing_model_intent_is_a_behavioral_failure_not_a_contract_failure(dsn
     result=run_scenario(dsn,scenario,NoIntentModel(),run_memory_worker=False)
     assert not result["errors"]
     assert result["contract_passed"] is True
-    assert result["behavioral_checks_passed"] is False
-    assert result["passed"] is False
-    assert any(x["check"]=="intent" and not x["pass"] for x in result["checks"])
+    assert result["behavioral_checks_passed"] is True
+    assert result["passed"] is True
+    assert any(x["check"]=="intent" and x["pass"] for x in result["checks"])
     assert result["interpretation_diagnostics"][0]["outcome"]=="RAW_RESPONSE_UNAVAILABLE"
+    assert result["interpretation_diagnostics"][0]["admission"]=="RULE_FALLBACK_PERSISTED"
 
 
 def test_default_scenario_marks_known_behavioral_gaps_without_forcing_mvp02():
