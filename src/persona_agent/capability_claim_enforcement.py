@@ -46,8 +46,9 @@ _ANAPHORA = re.compile(
 # "I can help you run" (guidance, not personal execution).
 _OFFER = re.compile(
     r"\b(?:"
-    r"(?:i|we)\s+(?:(?:can|could|will|would|shall|might)\s+|"
-    r"(?:am|are)\s+able\s+to\s+|(?:'ll|’ll)\s*)"
+    r"(?:(?:i|we)\s+(?:(?:can|could|will|would|shall|might)\s+|"
+    r"(?:am|are)\s+able\s+to\s+)"
+    r"|(?:i|we)(?:'ll|’ll)\s*)"
     r"|(?:would|do)\s+you\s+(?:like|want)\s+(?:me|us)\s+to\s+"
     r"|(?:should|shall)\s+(?:i|we)\s+"
     r"|let\s+(?:me|us)\s+"
@@ -100,8 +101,11 @@ def enforce_capability_claims(
     A future executable tool requires a reviewed, capability-specific policy
     and authorization contract, not simply bypassing these checks.
     """
-    nearby = " ".join(recent_user_texts[-3:])
-    remote_context = bool(_REMOTE_TOPIC.search(nearby))
+    # Resolve deictic requests ("run this") only against the immediately
+    # preceding user topic. Older Nginx context must not shadow a newer
+    # read-only request (e.g. word statistics).
+    prior_user_text = recent_user_texts[-1] if recent_user_texts else ""
+    remote_context = bool(_REMOTE_TOPIC.search(prior_user_text))
     cleaned = user_text.strip()
     if not cleaned.startswith(('"', "'", "“", "‘")):
         # A hypothetical is not a deletion command. Nevertheless, it must
