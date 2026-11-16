@@ -46,12 +46,12 @@ _PREFER = re.compile(r"i prefer (.+?) over ([a-z][a-z -]{1,30})", re.I)
 # A negative assertion occupies the same slot and must go through the
 # existing versioned conflict approval when a positive memory already exists.
 _ENJOY_ACTIVITY = re.compile(
-    r"i (?:really )?(?:enjoy|like|love) (?P<activity>[a-z][a-z -]{1,35})\\.?",
+    r"i (?:really )?(?:enjoy|like|love) (?P<activity>[a-z][a-z -]{1,35})\.?",
     re.I,
 )
 _NOT_ENJOY_ACTIVITY = re.compile(
     r"i (?:(?:no longer|do not|don't) (?:enjoy|like)) "
-    r"(?P<activity>[a-z][a-z -]{1,35}?)(?: anymore)?\\.?",
+    r"(?P<activity>[a-z][a-z -]{1,35}?)(?: anymore)?\.?",
     re.I,
 )
 _BLOCKED = re.compile(
@@ -174,7 +174,7 @@ def _conversational_activity_preference(text: str) -> ExplicitClaim | None:
     statement=text.strip()
     if (not 8<=len(statement)<=180
             or _BLOCKED.search(statement)
-            or any(c in statement for c in ('\\n','\\r','"',';','?',':','!','[',']','{','}','<','>'))):
+            or any(c in statement for c in ('\n','\r','"',';','?',':','!','[',']','{','}','<','>'))):
         return None
     negative=_NOT_ENJOY_ACTIVITY.fullmatch(statement)
     positive=_ENJOY_ACTIVITY.fullmatch(statement) if negative is None else None
