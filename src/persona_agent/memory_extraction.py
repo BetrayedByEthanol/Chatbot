@@ -41,6 +41,19 @@ _HOBBY = re.compile(r"my hobby is (.+)", re.I)
 _PET = re.compile(r"my (dog|cat)(?:'s name is| is named) (.+)", re.I)
 _MEANING = re.compile(r"for me,? ([a-z][a-z -]{1,30}) means (.+)", re.I)
 _PREFER = re.compile(r"i prefer (.+?) over ([a-z][a-z -]{1,30})", re.I)
+# High-precision conversational self-reports, not model-inferred hobbies or
+# episodic observations. Only exact positive-allowlisted activities qualify.
+# A negative assertion occupies the same slot and must go through the
+# existing versioned conflict approval when a positive memory already exists.
+_ENJOY_ACTIVITY = re.compile(
+    r"i (?:really )?(?:enjoy|like|love) (?P<activity>[a-z][a-z -]{1,35})\\.?",
+    re.I,
+)
+_NOT_ENJOY_ACTIVITY = re.compile(
+    r"i (?:(?:no longer|do not|don't) (?:enjoy|like)) "
+    r"(?P<activity>[a-z][a-z -]{1,35}?)(?: anymore)?\\.?",
+    re.I,
+)
 _BLOCKED = re.compile(
     r"\b(address|password|pin|secret|ssn|bank|credit|account|salary|income|"
     r"health|medical|diagnos\w*|disease|medication|pregnan\w*|therapy|"
@@ -63,8 +76,8 @@ _SAFE_FAVORITES = {
 }
 _SAFE_HOBBIES = frozenset({
     "gardening","cycling","reading","painting","drawing","knitting",
-    "hiking","swimming","photography","cooking","baking","chess",
-    "woodworking",
+    "hiking","walking","jogging","swimming","photography","cooking",
+    "baking","chess","woodworking",
 })
 _SAFE_PET_NAMES = frozenset({
     "milo","luna","bella","max","charlie","buddy","daisy","coco",
@@ -93,6 +106,9 @@ def _supported_safe_claim(kind: str, predicate: str, value: str) -> bool:
     if kind=="PREFERENCE" and predicate.startswith("prefer_over_"):
         alternative=predicate.removeprefix("prefer_over_").replace("_"," ")
         return term in _SAFE_PREFERENCES and alternative in _SAFE_PREFERENCES
+    if kind=="PREFERENCE" and predicate.startswith("enjoys_"):
+        activity=predicate.removeprefix("enjoys_").replace("_"," ")
+        return term in {"yes","no"} and activity in _SAFE_HOBBIES
     if kind=="FACT" and predicate=="hobby":
         return term in _SAFE_HOBBIES
     if kind=="FACT" and predicate in ("pet_dog_name","pet_cat_name"):
@@ -148,6 +164,37 @@ def _slug(value: str) -> str:
     return re.sub(r"\s+", "_", value.strip().casefold())
 
 
+def _conversational_activity_preference(text: str) -> ExplicitClaim | None:
+    """Bounded explicit user-report bridge, not interpretation of intent.
+
+    A user saying they enjoy an allowlisted activity reports a preference,
+    not a confirmed habitual practice or Goal. Time-qualified, speculative,
+    quoted and multi-activity statements deliberately abstain.
+    """
+    statement=text.strip()
+    if (not 8<=len(statement)<=180
+            or _BLOCKED.search(statement)
+            or any(c in statement for c in ('\\n','\\r','"',';','?',':','!','[',']','{','}','<','>'))):
+        return None
+    negative=_NOT_ENJOY_ACTIVITY.fullmatch(statement)
+    positive=_ENJOY_ACTIVITY.fullmatch(statement) if negative is None else None
+    matched=negative or positive
+    if matched is None:
+        return None
+    activity=matched["activity"].strip().casefold()
+    if activity not in _SAFE_HOBBIES:
+        return None
+    claim=ExplicitClaim(
+        "PREFERENCE","user",f"enjoys_{_slug(activity)}",
+        "no" if negative is not None else "yes",statement,
+    )
+    if not _supported_safe_claim(
+        claim.memory_kind,claim.predicate_key,claim.value_text,
+    ):
+        return None
+    return claim
+
+
 def parse_explicit_claim(text: str) -> ExplicitClaim | None:
     """High-precision grammar, not a semantic fact verifier.
 
@@ -155,6 +202,9 @@ def parse_explicit_claim(text: str) -> ExplicitClaim | None:
     quote. Quotes, multiple sentences, questions, sensitive or speculative
     phrasing, and unsupported topics are deliberately left unextracted.
     """
+    conversational=_conversational_activity_preference(text)
+    if conversational is not None:
+        return conversational
     statement=text.strip()
     if (len(statement)>320 or len(statement)<8
         or any(c in statement for c in ('\n','\r','"',"'",";",":","?","!","[","]","{","}","<",">"))
