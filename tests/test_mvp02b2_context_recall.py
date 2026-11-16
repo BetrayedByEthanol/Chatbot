@@ -75,6 +75,48 @@ def test_broad_activity_paraphrase_abstains_when_multiple_activities(dsn):
     assert second.turn_id not in system(model)
 
 
+def test_activity_ambiguity_detects_older_category_beyond_sixteen_hits(dsn):
+    host,model=fresh_host(dsn)
+    host.begin_session("old")
+    older=host.send(
+        "I've been considering hiking more regularly.",
+        idempotency_key="older-hiking",
+    )
+    # The first 16 ranked matches all contain repeated walking terms.
+    # A genuine hiking source outside that candidate cutoff must still
+    # prevent a guessed answer to the independent broad question.
+    for index in range(16):
+        host.send(
+            f"I walked, walked, and walked regularly on day {index}.",
+            idempotency_key=f"walking-{index}",
+        )
+    host.begin_session("new")
+    host.send(PARAPHRASE,idempotency_key="ambiguous-over-16")
+    prompt=system(model)
+    assert "Prior-session user statements" not in prompt
+    assert older.turn_id not in prompt
+
+
+def test_activity_preflight_excludes_sensitive_ineligible_category(dsn):
+    host,model=fresh_host(dsn)
+    host.begin_session("old")
+    host.send(
+        "I was hiking near my medical clinic.",
+        idempotency_key="sensitive-hiking",
+    )
+    for index in range(17):
+        host.send(
+            f"I took a pleasant walk at sunrise on day {index}.",
+            idempotency_key=f"walking-{index}",
+        )
+    host.begin_session("new")
+    host.send(PARAPHRASE,idempotency_key="only-eligible-walking")
+    prompt=system(model)
+    assert "Prior-session user statements" in prompt
+    assert "pleasant walk" in prompt
+    assert "medical clinic" not in prompt
+
+
 def test_historical_correction_and_tentative_cadence_remain_ordered(dsn):
     host,model=fresh_host(dsn)
     host.begin_session("old")
