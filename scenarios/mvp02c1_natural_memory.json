@@ -44,7 +44,7 @@
     {
       "action": "message",
       "mode": "model",
-      "text": "What did I tell you about reading?",
+      "text": "Do you remember what I said about reading?",
       "review_response": "Check request for the independently stored user.enjoys_reading=yes preference; do not conflate gardening and reading or invent a schedule."
     },
     {
