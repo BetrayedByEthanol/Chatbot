@@ -17,8 +17,14 @@ authoritative domain objects.
    wording. A small, documented exercise-activity vocabulary supplies
    PostgreSQL English-FTS search candidates (`walk/hike/cycle/jog`). The
    model receives **only source-linked historical statements**, never an
-   asserted inferred activity. If multiple different activity categories
-   match, retrieval abstains instead of choosing arbitrarily.
+   asserted inferred activity. Check activity-category existence across
+   **all** authenticated, eligible historical turns **before** imposing
+   the top-16 relevance cutoff used to select quotations. This independent
+   preflight streams matched turns through a PostgreSQL server-side cursor,
+   applies the same sensitive-content and Memory-source exclusions, and
+   stops early if two categories qualify; otherwise it scans the complete
+   eligible set. If multiple activity categories match anywhere in scope,
+   retrieval abstains instead of choosing from the top-ranked subset.
 2. **Correction-aware local context.** For up to the three best matching
    historical source turns, inspect at most the next three *responded* user
    turns of each in that **same** conversation. Deduplicate follow-up turn
@@ -76,7 +82,9 @@ python -m pytest -q tests/test_mvp02b_historical_user_turns.py \
 
 New integration scenarios assert: a standalone paraphrase as the **first**
 new-session query; ambiguity abstention when walking and hiking both
-qualify; chronological note and correction with source UUIDs; **two
+qualify, **including a hiking source hidden behind 16 higher-ranked
+walking matches**; exclusion of sensitive historical activity sources
+from the ambiguity decision; chronological note and correction with source UUIDs; **two
 successive corrections within the three-turn window**; latest-only
 correction rendering when the optional prompt budget is tight; independent
 paraphrase with correction; topic-switch and unrelated-message stop rules;
