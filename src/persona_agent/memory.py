@@ -322,9 +322,9 @@ def _select_memories(cur, user_id: UUID, instance_id: UUID,
                  WHERE unresolved.target_memory_id=memory_records.memory_id
                    AND unresolved.user_id=memory_records.user_id
                    AND unresolved.instance_id=memory_records.instance_id
-                   AND unresolved.target_version=memory_records.version
                    AND unresolved.status='CONFLICT'
                    AND newer_turn.created_at>memory_records.source_turn_at
+                   AND unresolved.value_text<>memory_records.value_text
              )
              AND (expires_at IS NULL OR expires_at>clock_timestamp())
              AND (%s::timestamptz IS NULL OR source_turn_at >= %s::timestamptz)
@@ -389,6 +389,8 @@ def contextual_memory_block(cur, user_id: UUID, instance_id: UUID,
     if len(head)>=max_chars:
         return ""
     found=_select_memories(cur,user_id,instance_id,query,4)
+    # Candidate target_version may lag a newly approved revision: evaluate
+    # disagreement against the current value and source chronology instead.
     # A newer authenticated user correction can leave the old Memory
     # revision authoritative yet unsafe to repeat as a current preference.
     # Surface only an epistemic caution (never either disputed value).
@@ -400,8 +402,9 @@ def contextual_memory_block(cur, user_id: UUID, instance_id: UUID,
              AND t.conversation_id=c.conversation_id
              AND t.user_id=c.user_id AND t.instance_id=c.instance_id
            WHERE c.user_id=%s AND c.instance_id=%s
-             AND c.status='CONFLICT' AND c.target_version=m.version
+             AND c.status='CONFLICT'
              AND t.created_at>m.source_turn_at
+             AND c.value_text<>m.value_text
              AND to_tsvector('simple',replace(m.subject_key,'_',' ')||' '||
                  replace(m.predicate_key,'_',' ')||' '||m.value_text)
                  @@ websearch_to_tsquery('simple',%s)
