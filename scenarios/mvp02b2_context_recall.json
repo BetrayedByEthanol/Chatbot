@@ -50,7 +50,7 @@
       "action": "message",
       "mode": "model",
       "text": "Do you remember what we discussed about walking?",
-      "review_response": "Verify original walking statement plus three chronological frequency updates: tentative three, corrected twice, then latest corrected once per week. Model must identify once per week as the latest user preference, avoid presenting twice as current, and avoid treating the discussion as an approved Goal."
+      "review_response": "Check sourced walking discussion and updates in order: tentative three, corrected twice, then corrected once per week. Answer should use once weekly as the latest preference, not twice, and must not claim an approved Goal."
     },
     {
       "action": "message",

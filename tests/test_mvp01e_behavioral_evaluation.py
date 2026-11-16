@@ -423,6 +423,9 @@ def test_compose_wrapper_preserves_evidence_on_failed_publication(
     python.write_text(
         "#!/bin/sh\n"
         "printf 'python %s\\n' \"$*\" >> \"$MOCK_LOG\"\n"
+        "if [ \"$1\" = \"-\" ]; then\n"
+        "  exit 0  # Scenario validation preflight is not the runner.\n"
+        "fi\n"
         "while [ \"$#\" -gt 0 ]; do\n"
         "  if [ \"$1\" = \"--publication-status-file\" ]; then\n"
         "    shift\n"
@@ -455,9 +458,16 @@ def test_compose_wrapper_preserves_evidence_on_failed_publication(
         0 if published else 2
     ))
     commands=log.read_text().splitlines()
-    assert any(" up -d --wait" in x for x in commands)
-    assert any(x.startswith("python scripts/persona_e2e.py ")
-               and "--publication-status-file " in x for x in commands)
+    # Preflight is the first Python invocation; only the later runner call
+    # simulates publication and returns MOCK_RUNNER_EXIT.
+    assert commands[0].startswith("python - ")
+    ups=[x for x in commands if x.startswith("docker ")
+         and " up -d --wait" in x]
+    runners=[x for x in commands
+             if x.startswith("python scripts/persona_e2e.py ")
+             and "--publication-status-file " in x]
+    assert len(ups)==len(runners)==1
+    assert commands.index(ups[0])<commands.index(runners[0])
     downs=[x for x in commands if " down -v " in x]
     assert bool(downs) is expect_teardown
     if not published:
@@ -465,7 +475,7 @@ def test_compose_wrapper_preserves_evidence_on_failed_publication(
         match=re.search(r"preserving Compose project (persona-e2e-[a-zA-Z0-9-]+)",
                         result.stderr)
         assert match is not None
-        assert match.group(1) in commands[0]
+        assert match.group(1) in ups[0]
     else:
         assert "EVIDENCE NOT CONFIRMED" not in result.stderr
 
