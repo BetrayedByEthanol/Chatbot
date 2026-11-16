@@ -123,6 +123,13 @@ def conservative_implicit_objective(text: str) -> IntentDraft | None:
     )
 
 
+def is_named_objective_reference(text: str) -> bool:
+    """Recognize a bounded named goal/plan reference, not a new topic."""
+    return _NAMED_GOAL_REFERENCE.fullmatch(
+        text.strip().replace("’","'")
+    ) is not None
+
+
 def _unique_active_objective(
     cur, user_id, instance_id, conversation_id, sequence, *, window: int,
 ):
