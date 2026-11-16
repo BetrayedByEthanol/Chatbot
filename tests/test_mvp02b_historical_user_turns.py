@@ -76,6 +76,8 @@ def test_no_unprompted_or_irrelevant_historical_recall(dsn):
     assert "Prior-session user statements" not in system(model)
     h.send("Do you remember?", idempotency_key="unspecified")
     assert "Prior-session user statements" not in system(model)
+    h.send("I remember walking yesterday.", idempotency_key="statement")
+    assert "Prior-session user statements" not in system(model)
 
 
 def test_sensitive_raw_turn_not_promoted_to_persistent_recall_context(dsn):
