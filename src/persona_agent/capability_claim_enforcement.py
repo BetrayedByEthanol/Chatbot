@@ -66,6 +66,18 @@ _REMOTE_OBJECT = re.compile(
 _ANAPHORA = re.compile(
     r"^\s*(?:this|that|these|those|it)(?:\s+for\s+me)?\s*[?.!]?\s*$", re.I,
 )
+# Explicit text-statistics operations remain read-only even when the content
+# being analyzed happens to be a script, command, server configuration, etc.
+_READ_ONLY_STATISTICS = re.compile(
+    r"^\s*(?:(?:please|can\s+you|could\s+you|would\s+you)\s+)?"
+    r"(?:(?:count|calculate|compute)\s+(?:the\s+)?"
+    r"(?:words?|characters?|lines?|tokens?)\b|"
+    r"(?:run|perform|calculate|compute)\s+(?:(?:a|the)\s+)?"
+    r"(?:word|character|line|token)\s+count\b|"
+    r"(?:run|perform)\s+text\s+statistics\b|"
+    r"how\s+many\s+(?:words|characters|lines|tokens)\b)",
+    re.I,
+)
 # Model promises/offers to carry out commands; excludes "I can't run" and
 # "I can help you run" (guidance, not personal execution).
 _OFFER = re.compile(
@@ -159,6 +171,26 @@ def _category(action: str, obj: str, *, remote_context: bool) -> str | None:
     return None
 
 
+def _prior_remote_context(prior_user_text: str) -> bool:
+    """Use the previous *operation*, not incidental nouns, for 'run this'.
+
+    The explicit-request classifier already distinguishes running code from
+    computing text statistics on code. Reuse that decision first; otherwise
+    protect recognizable read-only statistics requests before falling back
+    to technical-topic context for instructional questions about Nginx/TLS.
+    """
+    prior = prior_user_text.strip()
+    request = _REQUEST.fullmatch(prior)
+    if request:
+        return _category(
+            request.group("action"), request.group("object"),
+            remote_context=False,
+        ) == "remote"
+    if _READ_ONLY_STATISTICS.match(prior):
+        return False
+    return bool(_REMOTE_TOPIC.search(prior))
+
+
 def _fallback(category: str) -> str:
     if category == "data_deletion":
         return (
@@ -189,7 +221,7 @@ def enforce_capability_claims(
     # preceding user topic. Older Nginx context must not shadow a newer
     # read-only request (e.g. word statistics).
     prior_user_text = recent_user_texts[-1] if recent_user_texts else ""
-    remote_context = bool(_REMOTE_TOPIC.search(prior_user_text))
+    remote_context = _prior_remote_context(prior_user_text)
     cleaned = user_text.strip()
     if not cleaned.startswith(('"', "'", "“", "‘")):
         # A hypothetical is not a deletion command. Nevertheless, it must
