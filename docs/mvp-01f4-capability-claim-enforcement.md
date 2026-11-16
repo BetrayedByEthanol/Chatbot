@@ -17,10 +17,13 @@ was created. This was a **response-claim failure**, not a Tool Gateway bypass.
 - `capability_claim_context.py` remains a selective model-facing
   explanation of registered direct read-only tools.
 - `capability_claim_enforcement.py` applies a bounded deterministic
-  post-inference policy to the actual authenticated user text, only the
-  immediately preceding user topic for vague references, and the
-  untrusted model response. Older server topics cannot override intervening
-  read-only work. The host's current direct capabilities are
+  post-inference policy to the actual authenticated user text, the
+  immediately preceding **user operation** for vague references, and the
+  untrusted model response. Explicit preceding requests reuse the same
+  direct-operation classifier as current requests; recognizable standalone
+  word/character/line/token statistics requests are read-only even when
+  their source mentions scripts, servers, or Nginx. Older server topics
+  cannot override intervening read-only work. The host's current direct capabilities are
   limited to `clock.now.v1` and `text.statistics.v1`; there is no
   authorized shell, server mutation or data deletion adapter.
 - Explicit requests for server command execution or data deletion receive a
@@ -29,8 +32,11 @@ was created. This was a **response-claim failure**, not a Tool Gateway bypass.
   examines the requested direct object (e.g., `run this code`), not every
   noun in its arguments. A read-only operation such as `run a word count on
   this code` must not be mistaken for code execution. For the vague reference
-  `run this`, the immediately preceding user topic must establish the
-  server/command context. Otherwise the policy abstains.
+  `run this`, the immediately preceding operation must establish
+  unavailable remote execution: `run text statistics on this script`
+  is a read-only operation, while `run this script` requests execution.
+  For instructional questions such as `How do I configure Nginx?`, the
+  previous technical topic remains a fallback. Otherwise the policy abstains.
 - On other turns, the policy rejects narrowly recognized first-person
   offers such as `I can configure your server`, `I'll run these
   commands`, `We’ll delete your data` or `Would you like me to run these
@@ -105,6 +111,11 @@ still runs in the same turn, outside any PostgreSQL transaction.
   multiple safe offers and quoted examples pass through. A PostgreSQL host
   regression verifies the blocked second offer, durable evidence, replay
   and preservation of a distinct safe reply.
+  Follow-up regressions verify `run text statistics on this script → run
+  this` and `count words in this shell script → run this` preserve read-only
+  results, whereas `run this script → run this` remains blocked. An
+  integration test verifies persistence, restart replay, and one correctly
+  scoped block event after switching back to a Nginx execution topic.
   Text-editing scope regressions verify that separate summarization
   instructions cannot exempt direct stored-data deletion requests or
   unsolicited model offers; ordinary sentence editing still passes through.
