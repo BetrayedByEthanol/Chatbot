@@ -4,6 +4,7 @@ from uuid import uuid4, UUID
 from zipfile import ZipFile
 
 import pytest
+psycopg = pytest.importorskip("psycopg")
 
 from persona_agent.behavioral_evaluation import run_scenario, write_bundle
 from persona_agent.conversation_contracts import ModelReply
