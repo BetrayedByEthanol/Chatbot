@@ -11,7 +11,6 @@ import json
 import os
 import re
 from dataclasses import dataclass
-from typing import Any
 from uuid import UUID, uuid5, NAMESPACE_URL
 
 import psycopg
@@ -42,8 +41,8 @@ from .runtime import PermissionDenied, VersionConflict
 MODEL_MEMORY_CONSUMER = "memory.reviewed_model_extraction.v1"
 # Model input is restricted before inference, then validated again before
 # recording a review candidate or performing an authenticated approval.
-_ALLOWED_TEXT = re.compile(r"[A-Za-z][A-Za-z ,'-]{7,249}\\.?")
-_WORD = re.compile(r"\\b[a-z]+\\b",re.I)
+_ALLOWED_TEXT = re.compile(r"[A-Za-z][A-Za-z ,'-]{7,249}\.?")
+_WORD = re.compile(r"\b[a-z]+\b",re.I)
 
 
 class PreferenceProposal(BaseModel):
@@ -179,8 +178,7 @@ def _validated_draft(text:str,source_text:str) -> PreferenceProposal | None:
     proposed=draft.candidate
     if proposed is None:
         return None
-    # Never trust generated source evidence, values, or predicates, even
-    # when the LLM returns well-formed JSON. A model is a candidate generator.
+    # Never trust generated evidence or predicates. A model only proposes.
     if (proposed.source_quote!=source_text
             or not proposed.predicate_key.startswith("enjoys_")
             or not _input_eligible(source_text)
@@ -293,7 +291,7 @@ def run_model_memory_tick(
                 pass
         except StaleDelivery:
             continue
-        except (ValueError,ModelInputNotReady,PermissionDenied,Exception) as exc:
+        except Exception as exc:
             # model failures are retried through the existing durable
             # P0 delivery lease, never while holding a transaction.
             try:
