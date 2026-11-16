@@ -25,10 +25,10 @@ _REQUEST = re.compile(
     re.I,
 )
 _HYPOTHETICAL_DELETION = re.compile(
-    r"^what\\s+if\\s+(?:i|we)\\s+(?:asked|requested|wanted)\\s+"
-    r"(?:you\\s+to\\s+|that\\s+you\\s+)"
-    r"(?:delete|erase|remove)\\s+(?:my|our|the)\\s+"
-    r"(?:data|account|files|records)[?.!]?\\s*$",
+    r"^what\s+if\s+(?:i|we)\s+(?:asked|requested|wanted)\s+"
+    r"(?:you\s+to\s+|that\s+you\s+)"
+    r"(?:delete|erase|remove)\s+(?:my|our|the)\s+"
+    r"(?:data|account|files|records)[?.!]?\s*$",
     re.I,
 )
 _DELETION_OBJECT = re.compile(
