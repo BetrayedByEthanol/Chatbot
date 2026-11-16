@@ -204,6 +204,43 @@ def test_vague_execution_uses_immediately_previous_user_topic_only():
     assert result.reason=="unsupported_request:remote"
 
 
+@pytest.mark.parametrize("prior", [
+    "Could you run text statistics on this script?",
+    "Can you run a word count on this Nginx configuration?",
+    "Count words in this shell script",
+    "How many words are in the server script?",
+])
+def test_vague_run_after_read_only_operation_on_executable_content(prior):
+    answer="There are three words."
+    result=enforce_capability_claims(
+        "Can you run this for me?",answer,recent_user_texts=(prior,),
+    )
+    assert result.reason is None
+    assert result.text==answer
+
+
+@pytest.mark.parametrize("prior", [
+    "Can you run this script?",
+    "Can you execute these commands?",
+    "How do I configure Nginx?",
+])
+def test_vague_run_after_remote_operation_or_instruction_remains_blocked(prior):
+    result=enforce_capability_claims(
+        "Can you run this for me?", "Sure, I'll do that.",
+        recent_user_texts=(prior,),
+    )
+    assert result.reason=="unsupported_request:remote"
+
+
+def test_independent_remote_offer_still_blocked_after_read_only_operation():
+    result=enforce_capability_claims(
+        "Can you run this for me?",
+        "I can execute the script on your server.",
+        recent_user_texts=("Could you run text statistics on this script?",),
+    )
+    assert result.reason=="unsupported_offer:remote"
+
+
 @pytest.mark.parametrize(("input_text", "answer"), [
     ("Can you run a word count on this code?", "There are two words."),
     ("Could you run text statistics on this script?", "I counted three words."),
@@ -619,3 +656,51 @@ def test_host_fences_second_offer_after_supported_word_count(dsn):
                 (response.response_id,),
             ).fetchone()[0]
             assert stored==response.text
+
+
+def test_host_follows_read_only_script_statistics_without_remote_refusal(dsn):
+    class PreviousOperationModel(NonCompliantModel):
+        def generate(self,messages):
+            current=messages[-1].content
+            self.calls.append(current)
+            if current=="Can you run this for me?":
+                return ModelReply(model_id="statistics-model",text="There are three words.")
+            return ModelReply(model_id="statistics-model",text="Instructions only.")
+
+    model=PreviousOperationModel()
+    host=BehavioralAcceptanceHarness(dsn,seed_local_demo(dsn),model)
+    host.begin_session("read-only-script-followup")
+    host.send("How do I configure Nginx?",idempotency_key="older-server-topic")
+    host.send(
+        "Could you run text statistics on this script?",
+        idempotency_key="script-statistics",
+    )
+    safe=host.send("Can you run this for me?",idempotency_key="stats-followup")
+    assert safe.text=="There are three words."
+    host.restart_host()
+    replay=host.send("Can you run this for me?",idempotency_key="stats-followup")
+    assert replay.replayed and replay.response_id==safe.response_id
+    assert replay.text==safe.text
+
+    # A subsequent remote topic changes the immediate operation context.
+    host.send("How do I configure Nginx?",idempotency_key="new-server-topic")
+    blocked=host.send("Can you run this for me?",idempotency_key="remote-followup")
+    assert "can't run commands" in blocked.text
+    assert model.calls.count("Can you run this for me?")==2
+
+    identity=host.active_identity
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        events=conn.execute(
+            """SELECT payload FROM events
+               WHERE user_id=%s AND instance_id=%s
+                 AND event_type='conversation.response.capability_claim_blocked.v1'""",
+            (identity.user_id,identity.instance_id),
+        ).fetchall()
+        assert len(events)==1
+        assert events[0][0]["reason"]=="unsupported_request:remote"
+        for response in (safe,blocked):
+            persisted=conn.execute(
+                "SELECT response_text FROM conversation_responses WHERE response_id=%s",
+                (response.response_id,),
+            ).fetchone()[0]
+            assert persisted==response.text
