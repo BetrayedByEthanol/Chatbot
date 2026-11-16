@@ -91,6 +91,7 @@ def test_ambiguous_named_objective_does_not_guess_or_refocus(dsn):
     host.send("I want to track walking habits.",idempotency_key="w2")
     host.send("Switch the topic to cooking.",idempotency_key="cook")
     host.send("What about that walking goal?",idempotency_key="reference")
+    host.send("Let's discuss my walking plan instead.",idempotency_key="ambiguous-topic")
     with psycopg.connect(dsn,autocommit=True) as conn:
         actor=TrustedActor(user_id=host.active_identity.user_id,
                            source_id="mvp01f2-test")
@@ -98,6 +99,7 @@ def test_ambiguous_named_objective_does_not_guess_or_refocus(dsn):
         focused=next(t.title for t in dialogue.threads
                      if t.thread_id==dialogue.focus_thread_id)
         assert focused=="cooking"
+        assert len(dialogue.threads)==3  # Two objectives + cooking, no invented fourth.
         row=conn.execute(
             """SELECT related_signal_id FROM conversation_intent_signals
                WHERE conversation_id=%s ORDER BY turn_sequence DESC LIMIT 1""",
