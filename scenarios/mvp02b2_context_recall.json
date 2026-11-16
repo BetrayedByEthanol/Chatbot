@@ -1,0 +1,62 @@
+{
+  "name": "mvp02b2-independent-paraphrase-and-correction-v1",
+  "description": "Real-model review: an independent first-message paraphrase, followed by source-linked, successive frequency corrections. Neither tentative wording nor older cadence may be mistaken for an approved Goal.",
+  "steps": [
+    {
+      "action": "session",
+      "name": "original_walking_discussion"
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "I've been thinking about walking more regularly."
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "Maybe three times per week."
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "Actually, twice per week would be better."
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "Actually, once per week would be better."
+    },
+    {
+      "action": "restart"
+    },
+    {
+      "action": "session",
+      "name": "independent_paraphrase"
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "What outdoor activity had I been considering?",
+      "review_response": "Independent historical paraphrase: verify actual model request contains original prior-conversation walking statement, UUID and date; no earlier answer in this session may supply walking. Assistant must not invent a completed plan or confuse broad activity categories."
+    },
+    {
+      "action": "session",
+      "name": "corrected_frequency"
+    },
+    {
+      "action": "restart"
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "Do you remember what we discussed about walking?",
+      "review_response": "Verify original walking statement plus three chronological frequency updates: tentative three, corrected twice, then latest corrected once per week. Model must identify once per week as the latest user preference, avoid presenting twice as current, and avoid treating the discussion as an approved Goal."
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "What if I wanted to start next month instead?",
+      "review_response": "A hypothetical is not an approved goal or completed external action; response should be concise and grounded in the actual current topic."
+    }
+  ]
+}
