@@ -107,7 +107,16 @@ def conservative_implicit_objective(text: str) -> IntentDraft | None:
     *tentative discussion topic*, never an approved Goal.
     """
     value=text.strip().replace("’","'")
-    if len(value)>200 or "\n" in value or not _IMPLICIT_ROUTINE.fullmatch(value):
+    match=_IMPLICIT_ROUTINE.fullmatch(value)
+    if len(value)>200 or "\n" in value or match is None:
+        return None
+    activity=match.group("activity").casefold()
+    # A description of another person or a negated activity is not a
+    # user-owned objective, even if it has the same sentence skeleton.
+    if activity.startswith((
+        "not ","never ","my ","your ","their ","someone ",
+        "another ","other people ","you ",
+    )):
         return None
     return IntentDraft(
         "OBJECTIVE", value[:200], 0.85, "mvp01f2.routine_fallback.1",
