@@ -95,6 +95,8 @@ def resolve_interpretation(
         )
     elif any(x.get("source_response_id") is not None for x in turn_signals):
         record["admission"]="MODEL_SIGNAL_PERSISTED"
+    elif fallback is not None:
+        record["admission"]="RULE_FALLBACK_PERSISTED"
     elif turn_signals:
         record["admission"]="PREEXISTING_SIGNAL"
     else:
