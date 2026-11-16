@@ -11,7 +11,7 @@ from persona_agent.conversation import ingest_text
 from persona_agent.conversation_contracts import TextInputCommand
 from persona_agent.event_delivery import dispatch_outbox
 from persona_agent.lifecycle import SwitchPersonaCommand, switch_persona
-from persona_agent.memory import admit_memory, search_memories
+from persona_agent.memory import admit_memory, contextual_memory_block, search_memories
 from persona_agent.memory_contracts import AdmitMemoryCommand
 from persona_agent.memory_extraction import (
     approve_extraction_conflict, list_extraction_conflicts,
@@ -644,6 +644,27 @@ def test_later_conflict_retargets_to_new_revision_for_explicit_approval(dsn):
         expected_generation=1,expected_version=1,
     )
     assert first.version==2
+    # The later water claim still targets v1: the read-side must assess
+    # its newer source and value against authoritative v2, *without*
+    # first triggering review-queue reconciliation.
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            """SELECT status,target_version FROM memory_extraction_candidates
+               WHERE source_turn_id=%s""",(water.turn_id,),
+        ).fetchone()==("CONFLICT",1)
+        assert conn.execute(
+            """SELECT value_text,version FROM memory_records
+               WHERE user_id=%s AND instance_id=%s AND predicate_key='favorite_drink'""",
+            (user,instance),
+        ).fetchone()==("coffee",2)
+        with conn.cursor() as cur:
+            context=contextual_memory_block(
+                cur,user,instance,"Do you remember my favorite drink?",650,
+            )
+    assert call(dsn,search_memories,actor(user),instance,"favorite drink")==()
+    assert "newer user-reported correction" in context
+    assert "Do not assert the old value" in context
+    assert "user.favorite_drink: coffee" not in context
     updated=call(dsn,list_extraction_conflicts,actor(user),instance)
     assert len(updated)==1
     assert updated[0].candidate_id==later.candidate_id
@@ -690,6 +711,10 @@ def test_earlier_conflict_is_retired_when_newer_evidence_wins(dsn):
         dsn,approve_extraction_conflict,actor(user),new_candidate.candidate_id,
         expected_generation=1,expected_version=1,
     ).version==2
+    # The earlier coffee proposal is older than the authoritative
+    # water revision and must not suppress the updated preference.
+    assert call(dsn,search_memories,actor(user),instance,"favorite drink")[
+        0].value_text=="water"
     assert call(dsn,list_extraction_conflicts,actor(user),instance)==()
     with psycopg.connect(dsn,autocommit=True) as conn:
         assert conn.execute(
