@@ -389,7 +389,32 @@ def contextual_memory_block(cur, user_id: UUID, instance_id: UUID,
     if len(head)>=max_chars:
         return ""
     found=_select_memories(cur,user_id,instance_id,query,4)
+    # A newer authenticated user correction can leave the old Memory
+    # revision authoritative yet unsafe to repeat as a current preference.
+    # Surface only an epistemic caution (never either disputed value).
+    cur.execute(
+        """SELECT 1 FROM memory_extraction_candidates c
+           JOIN memory_records m ON m.memory_id=c.target_memory_id
+             AND m.user_id=c.user_id AND m.instance_id=c.instance_id
+           JOIN conversation_turns t ON t.turn_id=c.source_turn_id
+             AND t.conversation_id=c.conversation_id
+             AND t.user_id=c.user_id AND t.instance_id=c.instance_id
+           WHERE c.user_id=%s AND c.instance_id=%s
+             AND c.status='CONFLICT' AND c.target_version=m.version
+             AND t.created_at>m.source_turn_at
+             AND to_tsvector('simple',replace(m.subject_key,'_',' ')||' '||
+                 replace(m.predicate_key,'_',' ')||' '||m.value_text)
+                 @@ websearch_to_tsquery('simple',%s)
+           LIMIT 1""",
+        (user_id,instance_id,query),
+    )
+    caution=(
+        "A newer user-reported correction to a matching preference is "
+        "unresolved. Do not assert the old value; ask for clarification.\\n"
+    ) if cur.fetchone() is not None else ""
     block=head
+    if caution and len(block)+len(caution)<=max_chars:
+        block+=caution
     for item in found:
         line=(f"[{item.memory_kind}] {item.subject_key}.{item.predicate_key}: "
               f"{item.value_text} (source turn {item.source_turn_id})\n")
