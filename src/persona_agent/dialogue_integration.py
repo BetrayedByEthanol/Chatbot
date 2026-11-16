@@ -10,7 +10,8 @@ from uuid import UUID, uuid4
 
 from .dialogue_state import _link_turn
 from .intent_interpretation import (
-    classify_intent, parse_explicit_topic_switch, should_interpret_with_model,
+    classify_intent, is_named_objective_reference,
+    parse_explicit_topic_switch, should_interpret_with_model,
 )
 from .conversation import _event
 
@@ -38,6 +39,11 @@ _NOT_ANSWERS = {"okay", "ok", "got it", "understood"}
 
 def _starts_new_topic(kind: str, label: str) -> bool:
     """Shared ingress/delivery gate: a topic request is not an answer."""
+    # A named goal/plan reference is not a new subject when no single
+    # matching prior objective was resolved. Do not create a duplicate
+    # "walking plan" topic for an ambiguous reference.
+    if kind == "REQUEST" and is_named_objective_reference(label):
+        return False
     return kind == "OBJECTIVE" or (
         kind == "REQUEST" and bool(_TOPIC_REQUEST.match(label))
     )

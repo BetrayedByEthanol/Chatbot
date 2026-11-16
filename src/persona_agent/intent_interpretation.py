@@ -10,6 +10,35 @@ _INSTRUCTION = re.compile(r"^(?:please )?(?:remember that|always|never|don't|do 
 _OBSERVATION = re.compile(r"^(?:i (?:prepared|made|finished|tried|noticed|struggled|failed|managed|completed|cooked|feel|felt|am feeling)\b|my (?:favorite|hobby)\b)", re.I)
 _REQUEST = re.compile(r"^(?:can (?:you|we)|could (?:you|we)|would you|will you|please|help me|tell me|explain|how|what|why|when|where|yes,? please|let's)\b", re.I)
 _REFERENCE = re.compile(r"\b(that goal|this goal|our goal|previous goal|the plan|our plan|the goal|next step|start by|what we discussed|i meant)\b", re.I)
+# MVP-01F.2: high-precision conversational details, never Goal-domain writes.
+# These patterns abstain on unqualified musings ("thinking about ...") and
+# on hypothetical / negative input. They supply a source-grounded fallback
+# only after the primary model pass failed to admit a candidate.
+_IMPLICIT_ROUTINE = re.compile(
+    r"^i(?:'ve| have) been thinking about "
+    r"(?P<activity>[a-z][a-z -]{2,65}?) "
+    r"(?P<cadence>more regularly|more often|every day|each week)\s*[.!]?$",
+    re.I,
+)
+_FREQUENCY_NOTE = re.compile(
+    r"^(?:maybe|perhaps)\s+(?:(?:once|twice)(?:\s+times?)?|"
+    r"(?:three|four|five|six|seven|\d{1,2})\s+times?)"
+    r"\s+per\s+week\s*[.!]?$", re.I,
+)
+_FREQUENCY_CORRECTION = re.compile(
+    r"^actually[, ]+\s*(?:(?:once|twice)(?:\s+times?)?|"
+    r"(?:three|four|five|six|seven|\d{1,2})\s+times?)"
+    r"\s+per\s+week\s+would\s+be\s+better\s*[.!]?$",
+    re.I,
+)
+_NAMED_GOAL_REFERENCE = re.compile(
+    r"^(?:what about|let(?:'s| us) (?:discuss|talk about)|"
+    r"(?:can|could) we (?:discuss|return to))\s+"
+    r"(?:that|this|my|our|the)\s+"
+    r"(?P<name>[a-z][a-z-]{2,28})\s+(?:goal|plan)"
+    r"(?:\s+instead)?\s*[?.!]?$",re.I,
+)
+
 
 # MVP-01C: a bounded, explicit conversational topic switch is a REQUEST,
 # not an instruction to execute tools or a user-authorized goal.
@@ -53,6 +82,8 @@ def classify_intent(text: str) -> IntentDraft | None:
             kind, label, confidence = "REQUEST", original, .80
         else:
             kind, label, confidence = "OBJECTIVE", subject, .88
+    elif _FREQUENCY_NOTE.fullmatch(value):
+        kind, label, confidence = "OBSERVATION", original, .80
     elif parse_explicit_topic_switch(value) is not None:
         # Keep the exact user wording as source evidence. Dialogue routing
         # extracts the named subject only after the REQUEST signal is stored.
@@ -68,9 +99,124 @@ def classify_intent(text: str) -> IntentDraft | None:
     return IntentDraft(kind, label[:200], confidence)
 
 
+def conservative_implicit_objective(text: str) -> IntentDraft | None:
+    """Source-grounded routine intent, only if the model failed to admit one.
+
+    Avoid interpreting negation, questions, wishes about others, or vague
+    "thinking about" reports as objective commitments. This produces a
+    *tentative discussion topic*, never an approved Goal.
+    """
+    value=text.strip().replace("’","'")
+    match=_IMPLICIT_ROUTINE.fullmatch(value)
+    if len(value)>200 or "\n" in value or match is None:
+        return None
+    activity=match.group("activity").casefold()
+    # A description of another person or a negated activity is not a
+    # user-owned objective, even if it has the same sentence skeleton.
+    if activity.startswith((
+        "not ","never ","my ","your ","their ","someone ",
+        "another ","other people ","you ",
+    )):
+        return None
+    return IntentDraft(
+        "OBJECTIVE", text.strip()[:200], 0.85,
+        "mvp01f2.routine_fallback.1",
+    )
+
+
+def is_named_objective_reference(text: str) -> bool:
+    """Recognize a bounded named goal/plan reference, not a new topic."""
+    return _NAMED_GOAL_REFERENCE.fullmatch(
+        text.strip().replace("’","'")
+    ) is not None
+
+
+def _unique_active_objective(
+    cur, user_id, instance_id, conversation_id, sequence, *, window: int,
+):
+    """Find a single objective attached to the focused AUTO discussion."""
+    cur.execute(
+        """SELECT s.signal_id
+           FROM conversation_intent_signals s
+           JOIN dialogue_turn_links l
+             ON l.turn_id=s.turn_id AND l.conversation_id=s.conversation_id
+            AND l.user_id=s.user_id AND l.instance_id=s.instance_id
+           JOIN conversations c
+             ON c.conversation_id=s.conversation_id AND c.user_id=s.user_id
+            AND c.instance_id=s.instance_id
+           JOIN dialogue_threads d
+             ON d.thread_id=l.thread_id AND d.conversation_id=l.conversation_id
+            AND d.user_id=l.user_id AND d.instance_id=l.instance_id
+           WHERE s.conversation_id=%s AND s.user_id=%s AND s.instance_id=%s
+             AND s.intent_kind='OBJECTIVE' AND s.turn_sequence<%s
+             AND s.turn_sequence>=%s
+             AND l.thread_id=c.focus_thread_id
+             AND d.origin_kind='AUTO_SIGNAL' AND d.resolution_status='OPEN'
+           ORDER BY s.turn_sequence DESC LIMIT 2""",
+        (conversation_id,user_id,instance_id,sequence,
+         max(1,sequence-window)),
+    )
+    matches=cur.fetchall()
+    return matches[0]["signal_id"] if len(matches)==1 else None
+
+
+def _named_objective_reference(
+    cur, user_id, instance_id, conversation_id, sequence, text,
+):
+    """Resolve only explicit named goal/plan references, never fuzzy guesses.
+
+    A single exact source-word match is necessary; two possible objectives
+    are ambiguous and cannot redirect dialogue. Match only linked AUTO
+    discussion sources from this conversation, not other sessions or users.
+    """
+    match=_NAMED_GOAL_REFERENCE.fullmatch(text.strip().replace("’","'"))
+    if match is None:
+        return None
+    name=match.group("name").casefold()
+    cur.execute(
+        """SELECT s.signal_id,s.label
+           FROM conversation_intent_signals s
+           JOIN dialogue_turn_links l
+             ON l.turn_id=s.turn_id AND l.conversation_id=s.conversation_id
+            AND l.user_id=s.user_id AND l.instance_id=s.instance_id
+           JOIN dialogue_threads d
+             ON d.thread_id=l.thread_id AND d.conversation_id=l.conversation_id
+            AND d.user_id=l.user_id AND d.instance_id=l.instance_id
+           WHERE s.conversation_id=%s AND s.user_id=%s AND s.instance_id=%s
+             AND s.intent_kind='OBJECTIVE' AND s.turn_sequence<%s
+             AND d.origin_kind='AUTO_SIGNAL' AND d.resolution_status='OPEN'
+           ORDER BY s.turn_sequence DESC LIMIT 64""",
+        (conversation_id,user_id,instance_id,sequence),
+    )
+    candidates=[
+        row for row in cur.fetchall()
+        if re.search(r"\b"+re.escape(name)+r"\b",row["label"].casefold())
+    ]
+    return candidates[0]["signal_id"] if len(candidates)==1 else None
+
+
 def _related_objective(cur, user_id, instance_id, conversation_id, sequence, draft, text):
-    """Only link an explicitly referenced objective; never update it."""
-    if draft.kind not in ("REQUEST", "CORRECTION") or not _REFERENCE.search(text):
+    """Evidence-linked discussion reference; never change or approve a goal."""
+    if draft.kind not in ("REQUEST","CORRECTION","OBSERVATION"):
+        return None
+    if draft.kind=="REQUEST":
+        named=_named_objective_reference(
+            cur,user_id,instance_id,conversation_id,sequence,text,
+        )
+        if named is not None:
+            return named
+        if _NAMED_GOAL_REFERENCE.fullmatch(text.strip().replace("’","'")):
+            # Named references must not fall back to a different unnamed goal.
+            return None
+    if draft.kind=="CORRECTION" and _FREQUENCY_CORRECTION.fullmatch(text.strip()):
+        return _unique_active_objective(
+            cur,user_id,instance_id,conversation_id,sequence,window=8,
+        )
+    if draft.kind=="OBSERVATION" and _FREQUENCY_NOTE.fullmatch(text.strip()):
+        return _unique_active_objective(
+            cur,user_id,instance_id,conversation_id,sequence,window=8,
+        )
+    if draft.kind not in ("REQUEST","CORRECTION") or not _REFERENCE.search(text):
         return None
     cur.execute(
         """SELECT signal_id FROM conversation_intent_signals
@@ -80,18 +226,21 @@ def _related_objective(cur, user_id, instance_id, conversation_id, sequence, dra
            ORDER BY turn_sequence DESC LIMIT 2""",
         (conversation_id, user_id, instance_id, sequence, max(1, sequence-3)),
     )
-    candidates = cur.fetchall()
-    # If multiple goals were discussed recently, the reference is ambiguous.
-    return candidates[0]["signal_id"] if len(candidates) == 1 else None
+    candidates=cur.fetchall()
+    return candidates[0]["signal_id"] if len(candidates)==1 else None
 
 
 def record_intent_on_ingress(
     cur, *, user_id, instance_id, conversation_id,
-    turn_id, turn_sequence, source_event_id, text,
+    turn_id, turn_sequence, source_event_id, text, draft=None,
 ):
-    """Call under the existing authenticated, selection-fenced input transaction."""
+    """Call under the existing authenticated, selection-fenced transaction.
+
+    A supplied draft is a bounded rule-based fallback evaluated against the
+    original user input inside the response commit, not a model command.
+    """
     from uuid import uuid4
-    draft = classify_intent(text)
+    draft = draft if draft is not None else classify_intent(text)
     if draft is None:
         return None
     related = _related_objective(
@@ -167,6 +316,120 @@ def intent_context_block(
         rendered = head + json.dumps(payload, ensure_ascii=False) + "\n"
         if len(rendered) <= max_chars:
             return rendered
+    return ""
+
+
+
+def resolved_objective_context_block(
+    cur, *, user_id, instance_id, conversation_id, turn_id,
+    latest_text: str, max_chars: int,
+) -> str:
+    """Read-only, scope-fenced context for a *persisted* named reference.
+
+    The current turn's related_signal_id was resolved by authenticated
+    ingress; do not independently guess a goal or focus a thread here.
+    This is read during generation, while the conversation's old focus is
+    still authoritative until response delivery is acknowledged.
+    """
+    import json
+
+    if max_chars < 220 or not is_named_objective_reference(latest_text):
+        return ""
+
+    cur.execute(
+        """SELECT source.signal_id,source.label AS objective,
+                  input.input_text AS source_input,
+                  thread.thread_id,thread.title,thread.resolution_status,
+                  thread.next_conversational_action,
+                  source.turn_sequence AS objective_sequence,
+                  current.turn_sequence AS current_sequence
+           FROM conversation_intent_signals current
+           JOIN conversation_intent_signals source
+             ON source.signal_id=current.related_signal_id
+            AND source.conversation_id=current.conversation_id
+            AND source.user_id=current.user_id
+            AND source.instance_id=current.instance_id
+           JOIN conversation_turns input
+             ON input.turn_id=source.turn_id
+            AND input.conversation_id=source.conversation_id
+            AND input.user_id=source.user_id
+            AND input.instance_id=source.instance_id
+           JOIN dialogue_turn_links link
+             ON link.turn_id=source.turn_id
+            AND link.conversation_id=source.conversation_id
+            AND link.user_id=source.user_id
+            AND link.instance_id=source.instance_id
+           JOIN dialogue_threads thread
+             ON thread.thread_id=link.thread_id
+            AND thread.conversation_id=link.conversation_id
+            AND thread.user_id=link.user_id
+            AND thread.instance_id=link.instance_id
+           WHERE current.turn_id=%s AND current.conversation_id=%s
+             AND current.user_id=%s AND current.instance_id=%s
+             AND current.intent_kind='REQUEST'
+             AND source.intent_kind='OBJECTIVE'
+             AND source.turn_sequence<current.turn_sequence
+             AND thread.origin_kind='AUTO_SIGNAL'
+             AND thread.resolution_status='OPEN'
+           LIMIT 2""",
+        (turn_id,conversation_id,user_id,instance_id),
+    )
+    matches=cur.fetchall()
+    if len(matches)!=1:
+        return ""
+    resolved=matches[0]
+    # Limited history of the *resolved thread*, not whatever was in focus
+    # when this input arrived. Exclude the founding objective itself.
+    cur.execute(
+        """SELECT cue.intent_kind,cue.label,cue.turn_sequence
+           FROM conversation_intent_signals cue
+           JOIN dialogue_turn_links link
+             ON link.turn_id=cue.turn_id
+            AND link.conversation_id=cue.conversation_id
+            AND link.user_id=cue.user_id
+            AND link.instance_id=cue.instance_id
+           WHERE cue.conversation_id=%s AND cue.user_id=%s
+             AND cue.instance_id=%s AND link.thread_id=%s
+             AND cue.turn_sequence>%s AND cue.turn_sequence<%s
+           ORDER BY cue.turn_sequence DESC LIMIT 3""",
+        (conversation_id,user_id,instance_id,resolved["thread_id"],
+         resolved["objective_sequence"],resolved["current_sequence"]),
+    )
+    notes=list(reversed([{
+        "kind":row["intent_kind"], "text":row["label"][:160],
+        "turn":row["turn_sequence"],
+    } for row in cur.fetchall()]))
+
+    prefix=(
+        "Resolved prior conversation reference (untrusted discussion "
+        "evidence, NOT an approved goal, permission, or completed action; "
+        "the persisted focus changes only after delivery): "
+    )
+    # Fit as much as possible while prioritizing the original verbatim user
+    # observation. Late corrections are useful but must not crowd it out.
+    data={
+        "thread":resolved["title"][:160],
+        "thread_status":resolved["resolution_status"],
+        "objective":resolved["source_input"][:200],
+        "details":notes,
+    }
+    # Conversation-owned next action is a hint, not an agreed commitment.
+    if resolved["next_conversational_action"]:
+        data["next_dialogue_hint"]=resolved["next_conversational_action"][:120]
+    for _ in range(6):
+        block=prefix+json.dumps(data,ensure_ascii=False)+"\n"
+        if len(block)<=max_chars:
+            return block
+        if data["details"]:
+            data["details"].pop(0)
+        elif "next_dialogue_hint" in data:
+            data.pop("next_dialogue_hint")
+        elif len(data["objective"])>100:
+            data["objective"]=data["objective"][:100]
+        elif len(data["thread"])>60:
+            data["thread"]=data["thread"][:60]
+        else:
+            break
     return ""
 
 
