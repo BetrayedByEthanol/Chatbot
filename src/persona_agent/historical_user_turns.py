@@ -29,6 +29,17 @@ _SENSITIVE = re.compile(
     r"\b(?:\+?\d[\d ()-]{8,}\d)\b",
     re.I,
 )
+# The general Memory recall cue also recognizes declarative statements
+# ("I remember walking..."). Raw historical-turn fallback is narrower:
+# require an actual question/request for recollection.
+_EXPLICIT_RECALL = re.compile(
+    r"^\s*(?:(?:do|can|could|would|will)\s+you\s+"
+    r"(?:remember|recall|remind\s+me)|"
+    r"(?:please\s+)?(?:remember|recall|remind\s+me)|"
+    r"what\s+did\s+(?:i|we)\s+(?:say|discuss)|"
+    r"what\s+do\s+you\s+(?:remember|know)\s+about)\b",
+    re.I,
+)
 _GENERIC = frozenset({
     "discuss", "discussed", "discussion", "discussions",
     "mention", "mentioned", "talk", "talked", "talking",
@@ -56,6 +67,7 @@ def historical_user_turn_context_block(
     if (max_chars < _MIN_CONTEXT
             or len(latest_text) > 500
             or not is_historical_recall_query(latest_text)
+            or not _EXPLICIT_RECALL.match(latest_text)
             or _SENSITIVE.search(latest_text)):
         return ""
     terms = [
