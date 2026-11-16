@@ -37,7 +37,12 @@ was created. This was a **response-claim failure**, not a Tool Gateway bypass.
   commands?`. ASCII and typographic apostrophes are supported. Balanced
   quoted examples (straight, typographic, and inline-code delimiters) and
   explicitly negated attribution are not treated as actual first-person
-  offers; an independent unquoted offer remains enforceable. Ordinary
+  offers; an independent unquoted offer remains enforceable. Detection
+  matches the original model output and uses quote masking *only* to exclude
+  offer starts inside examples. This retains inline-code or quoted objects
+  of genuine offers, e.g. `I can execute \`openssl req -x509\` on your
+  server`, instead of erasing the execution target before classification.
+  Ordinary
   instructions addressed **to the user**, explicit inability, safe guidance,
   and registered read-only work are preserved.
 - Deletion classification excludes explicitly textual targets such as
@@ -86,7 +91,10 @@ still runs in the same turn, outside any PostgreSQL transaction.
   quoted examples such as `Do not assume that "I can run these commands"
   is a capability this host has`, plus text-editing requests such as
   `Can you remove my data from this sentence: "Here is my data"?`, with
-  no false capability-block event.
+  no false capability-block event. Tests also verify formatted
+  executable targets in **unquoted** first-person offers are blocked while
+  quoted examples containing the same inline-code commands are preserved,
+  including a PostgreSQL response-persistence and replay regression.
 - Existing MVP-01F.1–F.3, prior-phase regressions, Phase 0 PostgreSQL CI
   and Phase 1 live Ollama CI must remain green.
 - After merge approval, rerun the *target* `qwen2.5:7b` 28-turn
