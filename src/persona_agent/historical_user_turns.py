@@ -93,11 +93,16 @@ def historical_user_turn_context_block(
     if (max_chars < _MIN_CONTEXT
             or len(latest_text) > 500
             or not is_historical_recall_query(latest_text)
-            or not _EXPLICIT_RECALL.match(latest_text)
             or _SENSITIVE.search(latest_text)):
         return ""
+    request = _EXPLICIT_RECALL.match(latest_text)
+    if request is None:
+        return ""
+    # Route syntax is not a search topic: 'remind' and 'know' must not
+    # consume the small OR candidate set or make a topic-less request match.
+    topic_text = latest_text[request.end():]
     terms = [
-        word for word in _terms(latest_text)
+        word for word in _terms(topic_text)
         if word not in _GENERIC and not _SENSITIVE.search(word)
     ]
     if not terms:
