@@ -56,26 +56,26 @@ def test_vague_execution_uses_immediately_previous_user_topic_only():
     assert result.reason=="unsupported_request:remote"
 
 
-@pytest.mark.parametrize(("request", "answer"), [
+@pytest.mark.parametrize(("input_text", "answer"), [
     ("Can you run a word count on this code?", "There are two words."),
     ("Could you run text statistics on this script?", "I counted three words."),
     ("Can you run a character count on my Nginx configuration?", "28 characters."),
 ])
 def test_read_only_analysis_of_executable_content_is_not_remote_execution(
-    request, answer,
+    input_text, answer,
 ):
-    result=enforce_capability_claims(request,answer)
+    result=enforce_capability_claims(input_text,answer)
     assert result.reason is None
     assert result.text==answer
 
 
-@pytest.mark.parametrize("request", [
+@pytest.mark.parametrize("input_text", [
     "Can you run this code?",
     "Can you execute a script on the server?",
     "Can you run these commands for me?",
 ])
-def test_explicit_executable_targets_remain_blocked(request):
-    result=enforce_capability_claims(request,"Sure, I can do that.")
+def test_explicit_executable_targets_remain_blocked(input_text):
+    result=enforce_capability_claims(input_text,"Sure, I can do that.")
     assert result.reason=="unsupported_request:remote"
 
 
