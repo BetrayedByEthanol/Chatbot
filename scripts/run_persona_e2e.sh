@@ -31,7 +31,7 @@ import json
 from pathlib import Path
 import sys
 
-from persona_agent.behavioral_evaluation import validate_scenario
+from persona_agent.scenario_validation import validate_scenario
 
 parser = argparse.ArgumentParser(add_help=False)
 parser.add_argument(
