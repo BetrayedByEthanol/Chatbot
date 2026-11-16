@@ -381,10 +381,13 @@ def run_scenario(
         "identity":{"user_id":str(identity.user_id),
                     "instance_id":str(identity.instance_id)},
         "transcript":[], "snapshots":[], "checks":[], "errors":[],
+        "review_items":[],
+        "interpretation_diagnostics":observed_gateway.interpretations,
         "model_requests":observed_gateway.requests, "deliveries":harness.deliveries,
     }
     for index, step in enumerate(scenario["steps"]):
         recorded_message = False
+        interpretation_before = len(observed_gateway.interpretations)
         try:
             action = step["action"]
             if action == "session":
@@ -402,6 +405,10 @@ def run_scenario(
                     "conversation_id":str(harness.active_identity.conversation_id),
                 })
                 continue
+            previous_operations=(
+                report["snapshots"][-1]["database"]["operations"]["count"]
+                if report["snapshots"] else 0
+            )
             turn = harness.send(
                 step["text"],idempotency_key=f"mvp01e-{index:04d}",
                 mode=step.get("mode","auto"),
@@ -420,9 +427,28 @@ def run_scenario(
             )
             current["step_index"] = index
             report["snapshots"].append(current)
+            if len(observed_gateway.interpretations)>interpretation_before:
+                item=observed_gateway.interpretations[-1]
+                item.update({
+                    "step_index":index, "turn_id":turn.turn_id,
+                    "conversation_id":recorded["conversation_id"],
+                })
+                resolve_interpretation(
+                    item,input_text=step["text"],turn_id=turn.turn_id,
+                    snapshot=current,
+                )
             report["checks"].extend({
                 "step_index":index, **c,
-            } for c in _check_turn(step,recorded,current))
+            } for c in _check_turn(
+                step,recorded,current,previous_operations=previous_operations,
+            ))
+            if "review_response" in step:
+                report["review_items"].append({
+                    "step_index":index,"turn_id":turn.turn_id,
+                    "review_question":step["review_response"],
+                    "user":step["text"],"assistant":turn.text,
+                    "status":"PENDING_HUMAN_REVIEW",
+                })
             if run_tool_worker and turn.model_id == "tool.initial.deferred.v1":
                 # Use the real registered worker/claim/lease lifecycle,
                 # not a fabricated completed operation or test-side mutation.
@@ -461,6 +487,8 @@ def run_scenario(
                 "message":str(exc)[:1000],
             })
             if step["action"] == "message" and not recorded_message:
+                if len(observed_gateway.interpretations)>interpretation_before:
+                    observed_gateway.interpretations[-1]["step_index"]=index
                 key = f"mvp01e-{index:04d}"
                 failed = {
                     "index":index, "action":"message_failed",
@@ -481,6 +509,13 @@ def run_scenario(
                         )
                         snapshot["step_index"] = index
                         report["snapshots"].append(snapshot)
+                        if len(observed_gateway.interpretations)>interpretation_before:
+                            item=observed_gateway.interpretations[-1]
+                            item["turn_id"]=receipt["turn_id"]
+                            resolve_interpretation(
+                                item,input_text=step["text"],
+                                turn_id=receipt["turn_id"],snapshot=snapshot,
+                            )
                 except Exception as observation_exc:
                     report["errors"].append({
                         "step_index":index, "phase":"failure_observation",
@@ -489,13 +524,21 @@ def run_scenario(
                     })
             break
     report["completed_at"] = timestamp()
-    report["passed"] = (
-        not report["errors"]
-        and len(report["checks"]) > 0
-        and all(c["pass"] for c in report["checks"])
+    contracts = [x for x in report["checks"] if x.get("category","contract")=="contract"]
+    behavior = [x for x in report["checks"] if x.get("category")=="behavioral"]
+    report["contract_passed"] = (
+        not report["errors"] and bool(contracts)
+        and all(x["pass"] for x in contracts)
     )
-    # All passes are contract passes, never a claim of semantic intelligence.
+    report["behavioral_checks_passed"] = (
+        not report["errors"] and all(x["pass"] for x in behavior)
+    )
+    report["passed"] = (
+        report["contract_passed"] and report["behavioral_checks_passed"]
+    )
+    # No automated test declares semantic or capability-claim acceptance.
     report["requires_human_review"] = True
+    report["behavioral_accepted"] = None
     return report
 
 
@@ -513,7 +556,9 @@ def write_bundle(
         "python":sys.version.split()[0],
         "platform":platform.platform(),
         "migration_sha256":migration_hashes,
-        "contract_passed":report["passed"],
+        "contract_passed":report.get("contract_passed",report["passed"]),
+        "behavioral_checks_passed":report.get("behavioral_checks_passed"),
+        "behavioral_accepted":None,
         "conversational_quality":"NOT_AUTOMATICALLY_GRADED",
         "snapshot_row_limit":TABLE_ROW_LIMIT,
         "warnings":[
@@ -527,9 +572,13 @@ def write_bundle(
         "transcript.json":report["transcript"],
         "state_snapshots.json":report["snapshots"],
         "model_requests.json":report["model_requests"],
+        "interpretation_diagnostics.json":report.get("interpretation_diagnostics",[]),
+        "review_items.json":report.get("review_items",[]),
         "delivery_events.json":report["deliveries"],
         "evaluation.json":{
-            "contract_passed":report["passed"],
+            "contract_passed":report.get("contract_passed",report["passed"]),
+            "behavioral_checks_passed":report.get("behavioral_checks_passed"),
+            "behavioral_accepted":None,
             "checks":report["checks"],
             "conversational_quality":"REQUIRES_HUMAN_REVIEW",
         },
