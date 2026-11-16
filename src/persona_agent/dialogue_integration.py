@@ -10,8 +10,9 @@ from uuid import UUID, uuid4
 
 from .dialogue_state import _link_turn
 from .intent_interpretation import (
-    classify_intent, is_named_objective_reference,
-    parse_explicit_topic_switch, should_interpret_with_model,
+    classify_intent, explicit_unresolved_named_topic,
+    is_named_objective_reference, parse_explicit_topic_switch,
+    should_interpret_with_model,
 )
 from .conversation import _event
 
@@ -47,6 +48,34 @@ def _starts_new_topic(kind: str, label: str) -> bool:
     return kind == "OBJECTIVE" or (
         kind == "REQUEST" and bool(_TOPIC_REQUEST.match(label))
     )
+
+
+def _fresh_named_discussion(
+    cur, *, user_id, instance_id, conversation_id, label,
+) -> str | None:
+    """Use a new discussion-only topic if an explicit switch has no referent.
+
+    An ambiguous reference to one of several existing topics must not
+    create a duplicate thread or override the existing focused topic.
+    Keep this local to the conversation; historical retrieval is MVP-02.
+    """
+    title=explicit_unresolved_named_topic(label)
+    if title is None:
+        return None
+    keyword=title.split(" ",1)[0]
+    cur.execute(
+        """SELECT title FROM dialogue_threads
+           WHERE conversation_id=%s AND user_id=%s AND instance_id=%s
+             AND origin_kind='AUTO_SIGNAL'
+           ORDER BY updated_at DESC LIMIT 64""",
+        (conversation_id,user_id,instance_id),
+    )
+    if any(re.search(r"\\b"+re.escape(keyword)+r"\\b",
+                     row["title"],re.I) for row in cur.fetchall()):
+        return None
+    # A direct switch in a fresh conversation means "discuss the topic",
+    # not "we have recovered and verified an earlier plan".
+    return title
 
 
 def _event_of_progress(
@@ -179,12 +208,28 @@ def advance_on_delivery(
             match=cur.fetchone()
             if match is not None:
                 target=match["thread_id"]
-        elif _starts_new_topic(signal["intent_kind"],signal["label"]):
+        else:
+            # Named-topic switches with no matching objective in *this*
+            # conversation can start a new subject. Explicit named requests
+            # with multiple matching current topics continue to abstain.
+            named_new=(
+                _fresh_named_discussion(
+                    cur,user_id=user_id,instance_id=instance_id,
+                    conversation_id=conversation_id,label=signal["label"],
+                ) if signal["intent_kind"]=="REQUEST" else None
+            )
+            if not (_starts_new_topic(signal["intent_kind"],signal["label"])
+                    or named_new is not None):
+                named_new=None
             # A fresh objective/topic request is a conversational subject,
-            # not an approved Goal. Exact title reuse prevents duplicates
-            # for repeated explicit requests; fuzzy matching is deferred.
-            title=(parse_explicit_topic_switch(signal["label"])
-                   or signal["label"].strip())[:160]
+            # not an approved Goal. Exact title reuse prevents duplicates.
+            title=(
+                parse_explicit_topic_switch(signal["label"])
+                or named_new
+                or (signal["label"].strip()
+                    if _starts_new_topic(signal["intent_kind"],signal["label"])
+                    else "")
+            )[:160]
             if title:
                 cur.execute(
                     """SELECT thread_id FROM dialogue_threads
