@@ -213,8 +213,15 @@ def test_natural_preferences_are_scoped_recallable_and_conflicts_need_approval(d
     assert conflict.proposed_value=="no"
     assert conflict.current_value=="yes"
     assert conflict.source_turn_id==negative.turn_id
-    assert call(dsn,search_memories,actor(user),instance,"gardening")[
-        0].value_text=="yes"
+    # The authoritative yes revision remains in PostgreSQL, but pending
+    # newer user corrections are not offered as current recall.
+    assert call(dsn,search_memories,actor(user),instance,"gardening")==()
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT value_text FROM memory_records WHERE user_id=%s "
+            "AND instance_id=%s AND predicate_key='enjoys_gardening'",
+            (user,instance),
+        ).fetchone()[0]=="yes"
 
     # User-owned conflict approval is versioned and source linked.
     approved=call(
@@ -318,8 +325,12 @@ def test_duplicate_corroboration_conflict_and_user_reviewed_correction(dsn):
     assert conflict.proposed_value=="coffee" and conflict.current_value=="tea"
     assert conflict.expected_version==1
     assert conflict.source_turn_id==conflict_turn.turn_id
-    hits=call(dsn,search_memories,actor(user),instance,"favorite drink")
-    assert hits[0].value_text=="tea" and hits[0].version==1
+    assert call(dsn,search_memories,actor(user),instance,"favorite drink")==()
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT value_text,version FROM memory_records WHERE memory_id=%s",
+            (conflict.memory_id,),
+        ).fetchone()==("tea",1)
     with psycopg.connect(dsn,autocommit=True) as conn:
         support=conn.execute(
             """SELECT version,source_turn_id FROM memory_claim_support
