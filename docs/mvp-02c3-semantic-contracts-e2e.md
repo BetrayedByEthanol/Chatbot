@@ -10,7 +10,7 @@ not a new semantic subsystem, persistence owner, or production inference path.
 `SemanticAnnotationBatch` containing zero to four `SemanticClaim` entries.
 Each claim identifies:
 
-- **Statement type:** FACT, PREFERENCE, EXPERIENCE, INTENTION, OPINION.
+- **Statement type:** FACT, PREFERENCE, EXPERIENCE, INTENTION, OPINION, UNKNOWN.
 - **Temporal scope:** CURRENT, HABITUAL, PAST_EVENT, PAST_HABITUAL, FUTURE,
   UNSPECIFIED.
 - **Modality:** ASSERTED, TENTATIVE, CONDITIONAL, HYPOTHETICAL, UNKNOWN.
@@ -28,7 +28,10 @@ only; it is never a truth score or permission.
 
 `SemanticClassifier` is a runtime-independent Protocol; future Hugging Face,
 ONNX, rule-based or LLM adapters must implement the same interface. It does
-not require another service, GPU runtime, global mutable state, or schema.
+not require another service, GPU runtime, global mutable state, or schema. Specialist classifiers may use explicit `UNKNOWN`/`UNSPECIFIED`
+labels in dimensions they cannot assess, rather than inventing answers.
+Each batch retains its own source and revision; results are not merged into
+Conversation-owned state in this increment.
 
 `RuleSemanticClassifier` is a deliberately narrow executable baseline for
 six unambiguous grammar patterns and three benign example topics. It abstains
