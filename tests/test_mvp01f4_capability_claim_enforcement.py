@@ -26,8 +26,14 @@ def test_unavailable_data_deletion_is_not_promised():
     direct=enforce_capability_claims("Could you delete my data?", "Sure, done.")
     assert direct.reason=="unsupported_request:data_deletion"
     assert "haven't deleted anything" in direct.text
+    hypothetical=enforce_capability_claims(
+        "What if I asked you to delete my data?",
+        "If you ask me, it will be done securely.",
+    )
+    assert hypothetical.reason=="unsupported_hypothetical:data_deletion"
+    assert "haven't deleted anything" in hypothetical.text
     offered=enforce_capability_claims(
-        "What if I asked you to delete my data?", "I can delete your data now.",
+        "What happens to the account?", "I can delete your data now.",
     )
     assert offered.reason=="unsupported_offer:data_deletion"
 
@@ -36,7 +42,7 @@ def test_unavailable_data_deletion_is_not_promised():
      "I can't execute shell commands here. Run `openssl req -x509` on your machine.", ()),
     ("How do I configure Nginx?",
      "I can help you run these commands, but I can't run them myself.", ()),
-    ("What if I asked you to delete my data?",
+    ("Could you explain the data deletion process?",
      "I would explain the deletion options, not delete anything.", ()),
     ("Count words in: alpha beta", "There are two words.", ()),
     ("Can you run this for me?", "I can count the words.",
