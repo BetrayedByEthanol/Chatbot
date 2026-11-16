@@ -70,7 +70,7 @@ def _fresh_named_discussion(
            ORDER BY updated_at DESC LIMIT 64""",
         (conversation_id,user_id,instance_id),
     )
-    if any(re.search(r"\\b"+re.escape(keyword)+r"\\b",
+    if any(re.search(r"\b"+re.escape(keyword)+r"\b",
                      row["title"],re.I) for row in cur.fetchall()):
         return None
     # A direct switch in a fresh conversation means "discuss the topic",
