@@ -34,6 +34,14 @@ _HYPOTHETICAL_DELETION = re.compile(
 _DELETION_OBJECT = re.compile(
     r"\b(?:my|your|our|user|all|the)\s+(?:data|account|files|records)\b", re.I,
 )
+# "Remove my data from this sentence" is text editing, not deletion of
+# stored user data. The target must be explicitly textual; server/database
+# references must never be treated as textual targets.
+_TEXT_EDIT_TARGET = re.compile(
+    r"\b(?:from|in)\s+(?:(?:this|that|the|following|my|your)\s+)?"
+    r"(?:sentence|paragraph|text|string|phrase|quotation|quote|passage|example)\b",
+    re.I,
+)
 # The requested operation is determined by its direct object, not by
 # incidental nouns in the data being analyzed. "Run a word count on this
 # code" asks for statistics; "run this code" asks for code execution.
@@ -62,6 +70,55 @@ _OFFER = re.compile(
     re.I,
 )
 
+# A first-person phrase in a quoted example is not a model offer. Mask only
+# balanced quoted/code spans, preserving positions and any unquoted text.
+# Apostrophes *inside* words are not quotation delimiters (I'll / We’ll).
+_QUOTE_END = {'"': '"', "“": "”", "'": "'", "‘": "’", "`": "`"}
+_NEGATED_OFFER_PREFIX = re.compile(
+    r"\b(?:(?:do\s+not|don't|never|should\s+not|shouldn't)\s+"
+    r"(?:assume|believe|infer|claim|think)|"
+    r"(?:does\s+not|doesn't|do\s+not|don't|cannot|can't)\s+"
+    r"(?:mean|imply|indicate)|not\s+(?:claiming|saying))"
+    r"(?:\s+that)?\s*$",
+    re.I,
+)
+
+
+def _mask_quoted_examples(text: str) -> str:
+    """Mask balanced quotes without treating English contractions as quotes."""
+    masked = list(text)
+    position = 0
+    while position < len(text):
+        opener = text[position]
+        closer = _QUOTE_END.get(opener)
+        if closer is None or (
+            opener == "'" and position > 0 and text[position - 1].isalnum()
+        ):
+            position += 1
+            continue
+        end = position + 1
+        while end < len(text):
+            if text[end] == closer and not (
+                closer in ("'", "’")
+                and text[end - 1].isalnum()
+                and end + 1 < len(text) and text[end + 1].isalnum()
+            ):
+                break
+            end += 1
+        if end == len(text):
+            position += 1  # unmatched quote must not hide subsequent claims
+            continue
+        masked[position:end + 1] = " " * (end + 1 - position)
+        position = end + 1
+    return "".join(masked)
+
+
+def _is_negated_offer(text: str, start: int) -> bool:
+    # Inspect only the current sentence/clause. Earlier denials must not
+    # suppress a later independent promise in the same response.
+    clause = re.split(r"[.!?;\n]", text[max(0, start - 180):start])[-1]
+    return bool(_NEGATED_OFFER_PREFIX.search(clause))
+
 
 @dataclass(frozen=True)
 class CapabilityEnforcement:
@@ -72,6 +129,8 @@ class CapabilityEnforcement:
 
 def _category(action: str, obj: str, *, remote_context: bool) -> str | None:
     if action.lower() in ("delete", "erase", "remove"):
+        if _TEXT_EDIT_TARGET.search(obj):
+            return None
         return "data_deletion" if _DELETION_OBJECT.search(obj) else None
     if _REMOTE_OBJECT.search(obj):
         return "remote"
@@ -130,7 +189,10 @@ def enforce_capability_claims(
                     _fallback(category), "unsupported_request:" + category,
                 )
 
-    for match in _OFFER.finditer(model_text):
+    unquoted_model_text = _mask_quoted_examples(model_text)
+    for match in _OFFER.finditer(unquoted_model_text):
+        if _is_negated_offer(unquoted_model_text, match.start()):
+            continue
         category = _category(
             match.group("action"), match.group("object"),
             remote_context=remote_context or bool(_REMOTE_TOPIC.search(cleaned)),
