@@ -1,6 +1,6 @@
 {
   "name": "mvp01f1-behavioral-acceptance-v1",
-  "description": "28 real-model turns, contract + targeted behavior expectations. Known MVP-01 gaps are intentionally visible as failed checks. Human-review prompts are not auto-scored.",
+  "description": "MVP-01F.3 final 28-turn scenario: independent contracts, reference/topic grounding, capability safety, and explicit human review of memory and summary accuracy.",
   "steps": [
     {
       "action": "session",
@@ -103,7 +103,9 @@
     },
     {
       "action": "message",
-      "text": "Let's discuss my walking plan instead."
+      "text": "Let's discuss my walking plan instead.",
+      "expect_focus_contains": "walk",
+      "review_response": "In this new conversation the old walking plan is not retrieved: does the assistant switch to a new walking discussion without falsely claiming to remember past specifics?"
     },
     {
       "action": "session",
@@ -145,7 +147,8 @@
     },
     {
       "action": "message",
-      "text": "Could you summarize our discussion and suggest one next step?"
+      "text": "Could you summarize our discussion and suggest one next step?",
+      "review_response": "Does the assistant accurately summarize the user's available reports (walked yesterday; rained today; skipped today's walk), avoid invented posture/stride claims, and propose only one appropriately labeled next step?"
     }
   ]
 }
