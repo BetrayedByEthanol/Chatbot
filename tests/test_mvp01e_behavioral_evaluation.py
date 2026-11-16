@@ -396,6 +396,59 @@ def test_failed_turn_observation_cannot_hide_original_exception(dsn,monkeypatch)
     assert result["snapshots"]==[]
 
 
+@pytest.mark.parametrize("with_semantic_flag", [False, True])
+def test_compose_wrapper_checks_semantic_flags_before_startup(
+    tmp_path, with_semantic_flag,
+):
+    """Use the REAL preflight; Docker is a stub that must not be called
+    when the semantic scenario omits its mandatory flag."""
+    root=Path(__file__).resolve().parents[1]
+    scripts=tmp_path/"scripts"
+    scripts.mkdir()
+    shutil.copy2(
+        root/"scripts"/"run_persona_e2e.sh",
+        scripts/"run_persona_e2e.sh",
+    )
+    bin_dir=tmp_path/"bin"
+    bin_dir.mkdir()
+    docker=bin_dir/"docker"
+    docker.write_text(
+        "#!/bin/sh\\n"
+        'printf "docker %s\\\\n" "$*" >> "$MOCK_LOG"\\n'
+        "exit 37\\n",
+    )
+    docker.chmod(0o755)
+    log=tmp_path/"docker-calls.log"
+    env=os.environ.copy()
+    env.update({
+        "PATH":str(bin_dir)+os.pathsep+env.get("PATH",""),
+        "MOCK_LOG":str(log),
+        "E2E_POSTGRES_PASSWORD":"test-only",
+        "PERSONA_E2E_ADMIN_DSN":"dbname=postgres user=test",
+    })
+    argv=[
+        "bash",str(scripts/"run_persona_e2e.sh"),
+        "--scenario",str(root/"scenarios"/"mvp02c3_semantic_diagnostics.json"),
+    ]
+    if with_semantic_flag:
+        argv.append("--semantic-diagnostics")
+    result=subprocess.run(
+        argv,cwd=tmp_path,env=env,
+        text=True,capture_output=True,timeout=20,
+    )
+    if with_semantic_flag:
+        # The compatible invocation passes the same real preflight and
+        # reaches fake Compose, which intentionally exits nonzero.
+        assert result.returncode==37, result.stderr
+        assert log.exists()
+        assert " up -d --wait" in log.read_text()
+    else:
+        assert result.returncode==2, result.stderr
+        assert "semantic expectations require --semantic-diagnostics" in result.stderr
+        assert not log.exists(), "incompatible invocation started Compose"
+        assert "EVIDENCE NOT CONFIRMED" not in result.stderr
+
+
 @pytest.mark.parametrize("published,runner_exit,expect_teardown", [
     (False, 1, False),  # ZIP could not be written: preserve postgres volume
     (True, 1, True),    # Evaluated contract failure: valid ZIP, clean up
