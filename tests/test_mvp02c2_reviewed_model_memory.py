@@ -10,6 +10,8 @@ from persona_agent.behavioral_acceptance import BehavioralAcceptanceHarness
 from persona_agent.conversation_contracts import ModelReply
 from persona_agent.contracts import TrustedActor
 from persona_agent.event_delivery import dispatch_outbox
+from persona_agent.conversation import ingest_text, respond_to_text
+from persona_agent.conversation_contracts import TextInputCommand
 from persona_agent.memory import search_memories
 from persona_agent.memory_model_extraction import (
     approve_model_memory_candidate, list_model_memory_candidates,
@@ -69,6 +71,75 @@ def fixture(dsn):
         consumer="mvp02c2-"+uuid4().hex
         register_model_memory_consumer(conn,consumer_id=consumer)
     return host,ordinary,consumer
+
+
+def test_pending_response_parks_without_retry_exhaustion_then_resumes(dsn):
+    """A slow foreground response must not permanently block its stream."""
+    host,_,consumer=fixture(dsn)
+    identity=host.begin_session("slow-foreground")
+    actor=TrustedActor(user_id=identity.user_id,source_id="slow-foreground")
+    entered=call(
+        dsn,ingest_text,actor,TextInputCommand(
+            instance_id=identity.instance_id,
+            conversation_id=identity.conversation_id,
+            expected_generation=identity.generation,
+            idempotency_key="slow-first-input",
+            text="I've gotten into gardening lately.",
+        ),
+    )
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        model=MemoryProposer(conn)
+        # Even five polling cycles cannot consume the three-attempt
+        # failure budget. No model call is permitted before RESPONDED.
+        for attempt in range(5):
+            outcome=run_model_memory_tick(
+                conn,model,consumer_id=consumer,worker_id="slow-worker",
+            )
+            assert outcome.retry_pending==0
+            assert outcome.proposed==0
+            assert outcome.deferred==(1 if attempt==0 else 0)
+        state=conn.execute(
+            """SELECT d.status,d.attempt_count,d.max_attempts
+               FROM event_deliveries d JOIN events e ON e.event_id=d.event_id
+               WHERE d.consumer_id=%s AND e.event_type=
+                     'conversation.user_text.received.v1'
+                 AND e.payload->>'turn_id'=%s""",
+            (consumer,str(entered.turn_id)),
+        ).fetchone()
+        assert state[0]=="DEFERRED" and state[1]==1
+        assert state[2]<=3
+        assert model.calls==[]
+
+    # Finish the original turn through the production conversation owner,
+    # not by directly manipulating the delivery or turn status.
+    call(dsn,respond_to_text,actor,entered.turn_id,OrdinaryConversation())
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        model=MemoryProposer(conn)
+        resumed=run_model_memory_tick(
+            conn,model,consumer_id=consumer,worker_id="slow-worker",
+        )
+        assert resumed.proposed==1 and resumed.retry_pending==0
+        assert len(model.calls)==1
+        state=conn.execute(
+            """SELECT d.status,d.attempt_count
+               FROM event_deliveries d JOIN events e ON e.event_id=d.event_id
+               WHERE d.consumer_id=%s AND e.payload->>'turn_id'=%s
+                 AND e.event_type='conversation.user_text.received.v1'""",
+            (consumer,str(entered.turn_id)),
+        ).fetchone()
+        assert state==("PROCESSED",2)
+
+    # A later event on the SAME conversation stream is no longer blocked.
+    host.send("Maybe I'll try hiking next month.",idempotency_key="later")
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        continued=run_model_memory_tick(
+            conn,MemoryProposer(conn),consumer_id=consumer,
+        )
+        assert continued.processed==1 and continued.retry_pending==0
+    pending=call(
+        dsn,list_model_memory_candidates,actor,identity.instance_id,
+    )
+    assert len(pending)==1 and pending[0].source_turn_id==entered.turn_id
 
 
 def test_reviewed_model_candidate_requires_authenticated_approval(dsn):
