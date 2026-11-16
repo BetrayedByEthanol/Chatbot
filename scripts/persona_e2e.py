@@ -166,10 +166,19 @@ def run(argv=None) -> int:
             print("Database retained:",database_name,flush=True)
     if cleanup_error is not None:
         return 2
+    print(
+        "Contract checks:", result.get("contract_passed",result["passed"]),
+        "| Behavioral checks:", result.get("behavioral_checks_passed","NOT_RUN"),
+        "| Human review: REQUIRED",
+        flush=True,
+    )
     if not result["passed"]:
-        print("Contract failures or execution errors recorded in ZIP",file=sys.stderr)
+        print(
+            "Contract/behavioral expectations or execution errors recorded in ZIP",
+            file=sys.stderr,
+        )
         return 1
-    print("Contract checks passed; conversational quality still requires review.")
+    print("Deterministic checks passed; conversational quality still requires review.")
     return 0
 
 

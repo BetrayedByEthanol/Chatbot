@@ -24,6 +24,7 @@ from psycopg.rows import dict_row
 
 from .acceptance_host import seed_local_demo
 from .behavioral_acceptance import BehavioralAcceptanceHarness
+from .behavioral_diagnostics import describe_interpretation, resolve_interpretation
 from .contracts import TrustedActor
 from .dialogue_state import load_active_dialogue
 from .model_gateway import OllamaChatGateway
@@ -92,6 +93,24 @@ def validate_scenario(value: Any) -> dict:
                 "OBSERVATION", "INSTRUCTION", None,
             ):
                 raise ValueError("unknown expected intent kind")
+            if "expect_related_intent" in step and step[
+                "expect_related_intent"
+            ] not in ("OBJECTIVE", "REQUEST", "CORRECTION"):
+                raise ValueError("invalid related intent expectation")
+            if "expect_focus_contains" in step and (
+                not isinstance(step["expect_focus_contains"], str)
+                or not 1 <= len(step["expect_focus_contains"]) <= 80
+            ):
+                raise ValueError("invalid focus expectation")
+            if "expect_no_new_operations" in step and type(
+                step["expect_no_new_operations"]
+            ) is not bool:
+                raise ValueError("expect_no_new_operations must be boolean")
+            if "review_response" in step and (
+                not isinstance(step["review_response"], str)
+                or not 1 <= len(step["review_response"]) <= 300
+            ):
+                raise ValueError("review_response must be a short instruction")
             message_count += 1
         else:
             raise ValueError("unsupported scenario action")
@@ -111,6 +130,8 @@ class RecordingGateway:
 
     def __init__(self, inner):
         self.requests: list[dict] = []
+        self.raw_outputs: list[dict] = []
+        self.interpretations: list[dict] = []
         self._outbound_capture = isinstance(inner, OllamaChatGateway)
         if self._outbound_capture:
             previous_observer = inner.request_observer
@@ -129,8 +150,20 @@ class RecordingGateway:
                 if previous_observer is not None:
                     previous_observer(payload)
 
+            previous_response_observer = inner.response_observer
+
+            def capture_response(raw, json_mode):
+                self.raw_outputs.append({
+                    "raw":raw, "json_mode":bool(json_mode),
+                })
+                if previous_response_observer is not None:
+                    previous_response_observer(raw,json_mode)
+
             # Immutable clone: do not mutate a production gateway instance.
-            self.inner = replace(inner, request_observer=capture)
+            self.inner = replace(
+                inner, request_observer=capture,
+                response_observer=capture_response,
+            )
         else:
             self.inner = inner
 
@@ -153,7 +186,23 @@ class RecordingGateway:
         if method is None:
             return self.generate(messages)
         self._record_pre_gateway(messages, "generate_interpreted")
-        return method(messages)
+        before = len(self.raw_outputs)
+        try:
+            reply = method(messages)
+        except Exception as exc:
+            # Preserve the original gateway error, even if raw JSON was bad.
+            raw = self.raw_outputs[-1]["raw"] if len(self.raw_outputs)>before else None
+            self.interpretations.append({
+                "at":timestamp(), **describe_interpretation(raw),
+                "gateway_error_type":type(exc).__name__,
+            })
+            raise
+        raw = self.raw_outputs[-1]["raw"] if len(self.raw_outputs)>before else None
+        self.interpretations.append({
+            "at":timestamp(),
+            **describe_interpretation(raw,reply.intent_candidate),
+        })
+        return reply
 
 
 def capture_state(
@@ -211,33 +260,70 @@ def capture_state(
     }
 
 
-def _intent_from_snapshot(snapshot: dict, turn_id: str) -> str | None:
-    for row in snapshot["database"]["conversation_intent_signals"]["rows"]:
-        if str(row["turn_id"]) == turn_id:
-            return row["intent_kind"]
-    return None
+def _signals_for_turn(snapshot: dict, turn_id: str) -> list[dict]:
+    return [
+        row for row in snapshot["database"]["conversation_intent_signals"]["rows"]
+        if str(row["turn_id"]) == turn_id
+    ]
 
 
-def _check_turn(step: dict, turn: dict, snapshot: dict) -> list[dict]:
+def _check_turn(
+    step: dict, turn: dict, snapshot: dict, *,
+    previous_operations: int | None = None,
+) -> list[dict]:
+    """Outcome-based assertions: no model-text substring guessing.
+
+    A failed deterministic behavioral assertion is reported, not hidden by
+    successful response-delivery contracts. Interpretation stays tentative.
+    """
     checks = []
-    def record(name, passed, actual, expected):
+
+    def record(name, passed, actual, expected, category="behavioral"):
         checks.append({
-            "check": name, "pass": bool(passed),
-            "actual": actual, "expected": expected,
+            "check":name, "category":category, "pass":bool(passed),
+            "actual":actual, "expected":expected,
         })
+
     trace = snapshot["application"]["turn_trace"]
-    record("response_delivered",trace["response_status"] == "DELIVERED",
-           trace["response_status"],"DELIVERED")
+    record("response_delivered",trace["response_status"]=="DELIVERED",
+           trace["response_status"],"DELIVERED",category="contract")
     if "expect_model_id" in step:
-        record("route",turn["model_id"] == step["expect_model_id"],
-               turn["model_id"],step["expect_model_id"])
+        record("route",turn["model_id"]==step["expect_model_id"],
+               turn["model_id"],step["expect_model_id"],category="contract")
+    signals = _signals_for_turn(snapshot,turn["turn_id"])
     if "expect_intent" in step:
-        observed = _intent_from_snapshot(snapshot, turn["turn_id"])
-        record("intent",observed == step["expect_intent"],
-               observed,step["expect_intent"])
-    # All MVP-01E scenario objectives are discussions, never authorized goals.
+        kinds = [row["intent_kind"] for row in signals]
+        expected=step["expect_intent"]
+        record("intent",expected in kinds if expected else not kinds,
+               kinds,expected)
+    if "expect_related_intent" in step:
+        by_id={
+            str(row["signal_id"]):row
+            for row in snapshot["database"]["conversation_intent_signals"]["rows"]
+        }
+        resolved=[
+            by_id[str(row["related_signal_id"])]["intent_kind"]
+            for row in signals
+            if row.get("related_signal_id") is not None
+            and str(row["related_signal_id"]) in by_id
+        ]
+        record("related_intent",step["expect_related_intent"] in resolved,
+               resolved,step["expect_related_intent"])
+    if "expect_focus_contains" in step:
+        dialogue=snapshot["application"]["dialogue"]
+        focused=next((
+            row["title"] for row in dialogue["threads"]
+            if str(row["thread_id"])==str(dialogue["focus_thread_id"])
+        ),None)
+        expected=step["expect_focus_contains"]
+        record("focused_topic",focused is not None
+               and expected.casefold() in focused.casefold(),focused,expected)
+    if step.get("expect_no_new_operations"):
+        total=snapshot["database"]["operations"]["count"]
+        record("no_new_operations",previous_operations is not None
+               and total==previous_operations,total,previous_operations)
     count = snapshot["application"]["counts"]["goals"]
-    record("no_unapproved_goal",count == 0,count,0)
+    record("no_unapproved_goal",count == 0,count,0,category="contract")
     return checks
 
 
@@ -295,10 +381,13 @@ def run_scenario(
         "identity":{"user_id":str(identity.user_id),
                     "instance_id":str(identity.instance_id)},
         "transcript":[], "snapshots":[], "checks":[], "errors":[],
+        "review_items":[],
+        "interpretation_diagnostics":observed_gateway.interpretations,
         "model_requests":observed_gateway.requests, "deliveries":harness.deliveries,
     }
     for index, step in enumerate(scenario["steps"]):
         recorded_message = False
+        interpretation_before = len(observed_gateway.interpretations)
         try:
             action = step["action"]
             if action == "session":
@@ -316,6 +405,10 @@ def run_scenario(
                     "conversation_id":str(harness.active_identity.conversation_id),
                 })
                 continue
+            previous_operations=(
+                report["snapshots"][-1]["database"]["operations"]["count"]
+                if report["snapshots"] else 0
+            )
             turn = harness.send(
                 step["text"],idempotency_key=f"mvp01e-{index:04d}",
                 mode=step.get("mode","auto"),
@@ -334,9 +427,28 @@ def run_scenario(
             )
             current["step_index"] = index
             report["snapshots"].append(current)
+            if len(observed_gateway.interpretations)>interpretation_before:
+                item=observed_gateway.interpretations[-1]
+                item.update({
+                    "step_index":index, "turn_id":turn.turn_id,
+                    "conversation_id":recorded["conversation_id"],
+                })
+                resolve_interpretation(
+                    item,input_text=step["text"],turn_id=turn.turn_id,
+                    snapshot=current,
+                )
             report["checks"].extend({
                 "step_index":index, **c,
-            } for c in _check_turn(step,recorded,current))
+            } for c in _check_turn(
+                step,recorded,current,previous_operations=previous_operations,
+            ))
+            if "review_response" in step:
+                report["review_items"].append({
+                    "step_index":index,"turn_id":turn.turn_id,
+                    "review_question":step["review_response"],
+                    "user":step["text"],"assistant":turn.text,
+                    "status":"PENDING_HUMAN_REVIEW",
+                })
             if run_tool_worker and turn.model_id == "tool.initial.deferred.v1":
                 # Use the real registered worker/claim/lease lifecycle,
                 # not a fabricated completed operation or test-side mutation.
@@ -375,6 +487,8 @@ def run_scenario(
                 "message":str(exc)[:1000],
             })
             if step["action"] == "message" and not recorded_message:
+                if len(observed_gateway.interpretations)>interpretation_before:
+                    observed_gateway.interpretations[-1]["step_index"]=index
                 key = f"mvp01e-{index:04d}"
                 failed = {
                     "index":index, "action":"message_failed",
@@ -395,6 +509,13 @@ def run_scenario(
                         )
                         snapshot["step_index"] = index
                         report["snapshots"].append(snapshot)
+                        if len(observed_gateway.interpretations)>interpretation_before:
+                            item=observed_gateway.interpretations[-1]
+                            item["turn_id"]=receipt["turn_id"]
+                            resolve_interpretation(
+                                item,input_text=step["text"],
+                                turn_id=receipt["turn_id"],snapshot=snapshot,
+                            )
                 except Exception as observation_exc:
                     report["errors"].append({
                         "step_index":index, "phase":"failure_observation",
@@ -403,13 +524,21 @@ def run_scenario(
                     })
             break
     report["completed_at"] = timestamp()
-    report["passed"] = (
-        not report["errors"]
-        and len(report["checks"]) > 0
-        and all(c["pass"] for c in report["checks"])
+    contracts = [x for x in report["checks"] if x.get("category","contract")=="contract"]
+    behavior = [x for x in report["checks"] if x.get("category")=="behavioral"]
+    report["contract_passed"] = (
+        not report["errors"] and bool(contracts)
+        and all(x["pass"] for x in contracts)
     )
-    # All passes are contract passes, never a claim of semantic intelligence.
+    report["behavioral_checks_passed"] = (
+        not report["errors"] and all(x["pass"] for x in behavior)
+    )
+    report["passed"] = (
+        report["contract_passed"] and report["behavioral_checks_passed"]
+    )
+    # No automated test declares semantic or capability-claim acceptance.
     report["requires_human_review"] = True
+    report["behavioral_accepted"] = None
     return report
 
 
@@ -427,7 +556,9 @@ def write_bundle(
         "python":sys.version.split()[0],
         "platform":platform.platform(),
         "migration_sha256":migration_hashes,
-        "contract_passed":report["passed"],
+        "contract_passed":report.get("contract_passed",report["passed"]),
+        "behavioral_checks_passed":report.get("behavioral_checks_passed"),
+        "behavioral_accepted":None,
         "conversational_quality":"NOT_AUTOMATICALLY_GRADED",
         "snapshot_row_limit":TABLE_ROW_LIMIT,
         "warnings":[
@@ -441,9 +572,13 @@ def write_bundle(
         "transcript.json":report["transcript"],
         "state_snapshots.json":report["snapshots"],
         "model_requests.json":report["model_requests"],
+        "interpretation_diagnostics.json":report.get("interpretation_diagnostics",[]),
+        "review_items.json":report.get("review_items",[]),
         "delivery_events.json":report["deliveries"],
         "evaluation.json":{
-            "contract_passed":report["passed"],
+            "contract_passed":report.get("contract_passed",report["passed"]),
+            "behavioral_checks_passed":report.get("behavioral_checks_passed"),
+            "behavioral_accepted":None,
             "checks":report["checks"],
             "conversational_quality":"REQUIRES_HUMAN_REVIEW",
         },

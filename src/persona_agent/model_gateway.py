@@ -30,6 +30,11 @@ class OllamaChatGateway:
     request_observer: Callable[[dict], None] | None = field(
         default=None, repr=False, compare=False,
     )
+    # Optional observational hook for the validated raw model text.
+    # Used by synthetic behavioral evaluation; never enables extra inference.
+    response_observer: Callable[[str, bool], None] | None = field(
+        default=None, repr=False, compare=False,
+    )
 
     def __post_init__(self) -> None:
         if not (1 <= len(self.model) <= 128):
@@ -43,6 +48,8 @@ class OllamaChatGateway:
             raise ValueError("model endpoint must be HTTP(S)")
         if self.request_observer is not None and not callable(self.request_observer):
             raise TypeError("request_observer must be callable")
+        if self.response_observer is not None and not callable(self.response_observer):
+            raise TypeError("response_observer must be callable")
 
     def _chat(self, messages: Sequence[ModelMessage], *, json_mode: bool = False) -> str:
         if not messages:
@@ -87,6 +94,11 @@ class OllamaChatGateway:
                 raise ValueError("model returned empty or oversized text")
         except (ValueError, TypeError, KeyError, IndexError) as exc:
             raise ModelUnavailable("model gateway returned invalid response") from exc
+        # Observers run outside DB locks. Preserve exact validated raw
+        # response text before generate_interpreted parses the envelope.
+        # This is diagnostic evidence only, never an execution instruction.
+        if self.response_observer is not None:
+            self.response_observer(text, json_mode)
         return text
 
     def generate(self, messages: Sequence[ModelMessage]) -> ModelReply:
