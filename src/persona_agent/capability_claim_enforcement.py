@@ -135,7 +135,7 @@ def _category(action: str, obj: str, *, remote_context: bool) -> str | None:
     # An executable target may be an inline-code or quoted direct object:
     # execute `openssl req -x509` / run "these commands". Keep its actual
     # text for classification rather than using the masked offer scan.
-    direct_object = obj.lstrip().lstrip(`\`"'“‘`)
+    direct_object = obj.lstrip().lstrip(chr(96) + chr(34) + chr(39) + "“‘")
     if _REMOTE_OBJECT.search(direct_object):
         return "remote"
     if _ANAPHORA.fullmatch(obj) and remote_context:
