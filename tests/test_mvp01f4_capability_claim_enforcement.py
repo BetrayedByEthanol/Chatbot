@@ -52,6 +52,31 @@ def test_quoted_or_negated_examples_are_not_execution_offers(answer):
     assert result.text==answer
 
 
+@pytest.mark.parametrize("answer", [
+    "I can execute `openssl req -x509` on your server.",
+    "I'll run `openssl req -x509` on your server.",
+    "Would you like me to run `openssl req -x509` on your server?",
+    'I can execute "openssl req -x509" on your server.',
+    "I can execute “openssl req -x509” on your server.",
+    "I can execute 'openssl req -x509' on your server.",
+])
+def test_unquoted_execution_offers_retain_formatted_command_objects(answer):
+    result=enforce_capability_claims("How do I configure Nginx?",answer)
+    assert result.reason=="unsupported_offer:remote"
+    assert "haven't executed anything" in result.text
+
+
+@pytest.mark.parametrize("answer", [
+    'Do not assume that "I can execute `openssl req -x509` on your server" is supported.',
+    "Use your own machine: `I can execute openssl req -x509` is a false capability claim.",
+    "The phrase ‘I'll run `openssl req -x509` on your server’ is unsupported.",
+])
+def test_formatted_command_in_quoted_example_is_not_an_execution_offer(answer):
+    result=enforce_capability_claims("How do I configure Nginx?",answer)
+    assert result.reason is None
+    assert result.text==answer
+
+
 def test_real_offer_after_quoted_or_negated_example_is_still_blocked():
     answer=(
         'Do not assume "I can run these commands" is supported. '
@@ -359,3 +384,53 @@ def test_host_keeps_quoted_guidance_and_text_edit_without_false_block(dsn):
                  AND event_type='conversation.response.capability_claim_blocked.v1'""",
             (identity.user_id,identity.instance_id),
         ).fetchone()[0]==0
+
+
+def test_host_blocks_inline_code_offer_but_preserves_quoted_example(dsn):
+    unsupported="I can execute `openssl req -x509` on your server."
+    guidance=(
+        'Do not assume that "I can execute `openssl req -x509` on your server" '
+        "is a capability this host has."
+    )
+
+    class FormattedOfferModel(NonCompliantModel):
+        def generate(self,messages):
+            current=messages[-1].content
+            self.calls.append(current)
+            if current=="How do I configure Nginx?":
+                return ModelReply(model_id="unreliable.llm",text=unsupported)
+            return ModelReply(model_id="unreliable.llm",text=guidance)
+
+    host=BehavioralAcceptanceHarness(
+        dsn,seed_local_demo(dsn),FormattedOfferModel(),
+    )
+    host.begin_session("inline-code-offer")
+    blocked=host.send("How do I configure Nginx?",idempotency_key="offer")
+    assert "can't run commands" in blocked.text
+    assert blocked.text!=unsupported
+    retained=host.send("Explain that limitation.",idempotency_key="example")
+    assert retained.text==guidance
+    host.restart_host()
+    replay=host.send("How do I configure Nginx?",idempotency_key="offer")
+    assert replay.replayed and replay.text==blocked.text
+
+    identity=host.active_identity
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        events=conn.execute(
+            """SELECT payload FROM events
+               WHERE user_id=%s AND instance_id=%s
+                 AND event_type='conversation.response.capability_claim_blocked.v1'""",
+            (identity.user_id,identity.instance_id),
+        ).fetchall()
+        assert len(events)==1
+        assert events[0][0]["reason"]=="unsupported_offer:remote"
+        saved=conn.execute(
+            "SELECT response_text FROM conversation_responses WHERE response_id=%s",
+            (blocked.response_id,),
+        ).fetchone()[0]
+        assert saved==blocked.text
+        saved_guidance=conn.execute(
+            "SELECT response_text FROM conversation_responses WHERE response_id=%s",
+            (retained.response_id,),
+        ).fetchone()[0]
+        assert saved_guidance==guidance
