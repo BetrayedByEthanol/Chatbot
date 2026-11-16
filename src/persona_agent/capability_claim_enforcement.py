@@ -35,11 +35,22 @@ _DELETION_OBJECT = re.compile(
     r"\b(?:my|your|our|user|all|the)\s+(?:data|account|files|records)\b", re.I,
 )
 # "Remove my data from this sentence" is text editing, not deletion of
-# stored user data. The target must be explicitly textual; server/database
-# references must never be treated as textual targets.
+# stored user data. Match the *entire deletion target prefix*: a later,
+# separate output instruction ("...from your servers and summarize in this
+# paragraph") must never convert a stored-data deletion into text editing.
 _TEXT_EDIT_TARGET = re.compile(
-    r"\b(?:from|in)\s+(?:(?:this|that|the|following|my|your)\s+)?"
+    r"^\s*(?:my|your|our|user|all|the)\s+"
+    r"(?:data|account|files|records)\s+(?:from|in)\s+"
+    r"(?:(?:this|that|the|following|my|your)\s+)?"
     r"(?:sentence|paragraph|text|string|phrase|quotation|quote|passage|example)\b",
+    re.I,
+)
+# When an explicitly textual edit is followed by a distinct destructive
+# command, do not allow the first clause to exempt the second.
+_FOLLOWUP_DELETION = re.compile(
+    r"\b(?:and|then|also)\s+(?:(?:then|please|also)\s+)*"
+    r"(?:delete|erase|remove)\s+(?:my|your|our|user|all|the)\s+"
+    r"(?:data|account|files|records)\b",
     re.I,
 )
 # The requested operation is determined by its direct object, not by
@@ -129,7 +140,13 @@ class CapabilityEnforcement:
 
 def _category(action: str, obj: str, *, remote_context: bool) -> str | None:
     if action.lower() in ("delete", "erase", "remove"):
-        if _TEXT_EDIT_TARGET.search(obj):
+        # The editing exemption applies only when the deletion object is
+        # immediately scoped to a textual target. A later mention of
+        # "in this paragraph" is not a target of the earlier delete.
+        textual_edit = _TEXT_EDIT_TARGET.match(obj)
+        if textual_edit and not _FOLLOWUP_DELETION.search(
+            obj[textual_edit.end():]
+        ):
             return None
         return "data_deletion" if _DELETION_OBJECT.search(obj) else None
     # An executable target may be an inline-code or quoted direct object:
