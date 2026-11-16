@@ -10,8 +10,9 @@ from uuid import UUID, uuid4
 
 from .dialogue_state import _link_turn
 from .intent_interpretation import (
-    classify_intent, is_named_objective_reference,
-    parse_explicit_topic_switch, should_interpret_with_model,
+    classify_intent, explicit_unresolved_named_topic,
+    is_named_objective_reference, parse_explicit_topic_switch,
+    should_interpret_with_model,
 )
 from .conversation import _event
 
@@ -47,6 +48,63 @@ def _starts_new_topic(kind: str, label: str) -> bool:
     return kind == "OBJECTIVE" or (
         kind == "REQUEST" and bool(_TOPIC_REQUEST.match(label))
     )
+
+
+def _unique_named_discussion(
+    cur, *, user_id, instance_id, conversation_id, title,
+) -> UUID | None:
+    """Reuse one exact, OPEN, conversation-local discussion thread.
+
+    Request-originated named discussions have no OBJECTIVE signal, so
+    related_signal_id cannot resolve them. Exact matching precedes the
+    broader topic-keyword ambiguity gate; two exact matches abstain.
+    """
+    cur.execute(
+        """SELECT thread_id FROM dialogue_threads
+           WHERE conversation_id=%s AND user_id=%s AND instance_id=%s
+             AND origin_kind='AUTO_SIGNAL' AND resolution_status='OPEN'
+             AND lower(title)=lower(%s)
+           ORDER BY thread_id LIMIT 2""",
+        (conversation_id,user_id,instance_id,title),
+    )
+    matches=cur.fetchall()
+    return matches[0]["thread_id"] if len(matches)==1 else None
+
+
+def _fresh_named_discussion(
+    cur, *, user_id, instance_id, conversation_id, label,
+) -> str | None:
+    """Use a new discussion-only topic if an explicit switch has no referent.
+
+    An ambiguous reference to one of several existing topics must not
+    create a duplicate thread or override the existing focused topic.
+    Keep this local to the conversation; historical retrieval is MVP-02.
+    """
+    title=explicit_unresolved_named_topic(label)
+    if title is None:
+        return None
+    keyword=title.split(" ",1)[0]
+    # Only for preventing duplicate creation, treat a nominal gerund
+    # ("walking") and the corresponding verb ("walk") as one possible
+    # topic. This does NOT claim that they are a uniquely resolved goal.
+    root=keyword[:-3] if keyword.endswith("ing") and len(keyword)>6 else keyword
+    cur.execute(
+        """SELECT title FROM dialogue_threads
+           WHERE conversation_id=%s AND user_id=%s AND instance_id=%s
+             AND origin_kind='AUTO_SIGNAL'
+           ORDER BY updated_at DESC LIMIT 65""",
+        (conversation_id,user_id,instance_id),
+    )
+    existing=cur.fetchall()
+    if len(existing)>64 or any(
+        re.search(r"\b"+re.escape(root)+r"[a-z]*\b",row["title"],re.I)
+        for row in existing
+    ):
+        # If the bounded evidence is incomplete, also abstain.
+        return None
+    # A direct switch in a fresh conversation means "discuss the topic",
+    # not "we have recovered and verified an earlier plan".
+    return title
 
 
 def _event_of_progress(
@@ -179,35 +237,64 @@ def advance_on_delivery(
             match=cur.fetchone()
             if match is not None:
                 target=match["thread_id"]
-        elif _starts_new_topic(signal["intent_kind"],signal["label"]):
-            # A fresh objective/topic request is a conversational subject,
-            # not an approved Goal. Exact title reuse prevents duplicates
-            # for repeated explicit requests; fuzzy matching is deferred.
-            title=(parse_explicit_topic_switch(signal["label"])
-                   or signal["label"].strip())[:160]
-            if title:
-                cur.execute(
-                    """SELECT thread_id FROM dialogue_threads
-                       WHERE conversation_id=%s AND user_id=%s
-                         AND instance_id=%s AND origin_kind='AUTO_SIGNAL'
-                         AND lower(title)=lower(%s)
-                       ORDER BY updated_at DESC LIMIT 2""",
-                    (conversation_id,user_id,instance_id,title),
+        else:
+            # The previously-created named discussion may originate from a
+            # REQUEST, not an OBJECTIVE. Reuse an exact OPEN thread before
+            # considering the broader, ambiguous keyword match.
+            named_title=(
+                explicit_unresolved_named_topic(signal["label"])
+                if signal["intent_kind"]=="REQUEST" else None
+            )
+            if named_title is not None:
+                target=_unique_named_discussion(
+                    cur,user_id=user_id,instance_id=instance_id,
+                    conversation_id=conversation_id,title=named_title,
                 )
-                matches=cur.fetchall()
-                if len(matches)==1:
-                    target=matches[0]["thread_id"]
-                elif len(matches)==0:
-                    target=uuid4()
+            if target is None:
+                # Only when there is no exact match may an explicit named
+                # switch open a fresh subject. Matching other topics (or an
+                # incomplete scan) still causes a conservative abstention.
+                named_new=(
+                    _fresh_named_discussion(
+                        cur,user_id=user_id,instance_id=instance_id,
+                        conversation_id=conversation_id,label=signal["label"],
+                    ) if named_title is not None else None
+                )
+                if not (_starts_new_topic(signal["intent_kind"],signal["label"])
+                        or named_new is not None):
+                    named_new=None
+                # A fresh objective/topic request is a conversational
+                # subject, never an approved Goal.
+                title=(
+                    parse_explicit_topic_switch(signal["label"])
+                    or named_new
+                    or (signal["label"].strip()
+                        if _starts_new_topic(signal["intent_kind"],signal["label"])
+                        else "")
+                )[:160]
+                if title:
                     cur.execute(
-                        """INSERT INTO dialogue_threads (
-                             thread_id,conversation_id,user_id,instance_id,
-                             title,origin_turn_id,last_turn_id,origin_kind
-                           ) VALUES (%s,%s,%s,%s,%s,%s,%s,'AUTO_SIGNAL')""",
-                        (target,conversation_id,user_id,instance_id,
-                         title,turn_id,turn_id),
+                        """SELECT thread_id FROM dialogue_threads
+                           WHERE conversation_id=%s AND user_id=%s
+                             AND instance_id=%s AND origin_kind='AUTO_SIGNAL'
+                             AND lower(title)=lower(%s)
+                           ORDER BY updated_at DESC LIMIT 2""",
+                        (conversation_id,user_id,instance_id,title),
                     )
-                    new=True
+                    matches=cur.fetchall()
+                    if len(matches)==1:
+                        target=matches[0]["thread_id"]
+                    elif len(matches)==0:
+                        target=uuid4()
+                        cur.execute(
+                            """INSERT INTO dialogue_threads (
+                                 thread_id,conversation_id,user_id,instance_id,
+                                 title,origin_turn_id,last_turn_id,origin_kind
+                               ) VALUES (%s,%s,%s,%s,%s,%s,%s,'AUTO_SIGNAL')""",
+                            (target,conversation_id,user_id,instance_id,
+                             title,turn_id,turn_id),
+                        )
+                        new=True
     if target is not None:
         if _focus(
             cur,user_id=user_id,instance_id=instance_id,

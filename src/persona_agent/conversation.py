@@ -397,6 +397,21 @@ def prepare_text_context(
             boundary = capability_claim_context(history[-1].content)
             if len(prompt)+len(boundary)+len(history[-1].content)<max_context_chars:
                 prompt += boundary
+            # MVP-01F.3: on requests for recall or a summary, give the
+            # model a bounded view of actual first-party user statements.
+            # Old assistant output is never promoted to user evidence, and
+            # the absence of records here is not a claim about other sessions.
+            from .conversation_grounding import grounding_context_block
+            grounding_room=min(
+                1100,max_context_chars//3,
+                max_context_chars-len(prompt)-len(history[-1].content)-180,
+            )
+            if grounding_room>=260:
+                prompt+=grounding_context_block(
+                    history[-1].content,
+                    [row["input_text"] for row in recent[:-1]],
+                    max_chars=grounding_room,
+                )
             # MVP-01F.2: the authenticated ingress already resolved a
             # named objective reference. Put its source and discussion
             # evidence into THIS response's context, before optionally
