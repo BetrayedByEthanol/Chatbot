@@ -55,6 +55,33 @@ or unresolved references lead to abstention. No fuzzy embeddings, global
 search, or model-generated thread IDs are accepted. Existing scope,
 revision, one-selection, delivery and provenance checks remain authoritative.
 
+### Resolved-reference context before generation (P2 review)
+
+A successful `related_signal_id` resolution on ingress does not yet change
+the focus: this remains cooking until the generated reply is delivered.
+Previously, after the objective fell outside the 12-turn recent-history
+window, `prepare_text_context()` described only the old focus and the
+three-turn `intent_context_block()` could not include the referenced goal.
+The model could answer without ever seeing the actual walking discussion.
+
+Now, when a bounded **named objective reference** was already persisted on
+the authenticated input, `resolved_objective_context_block()` reads its
+source user text and linked AUTO_SIGNAL thread, plus up to three recent
+thread-bound observations/corrections. It enforces the same conversation,
+user and persona instance scope, verifies the objective predates this turn,
+and requires an OPEN auto discussion. This query **does not** independently
+resolve a new goal or mutate focus. The block is inserted into the system
+context before generic recent memory/topic retrieval and the old focused
+thread, with an explicit lower-trust/NOT-APPROVED caveat.
+
+The view is bounded by a per-turn character budget and shrinks optional
+details before removing the original objective. An ambiguous/unlinked
+reference adds no target block. PostgreSQL tests cover an objective older
+than 12 user turns, host restart, the previously focused cooking topic at
+model-call time, restored walking focus after delivery, bounded context,
+and no invented target on ambiguity. This is Conversation-owned context,
+not a replacement for MVP-02 historical memory retrieval.
+
 ## 3. Capability-grounded responses
 
 A small, **read-only** `capability_claim_context` describes the currently
