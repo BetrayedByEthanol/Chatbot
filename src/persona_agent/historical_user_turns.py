@@ -118,7 +118,18 @@ def _correction_followups(
     cur.execute(
         """SELECT t.turn_id,t.created_at,t.input_text,t.sequence,
                   signal.intent_kind,signal.related_signal_id,
-                  origin.signal_id AS origin_signal_id
+                  origin.signal_id AS origin_signal_id,
+                  EXISTS (
+                      SELECT 1 FROM memory_revisions mr
+                      WHERE mr.user_id=t.user_id AND mr.instance_id=t.instance_id
+                        AND mr.source_turn_id=t.turn_id
+                  ) AS has_memory_revision,
+                  EXISTS (
+                      SELECT 1 FROM memory_extraction_candidates candidate
+                      WHERE candidate.user_id=t.user_id
+                        AND candidate.instance_id=t.instance_id
+                        AND candidate.source_turn_id=t.turn_id
+                  ) AS has_memory_candidate
            FROM conversation_turns t
            LEFT JOIN conversation_intent_signals signal
              ON signal.turn_id=t.turn_id AND signal.user_id=t.user_id
@@ -137,7 +148,9 @@ def _correction_followups(
     for row in cur.fetchall():
         text=row["input_text"].strip()
         if (parse_explicit_topic_switch(text) is not None
-                or _SENSITIVE.search(text)):
+                or _SENSITIVE.search(text)
+                or row["has_memory_revision"]
+                or row["has_memory_candidate"]):
             break
         # Do not jump over unrelated conversation and attribute its later
         # corrections to the retrieved topic.
@@ -241,7 +254,10 @@ def historical_user_turn_context_block(
         (query, user_id, instance_id, conversation_id, before_at,
          query, _MAX_CANDIDATES, _MAX_QUOTE, query),
     )
-    rows=cur.fetchall()
+    rows=[
+        row for row in cur.fetchall()
+        if not _SENSITIVE.search(row["input_text"])
+    ]
     if paraphrase is not None:
         # A broad label can match several incompatible past activities.
         # Do not make a best-guess selection from ambiguous evidence.
