@@ -28,6 +28,7 @@ from .behavioral_diagnostics import describe_interpretation, resolve_interpretat
 from .contracts import TrustedActor
 from .dialogue_state import load_active_dialogue
 from .model_gateway import OllamaChatGateway
+from .semantic_contracts import SemanticClassifier
 from .observability import get_turn_trace
 from .tool_gateway import run_one_text_tool
 
@@ -321,7 +322,7 @@ def run_scenario(
     *, run_tool_worker: bool = True, run_memory_worker: bool = True,
     run_model_memory_worker: bool = False,
     run_semantic_diagnostics: bool = False,
-    semantic_classifier=None,
+    semantic_classifier: SemanticClassifier | None = None,
 ) -> dict:
     """Run ordinary model/tool conversations; return full evidence on failure."""
     scenario = validate_scenario(scenario)
