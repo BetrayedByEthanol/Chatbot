@@ -319,6 +319,114 @@ def intent_context_block(
     return ""
 
 
+
+def resolved_objective_context_block(
+    cur, *, user_id, instance_id, conversation_id, turn_id,
+    latest_text: str, max_chars: int,
+) -> str:
+    """Read-only, scope-fenced context for a *persisted* named reference.
+
+    The current turn's related_signal_id was resolved by authenticated
+    ingress; do not independently guess a goal or focus a thread here.
+    This is read during generation, while the conversation's old focus is
+    still authoritative until response delivery is acknowledged.
+    """
+    import json
+
+    if max_chars < 220 or not is_named_objective_reference(latest_text):
+        return ""
+
+    cur.execute(
+        """SELECT source.signal_id,source.label AS objective,
+                  input.input_text AS source_input,
+                  thread.thread_id,thread.title,thread.resolution_status,
+                  thread.next_conversational_action,
+                  source.turn_sequence AS objective_sequence,
+                  current.turn_sequence AS current_sequence
+           FROM conversation_intent_signals current
+           JOIN conversation_intent_signals source
+             ON source.signal_id=current.related_signal_id
+            AND source.conversation_id=current.conversation_id
+            AND source.user_id=current.user_id
+            AND source.instance_id=current.instance_id
+           JOIN conversation_turns input
+             ON input.turn_id=source.turn_id
+            AND input.conversation_id=source.conversation_id
+            AND input.user_id=source.user_id
+            AND input.instance_id=source.instance_id
+           JOIN dialogue_turn_links link
+             ON link.turn_id=source.turn_id
+            AND link.conversation_id=source.conversation_id
+            AND link.user_id=source.user_id
+            AND link.instance_id=source.instance_id
+           JOIN dialogue_threads thread
+             ON thread.thread_id=link.thread_id
+            AND thread.conversation_id=link.conversation_id
+            AND thread.user_id=link.user_id
+            AND thread.instance_id=link.instance_id
+           WHERE current.turn_id=%s AND current.conversation_id=%s
+             AND current.user_id=%s AND current.instance_id=%s
+             AND current.intent_kind='REQUEST'
+             AND source.intent_kind='OBJECTIVE'
+             AND source.turn_sequence<current.turn_sequence
+             AND thread.origin_kind='AUTO_SIGNAL'
+             AND thread.resolution_status='OPEN'
+           LIMIT 2""",
+        (turn_id,conversation_id,user_id,instance_id),
+    )
+    matches=cur.fetchall()
+    if len(matches)!=1:
+        return ""
+    resolved=matches[0]
+    # Limited history of the *resolved thread*, not whatever was in focus
+    # when this input arrived. Exclude the founding objective itself.
+    cur.execute(
+        """SELECT cue.intent_kind,cue.label,cue.turn_sequence
+           FROM conversation_intent_signals cue
+           JOIN dialogue_turn_links link
+             ON link.turn_id=cue.turn_id
+            AND link.conversation_id=cue.conversation_id
+            AND link.user_id=cue.user_id
+            AND link.instance_id=cue.instance_id
+           WHERE cue.conversation_id=%s AND cue.user_id=%s
+             AND cue.instance_id=%s AND link.thread_id=%s
+             AND cue.turn_sequence>%s AND cue.turn_sequence<%s
+           ORDER BY cue.turn_sequence DESC LIMIT 3""",
+        (conversation_id,user_id,instance_id,resolved["thread_id"],
+         resolved["objective_sequence"],resolved["current_sequence"]),
+    )
+    notes=list(reversed([{
+        "kind":row["intent_kind"], "text":row["label"][:160],
+        "turn":row["turn_sequence"],
+    } for row in cur.fetchall()]))
+
+    prefix=(
+        "Resolved prior conversation reference (untrusted discussion "
+        "evidence, NOT an approved goal, permission, or completed action; "
+        "the persisted focus changes only after delivery): "
+    )
+    # Fit as much as possible while prioritizing the original verbatim user
+    # observation. Late corrections are useful but must not crowd it out.
+    data={
+        "thread":resolved["title"][:160],
+        "objective":resolved["source_input"][:200],
+        "details":notes,
+    }
+    for _ in range(6):
+        block=prefix+json.dumps(data,ensure_ascii=False)+"\n"
+        if len(block)<=max_chars:
+            return block
+        if data["details"]:
+            data["details"].pop(0)
+        elif len(data["objective"])>100:
+            data["objective"]=data["objective"][:100]
+        elif len(data["thread"])>60:
+            data["thread"]=data["thread"][:60]
+        else:
+            break
+    return ""
+
+
 # Model interpretation is selective: skip ordinary, explicit, or hypothetical
 # text. The normal main model still generates the response in either route.
 _MODEL_INTERPRET_CUES = re.compile(
