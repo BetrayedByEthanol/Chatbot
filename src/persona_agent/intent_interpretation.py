@@ -409,15 +409,21 @@ def resolved_objective_context_block(
     # observation. Late corrections are useful but must not crowd it out.
     data={
         "thread":resolved["title"][:160],
+        "thread_status":resolved["resolution_status"],
         "objective":resolved["source_input"][:200],
         "details":notes,
     }
+    # Conversation-owned next action is a hint, not an agreed commitment.
+    if resolved["next_conversational_action"]:
+        data["next_dialogue_hint"]=resolved["next_conversational_action"][:120]
     for _ in range(6):
         block=prefix+json.dumps(data,ensure_ascii=False)+"\n"
         if len(block)<=max_chars:
             return block
         if data["details"]:
             data["details"].pop(0)
+        elif "next_dialogue_hint" in data:
+            data.pop("next_dialogue_hint")
         elif len(data["objective"])>100:
             data["objective"]=data["objective"][:100]
         elif len(data["thread"])>60:
