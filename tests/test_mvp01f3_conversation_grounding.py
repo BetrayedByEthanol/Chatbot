@@ -131,7 +131,7 @@ def test_recall_and_summary_prompt_uses_user_evidence_not_model_fabrications(dsn
     model=CapturingModel()
     host=BehavioralAcceptanceHarness(dsn,seed_local_demo(dsn),model)
     host.begin_session("historic")
-    host.send("I want to walk twice per week.",idempotency_key="first")
+    original=host.send("I want to walk twice per week.",idempotency_key="first")
     host.begin_session("return")
     host.send("Hi, I'm back.",idempotency_key="hello")
     host.send(
@@ -142,7 +142,14 @@ def test_recall_and_summary_prompt_uses_user_evidence_not_model_fabrications(dsn
     assert "Conversation grounding" in recall_prompt
     assert "none matching the requested earlier discussion" in recall_prompt
     assert "cannot reliably recall" in recall_prompt
-    assert "I want to walk twice per week." not in recall_prompt
+    # MVP-02B.1 adds independently authenticated historical user evidence.
+    # The grounding block still refers only to THIS conversation; prior
+    # source evidence must be separated, labeled and provenance-linked.
+    assert "Prior-session user statements" in recall_prompt
+    assert "I want to walk twice per week." in recall_prompt
+    assert original.turn_id in recall_prompt
+    assert "USER_REPORTED" in recall_prompt
+    assert "We discussed walking posture and stride." not in recall_prompt
 
     host.send("I managed to walk yesterday.",idempotency_key="success")
     host.send("It rained today, so I skipped my walk.",idempotency_key="rain")
