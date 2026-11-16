@@ -724,7 +724,14 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
                 record_model_intent_on_response,
             )
             admitted = None
-            if generated.intent_candidate is not None:
+            draft = conservative_implicit_objective(scoped["input_text"])
+            # On a tightly recognized routine objective, do not allow a
+            # lower-precision, non-OBJECTIVE model label to shadow the
+            # user-grounded conversational cue. Valid model OBJECTIVEs
+            # retain their original proposal/provenance path.
+            if (generated.intent_candidate is not None
+                    and (draft is None
+                         or generated.intent_candidate.kind=="OBJECTIVE")):
                 admitted = record_model_intent_on_response(
                     cursor,user_id=actor.user_id,
                     instance_id=context.instance_id,
@@ -740,7 +747,6 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
             # only when no candidate was admitted. The same response commit
             # fences it; this never approves a Goal or adds another LLM pass.
             if admitted is None:
-                draft = conservative_implicit_objective(scoped["input_text"])
                 if draft is not None:
                     record_intent_on_ingress(
                         cursor,user_id=actor.user_id,
