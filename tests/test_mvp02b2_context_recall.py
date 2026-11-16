@@ -161,11 +161,16 @@ def test_recall_preserves_tentative_preference_not_finalized_goal(dsn, query):
     host.send(query,idempotency_key="recall")
     prompt=system(model)
     assert "Prior-session user statements" in prompt
-    assert "Reflect tentative language" in prompt
-    assert "not settled plans or approved goals without explicit user commitment" in prompt
-    assert "'maybe', 'would be better'" in prompt
+    assert "Preserve uncertainty in EVERY statement" in prompt
+    assert "including earlier corrections" in prompt
+    assert "'maybe' and 'would be better' express preferences" in prompt
+    assert "NOT decisions, agreements or commitments" in prompt
+    assert "Never say 'decided', 'settled on', " in prompt
+    assert "'agreed' or 'committed' unless the user explicitly confirmed it" in prompt
+    assert "not a finalized plan or approved goal" in prompt
     assert SOURCE in prompt and source.turn_id in prompt
     assert LATEST_CORRECTION in prompt and final.turn_id in prompt
+    assert NOTE in prompt and CORRECTION in prompt
     assert prompt.index(NOTE)<prompt.index(CORRECTION)<prompt.index(LATEST_CORRECTION)
     assert sum(len(message.content) for message in model.contexts[-1])<=12000
 
