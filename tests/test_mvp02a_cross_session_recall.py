@@ -210,4 +210,5 @@ def test_baseline_report_exports_actual_gateway_boundary(tmp_path, baseline_repo
     assert all(item["capture_boundary"] == "pre_gateway_unverified"
                for item in exported)
     assert len(items) == 2
-    assert any(item["input"] == RECALL for item in transcript)
+    assert any(item.get("action") == "message" and item.get("input") == RECALL
+               for item in transcript)
