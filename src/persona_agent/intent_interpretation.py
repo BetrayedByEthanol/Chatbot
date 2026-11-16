@@ -200,6 +200,32 @@ def should_interpret_with_model(text: str) -> bool:
     )
 
 
+def diagnose_model_candidate_gate(
+    input_text: str, source_event_id, candidate,
+) -> str:
+    """Explain the existing model-intent admission guard without DB writes.
+
+    This helper is shared by production admission and the optional evaluation
+    recorder. It does NOT resolve references, verify delivery or authorize a
+    goal. A VALID result may still be rejected by the turn-uniqueness check.
+    """
+    from .conversation_contracts import ModelIntentCandidate
+
+    if type(candidate) is not ModelIntentCandidate:
+        return "NO_VALID_CANDIDATE"
+    if source_event_id is None:
+        return "SOURCE_EVENT_MISSING"
+    if not should_interpret_with_model(input_text):
+        return "INPUT_NOT_ELIGIBLE"
+    if candidate.confidence < 0.75:
+        return "BELOW_CONFIDENCE_THRESHOLD"
+    if candidate.kind == "INSTRUCTION":
+        return "MODEL_INSTRUCTION_DISALLOWED"
+    if candidate.evidence_quote not in input_text:
+        return "QUOTE_NOT_GROUNDED"
+    return "VALID"
+
+
 def record_model_intent_on_response(
     cur, *, user_id, instance_id, conversation_id,
     turn_id, turn_sequence, input_text, source_event_id,
@@ -211,18 +237,11 @@ def record_model_intent_on_response(
     selected generation, latest turn and revision. No LLM/tool work here.
     """
     from uuid import uuid4
-    from .conversation_contracts import ModelIntentCandidate
-
-    if type(candidate) is not ModelIntentCandidate or source_event_id is None:
-        return None
-    if not should_interpret_with_model(input_text):
-        return None
-    # Confidence is a model-reported heuristic, not a calibrated probability.
-    if candidate.confidence < 0.75 or candidate.kind == "INSTRUCTION":
-        return None
-    # Only verbatim evidence is admitted. Normalized, invented or cross-turn
-    # goal descriptions are rejected, even when proposed by the model.
-    if candidate.evidence_quote not in input_text:
+    # Preserve the previous ordered gates; make their rejections observable
+    # in the synthetic acceptance harness without another model call.
+    if diagnose_model_candidate_gate(
+        input_text, source_event_id, candidate,
+    ) != "VALID":
         return None
     cur.execute(
         """SELECT 1 FROM conversation_intent_signals
