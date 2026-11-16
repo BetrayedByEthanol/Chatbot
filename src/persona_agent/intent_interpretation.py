@@ -21,12 +21,14 @@ _IMPLICIT_ROUTINE = re.compile(
     re.I,
 )
 _FREQUENCY_NOTE = re.compile(
-    r"^(?:maybe|perhaps)\s+(?:once|twice|three|four|five|six|seven|"
-    r"\d{1,2})\s+times?\s+per\s+week\s*[.!]?$", re.I,
+    r"^(?:maybe|perhaps)\s+(?:(?:once|twice)(?:\s+times?)?|"
+    r"(?:three|four|five|six|seven|\d{1,2})\s+times?)"
+    r"\s+per\s+week\s*[.!]?$", re.I,
 )
 _FREQUENCY_CORRECTION = re.compile(
-    r"^actually[, ]+\s*(?:once|twice|three|four|five|six|seven|"
-    r"\d{1,2})\s+times?\s+per\s+week\s+would\s+be\s+better\s*[.!]?$",
+    r"^actually[, ]+\s*(?:(?:once|twice)(?:\s+times?)?|"
+    r"(?:three|four|five|six|seven|\d{1,2})\s+times?)"
+    r"\s+per\s+week\s+would\s+be\s+better\s*[.!]?$",
     re.I,
 )
 _NAMED_GOAL_REFERENCE = re.compile(
