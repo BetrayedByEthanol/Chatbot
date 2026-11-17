@@ -82,6 +82,7 @@ def summarize_nli(
     cases = []
     false_contradictions = 0
     high_confidence_false_contradictions = 0
+    threshold_tp = threshold_fp = threshold_fn = threshold_tn = 0
     for pair in examples:
         probabilities = outputs[pair.id]
         if set(probabilities) != set(LABELS):
@@ -103,7 +104,18 @@ def summarize_nli(
         high_confidence_false_contradictions += int(
             is_false_contradiction and scores["contradiction"] >= high_confidence_threshold
         )
+        threshold_hit = scores["contradiction"] >= high_confidence_threshold
+        expected_contradiction = pair.label == "contradiction"
+        threshold_tp += int(threshold_hit and expected_contradiction)
+        threshold_fp += int(threshold_hit and not expected_contradiction)
+        threshold_fn += int(not threshold_hit and expected_contradiction)
+        threshold_tn += int(not threshold_hit and not expected_contradiction)
+        threshold_outcome = ("TP" if expected_contradiction else "FP") if threshold_hit else (
+            "FN" if expected_contradiction else "TN"
+        )
         cases.append({
+            "contradiction_at_threshold": threshold_hit,
+            "contradiction_threshold_outcome": threshold_outcome,
             "id": pair.id, "group": pair.group,
             "expected": pair.label, "predicted": predicted,
             "correct": predicted == pair.label,
@@ -127,7 +139,22 @@ def summarize_nli(
         }
     correct = sum(pair["correct"] for pair in cases)
     negative_support = sum(pair.label != "contradiction" for pair in examples)
+    threshold_precision = threshold_tp / (threshold_tp + threshold_fp) if threshold_tp + threshold_fp else 0.0
+    threshold_recall = threshold_tp / (threshold_tp + threshold_fn) if threshold_tp + threshold_fn else 0.0
     return {
+        "contradiction_threshold": {
+            "score_cutoff": high_confidence_threshold,
+            "true_positive": threshold_tp,
+            "false_positive": threshold_fp,
+            "false_negative": threshold_fn,
+            "true_negative": threshold_tn,
+            "precision": round(threshold_precision, 4),
+            "recall": round(threshold_recall, 4),
+            "flagged_total": threshold_tp + threshold_fp,
+            "false_alert_rate_noncontradiction": round(
+                threshold_fp / (threshold_fp + threshold_tn), 4
+            ) if threshold_fp + threshold_tn else 0.0,
+        },
         "total": len(examples),
         "correct": correct,
         "accuracy": round(correct / len(examples), 4),
