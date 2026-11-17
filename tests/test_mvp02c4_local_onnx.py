@@ -7,7 +7,7 @@ import sys
 import pytest
 
 from persona_agent.local_onnx import (
-    LocalONNXConfig, cpu_instruction_flags, nli_indices, select_onnx_file,
+    LocalONNXConfig, LocalONNXModel, cpu_instruction_flags, nli_indices, select_onnx_file,
 )
 
 
@@ -156,3 +156,32 @@ def test_local_benchmark_cli_help_does_not_load_optional_onnx(tmp_path):
     assert result.returncode==0, result.stderr
     assert "--models-root" in result.stdout
     assert "--precision" in result.stdout
+
+
+def test_embedding_masked_mean_pooling_and_l2_normalization(tmp_path):
+    np=pytest.importorskip("numpy")
+    instance=LocalONNXModel.__new__(LocalONNXModel)
+    instance.np=np
+    instance.config=LocalONNXConfig(tmp_path,"embedding")
+    instance._forward=lambda texts: (
+        [np.array([[[3.,0.],[0.,4.],[1000.,1000.]]],dtype=np.float32)],
+        {"attention_mask":np.array([[1,1,0]],dtype=np.int64)},
+    )
+    output=instance.embed(["I enjoy gardening."])
+    assert output.shape==(1,2)
+    assert np.allclose(output[0],[0.6,0.8],atol=1e-6)
+    assert np.isclose(np.linalg.norm(output[0]),1.0)
+
+
+def test_nli_logits_are_softmaxed_with_explicit_label_mapping(tmp_path):
+    np=pytest.importorskip("numpy")
+    instance=LocalONNXModel.__new__(LocalONNXModel)
+    instance.np=np
+    instance.config=LocalONNXConfig(tmp_path,"nli")
+    instance.labels={"contradiction":0,"neutral":1,"entailment":2}
+    instance._forward=lambda *texts: (
+        [np.array([[0.,1.,2.]],dtype=np.float32)],{},
+    )
+    output=instance.nli("I enjoy reading.","I enjoy reading.")
+    assert output["entailment"]>output["neutral"]>output["contradiction"]
+    assert abs(sum(output.values())-1)<1e-8
