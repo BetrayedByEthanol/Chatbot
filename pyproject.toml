@@ -15,6 +15,7 @@ dependencies = [
 [project.optional-dependencies]
 test = ["pytest>=8,<10"]
 asr = ["faster-whisper>=1.1,<2", "numpy>=1.26,<3"]
+onnx-bench = ["onnxruntime>=1.18,<2", "numpy>=1.26,<3", "transformers>=4.42,<6", "sentencepiece>=0.2,<1"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
