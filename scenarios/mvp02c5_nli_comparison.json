@@ -1,0 +1,385 @@
+{
+  "version": "mvp02c5.synthetic_nli.v1",
+  "provenance": "Hand-curated synthetic diagnostic pairs; not a population-representative NLI validation corpus.",
+  "limitations": "Clear cases and temporal edge cases are deliberately mixed. Labels are proposed judgments for review; ambiguous judgments should be corrected explicitly, never silently treated as ground truth.",
+  "examples": [
+    {
+      "id": "E01",
+      "label": "entailment",
+      "group": "identity",
+      "premise": "I enjoy gardening.",
+      "hypothesis": "I enjoy gardening."
+    },
+    {
+      "id": "E02",
+      "label": "entailment",
+      "group": "paraphrase",
+      "premise": "Gardening is a hobby I like.",
+      "hypothesis": "I enjoy gardening."
+    },
+    {
+      "id": "E03",
+      "label": "entailment",
+      "group": "generalization",
+      "premise": "I drink coffee every morning.",
+      "hypothesis": "I drink coffee."
+    },
+    {
+      "id": "E04",
+      "label": "entailment",
+      "group": "generalization",
+      "premise": "I own two cats.",
+      "hypothesis": "I have cats."
+    },
+    {
+      "id": "E05",
+      "label": "entailment",
+      "group": "generalization",
+      "premise": "I walk to the office every weekday.",
+      "hypothesis": "I sometimes walk to the office."
+    },
+    {
+      "id": "E06",
+      "label": "entailment",
+      "group": "past_event",
+      "premise": "I ran five kilometers yesterday.",
+      "hypothesis": "I went running yesterday."
+    },
+    {
+      "id": "E07",
+      "label": "entailment",
+      "group": "current_preference",
+      "premise": "I do not enjoy gardening anymore.",
+      "hypothesis": "I do not currently enjoy gardening."
+    },
+    {
+      "id": "E08",
+      "label": "entailment",
+      "group": "past_event",
+      "premise": "I read a novel yesterday.",
+      "hypothesis": "I read something yesterday."
+    },
+    {
+      "id": "E09",
+      "label": "entailment",
+      "group": "goal",
+      "premise": "I want to eat fewer sweets.",
+      "hypothesis": "I want to reduce how many sweets I eat."
+    },
+    {
+      "id": "E10",
+      "label": "entailment",
+      "group": "future_intention",
+      "premise": "I plan to go running tomorrow.",
+      "hypothesis": "I intend to run tomorrow."
+    },
+    {
+      "id": "E11",
+      "label": "entailment",
+      "group": "past_habit",
+      "premise": "I used to enjoy gardening.",
+      "hypothesis": "Gardening was something I enjoyed in the past."
+    },
+    {
+      "id": "E12",
+      "label": "entailment",
+      "group": "negation",
+      "premise": "I have never visited Paris.",
+      "hypothesis": "I have not visited Paris."
+    },
+    {
+      "id": "E13",
+      "label": "entailment",
+      "group": "habitual",
+      "premise": "I never drink soda.",
+      "hypothesis": "I do not drink soda."
+    },
+    {
+      "id": "E14",
+      "label": "entailment",
+      "group": "scheduling",
+      "premise": "My meeting starts at 3 PM.",
+      "hypothesis": "My meeting is scheduled for 3 PM."
+    },
+    {
+      "id": "E15",
+      "label": "entailment",
+      "group": "past_change",
+      "premise": "I stopped eating sweets last week.",
+      "hypothesis": "I was eating sweets before last week."
+    },
+    {
+      "id": "E16",
+      "label": "entailment",
+      "group": "frequency",
+      "premise": "I often feel tired after work.",
+      "hypothesis": "I sometimes feel tired after work."
+    },
+    {
+      "id": "E17",
+      "label": "entailment",
+      "group": "completed_action",
+      "premise": "I finished my workout today.",
+      "hypothesis": "I worked out today."
+    },
+    {
+      "id": "E18",
+      "label": "entailment",
+      "group": "preference",
+      "premise": "I prefer tea to coffee.",
+      "hypothesis": "Given a choice between tea and coffee, I favor tea."
+    },
+    {
+      "id": "N01",
+      "label": "neutral",
+      "group": "unrelated_original",
+      "premise": "I enjoy gardening.",
+      "hypothesis": "I work as a programmer."
+    },
+    {
+      "id": "N02",
+      "label": "neutral",
+      "group": "unrelated_reverse",
+      "premise": "I work as a programmer.",
+      "hypothesis": "I enjoy gardening."
+    },
+    {
+      "id": "N03",
+      "label": "neutral",
+      "group": "temporal_scope",
+      "premise": "I enjoyed gardening yesterday.",
+      "hypothesis": "I enjoy gardening every day."
+    },
+    {
+      "id": "N04",
+      "label": "neutral",
+      "group": "temporal_scope",
+      "premise": "I used to enjoy gardening.",
+      "hypothesis": "I enjoy gardening now."
+    },
+    {
+      "id": "N05",
+      "label": "neutral",
+      "group": "temporal_scope",
+      "premise": "I enjoy gardening.",
+      "hypothesis": "I enjoyed gardening yesterday."
+    },
+    {
+      "id": "N06",
+      "label": "neutral",
+      "group": "hypothetical",
+      "premise": "I might start running.",
+      "hypothesis": "I run every morning."
+    },
+    {
+      "id": "N07",
+      "label": "neutral",
+      "group": "future_decision",
+      "premise": "I am thinking about quitting coffee.",
+      "hypothesis": "I no longer drink coffee."
+    },
+    {
+      "id": "N08",
+      "label": "neutral",
+      "group": "different_times",
+      "premise": "I plan to go hiking next month.",
+      "hypothesis": "I went hiking last year."
+    },
+    {
+      "id": "N09",
+      "label": "neutral",
+      "group": "generalization_not_entailed",
+      "premise": "I ate a healthy meal yesterday.",
+      "hypothesis": "I eat healthy meals every day."
+    },
+    {
+      "id": "N10",
+      "label": "neutral",
+      "group": "preference_vs_fact",
+      "premise": "I work as a programmer.",
+      "hypothesis": "I enjoy programming."
+    },
+    {
+      "id": "N11",
+      "label": "neutral",
+      "group": "ownership_vs_preference",
+      "premise": "I enjoy playing guitar.",
+      "hypothesis": "I own a guitar."
+    },
+    {
+      "id": "N12",
+      "label": "neutral",
+      "group": "unrelated_routine",
+      "premise": "I walk home from work.",
+      "hypothesis": "I take the train in the morning."
+    },
+    {
+      "id": "N13",
+      "label": "neutral",
+      "group": "causation_not_entailed",
+      "premise": "I slept badly last night.",
+      "hypothesis": "I feel tired today."
+    },
+    {
+      "id": "N14",
+      "label": "neutral",
+      "group": "past_vs_future",
+      "premise": "I went for a run on Monday.",
+      "hypothesis": "I will run tomorrow."
+    },
+    {
+      "id": "N15",
+      "label": "neutral",
+      "group": "ability_vs_preference",
+      "premise": "I can cook pasta.",
+      "hypothesis": "I like eating pasta."
+    },
+    {
+      "id": "N16",
+      "label": "neutral",
+      "group": "unrelated_skills",
+      "premise": "I am learning Python.",
+      "hypothesis": "I know Java."
+    },
+    {
+      "id": "N17",
+      "label": "neutral",
+      "group": "time_unspecified",
+      "premise": "I enjoy gardening.",
+      "hypothesis": "I will be gardening this weekend."
+    },
+    {
+      "id": "N18",
+      "label": "neutral",
+      "group": "goal_vs_habit",
+      "premise": "I want to exercise more.",
+      "hypothesis": "I currently exercise three times a week."
+    },
+    {
+      "id": "C01",
+      "label": "contradiction",
+      "group": "direct_negation",
+      "premise": "I enjoy gardening.",
+      "hypothesis": "I do not enjoy gardening."
+    },
+    {
+      "id": "C02",
+      "label": "contradiction",
+      "group": "current_correction",
+      "premise": "I do not enjoy gardening anymore.",
+      "hypothesis": "I currently enjoy gardening."
+    },
+    {
+      "id": "C03",
+      "label": "contradiction",
+      "group": "habitual_negation",
+      "premise": "I walk every morning.",
+      "hypothesis": "I never walk in the mornings."
+    },
+    {
+      "id": "C04",
+      "label": "contradiction",
+      "group": "same_day",
+      "premise": "I attended the meeting yesterday.",
+      "hypothesis": "I did not attend the meeting yesterday."
+    },
+    {
+      "id": "C05",
+      "label": "contradiction",
+      "group": "ownership",
+      "premise": "I have two dogs.",
+      "hypothesis": "I have no dogs."
+    },
+    {
+      "id": "C06",
+      "label": "contradiction",
+      "group": "habitual_negation",
+      "premise": "I drink coffee every day.",
+      "hypothesis": "I never drink coffee."
+    },
+    {
+      "id": "C07",
+      "label": "contradiction",
+      "group": "identity",
+      "premise": "I live in Berlin.",
+      "hypothesis": "I do not live in Berlin."
+    },
+    {
+      "id": "C08",
+      "label": "contradiction",
+      "group": "same_day",
+      "premise": "I read on Tuesday.",
+      "hypothesis": "I did not read on Tuesday."
+    },
+    {
+      "id": "C09",
+      "label": "contradiction",
+      "group": "same_future_intention",
+      "premise": "I plan to run tomorrow.",
+      "hypothesis": "I do not plan to run tomorrow."
+    },
+    {
+      "id": "C10",
+      "label": "contradiction",
+      "group": "mutually_exclusive",
+      "premise": "I was born in 1990.",
+      "hypothesis": "I was born in 1991."
+    },
+    {
+      "id": "C11",
+      "label": "contradiction",
+      "group": "same_day",
+      "premise": "Today is Tuesday.",
+      "hypothesis": "Today is Friday."
+    },
+    {
+      "id": "C12",
+      "label": "contradiction",
+      "group": "past_habit",
+      "premise": "I used to enjoy gardening.",
+      "hypothesis": "I never enjoyed gardening."
+    },
+    {
+      "id": "C13",
+      "label": "contradiction",
+      "group": "current_change",
+      "premise": "I no longer eat sweets.",
+      "hypothesis": "I currently eat sweets."
+    },
+    {
+      "id": "C14",
+      "label": "contradiction",
+      "group": "habitual_negation",
+      "premise": "I eat sweets every day.",
+      "hypothesis": "I never eat sweets."
+    },
+    {
+      "id": "C15",
+      "label": "contradiction",
+      "group": "past_event",
+      "premise": "I have never been to Paris.",
+      "hypothesis": "I visited Paris last year."
+    },
+    {
+      "id": "C16",
+      "label": "contradiction",
+      "group": "same_day",
+      "premise": "I finished working out today.",
+      "hypothesis": "I did not work out today."
+    },
+    {
+      "id": "C17",
+      "label": "contradiction",
+      "group": "exclusive_count",
+      "premise": "I have exactly one cat.",
+      "hypothesis": "I have exactly two cats."
+    },
+    {
+      "id": "C18",
+      "label": "contradiction",
+      "group": "preference",
+      "premise": "I prefer tea to coffee.",
+      "hypothesis": "I prefer coffee to tea."
+    }
+  ]
+}
