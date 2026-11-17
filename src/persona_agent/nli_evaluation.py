@@ -5,7 +5,6 @@ benchmark. No ML runtime dependency or database access is required here.
 """
 from __future__ import annotations
 
-from collections import Counter
 from dataclasses import dataclass
 from hashlib import sha256
 import json
