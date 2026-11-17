@@ -1,0 +1,847 @@
+{
+  "version": "mvp02c5.synthetic_nli.v1",
+  "provenance": "Newly authored synthetic NLI diagnostic cases; draft gold labels pending independent review. Not a representative or blinded holdout.",
+  "limitations": "Pragmatic/temporal labels may be ambiguous; review independently before interpreting model quality. Includes German and cross-language pairs. This suite was authored after seeing previous model errors.",
+  "examples": [
+    {
+      "id": "HE001",
+      "label": "entailment",
+      "group": "paraphrase",
+      "premise": "My brother lives in Hamburg.",
+      "hypothesis": "My sibling lives in Hamburg."
+    },
+    {
+      "id": "HE002",
+      "label": "entailment",
+      "group": "paraphrase",
+      "premise": "I bought a bicycle yesterday.",
+      "hypothesis": "Yesterday I purchased a bike."
+    },
+    {
+      "id": "HE003",
+      "label": "entailment",
+      "group": "paraphrase",
+      "premise": "I really dislike mushrooms.",
+      "hypothesis": "Mushrooms are something I do not like."
+    },
+    {
+      "id": "HE004",
+      "label": "entailment",
+      "group": "paraphrase",
+      "premise": "My appointment was moved to Friday.",
+      "hypothesis": "The appointment was rescheduled for Friday."
+    },
+    {
+      "id": "HE005",
+      "label": "entailment",
+      "group": "entailment_quantity",
+      "premise": "I own exactly three bicycles.",
+      "hypothesis": "I own at least one bicycle."
+    },
+    {
+      "id": "HE006",
+      "label": "entailment",
+      "group": "entailment_quantity",
+      "premise": "The box contains twelve notebooks.",
+      "hypothesis": "There are more than ten notebooks in the box."
+    },
+    {
+      "id": "HE007",
+      "label": "entailment",
+      "group": "entailment_quantity",
+      "premise": "I walked six kilometers this afternoon.",
+      "hypothesis": "I walked some distance this afternoon."
+    },
+    {
+      "id": "HE008",
+      "label": "entailment",
+      "group": "entailment_quantity",
+      "premise": "Four people attended the meeting.",
+      "hypothesis": "At least one person attended the meeting."
+    },
+    {
+      "id": "HE009",
+      "label": "entailment",
+      "group": "entailment_time",
+      "premise": "I attended the concert last Saturday.",
+      "hypothesis": "I attended a concert in the past."
+    },
+    {
+      "id": "HE010",
+      "label": "entailment",
+      "group": "entailment_time",
+      "premise": "I finished my presentation this morning.",
+      "hypothesis": "I completed my presentation today."
+    },
+    {
+      "id": "HE011",
+      "label": "entailment",
+      "group": "entailment_time",
+      "premise": "I will visit Munich next Tuesday.",
+      "hypothesis": "I am planning a visit to Munich in the future."
+    },
+    {
+      "id": "HE012",
+      "label": "entailment",
+      "group": "entailment_time",
+      "premise": "Yesterday I sent an email to my supervisor.",
+      "hypothesis": "I sent my supervisor a message yesterday."
+    },
+    {
+      "id": "HE013",
+      "label": "entailment",
+      "group": "entailment_modality",
+      "premise": "I must submit the report by Monday.",
+      "hypothesis": "I am required to submit the report by Monday."
+    },
+    {
+      "id": "HE014",
+      "label": "entailment",
+      "group": "entailment_modality",
+      "premise": "I intend to reduce my sugar intake.",
+      "hypothesis": "I plan to consume less sugar."
+    },
+    {
+      "id": "HE015",
+      "label": "entailment",
+      "group": "entailment_modality",
+      "premise": "I cannot swim.",
+      "hypothesis": "I am unable to swim."
+    },
+    {
+      "id": "HE016",
+      "label": "entailment",
+      "group": "entailment_modality",
+      "premise": "I might join the workshop.",
+      "hypothesis": "It is possible I will attend the workshop."
+    },
+    {
+      "id": "HE017",
+      "label": "entailment",
+      "group": "entailment_goal",
+      "premise": "My goal is to run twice per week.",
+      "hypothesis": "I want to go running two times each week."
+    },
+    {
+      "id": "HE018",
+      "label": "entailment",
+      "group": "entailment_goal",
+      "premise": "I completed step three of the installation.",
+      "hypothesis": "Step three of the installation is finished."
+    },
+    {
+      "id": "HE019",
+      "label": "entailment",
+      "group": "entailment_goal",
+      "premise": "I prefer taking the bus over driving.",
+      "hypothesis": "Given those options, I would rather take the bus."
+    },
+    {
+      "id": "HE020",
+      "label": "entailment",
+      "group": "entailment_goal",
+      "premise": "I no longer drink energy drinks.",
+      "hypothesis": "I have stopped drinking energy drinks."
+    },
+    {
+      "id": "HE021",
+      "label": "entailment",
+      "group": "german_entailment",
+      "premise": "Ich wohne in Leipzig.",
+      "hypothesis": "Mein Wohnort ist Leipzig."
+    },
+    {
+      "id": "HE022",
+      "label": "entailment",
+      "group": "german_entailment",
+      "premise": "Ich trinke keinen Kaffee mehr.",
+      "hypothesis": "Ich habe aufgehört, Kaffee zu trinken."
+    },
+    {
+      "id": "HE023",
+      "label": "entailment",
+      "group": "german_entailment",
+      "premise": "Das Treffen beginnt um neun Uhr.",
+      "hypothesis": "Das Treffen startet um 9 Uhr."
+    },
+    {
+      "id": "HE024",
+      "label": "entailment",
+      "group": "cross_language_entailment",
+      "premise": "Ich habe gestern trainiert.",
+      "hypothesis": "I exercised yesterday."
+    },
+    {
+      "id": "HN001",
+      "label": "neutral",
+      "group": "unrelated_identity",
+      "premise": "I work in accounting.",
+      "hypothesis": "I enjoy hiking in the mountains."
+    },
+    {
+      "id": "HN002",
+      "label": "neutral",
+      "group": "unrelated_identity",
+      "premise": "I was born in 1998.",
+      "hypothesis": "My favorite color is green."
+    },
+    {
+      "id": "HN003",
+      "label": "neutral",
+      "group": "unrelated_identity",
+      "premise": "My sister owns a bicycle.",
+      "hypothesis": "I cook pasta on Fridays."
+    },
+    {
+      "id": "HN004",
+      "label": "neutral",
+      "group": "unrelated_identity",
+      "premise": "My home has a garden.",
+      "hypothesis": "I work remotely."
+    },
+    {
+      "id": "HN005",
+      "label": "neutral",
+      "group": "unrelated_identity",
+      "premise": "I am a professional musician.",
+      "hypothesis": "I collect postcards."
+    },
+    {
+      "id": "HN006",
+      "label": "neutral",
+      "group": "unrelated_identity",
+      "premise": "I live in Munich.",
+      "hypothesis": "I play chess online."
+    },
+    {
+      "id": "HN007",
+      "label": "neutral",
+      "group": "unrelated_identity",
+      "premise": "I can write Python programs.",
+      "hypothesis": "I understand Japanese."
+    },
+    {
+      "id": "HN008",
+      "label": "neutral",
+      "group": "unrelated_identity",
+      "premise": "I wear glasses.",
+      "hypothesis": "I prefer herbal tea."
+    },
+    {
+      "id": "HN009",
+      "label": "neutral",
+      "group": "unrelated_identity",
+      "premise": "I own a small dog.",
+      "hypothesis": "I enjoy classical music."
+    },
+    {
+      "id": "HN010",
+      "label": "neutral",
+      "group": "unrelated_identity",
+      "premise": "I speak French.",
+      "hypothesis": "I like science fiction films."
+    },
+    {
+      "id": "HN011",
+      "label": "neutral",
+      "group": "unrelated_identity",
+      "premise": "I like cycling.",
+      "hypothesis": "I work as a data analyst."
+    },
+    {
+      "id": "HN012",
+      "label": "neutral",
+      "group": "unrelated_identity",
+      "premise": "I drive a blue car.",
+      "hypothesis": "I usually eat lunch at noon."
+    },
+    {
+      "id": "HN013",
+      "label": "neutral",
+      "group": "temporal_scope",
+      "premise": "I liked running in high school.",
+      "hypothesis": "I like running today."
+    },
+    {
+      "id": "HN014",
+      "label": "neutral",
+      "group": "temporal_scope",
+      "premise": "I lived in Cologne in 2010.",
+      "hypothesis": "I live in Cologne today."
+    },
+    {
+      "id": "HN015",
+      "label": "neutral",
+      "group": "temporal_scope",
+      "premise": "I ate breakfast at 7 AM yesterday.",
+      "hypothesis": "I ate breakfast at 8 AM today."
+    },
+    {
+      "id": "HN016",
+      "label": "neutral",
+      "group": "temporal_scope",
+      "premise": "My favorite food was pizza as a child.",
+      "hypothesis": "My favorite food is pizza now."
+    },
+    {
+      "id": "HN017",
+      "label": "neutral",
+      "group": "temporal_scope",
+      "premise": "I had a cat five years ago.",
+      "hypothesis": "I currently have a cat."
+    },
+    {
+      "id": "HN018",
+      "label": "neutral",
+      "group": "temporal_scope",
+      "premise": "I did not drink coffee in January.",
+      "hypothesis": "I drink coffee in November."
+    },
+    {
+      "id": "HN019",
+      "label": "neutral",
+      "group": "temporal_scope",
+      "premise": "I used to take the bus to work.",
+      "hypothesis": "I commute by bicycle now."
+    },
+    {
+      "id": "HN020",
+      "label": "neutral",
+      "group": "temporal_scope",
+      "premise": "I was traveling in Spain last summer.",
+      "hypothesis": "I am in Spain today."
+    },
+    {
+      "id": "HN021",
+      "label": "neutral",
+      "group": "temporal_scope",
+      "premise": "I completed my workout on Monday.",
+      "hypothesis": "I completed a workout on Thursday."
+    },
+    {
+      "id": "HN022",
+      "label": "neutral",
+      "group": "temporal_scope",
+      "premise": "I worked in a hospital ten years ago.",
+      "hypothesis": "I work in a hospital now."
+    },
+    {
+      "id": "HN023",
+      "label": "neutral",
+      "group": "temporal_scope",
+      "premise": "I hated spinach when I was six.",
+      "hypothesis": "I enjoy spinach today."
+    },
+    {
+      "id": "HN024",
+      "label": "neutral",
+      "group": "temporal_scope",
+      "premise": "I slept seven hours last night.",
+      "hypothesis": "I slept six hours the night before."
+    },
+    {
+      "id": "HN025",
+      "label": "neutral",
+      "group": "intention_vs_action",
+      "premise": "I plan to learn guitar this year.",
+      "hypothesis": "I can play guitar already."
+    },
+    {
+      "id": "HN026",
+      "label": "neutral",
+      "group": "intention_vs_action",
+      "premise": "I want to buy a new laptop.",
+      "hypothesis": "I have bought a new laptop."
+    },
+    {
+      "id": "HN027",
+      "label": "neutral",
+      "group": "intention_vs_action",
+      "premise": "I am considering moving to Dresden.",
+      "hypothesis": "I have moved to Dresden."
+    },
+    {
+      "id": "HN028",
+      "label": "neutral",
+      "group": "intention_vs_action",
+      "premise": "I might register for the marathon.",
+      "hypothesis": "I am registered for the marathon."
+    },
+    {
+      "id": "HN029",
+      "label": "neutral",
+      "group": "intention_vs_action",
+      "premise": "I hope to finish the essay tonight.",
+      "hypothesis": "I finished the essay last night."
+    },
+    {
+      "id": "HN030",
+      "label": "neutral",
+      "group": "intention_vs_action",
+      "premise": "I am thinking about giving up soda.",
+      "hypothesis": "I have stopped drinking soda."
+    },
+    {
+      "id": "HN031",
+      "label": "neutral",
+      "group": "intention_vs_action",
+      "premise": "I am deciding whether to adopt a dog.",
+      "hypothesis": "I have adopted a dog."
+    },
+    {
+      "id": "HN032",
+      "label": "neutral",
+      "group": "intention_vs_action",
+      "premise": "I plan to cook tonight.",
+      "hypothesis": "I cooked yesterday."
+    },
+    {
+      "id": "HN033",
+      "label": "neutral",
+      "group": "intention_vs_action",
+      "premise": "I want to exercise more.",
+      "hypothesis": "I currently exercise daily."
+    },
+    {
+      "id": "HN034",
+      "label": "neutral",
+      "group": "intention_vs_action",
+      "premise": "I am learning to drive.",
+      "hypothesis": "I have a driving license."
+    },
+    {
+      "id": "HN035",
+      "label": "neutral",
+      "group": "hypothetical",
+      "premise": "I might travel to Oslo in December.",
+      "hypothesis": "I visited Oslo last December."
+    },
+    {
+      "id": "HN036",
+      "label": "neutral",
+      "group": "hypothetical",
+      "premise": "If it rains tomorrow, I will stay home.",
+      "hypothesis": "It is raining today."
+    },
+    {
+      "id": "HN037",
+      "label": "neutral",
+      "group": "hypothetical",
+      "premise": "I could start a business someday.",
+      "hypothesis": "I currently run a business."
+    },
+    {
+      "id": "HN038",
+      "label": "neutral",
+      "group": "hypothetical",
+      "premise": "If the shop were open, I would buy bread.",
+      "hypothesis": "I bought bread at that shop today."
+    },
+    {
+      "id": "HN039",
+      "label": "neutral",
+      "group": "hypothetical",
+      "premise": "I may attend the event next year.",
+      "hypothesis": "I attended the event last year."
+    },
+    {
+      "id": "HN040",
+      "label": "neutral",
+      "group": "hypothetical",
+      "premise": "I would like to try rock climbing.",
+      "hypothesis": "I have tried rock climbing."
+    },
+    {
+      "id": "HN041",
+      "label": "neutral",
+      "group": "hypothetical",
+      "premise": "It is possible I will switch careers.",
+      "hypothesis": "I have already switched careers."
+    },
+    {
+      "id": "HN042",
+      "label": "neutral",
+      "group": "ability_ownership_preference",
+      "premise": "I own a guitar.",
+      "hypothesis": "I enjoy playing guitar."
+    },
+    {
+      "id": "HN043",
+      "label": "neutral",
+      "group": "ability_ownership_preference",
+      "premise": "I know how to cook rice.",
+      "hypothesis": "I like eating rice."
+    },
+    {
+      "id": "HN044",
+      "label": "neutral",
+      "group": "ability_ownership_preference",
+      "premise": "I dislike airplanes.",
+      "hypothesis": "I have never flown."
+    },
+    {
+      "id": "HN045",
+      "label": "neutral",
+      "group": "ability_ownership_preference",
+      "premise": "I am good at mathematics.",
+      "hypothesis": "I teach mathematics."
+    },
+    {
+      "id": "HN046",
+      "label": "neutral",
+      "group": "ability_ownership_preference",
+      "premise": "I have running shoes.",
+      "hypothesis": "I run every morning."
+    },
+    {
+      "id": "HN047",
+      "label": "neutral",
+      "group": "ability_ownership_preference",
+      "premise": "I own a car.",
+      "hypothesis": "I drive to work."
+    },
+    {
+      "id": "HN048",
+      "label": "neutral",
+      "group": "ability_ownership_preference",
+      "premise": "I can swim.",
+      "hypothesis": "I swim every weekend."
+    },
+    {
+      "id": "HN049",
+      "label": "neutral",
+      "group": "ability_ownership_preference",
+      "premise": "I enjoy reading.",
+      "hypothesis": "I own a library card."
+    },
+    {
+      "id": "HN050",
+      "label": "neutral",
+      "group": "causation_vs_correlation",
+      "premise": "I skipped breakfast today.",
+      "hypothesis": "I felt dizzy this morning."
+    },
+    {
+      "id": "HN051",
+      "label": "neutral",
+      "group": "causation_vs_correlation",
+      "premise": "I worked late last night.",
+      "hypothesis": "I am tired today."
+    },
+    {
+      "id": "HN052",
+      "label": "neutral",
+      "group": "causation_vs_correlation",
+      "premise": "I practiced guitar.",
+      "hypothesis": "My performance improved."
+    },
+    {
+      "id": "HN053",
+      "label": "neutral",
+      "group": "causation_vs_correlation",
+      "premise": "I watered the garden.",
+      "hypothesis": "My tomatoes grew faster."
+    },
+    {
+      "id": "HN054",
+      "label": "neutral",
+      "group": "causation_vs_correlation",
+      "premise": "I changed my diet last month.",
+      "hypothesis": "My energy has improved."
+    },
+    {
+      "id": "HN055",
+      "label": "neutral",
+      "group": "causation_vs_correlation",
+      "premise": "I studied all evening.",
+      "hypothesis": "I passed the exam."
+    },
+    {
+      "id": "HN056",
+      "label": "neutral",
+      "group": "causation_vs_correlation",
+      "premise": "I took a day off.",
+      "hypothesis": "My stress decreased."
+    },
+    {
+      "id": "HN057",
+      "label": "neutral",
+      "group": "causation_vs_correlation",
+      "premise": "I switched internet providers.",
+      "hypothesis": "My connection became faster."
+    },
+    {
+      "id": "HN058",
+      "label": "neutral",
+      "group": "scope_mismatch",
+      "premise": "I enjoy black coffee.",
+      "hypothesis": "I enjoy all coffee drinks."
+    },
+    {
+      "id": "HN059",
+      "label": "neutral",
+      "group": "scope_mismatch",
+      "premise": "I spoke with one colleague yesterday.",
+      "hypothesis": "I spoke with every colleague yesterday."
+    },
+    {
+      "id": "HN060",
+      "label": "neutral",
+      "group": "scope_mismatch",
+      "premise": "My laptop can run Linux.",
+      "hypothesis": "My phone can run Linux."
+    },
+    {
+      "id": "HN061",
+      "label": "neutral",
+      "group": "scope_mismatch",
+      "premise": "I eat vegetables at dinner.",
+      "hypothesis": "I eat vegetables at every meal."
+    },
+    {
+      "id": "HN062",
+      "label": "neutral",
+      "group": "scope_mismatch",
+      "premise": "My brother likes chess.",
+      "hypothesis": "I like chess."
+    },
+    {
+      "id": "HN063",
+      "label": "neutral",
+      "group": "scope_mismatch",
+      "premise": "I speak German.",
+      "hypothesis": "I speak German fluently."
+    },
+    {
+      "id": "HN064",
+      "label": "neutral",
+      "group": "scope_mismatch",
+      "premise": "I enjoy running on weekends.",
+      "hypothesis": "I enjoy running on weekdays."
+    },
+    {
+      "id": "HN065",
+      "label": "neutral",
+      "group": "german_neutral",
+      "premise": "Ich spiele gern Schach.",
+      "hypothesis": "Ich arbeite in einer Bäckerei."
+    },
+    {
+      "id": "HN066",
+      "label": "neutral",
+      "group": "german_neutral",
+      "premise": "Ich habe gestern Reis gegessen.",
+      "hypothesis": "Ich esse jeden Tag Reis."
+    },
+    {
+      "id": "HN067",
+      "label": "neutral",
+      "group": "german_neutral",
+      "premise": "Ich möchte morgen joggen.",
+      "hypothesis": "Ich bin heute joggen gegangen."
+    },
+    {
+      "id": "HN068",
+      "label": "neutral",
+      "group": "german_neutral",
+      "premise": "Ich kann kochen.",
+      "hypothesis": "Ich koche jeden Tag."
+    },
+    {
+      "id": "HN069",
+      "label": "neutral",
+      "group": "german_neutral",
+      "premise": "Ich habe früher in Bonn gewohnt.",
+      "hypothesis": "Ich wohne jetzt in Bonn."
+    },
+    {
+      "id": "HN070",
+      "label": "neutral",
+      "group": "german_neutral",
+      "premise": "Ich spiele Klavier.",
+      "hypothesis": "Ich besitze ein Klavier."
+    },
+    {
+      "id": "HN071",
+      "label": "neutral",
+      "group": "cross_language_neutral",
+      "premise": "Ich lerne Spanisch.",
+      "hypothesis": "I speak Italian."
+    },
+    {
+      "id": "HN072",
+      "label": "neutral",
+      "group": "cross_language_neutral",
+      "premise": "Ich war gestern in Berlin.",
+      "hypothesis": "I will be in Berlin tomorrow."
+    },
+    {
+      "id": "HC001",
+      "label": "contradiction",
+      "group": "direct_negation",
+      "premise": "My laptop is turned on right now.",
+      "hypothesis": "My laptop is currently turned off."
+    },
+    {
+      "id": "HC002",
+      "label": "contradiction",
+      "group": "direct_negation",
+      "premise": "I have a pet rabbit.",
+      "hypothesis": "I have no pet rabbits."
+    },
+    {
+      "id": "HC003",
+      "label": "contradiction",
+      "group": "direct_negation",
+      "premise": "The front door is locked.",
+      "hypothesis": "The front door is unlocked."
+    },
+    {
+      "id": "HC004",
+      "label": "contradiction",
+      "group": "direct_negation",
+      "premise": "I have finished the questionnaire.",
+      "hypothesis": "I have not finished the questionnaire."
+    },
+    {
+      "id": "HC005",
+      "label": "contradiction",
+      "group": "contradiction_quantity",
+      "premise": "My order contains exactly two items.",
+      "hypothesis": "My order contains exactly five items."
+    },
+    {
+      "id": "HC006",
+      "label": "contradiction",
+      "group": "contradiction_quantity",
+      "premise": "The password is eight characters long.",
+      "hypothesis": "The same password is exactly twelve characters long."
+    },
+    {
+      "id": "HC007",
+      "label": "contradiction",
+      "group": "contradiction_quantity",
+      "premise": "I paid exactly 30 euros for this ticket.",
+      "hypothesis": "I paid exactly 45 euros for this same ticket."
+    },
+    {
+      "id": "HC008",
+      "label": "contradiction",
+      "group": "contradiction_quantity",
+      "premise": "The table has only three legs.",
+      "hypothesis": "The same table has exactly four legs."
+    },
+    {
+      "id": "HC009",
+      "label": "contradiction",
+      "group": "contradiction_time",
+      "premise": "At 8 AM today, I was in Berlin.",
+      "hypothesis": "At 8 AM today, I was in Paris."
+    },
+    {
+      "id": "HC010",
+      "label": "contradiction",
+      "group": "contradiction_time",
+      "premise": "The meeting starts at 14:00 on Monday.",
+      "hypothesis": "The same meeting starts at 16:00 on Monday."
+    },
+    {
+      "id": "HC011",
+      "label": "contradiction",
+      "group": "contradiction_time",
+      "premise": "I submitted the assignment yesterday.",
+      "hypothesis": "I did not submit the assignment yesterday."
+    },
+    {
+      "id": "HC012",
+      "label": "contradiction",
+      "group": "contradiction_time",
+      "premise": "I worked from home last Friday.",
+      "hypothesis": "I did not work from home last Friday."
+    },
+    {
+      "id": "HC013",
+      "label": "contradiction",
+      "group": "contradiction_preference",
+      "premise": "I prefer apples to oranges.",
+      "hypothesis": "I prefer oranges to apples."
+    },
+    {
+      "id": "HC014",
+      "label": "contradiction",
+      "group": "contradiction_preference",
+      "premise": "Of these two options, I choose tea rather than coffee.",
+      "hypothesis": "Of the same two options, I choose coffee rather than tea."
+    },
+    {
+      "id": "HC015",
+      "label": "contradiction",
+      "group": "contradiction_preference",
+      "premise": "I dislike the taste of black olives.",
+      "hypothesis": "I like the taste of black olives."
+    },
+    {
+      "id": "HC016",
+      "label": "contradiction",
+      "group": "contradiction_preference",
+      "premise": "I want to avoid all added sugar this month.",
+      "hypothesis": "I do not want to avoid any added sugar this month."
+    },
+    {
+      "id": "HC017",
+      "label": "contradiction",
+      "group": "contradiction_intention",
+      "premise": "I will definitely attend the lecture tomorrow.",
+      "hypothesis": "I definitely will not attend the lecture tomorrow."
+    },
+    {
+      "id": "HC018",
+      "label": "contradiction",
+      "group": "contradiction_intention",
+      "premise": "I plan to renew my passport this week.",
+      "hypothesis": "I have no plan to renew my passport this week."
+    },
+    {
+      "id": "HC019",
+      "label": "contradiction",
+      "group": "contradiction_intention",
+      "premise": "I intend to keep this appointment.",
+      "hypothesis": "I intend to cancel this same appointment."
+    },
+    {
+      "id": "HC020",
+      "label": "contradiction",
+      "group": "contradiction_intention",
+      "premise": "My current goal is to stop smoking.",
+      "hypothesis": "My current goal is not to stop smoking."
+    },
+    {
+      "id": "HC021",
+      "label": "contradiction",
+      "group": "german_contradiction",
+      "premise": "Ich habe zwei Katzen.",
+      "hypothesis": "Ich habe keine Katzen."
+    },
+    {
+      "id": "HC022",
+      "label": "contradiction",
+      "group": "german_contradiction",
+      "premise": "Der Termin ist heute um 15 Uhr.",
+      "hypothesis": "Derselbe Termin ist heute um 18 Uhr."
+    },
+    {
+      "id": "HC023",
+      "label": "contradiction",
+      "group": "german_contradiction",
+      "premise": "Ich mag keinen Spinat.",
+      "hypothesis": "Ich mag Spinat."
+    },
+    {
+      "id": "HC024",
+      "label": "contradiction",
+      "group": "cross_language_contradiction",
+      "premise": "Ich wohne in Wien.",
+      "hypothesis": "I do not live in Vienna."
+    }
+  ]
+}
