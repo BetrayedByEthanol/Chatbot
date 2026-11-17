@@ -146,7 +146,8 @@ def main(argv=None) -> int:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("--suite", type=Path, default=Path(
-        "scenarios/mvp02c7_nli_threshold_diagnostics.json"))
+        "scenarios/mvp02c7_nli_threshold_diagnostics.json"),
+        help="Path to the reviewed or draft NLI diagnostic suite")
     parser.add_argument("--models-root", type=Path,
                         default=Path("~/models/nli").expanduser())
     parser.add_argument("--models", nargs="+", choices=MODEL_NAMES,
