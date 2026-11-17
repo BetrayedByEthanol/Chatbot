@@ -85,10 +85,10 @@ investigation and independent evaluation below.
 
 | Variant | Median per pair | P95 per pair | ONNX artifact bytes |
 |---|---:|---:|---:|
-| FineCat FP32 | 200.187 ms | report-specific | 8,251,609,947 |
-| FineCat INT8 | 141.261 ms | report-specific | 1,303,788,414 |
-| mDeBERTa FP32 | 31.749 ms | report-specific | 1,116,156,872 |
-| mDeBERTa INT8 | 23.965 ms | report-specific | 916,662,197 |
+| FineCat FP32 | 200.187 ms | 249.899 ms | 8,251,609,947 |
+| FineCat INT8 | 141.261 ms | 204.210 ms | 1,303,788,414 |
+| mDeBERTa FP32 | 31.749 ms | 37.277 ms | 1,116,156,872 |
+| mDeBERTa INT8 | 23.965 ms | 32.121 ms | 916,662,197 |
 
 Times above use the *parity* report run, rather than mixing medians from
 different repeat runs. These are sequential synthetic CPU measurements, not
