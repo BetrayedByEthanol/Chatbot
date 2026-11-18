@@ -163,12 +163,12 @@ def test_review_comparison_records_disagreements_but_never_promotes_gold(tmp_pat
     a = tmp_path / "review-a.json"
     b = tmp_path / "review-b.json"
     a.write_text(json.dumps(_fake_review(module, "reviewer_a")), encoding="utf-8")
-    b.write_text(json.dumps(_fake_review(module, "reviewer_b", edit_case="SC001")),
+    b.write_text(json.dumps(_fake_review(module, "reviewer_b", edit_case="SC025")),
                  encoding="utf-8")
     report = module.compare_reviews(CORPUS, a, b)
     assert report["total"] == 80
     assert report["full_agreement"] == 79
-    assert report["disagreements"] == [{"id": "SC001", "different_fields": ["modality"]}]
+    assert report["disagreements"] == [{"id": "SC025", "different_fields": ["modality"]}]
     assert report["status"] == "REQUIRES_INDEPENDENT_ADJUDICATION"
     assert report["per_field_agreements"]["modality"] == 79
     assert report["per_field_agreements"]["temporal_scope"] == 80
