@@ -51,7 +51,9 @@ TrustedActor + source turn ID + expected selected generation
        retrieve EXACT active/normal/unexpired memory slot and real source turn
        and exclude records suppressed by unresolved extracted conflicts
     -> close transaction
-    -> revalidate stored memory source quote and canonical value/slot
+    -> parse BOTH the complete original Memory source turn AND the stored
+       evidence quote with the same bounded grammar; require matching
+       canonical slot/value and supported CURRENT scope
     -> MVP-02C.11 pure eligibility gate
     -> read-only disposition / abstention / no-record outcome
 ```
@@ -99,6 +101,17 @@ context, which requires validated per-entity scope derivation.
 - The current exact Memory slot must be **ACTIVE**, **NORMAL**, unexpired,
   with a matching source quote and value, and no newer unresolved conflict
   suppression (same predicate as Memory recall). Otherwise it is not used.
+- **Never infer CURRENT/general scope from a Memory quote substring.** The
+  full authenticated source turn must also parse into the identical
+  unqualified canonical statement. For example, an existing
+  `admit_memory` command can admit the quote `I enjoy gardening` from
+  `I enjoy gardening only during summer.`, because the Memory domain
+  verifies literal substring provenance, not semantic scope. The shadow
+  evaluator now returns `MEMORY_EVIDENCE_ABSTENTION` for that record
+  instead of comparing it with a general/current claim. Attribution,
+  modality, conditional, and compound source statements similarly abstain.
+  A truncated quote is still usable when the **full turn** independently
+  establishes the same supported unqualified statement.
 - Only an admitted Memory ID/version from the DB may reach MVP-02C.11.
   A result is not a capability token, endorsement, correction request, or
   authorization to change a record.
@@ -113,6 +126,10 @@ with normal schema and conversation/Memory owner APIs to verify:
 - Source-backed admitted Memory → NLI eligibility (including same value).
 - Source-backed explicit correction → correction *proposal* without NLI.
 - Missing, expired, unsupported and mismatched-source Memory slots.
+- Substring-based admissions from original turns qualified by season,
+  weekends, conditions, tentative modality, attribution or additional
+  sentences must abstain; a short quote of an otherwise unqualified full
+  source must still qualify.
 - Cross-user access denial and selected-generation fencing.
 - Rejected injected semantic correction labels and hallucinated quotes.
 - No Memory record, event or revision changes from observations.
