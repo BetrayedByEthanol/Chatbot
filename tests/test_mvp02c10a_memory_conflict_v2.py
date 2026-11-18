@@ -95,7 +95,7 @@ def test_v2_malformed_metadata_fails_closed(tmp_path):
         (lambda data: data["examples"][by_id["MC071"]].update(
             memory_conflict_eligible=True), "requires admitted source"),
         (lambda data: data["examples"][by_id["MC071"]].update(
-            stored_claim_status="ADMITTED_ASSERTED"), "inconsistent with reason"),
+            stored_claim_status="ADMITTED_ASSERTED"), "requires admitted source"),
         (lambda data: data["examples"][by_id["MC071"]].update(
             expected_resolution="POTENTIAL_MEMORY_CONFLICT"), "needs eligible contradiction"),
         (lambda data: data["examples"][by_id["MC079"]].update(
