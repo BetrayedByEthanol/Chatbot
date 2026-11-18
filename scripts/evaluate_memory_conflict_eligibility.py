@@ -50,7 +50,10 @@ def evaluate_fixture_set(suite_path: Path, fixture_path: Path) -> dict:
             or fixtures.get("annotation_status") != "SYNTHETIC_GOLD_AWARE_NOT_INDEPENDENT"
             or fixtures.get("source_suite_sha256") != suite_sha):
         raise ValueError("fixture version, provenance or source SHA mismatch")
-    if fixtures.get("source_suite_path") != str(suite_path):
+    fixture_source = fixtures.get("source_suite_path")
+    if (not isinstance(fixture_source, str)
+        or (Path(__file__).resolve().parents[1] / fixture_source).resolve()
+            != suite_path.resolve()):
         raise ValueError("fixture source suite path mismatch")
     source_cases = suite.get("examples")
     if not isinstance(source_cases, list) or len(source_cases) != 94:
