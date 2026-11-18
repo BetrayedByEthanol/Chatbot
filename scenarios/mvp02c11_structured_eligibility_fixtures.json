@@ -1,0 +1,555 @@
+{
+  "version": "mvp02c11.structured_eligibility_fixture.v1",
+  "annotation_status": "SYNTHETIC_GOLD_AWARE_NOT_INDEPENDENT",
+  "source_suite_path": "scenarios/mvp02c10_memory_conflict_diagnostic_v2.json",
+  "source_suite_sha256": "46310133cd3909b7e73b310478e2fed3f0f54d54018e1cb6e56f4118ca23b462",
+  "provenance": "21 manually selected and normalized typed metadata examples from provisional v2 source text. This is a structural-contract fixture, constructed with knowledge of v2 labels. It is not a classifier output, not a blinded holdout, and must not be used to estimate operational eligibility accuracy.",
+  "fixtures": [
+    {
+      "id": "MC001",
+      "prior": {
+        "admission": "ADMITTED_ASSERTED",
+        "memory_kind": "FACT",
+        "scope": {
+          "subject_key": "user",
+          "predicate_key": "residence",
+          "context_key": "general",
+          "temporal_scope": "CURRENT"
+        }
+      },
+      "candidate": {
+        "memory_kind": "FACT",
+        "scope": {
+          "subject_key": "user",
+          "predicate_key": "residence",
+          "context_key": "general",
+          "temporal_scope": "CURRENT"
+        },
+        "statement_type": "FACT",
+        "modality": "ASSERTED",
+        "pragmatic_function": "INFORMING"
+      },
+      "expected_disposition": "NLI_CANDIDATE"
+    },
+    {
+      "id": "MC013",
+      "prior": {
+        "admission": "ADMITTED_ASSERTED",
+        "memory_kind": "FACT",
+        "scope": {
+          "subject_key": "user",
+          "predicate_key": "enjoys_reading",
+          "context_key": "general",
+          "temporal_scope": "CURRENT"
+        }
+      },
+      "candidate": {
+        "memory_kind": "FACT",
+        "scope": {
+          "subject_key": "user",
+          "predicate_key": "enjoys_reading",
+          "context_key": "general",
+          "temporal_scope": "CURRENT"
+        },
+        "statement_type": "FACT",
+        "modality": "ASSERTED",
+        "pragmatic_function": "INFORMING"
+      },
+      "expected_disposition": "NLI_CANDIDATE"
+    },
+    {
+      "id": "MC024",
+      "prior": {
+        "admission": "ADMITTED_ASSERTED",
+        "memory_kind": "FACT",
+        "scope": {
+          "subject_key": "user",
+          "predicate_key": "running",
+          "context_key": "general",
+          "temporal_scope": "PAST_EVENT"
+        }
+      },
+      "candidate": {
+        "memory_kind": "FACT",
+        "scope": {
+          "subject_key": "user",
+          "predicate_key": "reading",
+          "context_key": "general",
+          "temporal_scope": "PAST_EVENT"
+        },
+        "statement_type": "FACT",
+        "modality": "ASSERTED",
+        "pragmatic_function": "INFORMING"
+      },
+      "expected_disposition": "SKIP"
+    },
+    {
+      "id": "MC029",
+      "prior": {
+        "admission": "ADMITTED_ASSERTED",
+        "memory_kind": "FACT",
+        "scope": {
+          "subject_key": "user",
+          "predicate_key": "residence",
+          "context_key": "general",
+          "temporal_scope": "PAST_HABITUAL"
+        }
+      },
+      "candidate": {
+        "memory_kind": "FACT",
+        "scope": {
+          "subject_key": "user",
+          "predicate_key": "residence",
+          "context_key": "general",
+          "temporal_scope": "CURRENT"
+        },
+        "statement_type": "FACT",
+        "modality": "ASSERTED",
+        "pragmatic_function": "INFORMING"
+      },
+      "expected_disposition": "SKIP"
+    },
+    {
+      "id": "MC039",
+      "prior": {
+        "admission": "OTHER_UNADMITTED",
+        "memory_kind": "FACT",
+        "scope": {
+          "subject_key": "user",
+          "predicate_key": "join_running_club",
+          "context_key": "general",
+          "temporal_scope": "FUTURE"
+        }
+      },
+      "candidate": {
+        "memory_kind": "FACT",
+        "scope": {
+          "subject_key": "user",
+          "predicate_key": "runs_daily",
+          "context_key": "general",
+          "temporal_scope": "HABITUAL"
+        },
+        "statement_type": "FACT",
+        "modality": "ASSERTED",
+        "pragmatic_function": "INFORMING"
+      },
+      "expected_disposition": "SKIP"
+    },
+    {
+      "id": "MC041",
+      "prior": {
+        "admission": "OTHER_UNADMITTED",
+        "memory_kind": "FACT",
+        "scope": {
+          "subject_key": "user",
+          "predicate_key": "italian_course",
+          "context_key": "general",
+          "temporal_scope": "FUTURE"
+        }
+      },
+      "candidate": {
+        "memory_kind": "FACT",
+        "scope": {
+          "subject_key": "user",
+          "predicate_key": "italian_fluency",
+          "context_key": "general",
+          "temporal_scope": "CURRENT"
+        },
+        "statement_type": "FACT",
+        "modality": "ASSERTED",
+        "pragmatic_function": "INFORMING"
+      },
+      "expected_disposition": "SKIP"
+    },
+    {
+      "id": "MC048",
+      "prior": {
+        "admission": "OTHER_UNADMITTED",
+        "memory_kind": "FACT",
+        "scope": {
+          "subject_key": "user",
+          "predicate_key": "guitar_lessons",
+          "context_key": "general",
+          "temporal_scope": "FUTURE"
+        }
+      },
+      "candidate": {
+        "memory_kind": "FACT",
+        "scope": {
+          "subject_key": "user",
+          "predicate_key": "plays_guitar",
+          "context_key": "general",
+          "temporal_scope": "HABITUAL"
+        },
+        "statement_type": "FACT",
+        "modality": "ASSERTED",
+        "pragmatic_function": "INFORMING"
+      },
+      "expected_disposition": "SKIP"
+    },
+    {
+      "id": "MC049",
+      "prior": {
+        "admission": "OTHER_UNADMITTED",
+        "memory_kind": "FACT",
+        "scope": {
+          "subject_key": "user",
+          "predicate_key": "owns_dog",
+          "context_key": "general",
+          "temporal_scope": "CURRENT"
+        }
+      },
+      "candidate": {
+        "memory_kind": "FACT",
+        "scope": {
+          "subject_key": "user",
+          "predicate_key": "owns_dog",
+          "context_key": "general",
+          "temporal_scope": "CURRENT"
+        },
+        "statement_type": "FACT",
+        "modality": "ASSERTED",
+        "pragmatic_function": "INFORMING"
+      },
+      "expected_disposition": "SKIP"
+    },
+    {
+      "id": "MC056",
+      "prior": {
+        "admission": "OTHER_UNADMITTED",
+        "memory_kind": "FACT",
+        "scope": {
+          "subject_key": "user",
+          "predicate_key": "likes_mushrooms",
+          "context_key": "general",
+          "temporal_scope": "CURRENT"
+        }
+      },
+      "candidate": {
+        "memory_kind": "FACT",
+        "scope": {
+          "subject_key": "user",
+          "predicate_key": "likes_mushrooms",
+          "context_key": "general",
+          "temporal_scope": "CURRENT"
+        },
+        "statement_type": "FACT",
+        "modality": "ASSERTED",
+        "pragmatic_function": "INFORMING"
+      },
+      "expected_disposition": "SKIP"
+    },
+    {
+      "id": "MC065",
+      "prior": {
+        "admission": "ADMITTED_ASSERTED",
+        "memory_kind": "FACT",
+        "scope": {
+          "subject_key": "user",
+          "predicate_key": "pet_name",
+          "context_key": "pet_dog",
+          "temporal_scope": "CURRENT"
+        }
+      },
+      "candidate": {
+        "memory_kind": "FACT",
+        "scope": {
+          "subject_key": "user",
+          "predicate_key": "pet_name",
+          "context_key": "pet_cat",
+          "temporal_scope": "CURRENT"
+        },
+        "statement_type": "FACT",
+        "modality": "ASSERTED",
+        "pragmatic_function": "INFORMING"
+      },
+      "expected_disposition": "SKIP"
+    },
+    {
+      "id": "MC069",
+      "prior": {
+        "admission": "ADMITTED_ASSERTED",
+        "memory_kind": "FACT",
+        "scope": {
+          "subject_key": "user",
+          "predicate_key": "residence",
+          "context_key": "weekdays",
+          "temporal_scope": "CURRENT"
+        }
+      },
+      "candidate": {
+        "memory_kind": "FACT",
+        "scope": {
+          "subject_key": "user",
+          "predicate_key": "residence",
+          "context_key": "weekends",
+          "temporal_scope": "CURRENT"
+        },
+        "statement_type": "FACT",
+        "modality": "ASSERTED",
+        "pragmatic_function": "INFORMING"
+      },
+      "expected_disposition": "SKIP"
+    },
+    {
+      "id": "MC071",
+      "prior": {
+        "admission": "TENTATIVE_UNADMITTED",
+        "memory_kind": "FACT",
+        "scope": {
+          "subject_key": "user",
+          "predicate_key": "enjoys_gardening",
+          "context_key": "general",
+          "temporal_scope": "CURRENT"
+        }
+      },
+      "candidate": {
+        "memory_kind": "FACT",
+        "scope": {
+          "subject_key": "user",
+          "predicate_key": "enjoys_gardening",
+          "context_key": "general",
+          "temporal_scope": "CURRENT"
+        },
+        "statement_type": "FACT",
+        "modality": "ASSERTED",
+        "pragmatic_function": "INFORMING"
+      },
+      "expected_disposition": "TENTATIVE_RESOLUTION"
+    },
+    {
+      "id": "MC072",
+      "prior": {
+        "admission": "TENTATIVE_UNADMITTED",
+        "memory_kind": "FACT",
+        "scope": {
+          "subject_key": "user",
+          "predicate_key": "appointment_day",
+          "context_key": "general",
+          "temporal_scope": "CURRENT"
+        }
+      },
+      "candidate": {
+        "memory_kind": "FACT",
+        "scope": {
+          "subject_key": "user",
+          "predicate_key": "appointment_day",
+          "context_key": "general",
+          "temporal_scope": "CURRENT"
+        },
+        "statement_type": "FACT",
+        "modality": "ASSERTED",
+        "pragmatic_function": "INFORMING"
+      },
+      "expected_disposition": "TENTATIVE_RESOLUTION"
+    },
+    {
+      "id": "MC074",
+      "prior": {
+        "admission": "TENTATIVE_UNADMITTED",
+        "memory_kind": "FACT",
+        "scope": {
+          "subject_key": "user",
+          "predicate_key": "owns_bicycle",
+          "context_key": "general",
+          "temporal_scope": "CURRENT"
+        }
+      },
+      "candidate": {
+        "memory_kind": "FACT",
+        "scope": {
+          "subject_key": "user",
+          "predicate_key": "owns_bicycle",
+          "context_key": "general",
+          "temporal_scope": "CURRENT"
+        },
+        "statement_type": "FACT",
+        "modality": "ASSERTED",
+        "pragmatic_function": "INFORMING"
+      },
+      "expected_disposition": "TENTATIVE_RESOLUTION"
+    },
+    {
+      "id": "MC077",
+      "prior": {
+        "admission": "TENTATIVE_UNADMITTED",
+        "memory_kind": "FACT",
+        "scope": {
+          "subject_key": "user",
+          "predicate_key": "swimming",
+          "context_key": "general",
+          "temporal_scope": "FUTURE"
+        }
+      },
+      "candidate": {
+        "memory_kind": "FACT",
+        "scope": {
+          "subject_key": "user",
+          "predicate_key": "office_attendance",
+          "context_key": "general",
+          "temporal_scope": "FUTURE"
+        },
+        "statement_type": "FACT",
+        "modality": "ASSERTED",
+        "pragmatic_function": "INFORMING"
+      },
+      "expected_disposition": "SKIP"
+    },
+    {
+      "id": "MC079",
+      "prior": {
+        "admission": "ADMITTED_ASSERTED",
+        "memory_kind": "FACT",
+        "scope": {
+          "subject_key": "user",
+          "predicate_key": "residence",
+          "context_key": "general",
+          "temporal_scope": "CURRENT"
+        }
+      },
+      "candidate": {
+        "memory_kind": "FACT",
+        "scope": {
+          "subject_key": "user",
+          "predicate_key": "residence",
+          "context_key": "general",
+          "temporal_scope": "CURRENT"
+        },
+        "statement_type": "FACT",
+        "modality": "ASSERTED",
+        "pragmatic_function": "CORRECTING"
+      },
+      "expected_disposition": "CORRECTION_PATH"
+    },
+    {
+      "id": "MC080",
+      "prior": {
+        "admission": "ADMITTED_ASSERTED",
+        "memory_kind": "FACT",
+        "scope": {
+          "subject_key": "user",
+          "predicate_key": "owns_car",
+          "context_key": "general",
+          "temporal_scope": "CURRENT"
+        }
+      },
+      "candidate": {
+        "memory_kind": "FACT",
+        "scope": {
+          "subject_key": "user",
+          "predicate_key": "owns_car",
+          "context_key": "general",
+          "temporal_scope": "CURRENT"
+        },
+        "statement_type": "FACT",
+        "modality": "ASSERTED",
+        "pragmatic_function": "CORRECTING"
+      },
+      "expected_disposition": "CORRECTION_PATH"
+    },
+    {
+      "id": "MC089",
+      "prior": {
+        "admission": "ADMITTED_ASSERTED",
+        "memory_kind": "FACT",
+        "scope": {
+          "subject_key": "user",
+          "predicate_key": "owns_bicycle",
+          "context_key": "general",
+          "temporal_scope": "CURRENT"
+        }
+      },
+      "candidate": {
+        "memory_kind": "FACT",
+        "scope": {
+          "subject_key": "user",
+          "predicate_key": "owns_bicycle",
+          "context_key": "general",
+          "temporal_scope": "CURRENT"
+        },
+        "statement_type": "FACT",
+        "modality": "ASSERTED",
+        "pragmatic_function": "INFORMING"
+      },
+      "expected_disposition": "NLI_CANDIDATE"
+    },
+    {
+      "id": "MC092",
+      "prior": {
+        "admission": "ADMITTED_ASSERTED",
+        "memory_kind": "FACT",
+        "scope": {
+          "subject_key": "user",
+          "predicate_key": "residence",
+          "context_key": "general",
+          "temporal_scope": "PAST_HABITUAL"
+        }
+      },
+      "candidate": {
+        "memory_kind": "FACT",
+        "scope": {
+          "subject_key": "user",
+          "predicate_key": "residence",
+          "context_key": "general",
+          "temporal_scope": "CURRENT"
+        },
+        "statement_type": "FACT",
+        "modality": "ASSERTED",
+        "pragmatic_function": "INFORMING"
+      },
+      "expected_disposition": "SKIP"
+    },
+    {
+      "id": "MC093",
+      "prior": {
+        "admission": "OTHER_UNADMITTED",
+        "memory_kind": "FACT",
+        "scope": {
+          "subject_key": "user",
+          "predicate_key": "running",
+          "context_key": "general",
+          "temporal_scope": "FUTURE"
+        }
+      },
+      "candidate": {
+        "memory_kind": "FACT",
+        "scope": {
+          "subject_key": "user",
+          "predicate_key": "running",
+          "context_key": "general",
+          "temporal_scope": "PAST_EVENT"
+        },
+        "statement_type": "FACT",
+        "modality": "ASSERTED",
+        "pragmatic_function": "INFORMING"
+      },
+      "expected_disposition": "SKIP"
+    },
+    {
+      "id": "MC094",
+      "prior": {
+        "admission": "ADMITTED_ASSERTED",
+        "memory_kind": "FACT",
+        "scope": {
+          "subject_key": "brother",
+          "predicate_key": "residence",
+          "context_key": "general",
+          "temporal_scope": "CURRENT"
+        }
+      },
+      "candidate": {
+        "memory_kind": "FACT",
+        "scope": {
+          "subject_key": "user",
+          "predicate_key": "residence",
+          "context_key": "general",
+          "temporal_scope": "CURRENT"
+        },
+        "statement_type": "FACT",
+        "modality": "ASSERTED",
+        "pragmatic_function": "INFORMING"
+      },
+      "expected_disposition": "SKIP"
+    }
+  ]
+}
