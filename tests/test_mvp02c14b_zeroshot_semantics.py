@@ -74,6 +74,7 @@ class ScriptedNLI:
 
 
 def test_all_eighty_existing_examples_and_draft_status_preserved():
+    _module()  # Ensure the scripts directory is importable in CI.
     from evaluate_semantic_scope import load_corpus, LABEL_STATUS
     rows, digest = load_corpus(CORPUS)
     assert len(rows) == 80
