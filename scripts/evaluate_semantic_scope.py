@@ -232,9 +232,9 @@ def make_blind_template(path: Path) -> dict:
         "version": "mvp02c13.blind_review_template.v1",
         "source_sha256": digest,
         "reviewer_id": None,
-        "instructions": "Independently label every entire source text without seeing author drafts or classifier predictions. Replace reviewer_id and all null annotations. Do not infer Memory admission.",
+        "instructions": "Independently annotate the full source text without draft gold, model outputs or diagnostic group tags. Replace reviewer_id and all null annotations. Do not infer Memory admission.",
         "annotations": [{
-            "id": item["id"], "text": item["text"], "group": item["group"],
+            "id": item["id"], "text": item["text"],
             "labels": {key: None for key in FIELDS},
         } for item in rows],
     }
@@ -259,12 +259,11 @@ def compare_reviews(path: Path, a_path: Path, b_path: Path) -> dict:
             raise ValueError("reviewer must annotate every case")
         label_map = {}
         for item in annotations:
-            if not isinstance(item, dict) or set(item) != {"id", "group", "text", "labels"}:
+            if not isinstance(item, dict) or set(item) != {"id", "text", "labels"}:
                 raise ValueError("unexpected review case fields")
             key = item["id"]
             source = next((row for row in rows if row["id"] == key), None)
-            if source is None or key in label_map or (
-                item["text"], item["group"]) != (source["text"], source["group"]):
+            if source is None or key in label_map or item["text"] != source["text"]:
                 raise ValueError("review has missing/duplicate/modified source case")
             check_labels(item["labels"])
             label_map[key] = item["labels"]
