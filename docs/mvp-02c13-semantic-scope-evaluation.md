@@ -79,8 +79,12 @@ made; its SHA256 is recorded in every generated report/review template.
    or abstention—never fabricate a narrower scope.
 5. Measure: Stage A interpretation coverage; full narrow-scope emission;
    draft-labeled true/false activations and missed supported scopes;
-   dimension-level agreement *conditional on that dimension being
-   predicted*; category-level abstention; case-level mistakes.
+   dimension-level agreement **only where that dimension was predicted
+   non-null**; category-level abstention; case-level mistakes. A null
+   prediction matched to null draft does **not** earn a correct prediction
+   (e.g., SC013 has no extracted `normalized_value`). For every dimension,
+   `correct + incorrect == supported` and
+   `supported + abstained == total`.
 
 A valid current preference may **fail to be extracted** because its
 paraphrase is unrecognized. That is counted as missed coverage, not scored
@@ -98,6 +102,29 @@ The result contains **no verbatim text**, full source IDs, or private user
 records. It exposes example ID, group, predicted label comparison and
 reason. Reports are write-once (no overwrite), with source SHA and
 draft annotation status, and do not contain a production Memory command.
+
+## CI dependency isolation and parser ownership
+
+The first PR #71 CI run failed specifically on **“Verify contract tests
+without Psycopg”**; the PostgreSQL-backed test step passed. The offline
+runner imported `memory_extraction.py`, which imports Psycopg even for its
+pure, deterministic `parse_explicit_claim` helper. This violated the
+existing no-database-driver contract test.
+
+The existing bounded positive-allowlist grammar was moved **without changing
+its matching semantics** to
+`src/persona_agent/memory_explicit_grammar.py`, a dependency-light module.
+The Memory owner `memory_extraction.py` still imports and re-exports
+`ExplicitClaim`, `parse_explicit_claim`, `_slug` and
+`_supported_safe_claim` for existing callers. The offline evaluation script
+imports the same parser directly, avoiding Psycopg and retaining a single
+implementation rather than copying the whitelist or inventing new semantics.
+
+Regression tests assert the SC013 null/null case is not credited as a
+prediction, require every dimension's supported/correct/incorrect/abstained
+counts to reconcile, and exercise the parser under an import guard that
+rejects Psycopg. No Memory persistence, extraction admission policy or
+event handler behavior was intentionally changed.
 
 ## Independent, blinded annotation workflow
 
