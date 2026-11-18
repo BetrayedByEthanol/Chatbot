@@ -68,6 +68,53 @@ def test_actual_stage_a_and_existing_memory_grammar_are_scored_not_oracle_inputs
                for row in report["cases"])
 
 
+def test_null_prediction_never_counts_as_correct_even_when_draft_is_null():
+    """Regression: SC013 has an explicitly null draft normalized value.
+
+    Stage A recognizes its tentative intention, but the Memory slot parser
+    abstains. A null/null pair is *not* an extracted correct value.
+    """
+    report = _load_script().evaluate_corpus(CORPUS)
+    row = next(x for x in report["cases"] if x["id"] == "SC013")
+    value = row["fields"]["normalized_value"]
+    assert value["gold"] is None
+    assert value["predicted"] is None
+    assert value["match"] is False
+    assert row["status"] == "SEMANTIC_ONLY"
+
+    m = report["metrics"]
+    for key, counts in m["by_dimension"].items():
+        assert counts["correct"] <= counts["supported"], key
+        assert counts["correct"] + counts["incorrect"] == counts["supported"], key
+        assert counts["supported"] + counts["abstained"] == m["total"], key
+    assert all(
+        not field["match"] for case in report["cases"]
+        for field in case["fields"].values()
+        if field["predicted"] is None
+    )
+
+
+def test_parser_is_available_without_psycopg_runtime_import():
+    """Offline scope evaluation must not import the PostgreSQL Memory worker."""
+    import subprocess
+    script = (
+        "import builtins; original = builtins.__import__; "
+        "def_forbidden = lambda name: name == 'psycopg' or name.startswith('psycopg.'); "
+        "builtins.__import__ = lambda name, *a, **kw: "
+        "(_ for _ in ()).throw(ImportError('Psycopg forbidden')) "
+        "if def_forbidden(name) else original(name, *a, **kw); "
+        "from persona_agent.memory_explicit_grammar import parse_explicit_claim; "
+        "from persona_agent.semantic_classification import RuleSemanticClassifier; "
+        "assert parse_explicit_claim('I enjoy gardening.') is not None; "
+        "assert RuleSemanticClassifier().classifier_id.startswith('semantic.')"
+    )
+    p = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True, text=True, timeout=12,
+    )
+    assert p.returncode == 0, p.stderr
+
+
 @pytest.mark.parametrize("text,narrow", [
     ("I enjoy gardening.", True),
     ("I really enjoy reading.", True),
