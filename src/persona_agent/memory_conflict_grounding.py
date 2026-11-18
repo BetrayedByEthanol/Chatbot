@@ -123,13 +123,23 @@ def _source_metadata_matches(source) -> bool:
         return False
     if quote.casefold() not in original.casefold():
         return False
-    parsed = parse_explicit_claim(quote)
-    return (parsed is not None
-            and parsed.memory_kind == source["memory_kind"]
-            and parsed.subject_key == source["subject_key"]
-            and parsed.predicate_key == source["predicate_key"]
-            and parsed.value_text == source["value_text"]
-            and parsed.predicate_key.startswith("enjoys_"))
+    # A Memory admission only proves the quote occurs within its turn:
+    # "I enjoy gardening" can be admitted from the unsupported sentence
+    # "I enjoy gardening only during summer." Parsing the quote alone
+    # would silently discard the time qualifier and fabricate CURRENT scope.
+    # Both the complete authenticated turn and the stored quote must parse
+    # to the same conservative, unqualified canonical assertion.
+    full_claim = parse_explicit_claim(original)
+    quoted_claim = parse_explicit_claim(quote)
+    if full_claim is None or quoted_claim is None:
+        return False
+    return (
+        full_claim.memory_kind == quoted_claim.memory_kind == source["memory_kind"]
+        and full_claim.subject_key == quoted_claim.subject_key == source["subject_key"]
+        and full_claim.predicate_key == quoted_claim.predicate_key == source["predicate_key"]
+        and full_claim.value_text == quoted_claim.value_text == source["value_text"]
+        and full_claim.predicate_key.startswith("enjoys_")
+    )
 
 
 def observe_grounded_memory_eligibility(
