@@ -123,6 +123,58 @@ def test_only_matching_slot_and_verified_current_revision_is_compared(dsn):
     assert _observe(dsn, user, instance, same).status == "MEMORY_EVIDENCE_ABSTENTION"
 
 
+@pytest.mark.parametrize("original", [
+    "I enjoy gardening only during summer.",
+    "I enjoy gardening on weekends.",
+    "I enjoy gardening if I have time.",
+    "Maybe I enjoy gardening.",
+    "My brother says I enjoy gardening.",
+    "She quoted me saying I enjoy gardening.",
+    "I enjoy gardening. I no longer do.",
+])
+def test_short_admitted_quote_cannot_erase_source_qualifiers(dsn, original):
+    """admit_memory accepts any literal source substring, not inferred scope.
+
+    The shadow must abstain when the ORIGINAL authenticated user turn cannot
+    be parsed as the same unqualified CURRENT preference as the quote.
+    """
+    user, instance = _seed(dsn)
+    conversation, source_turn = _ingest(dsn, user, instance, original)
+    # Deliberately admit only the short quote from the qualified statement:
+    # _evidence() permits this exact source substring.
+    stored = _admit(
+        dsn, user, instance, conversation, source_turn, "I enjoy gardening",
+    )
+    _, new_turn = _ingest(dsn, user, instance, "I don't enjoy gardening anymore.")
+
+    observed = _observe(dsn, user, instance, new_turn)
+    assert observed.status == "MEMORY_EVIDENCE_ABSTENTION"
+    assert observed.reason == "UNVERIFIED_MEMORY_SOURCE"
+    assert observed.decision is None
+    assert observed.memory_id is None
+    with psycopg.connect(dsn, autocommit=True) as db:
+        original_record = db.execute(
+            "SELECT version, value_text, record_status FROM memory_records "
+            "WHERE memory_id=%s", (stored.memory_id,),
+        ).fetchone()
+    assert original_record == (1, "yes", "ACTIVE")
+
+
+def test_short_quote_allowed_when_entire_source_is_unqualified_and_consistent(dsn):
+    user, instance = _seed(dsn)
+    conversation, source_turn = _ingest(dsn, user, instance, "I enjoy gardening.")
+    stored = _admit(
+        dsn, user, instance, conversation, source_turn, "I enjoy gardening",
+    )
+    _, new_turn = _ingest(dsn, user, instance, "I don't enjoy gardening anymore.")
+
+    observed = _observe(dsn, user, instance, new_turn)
+    assert observed.status == "EVALUATED"
+    assert observed.memory_id == stored.memory_id
+    assert observed.decision.disposition == "CORRECTION_PATH"
+    assert observed.decision.nli_allowed is False
+
+
 def test_retracted_or_expired_memory_not_exposed(dsn):
     user, instance = _seed(dsn)
     cid, turn = _ingest(dsn, user, instance, "I enjoy gardening.")
