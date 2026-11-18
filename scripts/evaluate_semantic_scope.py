@@ -16,7 +16,7 @@ from pathlib import Path
 import re
 from uuid import NAMESPACE_URL, uuid5
 
-from persona_agent.memory_extraction import parse_explicit_claim
+from persona_agent.memory_explicit_grammar import parse_explicit_claim
 from persona_agent.semantic_classification import RuleSemanticClassifier
 from persona_agent.semantic_contracts import validate_semantic_evidence
 
@@ -160,7 +160,8 @@ def evaluate_corpus(path: Path, *, classifier=None) -> dict:
             key: {
                 "gold": row["draft"][key],
                 "predicted": None if labels is None else labels[key],
-                "match": labels is not None and labels[key] == row["draft"][key],
+                "match": (labels is not None and labels[key] is not None
+                          and labels[key] == row["draft"][key]),
             }
             for key in DIMENSIONS
         }
