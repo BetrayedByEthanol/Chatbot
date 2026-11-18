@@ -115,8 +115,9 @@ The existing bounded positive-allowlist grammar was moved **without changing
 its matching semantics** to
 `src/persona_agent/memory_explicit_grammar.py`, a dependency-light module.
 The Memory owner `memory_extraction.py` still imports and re-exports
-`ExplicitClaim`, `parse_explicit_claim`, `_slug` and
-`_supported_safe_claim` for existing callers. The offline evaluation script
+`ExplicitClaim`, `parse_explicit_claim`, `_slug`,
+`_supported_safe_claim`, `_BLOCKED` and `_SAFE_HOBBIES` for existing callers,
+including `memory_model_extraction.py`. The offline evaluation script
 imports the same parser directly, avoiding Psycopg and retaining a single
 implementation rather than copying the whitelist or inventing new semantics.
 
