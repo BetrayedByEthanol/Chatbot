@@ -85,8 +85,11 @@ class PriorClaimSnapshot(BaseModel):
     @model_validator(mode="after")
     def memory_reference_contract(self):
         admitted = self.admission == "ADMITTED_ASSERTED"
-        if admitted != (self.memory_id is not None and self.memory_version is not None):
-            raise ValueError("only admitted Memory snapshots have both memory ID and version")
+        if admitted:
+            if self.memory_id is None or self.memory_version is None:
+                raise ValueError("admitted Memory snapshot needs ID and version")
+        elif self.memory_id is not None or self.memory_version is not None:
+            raise ValueError("unadmitted source cannot contain Memory identity/version")
         return self
 
 
