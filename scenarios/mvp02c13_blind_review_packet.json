@@ -2,7 +2,7 @@
   "version": "mvp02c13.blind_annotation_packet.v1",
   "annotation_status": "UNLABELED_REVIEW_PACKET",
   "source_dataset": "scenarios/mvp02c13_semantic_scope_corpus.json",
-  "instructions": "Two independent reviewers: classify each entire text without access to the draft gold or model output. Record one schema-complete annotation per ID, rationale for uncertain scope, and reviewer-independent case IDs. No user-identifying data. Do not use existing draft predictions.",
+  "instructions": "Two independent reviewers: annotate each entire source text without draft gold, prediction outputs, group tags, or previous reviewer annotations. Record uncertainty explicitly with allowed UNKNOWN/null values. Use separate reviewer identifiers and later submit blinded forms for adjudication.",
   "labels": [
     "statement_type",
     "temporal_scope",
@@ -17,402 +17,322 @@
   "examples": [
     {
       "id": "SC001",
-      "group": "baseline_rules",
       "text": "I enjoy gardening."
     },
     {
       "id": "SC002",
-      "group": "baseline_rules",
       "text": "I like gardening."
     },
     {
       "id": "SC003",
-      "group": "baseline_rules",
       "text": "I love gardening."
     },
     {
       "id": "SC004",
-      "group": "baseline_rules",
       "text": "I really enjoy gardening."
     },
     {
       "id": "SC005",
-      "group": "baseline_rules",
       "text": "I enjoy reading."
     },
     {
       "id": "SC006",
-      "group": "baseline_rules",
       "text": "I like reading."
     },
     {
       "id": "SC007",
-      "group": "baseline_rules",
       "text": "I enjoy walking."
     },
     {
       "id": "SC008",
-      "group": "baseline_rules",
       "text": "I really love walking."
     },
     {
       "id": "SC009",
-      "group": "baseline_rules",
       "text": "I don't enjoy gardening anymore."
     },
     {
       "id": "SC010",
-      "group": "baseline_rules",
       "text": "I don't enjoy reading anymore."
     },
     {
       "id": "SC011",
-      "group": "baseline_rules",
       "text": "I used to enjoy gardening."
     },
     {
       "id": "SC012",
-      "group": "baseline_rules",
       "text": "I enjoyed gardening yesterday."
     },
     {
       "id": "SC013",
-      "group": "baseline_rules",
       "text": "Maybe I should go walking tomorrow."
     },
     {
       "id": "SC014",
-      "group": "baseline_rules",
       "text": "I've gotten into gardening lately."
     },
     {
       "id": "SC015",
-      "group": "paraphrase_gap",
       "text": "I absolutely love gardening."
     },
     {
       "id": "SC016",
-      "group": "paraphrase_gap",
       "text": "Gardening is something I really enjoy."
     },
     {
       "id": "SC017",
-      "group": "paraphrase_gap",
       "text": "I am fond of reading."
     },
     {
       "id": "SC018",
-      "group": "paraphrase_gap",
       "text": "Walking is one of my favorite things."
     },
     {
       "id": "SC019",
-      "group": "paraphrase_gap",
       "text": "I do not enjoy gardening."
     },
     {
       "id": "SC020",
-      "group": "paraphrase_gap",
       "text": "I no longer enjoy reading."
     },
     {
       "id": "SC021",
-      "group": "paraphrase_gap",
       "text": "I don't like reading."
     },
     {
       "id": "SC022",
-      "group": "paraphrase_gap",
       "text": "I do not enjoy walking."
     },
     {
       "id": "SC023",
-      "group": "paraphrase_gap",
       "text": "Gardening brings me joy."
     },
     {
       "id": "SC024",
-      "group": "paraphrase_gap",
       "text": "I dislike gardening."
     },
     {
       "id": "SC025",
-      "group": "temporal_context",
       "text": "I enjoy gardening only during summer."
     },
     {
       "id": "SC026",
-      "group": "temporal_context",
       "text": "I enjoy gardening on weekends."
     },
     {
       "id": "SC027",
-      "group": "temporal_context",
       "text": "I enjoy gardening at the office."
     },
     {
       "id": "SC028",
-      "group": "temporal_context",
       "text": "I enjoy gardening at home."
     },
     {
       "id": "SC029",
-      "group": "temporal_context",
       "text": "I enjoyed gardening in 2023."
     },
     {
       "id": "SC030",
-      "group": "temporal_context",
       "text": "I enjoyed gardening last winter."
     },
     {
       "id": "SC031",
-      "group": "temporal_context",
       "text": "I used to enjoy reading."
     },
     {
       "id": "SC032",
-      "group": "temporal_context",
       "text": "I will enjoy gardening when I retire."
     },
     {
       "id": "SC033",
-      "group": "temporal_context",
       "text": "I enjoy reading after work."
     },
     {
       "id": "SC034",
-      "group": "temporal_context",
       "text": "I sometimes enjoy gardening."
     },
     {
       "id": "SC035",
-      "group": "temporal_context",
       "text": "I enjoy gardening only if it is sunny."
     },
     {
       "id": "SC036",
-      "group": "tentative_uncertain",
       "text": "I might enjoy gardening."
     },
     {
       "id": "SC037",
-      "group": "tentative_uncertain",
       "text": "Perhaps I enjoy gardening."
     },
     {
       "id": "SC038",
-      "group": "tentative_uncertain",
       "text": "I think I like reading."
     },
     {
       "id": "SC039",
-      "group": "tentative_uncertain",
       "text": "I'm not sure I enjoy reading."
     },
     {
       "id": "SC040",
-      "group": "tentative_uncertain",
       "text": "Maybe I don't enjoy gardening anymore."
     },
     {
       "id": "SC041",
-      "group": "tentative_uncertain",
       "text": "I may still enjoy walking."
     },
     {
       "id": "SC042",
-      "group": "tentative_uncertain",
       "text": "I probably enjoy gardening."
     },
     {
       "id": "SC043",
-      "group": "tentative_uncertain",
       "text": "I am considering gardening as a hobby."
     },
     {
       "id": "SC044",
-      "group": "intent_conditional",
       "text": "If I had time, I would enjoy gardening."
     },
     {
       "id": "SC045",
-      "group": "intent_conditional",
       "text": "If it stops raining, I will enjoy gardening."
     },
     {
       "id": "SC046",
-      "group": "intent_conditional",
       "text": "Suppose I enjoyed gardening."
     },
     {
       "id": "SC047",
-      "group": "intent_conditional",
       "text": "I would enjoy reading if I had more time."
     },
     {
       "id": "SC048",
-      "group": "intent_conditional",
       "text": "I plan to start gardening next month."
     },
     {
       "id": "SC049",
-      "group": "intent_conditional",
       "text": "I want to begin walking tomorrow."
     },
     {
       "id": "SC050",
-      "group": "intent_conditional",
       "text": "If I liked gardening, I would spend more time outside."
     },
     {
       "id": "SC051",
-      "group": "intent_conditional",
       "text": "I hope to enjoy reading again."
     },
     {
       "id": "SC052",
-      "group": "attribution_entity",
       "text": "My brother enjoys gardening."
     },
     {
       "id": "SC053",
-      "group": "attribution_entity",
       "text": "My friend likes reading."
     },
     {
       "id": "SC054",
-      "group": "attribution_entity",
       "text": "My dog enjoys walking."
     },
     {
       "id": "SC055",
-      "group": "attribution_entity",
       "text": "My cat's name is Luna."
     },
     {
       "id": "SC056",
-      "group": "attribution_entity",
       "text": "My dog's name is Milo."
     },
     {
       "id": "SC057",
-      "group": "attribution_entity",
       "text": "My friend said, \"I enjoy gardening.\""
     },
     {
       "id": "SC058",
-      "group": "attribution_entity",
       "text": "According to my brother, I enjoy gardening."
     },
     {
       "id": "SC059",
-      "group": "attribution_entity",
       "text": "She claims I enjoy gardening."
     },
     {
       "id": "SC060",
-      "group": "compound_multiple",
       "text": "I enjoy gardening and reading."
     },
     {
       "id": "SC061",
-      "group": "compound_multiple",
       "text": "I enjoy gardening. I dislike reading."
     },
     {
       "id": "SC062",
-      "group": "compound_multiple",
       "text": "I enjoy gardening, but only in summer."
     },
     {
       "id": "SC063",
-      "group": "compound_multiple",
       "text": "I enjoy gardening, although I stopped last month."
     },
     {
       "id": "SC064",
-      "group": "compound_multiple",
       "text": "Gardening is fun for my brother, and I enjoy reading."
     },
     {
       "id": "SC065",
-      "group": "compound_multiple",
       "text": "I enjoy gardening more than walking."
     },
     {
       "id": "SC066",
-      "group": "explicit_correction",
       "text": "Actually, I don't enjoy gardening anymore."
     },
     {
       "id": "SC067",
-      "group": "explicit_correction",
       "text": "Correction: I do not enjoy gardening."
     },
     {
       "id": "SC068",
-      "group": "explicit_correction",
       "text": "I was wrong: I do not enjoy gardening."
     },
     {
       "id": "SC069",
-      "group": "explicit_correction",
       "text": "No, I actually like gardening."
     },
     {
       "id": "SC070",
-      "group": "explicit_correction",
       "text": "I changed my mind; I prefer reading."
     },
     {
       "id": "SC071",
-      "group": "explicit_correction",
       "text": "I don't enjoy gardening anymore."
     },
     {
       "id": "SC072",
-      "group": "explicit_correction",
       "text": "I used to enjoy gardening, but not anymore."
     },
     {
       "id": "SC073",
-      "group": "other_non_slot",
       "text": "Do I enjoy gardening?"
     },
     {
       "id": "SC074",
-      "group": "other_non_slot",
       "text": "Please remember that I enjoy gardening."
     },
     {
       "id": "SC075",
-      "group": "other_non_slot",
       "text": "My favorite hobby is gardening."
     },
     {
       "id": "SC076",
-      "group": "other_non_slot",
       "text": "I prefer reading over walking."
     },
     {
       "id": "SC077",
-      "group": "other_non_slot",
       "text": "I planted flowers yesterday."
     },
     {
       "id": "SC078",
-      "group": "other_non_slot",
       "text": "Hello!"
     },
     {
       "id": "SC079",
-      "group": "other_non_slot",
       "text": "What did I tell you about gardening?"
     },
     {
       "id": "SC080",
-      "group": "other_non_slot",
       "text": "I have never tried gardening."
     }
   ]
