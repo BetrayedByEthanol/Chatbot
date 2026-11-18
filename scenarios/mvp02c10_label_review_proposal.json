@@ -1,0 +1,975 @@
+{
+  "version": "mvp02c10.label_review_proposal.v1",
+  "source_suite": "scenarios/mvp02c10_memory_conflict_diagnostic.json",
+  "source_suite_sha256": "2d28d7761920d743addd11e75d2af86b9f229756810bc0fffe6df6e947dc241b",
+  "source_annotation_status": "DRAFT_UNREVIEWED",
+  "review_status": "ASSISTANT_SECOND_PASS_SCORE_EXPOSED_NOT_INDEPENDENT_ADJUDICATION",
+  "notes": "Full 94-row manual semantic second pass with prior model-score exposure. Retain original immutable benchmark corpus. Proposed rewrites are NOT applied or scored. All labels still require independent qualified human review; do not infer production accuracy.",
+  "counts": {
+    "ACCEPT": 86,
+    "REWORD": 5,
+    "POLICY_REVIEW": 3
+  },
+  "annotations": [
+    {
+      "id": "MC001",
+      "group": "same_scope_conflict",
+      "original_expected_nli": "contradiction",
+      "original_review_applicable": true,
+      "status": "ACCEPT",
+      "nli_label_proposal": "contradiction",
+      "review_applicability_proposal": true,
+      "rationale": "Same first-person current predicate with incompatible asserted values; eligible for review, not automatic overwrite."
+    },
+    {
+      "id": "MC002",
+      "group": "same_scope_conflict",
+      "original_expected_nli": "contradiction",
+      "original_review_applicable": true,
+      "status": "ACCEPT",
+      "nli_label_proposal": "contradiction",
+      "review_applicability_proposal": true,
+      "rationale": "Same first-person current predicate with incompatible asserted values; eligible for review, not automatic overwrite."
+    },
+    {
+      "id": "MC003",
+      "group": "same_scope_conflict",
+      "original_expected_nli": "contradiction",
+      "original_review_applicable": true,
+      "status": "ACCEPT",
+      "nli_label_proposal": "contradiction",
+      "review_applicability_proposal": true,
+      "rationale": "Same first-person current predicate with incompatible asserted values; eligible for review, not automatic overwrite."
+    },
+    {
+      "id": "MC004",
+      "group": "same_scope_conflict",
+      "original_expected_nli": "contradiction",
+      "original_review_applicable": true,
+      "status": "ACCEPT",
+      "nli_label_proposal": "contradiction",
+      "review_applicability_proposal": true,
+      "rationale": "Same first-person current predicate with incompatible asserted values; eligible for review, not automatic overwrite."
+    },
+    {
+      "id": "MC005",
+      "group": "same_scope_conflict",
+      "original_expected_nli": "contradiction",
+      "original_review_applicable": true,
+      "status": "ACCEPT",
+      "nli_label_proposal": "contradiction",
+      "review_applicability_proposal": true,
+      "rationale": "Same first-person current predicate with incompatible asserted values; eligible for review, not automatic overwrite."
+    },
+    {
+      "id": "MC006",
+      "group": "same_scope_conflict",
+      "original_expected_nli": "contradiction",
+      "original_review_applicable": true,
+      "status": "ACCEPT",
+      "nli_label_proposal": "contradiction",
+      "review_applicability_proposal": true,
+      "rationale": "Same first-person current predicate with incompatible asserted values; eligible for review, not automatic overwrite."
+    },
+    {
+      "id": "MC007",
+      "group": "same_scope_conflict",
+      "original_expected_nli": "contradiction",
+      "original_review_applicable": true,
+      "status": "ACCEPT",
+      "nli_label_proposal": "contradiction",
+      "review_applicability_proposal": true,
+      "rationale": "Same first-person current predicate with incompatible asserted values; eligible for review, not automatic overwrite."
+    },
+    {
+      "id": "MC008",
+      "group": "same_scope_conflict",
+      "original_expected_nli": "contradiction",
+      "original_review_applicable": true,
+      "status": "ACCEPT",
+      "nli_label_proposal": "contradiction",
+      "review_applicability_proposal": true,
+      "rationale": "Same first-person current predicate with incompatible asserted values; eligible for review, not automatic overwrite."
+    },
+    {
+      "id": "MC009",
+      "group": "same_scope_conflict",
+      "original_expected_nli": "contradiction",
+      "original_review_applicable": true,
+      "status": "ACCEPT",
+      "nli_label_proposal": "contradiction",
+      "review_applicability_proposal": true,
+      "rationale": "Same first-person current predicate with incompatible asserted values; eligible for review, not automatic overwrite."
+    },
+    {
+      "id": "MC010",
+      "group": "same_scope_conflict",
+      "original_expected_nli": "contradiction",
+      "original_review_applicable": true,
+      "status": "ACCEPT",
+      "nli_label_proposal": "contradiction",
+      "review_applicability_proposal": true,
+      "rationale": "Same first-person current predicate with incompatible asserted values; eligible for review, not automatic overwrite."
+    },
+    {
+      "id": "MC011",
+      "group": "same_scope_conflict",
+      "original_expected_nli": "contradiction",
+      "original_review_applicable": true,
+      "status": "ACCEPT",
+      "nli_label_proposal": "contradiction",
+      "review_applicability_proposal": true,
+      "rationale": "Same first-person current predicate with incompatible asserted values; eligible for review, not automatic overwrite."
+    },
+    {
+      "id": "MC012",
+      "group": "same_scope_conflict",
+      "original_expected_nli": "contradiction",
+      "original_review_applicable": true,
+      "status": "ACCEPT",
+      "nli_label_proposal": "contradiction",
+      "review_applicability_proposal": true,
+      "rationale": "Same first-person current predicate with incompatible asserted values; eligible for review, not automatic overwrite."
+    },
+    {
+      "id": "MC013",
+      "group": "same_scope_restatement",
+      "original_expected_nli": "entailment",
+      "original_review_applicable": true,
+      "status": "ACCEPT",
+      "nli_label_proposal": "entailment",
+      "review_applicability_proposal": true,
+      "rationale": "Same scoped assertion paraphrased compatibly; entailment does not imply a review-worthy conflict."
+    },
+    {
+      "id": "MC014",
+      "group": "same_scope_restatement",
+      "original_expected_nli": "entailment",
+      "original_review_applicable": true,
+      "status": "ACCEPT",
+      "nli_label_proposal": "entailment",
+      "review_applicability_proposal": true,
+      "rationale": "Same scoped assertion paraphrased compatibly; entailment does not imply a review-worthy conflict."
+    },
+    {
+      "id": "MC015",
+      "group": "same_scope_restatement",
+      "original_expected_nli": "entailment",
+      "original_review_applicable": true,
+      "status": "ACCEPT",
+      "nli_label_proposal": "entailment",
+      "review_applicability_proposal": true,
+      "rationale": "Same scoped assertion paraphrased compatibly; entailment does not imply a review-worthy conflict."
+    },
+    {
+      "id": "MC016",
+      "group": "same_scope_restatement",
+      "original_expected_nli": "entailment",
+      "original_review_applicable": true,
+      "status": "ACCEPT",
+      "nli_label_proposal": "entailment",
+      "review_applicability_proposal": true,
+      "rationale": "Same scoped assertion paraphrased compatibly; entailment does not imply a review-worthy conflict."
+    },
+    {
+      "id": "MC017",
+      "group": "same_scope_restatement",
+      "original_expected_nli": "entailment",
+      "original_review_applicable": true,
+      "status": "ACCEPT",
+      "nli_label_proposal": "entailment",
+      "review_applicability_proposal": true,
+      "rationale": "Same scoped assertion paraphrased compatibly; entailment does not imply a review-worthy conflict."
+    },
+    {
+      "id": "MC018",
+      "group": "same_scope_restatement",
+      "original_expected_nli": "entailment",
+      "original_review_applicable": true,
+      "status": "ACCEPT",
+      "nli_label_proposal": "entailment",
+      "review_applicability_proposal": true,
+      "rationale": "Same scoped assertion paraphrased compatibly; entailment does not imply a review-worthy conflict."
+    },
+    {
+      "id": "MC019",
+      "group": "same_scope_restatement",
+      "original_expected_nli": "entailment",
+      "original_review_applicable": true,
+      "status": "ACCEPT",
+      "nli_label_proposal": "entailment",
+      "review_applicability_proposal": true,
+      "rationale": "Same scoped assertion paraphrased compatibly; entailment does not imply a review-worthy conflict."
+    },
+    {
+      "id": "MC020",
+      "group": "same_scope_restatement",
+      "original_expected_nli": "entailment",
+      "original_review_applicable": true,
+      "status": "ACCEPT",
+      "nli_label_proposal": "entailment",
+      "review_applicability_proposal": true,
+      "rationale": "Same scoped assertion paraphrased compatibly; entailment does not imply a review-worthy conflict."
+    },
+    {
+      "id": "MC021",
+      "group": "independent_facts",
+      "original_expected_nli": "neutral",
+      "original_review_applicable": false,
+      "status": "ACCEPT",
+      "nli_label_proposal": "neutral",
+      "review_applicability_proposal": false,
+      "rationale": "Different predicates; no entailment or contradiction is licensed by the premise."
+    },
+    {
+      "id": "MC022",
+      "group": "independent_facts",
+      "original_expected_nli": "neutral",
+      "original_review_applicable": false,
+      "status": "ACCEPT",
+      "nli_label_proposal": "neutral",
+      "review_applicability_proposal": false,
+      "rationale": "Different predicates; no entailment or contradiction is licensed by the premise."
+    },
+    {
+      "id": "MC023",
+      "group": "independent_facts",
+      "original_expected_nli": "neutral",
+      "original_review_applicable": false,
+      "status": "ACCEPT",
+      "nli_label_proposal": "neutral",
+      "review_applicability_proposal": false,
+      "rationale": "Different predicates; no entailment or contradiction is licensed by the premise."
+    },
+    {
+      "id": "MC024",
+      "group": "independent_facts",
+      "original_expected_nli": "neutral",
+      "original_review_applicable": false,
+      "status": "ACCEPT",
+      "nli_label_proposal": "neutral",
+      "review_applicability_proposal": false,
+      "rationale": "Different predicates; no entailment or contradiction is licensed by the premise."
+    },
+    {
+      "id": "MC025",
+      "group": "independent_facts",
+      "original_expected_nli": "neutral",
+      "original_review_applicable": false,
+      "status": "ACCEPT",
+      "nli_label_proposal": "neutral",
+      "review_applicability_proposal": false,
+      "rationale": "Different predicates; no entailment or contradiction is licensed by the premise."
+    },
+    {
+      "id": "MC026",
+      "group": "independent_facts",
+      "original_expected_nli": "neutral",
+      "original_review_applicable": false,
+      "status": "ACCEPT",
+      "nli_label_proposal": "neutral",
+      "review_applicability_proposal": false,
+      "rationale": "Different predicates; no entailment or contradiction is licensed by the premise."
+    },
+    {
+      "id": "MC027",
+      "group": "independent_facts",
+      "original_expected_nli": "neutral",
+      "original_review_applicable": false,
+      "status": "ACCEPT",
+      "nli_label_proposal": "neutral",
+      "review_applicability_proposal": false,
+      "rationale": "Different predicates; no entailment or contradiction is licensed by the premise."
+    },
+    {
+      "id": "MC028",
+      "group": "independent_facts",
+      "original_expected_nli": "neutral",
+      "original_review_applicable": false,
+      "status": "ACCEPT",
+      "nli_label_proposal": "neutral",
+      "review_applicability_proposal": false,
+      "rationale": "Different predicates; no entailment or contradiction is licensed by the premise."
+    },
+    {
+      "id": "MC029",
+      "group": "temporal_change",
+      "original_expected_nli": "neutral",
+      "original_review_applicable": false,
+      "status": "ACCEPT",
+      "nli_label_proposal": "neutral",
+      "review_applicability_proposal": false,
+      "rationale": "Statements concern distinct times; changed circumstances can be simultaneously true."
+    },
+    {
+      "id": "MC030",
+      "group": "temporal_change",
+      "original_expected_nli": "neutral",
+      "original_review_applicable": false,
+      "status": "ACCEPT",
+      "nli_label_proposal": "neutral",
+      "review_applicability_proposal": false,
+      "rationale": "Statements concern distinct times; changed circumstances can be simultaneously true."
+    },
+    {
+      "id": "MC031",
+      "group": "temporal_change",
+      "original_expected_nli": "neutral",
+      "original_review_applicable": false,
+      "status": "ACCEPT",
+      "nli_label_proposal": "neutral",
+      "review_applicability_proposal": false,
+      "rationale": "Statements concern distinct times; changed circumstances can be simultaneously true."
+    },
+    {
+      "id": "MC032",
+      "group": "temporal_change",
+      "original_expected_nli": "neutral",
+      "original_review_applicable": false,
+      "status": "ACCEPT",
+      "nli_label_proposal": "neutral",
+      "review_applicability_proposal": false,
+      "rationale": "Statements concern distinct times; changed circumstances can be simultaneously true."
+    },
+    {
+      "id": "MC033",
+      "group": "temporal_change",
+      "original_expected_nli": "neutral",
+      "original_review_applicable": false,
+      "status": "ACCEPT",
+      "nli_label_proposal": "neutral",
+      "review_applicability_proposal": false,
+      "rationale": "Statements concern distinct times; changed circumstances can be simultaneously true."
+    },
+    {
+      "id": "MC034",
+      "group": "temporal_change",
+      "original_expected_nli": "neutral",
+      "original_review_applicable": false,
+      "status": "ACCEPT",
+      "nli_label_proposal": "neutral",
+      "review_applicability_proposal": false,
+      "rationale": "Statements concern distinct times; changed circumstances can be simultaneously true."
+    },
+    {
+      "id": "MC035",
+      "group": "temporal_change",
+      "original_expected_nli": "neutral",
+      "original_review_applicable": false,
+      "status": "REWORD",
+      "nli_label_proposal": "neutral",
+      "review_applicability_proposal": false,
+      "rationale": "The past interval 'during the winter' has no year; 'now' can overlap a winter. Neutral is plausible but the comparison is not temporally anchored.",
+      "suggested_rewrite": {
+        "stored_text": "I did not cycle during winter 2024.",
+        "candidate_text": "I cycle every morning in autumn 2026."
+      }
+    },
+    {
+      "id": "MC036",
+      "group": "temporal_change",
+      "original_expected_nli": "neutral",
+      "original_review_applicable": false,
+      "status": "ACCEPT",
+      "nli_label_proposal": "neutral",
+      "review_applicability_proposal": false,
+      "rationale": "Statements concern distinct times; changed circumstances can be simultaneously true."
+    },
+    {
+      "id": "MC037",
+      "group": "temporal_change",
+      "original_expected_nli": "neutral",
+      "original_review_applicable": false,
+      "status": "ACCEPT",
+      "nli_label_proposal": "neutral",
+      "review_applicability_proposal": false,
+      "rationale": "Statements concern distinct times; changed circumstances can be simultaneously true."
+    },
+    {
+      "id": "MC038",
+      "group": "temporal_change",
+      "original_expected_nli": "neutral",
+      "original_review_applicable": false,
+      "status": "ACCEPT",
+      "nli_label_proposal": "neutral",
+      "review_applicability_proposal": false,
+      "rationale": "Statements concern distinct times; changed circumstances can be simultaneously true."
+    },
+    {
+      "id": "MC039",
+      "group": "intention_vs_outcome",
+      "original_expected_nli": "neutral",
+      "original_review_applicable": false,
+      "status": "REWORD",
+      "nli_label_proposal": "neutral",
+      "review_applicability_proposal": false,
+      "rationale": "'Plan to begin running' pragmatically presupposes not already running; 'I run each morning' can be read as contradictory at the same time. A definite neutral gold is unsafe without disambiguation.",
+      "suggested_rewrite": {
+        "stored_text": "I plan to join a running club next month.",
+        "candidate_text": "I run alone each morning."
+      }
+    },
+    {
+      "id": "MC040",
+      "group": "intention_vs_outcome",
+      "original_expected_nli": "neutral",
+      "original_review_applicable": false,
+      "status": "ACCEPT",
+      "nli_label_proposal": "neutral",
+      "review_applicability_proposal": false,
+      "rationale": "Intention or contemplated action alone neither entails nor negates a different reported outcome."
+    },
+    {
+      "id": "MC041",
+      "group": "intention_vs_outcome",
+      "original_expected_nli": "neutral",
+      "original_review_applicable": false,
+      "status": "REWORD",
+      "nli_label_proposal": "neutral",
+      "review_applicability_proposal": false,
+      "rationale": "'Considering learning Italian' vs 'speak Italian fluently' creates pragmatic tension despite possible further learning. Reword as an unambiguous course intention distinct from current proficiency.",
+      "suggested_rewrite": {
+        "stored_text": "I am considering taking an advanced Italian course next year.",
+        "candidate_text": "I speak Italian fluently."
+      }
+    },
+    {
+      "id": "MC042",
+      "group": "intention_vs_outcome",
+      "original_expected_nli": "neutral",
+      "original_review_applicable": false,
+      "status": "ACCEPT",
+      "nli_label_proposal": "neutral",
+      "review_applicability_proposal": false,
+      "rationale": "Intention or contemplated action alone neither entails nor negates a different reported outcome."
+    },
+    {
+      "id": "MC043",
+      "group": "intention_vs_outcome",
+      "original_expected_nli": "neutral",
+      "original_review_applicable": false,
+      "status": "ACCEPT",
+      "nli_label_proposal": "neutral",
+      "review_applicability_proposal": false,
+      "rationale": "Intention or contemplated action alone neither entails nor negates a different reported outcome."
+    },
+    {
+      "id": "MC044",
+      "group": "intention_vs_outcome",
+      "original_expected_nli": "neutral",
+      "original_review_applicable": false,
+      "status": "ACCEPT",
+      "nli_label_proposal": "neutral",
+      "review_applicability_proposal": false,
+      "rationale": "Intention or contemplated action alone neither entails nor negates a different reported outcome."
+    },
+    {
+      "id": "MC045",
+      "group": "intention_vs_outcome",
+      "original_expected_nli": "neutral",
+      "original_review_applicable": false,
+      "status": "ACCEPT",
+      "nli_label_proposal": "neutral",
+      "review_applicability_proposal": false,
+      "rationale": "Intention or contemplated action alone neither entails nor negates a different reported outcome."
+    },
+    {
+      "id": "MC046",
+      "group": "intention_vs_outcome",
+      "original_expected_nli": "neutral",
+      "original_review_applicable": false,
+      "status": "ACCEPT",
+      "nli_label_proposal": "neutral",
+      "review_applicability_proposal": false,
+      "rationale": "Intention or contemplated action alone neither entails nor negates a different reported outcome."
+    },
+    {
+      "id": "MC047",
+      "group": "hypothetical_conditional",
+      "original_expected_nli": "neutral",
+      "original_review_applicable": false,
+      "status": "ACCEPT",
+      "nli_label_proposal": "neutral",
+      "review_applicability_proposal": false,
+      "rationale": "Conditional, imagined or possible event does not assert the contemplated fact."
+    },
+    {
+      "id": "MC048",
+      "group": "hypothetical_conditional",
+      "original_expected_nli": "neutral",
+      "original_review_applicable": false,
+      "status": "REWORD",
+      "nli_label_proposal": "neutral",
+      "review_applicability_proposal": false,
+      "rationale": "Counterfactual 'would learn guitar' carries an implication of not yet knowing guitar, potentially clashing with daily playing. Use intention for lessons instead of knowledge acquisition.",
+      "suggested_rewrite": {
+        "stored_text": "If I had more time, I would take guitar lessons.",
+        "candidate_text": "I play guitar daily."
+      }
+    },
+    {
+      "id": "MC049",
+      "group": "hypothetical_conditional",
+      "original_expected_nli": "neutral",
+      "original_review_applicable": false,
+      "status": "ACCEPT",
+      "nli_label_proposal": "neutral",
+      "review_applicability_proposal": false,
+      "rationale": "Conditional, imagined or possible event does not assert the contemplated fact."
+    },
+    {
+      "id": "MC050",
+      "group": "hypothetical_conditional",
+      "original_expected_nli": "neutral",
+      "original_review_applicable": false,
+      "status": "ACCEPT",
+      "nli_label_proposal": "neutral",
+      "review_applicability_proposal": false,
+      "rationale": "Conditional, imagined or possible event does not assert the contemplated fact."
+    },
+    {
+      "id": "MC051",
+      "group": "hypothetical_conditional",
+      "original_expected_nli": "neutral",
+      "original_review_applicable": false,
+      "status": "ACCEPT",
+      "nli_label_proposal": "neutral",
+      "review_applicability_proposal": false,
+      "rationale": "Conditional, imagined or possible event does not assert the contemplated fact."
+    },
+    {
+      "id": "MC052",
+      "group": "hypothetical_conditional",
+      "original_expected_nli": "neutral",
+      "original_review_applicable": false,
+      "status": "ACCEPT",
+      "nli_label_proposal": "neutral",
+      "review_applicability_proposal": false,
+      "rationale": "Conditional, imagined or possible event does not assert the contemplated fact."
+    },
+    {
+      "id": "MC053",
+      "group": "hypothetical_conditional",
+      "original_expected_nli": "neutral",
+      "original_review_applicable": false,
+      "status": "ACCEPT",
+      "nli_label_proposal": "neutral",
+      "review_applicability_proposal": false,
+      "rationale": "Conditional, imagined or possible event does not assert the contemplated fact."
+    },
+    {
+      "id": "MC054",
+      "group": "hypothetical_conditional",
+      "original_expected_nli": "neutral",
+      "original_review_applicable": false,
+      "status": "ACCEPT",
+      "nli_label_proposal": "neutral",
+      "review_applicability_proposal": false,
+      "rationale": "Conditional, imagined or possible event does not assert the contemplated fact."
+    },
+    {
+      "id": "MC055",
+      "group": "attributed_quoted",
+      "original_expected_nli": "neutral",
+      "original_review_applicable": false,
+      "status": "ACCEPT",
+      "nli_label_proposal": "neutral",
+      "review_applicability_proposal": false,
+      "rationale": "Third-party report or quotation is not automatically a first-person factual assertion."
+    },
+    {
+      "id": "MC056",
+      "group": "attributed_quoted",
+      "original_expected_nli": "neutral",
+      "original_review_applicable": false,
+      "status": "ACCEPT",
+      "nli_label_proposal": "neutral",
+      "review_applicability_proposal": false,
+      "rationale": "Third-party report or quotation is not automatically a first-person factual assertion."
+    },
+    {
+      "id": "MC057",
+      "group": "attributed_quoted",
+      "original_expected_nli": "neutral",
+      "original_review_applicable": false,
+      "status": "ACCEPT",
+      "nli_label_proposal": "neutral",
+      "review_applicability_proposal": false,
+      "rationale": "Third-party report or quotation is not automatically a first-person factual assertion."
+    },
+    {
+      "id": "MC058",
+      "group": "attributed_quoted",
+      "original_expected_nli": "neutral",
+      "original_review_applicable": false,
+      "status": "ACCEPT",
+      "nli_label_proposal": "neutral",
+      "review_applicability_proposal": false,
+      "rationale": "Third-party report or quotation is not automatically a first-person factual assertion."
+    },
+    {
+      "id": "MC059",
+      "group": "attributed_quoted",
+      "original_expected_nli": "neutral",
+      "original_review_applicable": false,
+      "status": "ACCEPT",
+      "nli_label_proposal": "neutral",
+      "review_applicability_proposal": false,
+      "rationale": "Third-party report or quotation is not automatically a first-person factual assertion."
+    },
+    {
+      "id": "MC060",
+      "group": "attributed_quoted",
+      "original_expected_nli": "neutral",
+      "original_review_applicable": false,
+      "status": "ACCEPT",
+      "nli_label_proposal": "neutral",
+      "review_applicability_proposal": false,
+      "rationale": "Third-party report or quotation is not automatically a first-person factual assertion."
+    },
+    {
+      "id": "MC061",
+      "group": "attributed_quoted",
+      "original_expected_nli": "neutral",
+      "original_review_applicable": false,
+      "status": "ACCEPT",
+      "nli_label_proposal": "neutral",
+      "review_applicability_proposal": false,
+      "rationale": "Third-party report or quotation is not automatically a first-person factual assertion."
+    },
+    {
+      "id": "MC062",
+      "group": "attributed_quoted",
+      "original_expected_nli": "neutral",
+      "original_review_applicable": false,
+      "status": "ACCEPT",
+      "nli_label_proposal": "neutral",
+      "review_applicability_proposal": false,
+      "rationale": "Third-party report or quotation is not automatically a first-person factual assertion."
+    },
+    {
+      "id": "MC063",
+      "group": "subject_or_context_scope",
+      "original_expected_nli": "neutral",
+      "original_review_applicable": false,
+      "status": "ACCEPT",
+      "nli_label_proposal": "neutral",
+      "review_applicability_proposal": false,
+      "rationale": "Different entity, location, activity scope or interval; both statements can be true."
+    },
+    {
+      "id": "MC064",
+      "group": "subject_or_context_scope",
+      "original_expected_nli": "neutral",
+      "original_review_applicable": false,
+      "status": "ACCEPT",
+      "nli_label_proposal": "neutral",
+      "review_applicability_proposal": false,
+      "rationale": "Different entity, location, activity scope or interval; both statements can be true."
+    },
+    {
+      "id": "MC065",
+      "group": "subject_or_context_scope",
+      "original_expected_nli": "neutral",
+      "original_review_applicable": false,
+      "status": "ACCEPT",
+      "nli_label_proposal": "neutral",
+      "review_applicability_proposal": false,
+      "rationale": "Different entity, location, activity scope or interval; both statements can be true."
+    },
+    {
+      "id": "MC066",
+      "group": "subject_or_context_scope",
+      "original_expected_nli": "neutral",
+      "original_review_applicable": false,
+      "status": "ACCEPT",
+      "nli_label_proposal": "neutral",
+      "review_applicability_proposal": false,
+      "rationale": "Different entity, location, activity scope or interval; both statements can be true."
+    },
+    {
+      "id": "MC067",
+      "group": "subject_or_context_scope",
+      "original_expected_nli": "neutral",
+      "original_review_applicable": false,
+      "status": "ACCEPT",
+      "nli_label_proposal": "neutral",
+      "review_applicability_proposal": false,
+      "rationale": "Different entity, location, activity scope or interval; both statements can be true."
+    },
+    {
+      "id": "MC068",
+      "group": "subject_or_context_scope",
+      "original_expected_nli": "neutral",
+      "original_review_applicable": false,
+      "status": "ACCEPT",
+      "nli_label_proposal": "neutral",
+      "review_applicability_proposal": false,
+      "rationale": "Different entity, location, activity scope or interval; both statements can be true."
+    },
+    {
+      "id": "MC069",
+      "group": "subject_or_context_scope",
+      "original_expected_nli": "neutral",
+      "original_review_applicable": false,
+      "status": "ACCEPT",
+      "nli_label_proposal": "neutral",
+      "review_applicability_proposal": false,
+      "rationale": "Different entity, location, activity scope or interval; both statements can be true."
+    },
+    {
+      "id": "MC070",
+      "group": "subject_or_context_scope",
+      "original_expected_nli": "neutral",
+      "original_review_applicable": false,
+      "status": "ACCEPT",
+      "nli_label_proposal": "neutral",
+      "review_applicability_proposal": false,
+      "rationale": "Different entity, location, activity scope or interval; both statements can be true."
+    },
+    {
+      "id": "MC071",
+      "group": "uncertain_modal",
+      "original_expected_nli": "neutral",
+      "original_review_applicable": false,
+      "status": "POLICY_REVIEW",
+      "nli_label_proposal": "neutral",
+      "review_applicability_proposal": false,
+      "rationale": "Tentative 'might enjoy gardening' should not be promoted to an authoritative enjoyment preference; a later assertion can resolve uncertainty. Keep neutral NLI, but eligibility depends on the source-record type and conversation correction contract."
+    },
+    {
+      "id": "MC072",
+      "group": "uncertain_modal",
+      "original_expected_nli": "neutral",
+      "original_review_applicable": false,
+      "status": "POLICY_REVIEW",
+      "nli_label_proposal": "neutral",
+      "review_applicability_proposal": false,
+      "rationale": "A tentative appointment date and subsequent asserted different date can be a useful correction of working conversational state, even if no authoritative Memory record exists. NLI neutral is defensible; clarify whether 'eligibility' excludes provisional active state."
+    },
+    {
+      "id": "MC073",
+      "group": "uncertain_modal",
+      "original_expected_nli": "neutral",
+      "original_review_applicable": false,
+      "status": "ACCEPT",
+      "nli_label_proposal": "neutral",
+      "review_applicability_proposal": false,
+      "rationale": "Tentative or uncertain report does not assert the opposite of a later statement."
+    },
+    {
+      "id": "MC074",
+      "group": "uncertain_modal",
+      "original_expected_nli": "neutral",
+      "original_review_applicable": false,
+      "status": "POLICY_REVIEW",
+      "nli_label_proposal": "neutral",
+      "review_applicability_proposal": false,
+      "rationale": "Tentative possible bicycle ownership vs confirmed absence may resolve uncertainty. The current false applicability assumes tentative sources are never authoritative; document that precondition before treating it as a universal reject."
+    },
+    {
+      "id": "MC075",
+      "group": "uncertain_modal",
+      "original_expected_nli": "neutral",
+      "original_review_applicable": false,
+      "status": "ACCEPT",
+      "nli_label_proposal": "neutral",
+      "review_applicability_proposal": false,
+      "rationale": "Tentative or uncertain report does not assert the opposite of a later statement."
+    },
+    {
+      "id": "MC076",
+      "group": "uncertain_modal",
+      "original_expected_nli": "neutral",
+      "original_review_applicable": false,
+      "status": "ACCEPT",
+      "nli_label_proposal": "neutral",
+      "review_applicability_proposal": false,
+      "rationale": "Tentative or uncertain report does not assert the opposite of a later statement."
+    },
+    {
+      "id": "MC077",
+      "group": "uncertain_modal",
+      "original_expected_nli": "neutral",
+      "original_review_applicable": false,
+      "status": "ACCEPT",
+      "nli_label_proposal": "neutral",
+      "review_applicability_proposal": false,
+      "rationale": "Tentative or uncertain report does not assert the opposite of a later statement."
+    },
+    {
+      "id": "MC078",
+      "group": "uncertain_modal",
+      "original_expected_nli": "neutral",
+      "original_review_applicable": false,
+      "status": "ACCEPT",
+      "nli_label_proposal": "neutral",
+      "review_applicability_proposal": false,
+      "rationale": "Tentative or uncertain report does not assert the opposite of a later statement."
+    },
+    {
+      "id": "MC079",
+      "group": "explicit_correction",
+      "original_expected_nli": "contradiction",
+      "original_review_applicable": true,
+      "status": "ACCEPT",
+      "nli_label_proposal": "contradiction",
+      "review_applicability_proposal": true,
+      "rationale": "Explicit first-person correction denies the previous value for the same reported predicate; reviewable via user-correction path independent of NLI threshold."
+    },
+    {
+      "id": "MC080",
+      "group": "explicit_correction",
+      "original_expected_nli": "contradiction",
+      "original_review_applicable": true,
+      "status": "ACCEPT",
+      "nli_label_proposal": "contradiction",
+      "review_applicability_proposal": true,
+      "rationale": "Explicit first-person correction denies the previous value for the same reported predicate; reviewable via user-correction path independent of NLI threshold."
+    },
+    {
+      "id": "MC081",
+      "group": "explicit_correction",
+      "original_expected_nli": "contradiction",
+      "original_review_applicable": true,
+      "status": "ACCEPT",
+      "nli_label_proposal": "contradiction",
+      "review_applicability_proposal": true,
+      "rationale": "Explicit first-person correction denies the previous value for the same reported predicate; reviewable via user-correction path independent of NLI threshold."
+    },
+    {
+      "id": "MC082",
+      "group": "explicit_correction",
+      "original_expected_nli": "contradiction",
+      "original_review_applicable": true,
+      "status": "ACCEPT",
+      "nli_label_proposal": "contradiction",
+      "review_applicability_proposal": true,
+      "rationale": "Explicit first-person correction denies the previous value for the same reported predicate; reviewable via user-correction path independent of NLI threshold."
+    },
+    {
+      "id": "MC083",
+      "group": "explicit_correction",
+      "original_expected_nli": "contradiction",
+      "original_review_applicable": true,
+      "status": "ACCEPT",
+      "nli_label_proposal": "contradiction",
+      "review_applicability_proposal": true,
+      "rationale": "Explicit first-person correction denies the previous value for the same reported predicate; reviewable via user-correction path independent of NLI threshold."
+    },
+    {
+      "id": "MC084",
+      "group": "explicit_correction",
+      "original_expected_nli": "contradiction",
+      "original_review_applicable": true,
+      "status": "ACCEPT",
+      "nli_label_proposal": "contradiction",
+      "review_applicability_proposal": true,
+      "rationale": "Explicit first-person correction denies the previous value for the same reported predicate; reviewable via user-correction path independent of NLI threshold."
+    },
+    {
+      "id": "MC085",
+      "group": "explicit_correction",
+      "original_expected_nli": "contradiction",
+      "original_review_applicable": true,
+      "status": "ACCEPT",
+      "nli_label_proposal": "contradiction",
+      "review_applicability_proposal": true,
+      "rationale": "Explicit first-person correction denies the previous value for the same reported predicate; reviewable via user-correction path independent of NLI threshold."
+    },
+    {
+      "id": "MC086",
+      "group": "explicit_correction",
+      "original_expected_nli": "contradiction",
+      "original_review_applicable": true,
+      "status": "ACCEPT",
+      "nli_label_proposal": "contradiction",
+      "review_applicability_proposal": true,
+      "rationale": "Explicit first-person correction denies the previous value for the same reported predicate; reviewable via user-correction path independent of NLI threshold."
+    },
+    {
+      "id": "MC087",
+      "group": "multilingual_mixed",
+      "original_expected_nli": "contradiction",
+      "original_review_applicable": true,
+      "status": "ACCEPT",
+      "nli_label_proposal": "contradiction",
+      "review_applicability_proposal": true,
+      "rationale": "Directional cross-lingual relationship checked using the same subject, predicate, time and modality."
+    },
+    {
+      "id": "MC088",
+      "group": "multilingual_mixed",
+      "original_expected_nli": "contradiction",
+      "original_review_applicable": true,
+      "status": "ACCEPT",
+      "nli_label_proposal": "contradiction",
+      "review_applicability_proposal": true,
+      "rationale": "Directional cross-lingual relationship checked using the same subject, predicate, time and modality."
+    },
+    {
+      "id": "MC089",
+      "group": "multilingual_mixed",
+      "original_expected_nli": "contradiction",
+      "original_review_applicable": true,
+      "status": "REWORD",
+      "nli_label_proposal": "contradiction",
+      "review_applicability_proposal": true,
+      "rationale": "German 'habe ein Fahrrad' can indicate possession or access, which does not strictly entail ownership. Existing English hypothesis denies ownership, so draft contradiction is not semantically airtight.",
+      "suggested_rewrite": {
+        "stored_text": "Ich besitze ein Fahrrad.",
+        "candidate_text": "I do not own a bicycle."
+      }
+    },
+    {
+      "id": "MC090",
+      "group": "multilingual_mixed",
+      "original_expected_nli": "entailment",
+      "original_review_applicable": true,
+      "status": "ACCEPT",
+      "nli_label_proposal": "entailment",
+      "review_applicability_proposal": true,
+      "rationale": "Directional cross-lingual relationship checked using the same subject, predicate, time and modality."
+    },
+    {
+      "id": "MC091",
+      "group": "multilingual_mixed",
+      "original_expected_nli": "entailment",
+      "original_review_applicable": true,
+      "status": "ACCEPT",
+      "nli_label_proposal": "entailment",
+      "review_applicability_proposal": true,
+      "rationale": "Directional cross-lingual relationship checked using the same subject, predicate, time and modality."
+    },
+    {
+      "id": "MC092",
+      "group": "multilingual_mixed",
+      "original_expected_nli": "neutral",
+      "original_review_applicable": false,
+      "status": "ACCEPT",
+      "nli_label_proposal": "neutral",
+      "review_applicability_proposal": false,
+      "rationale": "Directional cross-lingual relationship checked using the same subject, predicate, time and modality."
+    },
+    {
+      "id": "MC093",
+      "group": "multilingual_mixed",
+      "original_expected_nli": "neutral",
+      "original_review_applicable": false,
+      "status": "ACCEPT",
+      "nli_label_proposal": "neutral",
+      "review_applicability_proposal": false,
+      "rationale": "Directional cross-lingual relationship checked using the same subject, predicate, time and modality."
+    },
+    {
+      "id": "MC094",
+      "group": "multilingual_mixed",
+      "original_expected_nli": "neutral",
+      "original_review_applicable": false,
+      "status": "ACCEPT",
+      "nli_label_proposal": "neutral",
+      "review_applicability_proposal": false,
+      "rationale": "Directional cross-lingual relationship checked using the same subject, predicate, time and modality."
+    }
+  ]
+}
