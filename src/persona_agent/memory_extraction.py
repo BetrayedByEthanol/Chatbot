@@ -20,6 +20,7 @@ from psycopg.rows import dict_row
 from .contracts import TrustedActor
 from .memory_explicit_grammar import (
     ExplicitClaim, parse_explicit_claim, _slug, _supported_safe_claim,
+    _BLOCKED, _SAFE_HOBBIES,  # Existing reviewed-model extraction imports.
 )
 from .conversation import _require_actor
 from .event_delivery import (
