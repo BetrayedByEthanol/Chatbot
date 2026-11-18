@@ -41,9 +41,9 @@ def test_provisional_corpus_has_broad_relevant_coverage_and_untouched_blind_pack
     assert digest == sha256(CORPUS.read_bytes()).hexdigest()
     assert packet["annotation_status"] == "UNLABELED_REVIEW_PACKET"
     assert packet["version"] == "mvp02c13.blind_annotation_packet.v1"
-    assert [(r["id"], r["group"], r["text"]) for r in cases] == [
-        (r["id"], r["group"], r["text"]) for r in packet["examples"]]
-    assert all(set(r) == {"id", "group", "text"} for r in packet["examples"])
+    assert [(r["id"], r["text"]) for r in cases] == [
+        (r["id"], r["text"]) for r in packet["examples"]]
+    assert all(set(r) == {"id", "text"} for r in packet["examples"])
     assert "not independently" in _dataset()["provenance"].lower()
 
 
@@ -143,7 +143,7 @@ def test_blind_template_is_prediction_free_and_hash_bound():
         assert row["labels"] == {k: None for k in module.FIELDS}
         assert "draft" not in row
         assert "predicted" not in row
-    assert "classifier" not in json.dumps(template)
+    assert all(set(row) == {"id", "text", "labels"} for row in template["annotations"])
 
 
 def _fake_review(module, reviewer, *, edit_case=None):
