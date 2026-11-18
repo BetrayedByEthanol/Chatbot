@@ -1,0 +1,339 @@
+{
+  "version": "mvp02c13.blind_annotation_packet.v1",
+  "annotation_status": "UNLABELED_REVIEW_PACKET",
+  "source_dataset": "scenarios/mvp02c13_semantic_scope_corpus.json",
+  "instructions": "Two independent reviewers: annotate each entire source text without draft gold, prediction outputs, group tags, or previous reviewer annotations. Record uncertainty explicitly with allowed UNKNOWN/null values. Use separate reviewer identifiers and later submit blinded forms for adjudication.",
+  "labels": [
+    "statement_type",
+    "temporal_scope",
+    "modality",
+    "pragmatic_function",
+    "subject_key",
+    "predicate_key",
+    "context_key",
+    "normalized_value",
+    "narrow_current_scope"
+  ],
+  "examples": [
+    {
+      "id": "SC001",
+      "text": "I enjoy gardening."
+    },
+    {
+      "id": "SC002",
+      "text": "I like gardening."
+    },
+    {
+      "id": "SC003",
+      "text": "I love gardening."
+    },
+    {
+      "id": "SC004",
+      "text": "I really enjoy gardening."
+    },
+    {
+      "id": "SC005",
+      "text": "I enjoy reading."
+    },
+    {
+      "id": "SC006",
+      "text": "I like reading."
+    },
+    {
+      "id": "SC007",
+      "text": "I enjoy walking."
+    },
+    {
+      "id": "SC008",
+      "text": "I really love walking."
+    },
+    {
+      "id": "SC009",
+      "text": "I don't enjoy gardening anymore."
+    },
+    {
+      "id": "SC010",
+      "text": "I don't enjoy reading anymore."
+    },
+    {
+      "id": "SC011",
+      "text": "I used to enjoy gardening."
+    },
+    {
+      "id": "SC012",
+      "text": "I enjoyed gardening yesterday."
+    },
+    {
+      "id": "SC013",
+      "text": "Maybe I should go walking tomorrow."
+    },
+    {
+      "id": "SC014",
+      "text": "I've gotten into gardening lately."
+    },
+    {
+      "id": "SC015",
+      "text": "I absolutely love gardening."
+    },
+    {
+      "id": "SC016",
+      "text": "Gardening is something I really enjoy."
+    },
+    {
+      "id": "SC017",
+      "text": "I am fond of reading."
+    },
+    {
+      "id": "SC018",
+      "text": "Walking is one of my favorite things."
+    },
+    {
+      "id": "SC019",
+      "text": "I do not enjoy gardening."
+    },
+    {
+      "id": "SC020",
+      "text": "I no longer enjoy reading."
+    },
+    {
+      "id": "SC021",
+      "text": "I don't like reading."
+    },
+    {
+      "id": "SC022",
+      "text": "I do not enjoy walking."
+    },
+    {
+      "id": "SC023",
+      "text": "Gardening brings me joy."
+    },
+    {
+      "id": "SC024",
+      "text": "I dislike gardening."
+    },
+    {
+      "id": "SC025",
+      "text": "I enjoy gardening only during summer."
+    },
+    {
+      "id": "SC026",
+      "text": "I enjoy gardening on weekends."
+    },
+    {
+      "id": "SC027",
+      "text": "I enjoy gardening at the office."
+    },
+    {
+      "id": "SC028",
+      "text": "I enjoy gardening at home."
+    },
+    {
+      "id": "SC029",
+      "text": "I enjoyed gardening in 2023."
+    },
+    {
+      "id": "SC030",
+      "text": "I enjoyed gardening last winter."
+    },
+    {
+      "id": "SC031",
+      "text": "I used to enjoy reading."
+    },
+    {
+      "id": "SC032",
+      "text": "I will enjoy gardening when I retire."
+    },
+    {
+      "id": "SC033",
+      "text": "I enjoy reading after work."
+    },
+    {
+      "id": "SC034",
+      "text": "I sometimes enjoy gardening."
+    },
+    {
+      "id": "SC035",
+      "text": "I enjoy gardening only if it is sunny."
+    },
+    {
+      "id": "SC036",
+      "text": "I might enjoy gardening."
+    },
+    {
+      "id": "SC037",
+      "text": "Perhaps I enjoy gardening."
+    },
+    {
+      "id": "SC038",
+      "text": "I think I like reading."
+    },
+    {
+      "id": "SC039",
+      "text": "I'm not sure I enjoy reading."
+    },
+    {
+      "id": "SC040",
+      "text": "Maybe I don't enjoy gardening anymore."
+    },
+    {
+      "id": "SC041",
+      "text": "I may still enjoy walking."
+    },
+    {
+      "id": "SC042",
+      "text": "I probably enjoy gardening."
+    },
+    {
+      "id": "SC043",
+      "text": "I am considering gardening as a hobby."
+    },
+    {
+      "id": "SC044",
+      "text": "If I had time, I would enjoy gardening."
+    },
+    {
+      "id": "SC045",
+      "text": "If it stops raining, I will enjoy gardening."
+    },
+    {
+      "id": "SC046",
+      "text": "Suppose I enjoyed gardening."
+    },
+    {
+      "id": "SC047",
+      "text": "I would enjoy reading if I had more time."
+    },
+    {
+      "id": "SC048",
+      "text": "I plan to start gardening next month."
+    },
+    {
+      "id": "SC049",
+      "text": "I want to begin walking tomorrow."
+    },
+    {
+      "id": "SC050",
+      "text": "If I liked gardening, I would spend more time outside."
+    },
+    {
+      "id": "SC051",
+      "text": "I hope to enjoy reading again."
+    },
+    {
+      "id": "SC052",
+      "text": "My brother enjoys gardening."
+    },
+    {
+      "id": "SC053",
+      "text": "My friend likes reading."
+    },
+    {
+      "id": "SC054",
+      "text": "My dog enjoys walking."
+    },
+    {
+      "id": "SC055",
+      "text": "My cat's name is Luna."
+    },
+    {
+      "id": "SC056",
+      "text": "My dog's name is Milo."
+    },
+    {
+      "id": "SC057",
+      "text": "My friend said, \"I enjoy gardening.\""
+    },
+    {
+      "id": "SC058",
+      "text": "According to my brother, I enjoy gardening."
+    },
+    {
+      "id": "SC059",
+      "text": "She claims I enjoy gardening."
+    },
+    {
+      "id": "SC060",
+      "text": "I enjoy gardening and reading."
+    },
+    {
+      "id": "SC061",
+      "text": "I enjoy gardening. I dislike reading."
+    },
+    {
+      "id": "SC062",
+      "text": "I enjoy gardening, but only in summer."
+    },
+    {
+      "id": "SC063",
+      "text": "I enjoy gardening, although I stopped last month."
+    },
+    {
+      "id": "SC064",
+      "text": "Gardening is fun for my brother, and I enjoy reading."
+    },
+    {
+      "id": "SC065",
+      "text": "I enjoy gardening more than walking."
+    },
+    {
+      "id": "SC066",
+      "text": "Actually, I don't enjoy gardening anymore."
+    },
+    {
+      "id": "SC067",
+      "text": "Correction: I do not enjoy gardening."
+    },
+    {
+      "id": "SC068",
+      "text": "I was wrong: I do not enjoy gardening."
+    },
+    {
+      "id": "SC069",
+      "text": "No, I actually like gardening."
+    },
+    {
+      "id": "SC070",
+      "text": "I changed my mind; I prefer reading."
+    },
+    {
+      "id": "SC071",
+      "text": "I don't enjoy gardening anymore."
+    },
+    {
+      "id": "SC072",
+      "text": "I used to enjoy gardening, but not anymore."
+    },
+    {
+      "id": "SC073",
+      "text": "Do I enjoy gardening?"
+    },
+    {
+      "id": "SC074",
+      "text": "Please remember that I enjoy gardening."
+    },
+    {
+      "id": "SC075",
+      "text": "My favorite hobby is gardening."
+    },
+    {
+      "id": "SC076",
+      "text": "I prefer reading over walking."
+    },
+    {
+      "id": "SC077",
+      "text": "I planted flowers yesterday."
+    },
+    {
+      "id": "SC078",
+      "text": "Hello!"
+    },
+    {
+      "id": "SC079",
+      "text": "What did I tell you about gardening?"
+    },
+    {
+      "id": "SC080",
+      "text": "I have never tried gardening."
+    }
+  ]
+}
