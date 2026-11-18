@@ -1,0 +1,855 @@
+{
+  "version": "mvp02c10.memory_conflict_diagnostic.v1",
+  "annotation_status": "DRAFT_UNREVIEWED",
+  "provenance": "Author-generated synthetic examples drafted before running candidate models on this suite. Requires independent semantic and eligibility review; not real user data, not a representative or blinded holdout.",
+  "task_definition": "Each pair compares stored_text (prior reported claim) against candidate_text (new statement). expected_nli is a draft textual relation, not proof of user truth. review_applicable marks an oracle human annotation that the same asserted subject/predicate/time can be considered for a conflict review; not an implemented eligibility detector and never memory-write authorization.",
+  "limits": "NLI is directional (stored_text is premise). The 0.90 cutoff is a fixed diagnostic only. Real-world memory corrections require domain-owned provenance, temporality, user authority and explicit policy.",
+  "examples": [
+    {
+      "id": "MC001",
+      "group": "same_scope_conflict",
+      "stored_text": "I currently live in Berlin.",
+      "candidate_text": "I currently live in Hamburg, not Berlin.",
+      "expected_nli": "contradiction",
+      "review_applicable": true,
+      "eligibility_reason": "SAME_SUBJECT_SCOPE_ASSERTED"
+    },
+    {
+      "id": "MC002",
+      "group": "same_scope_conflict",
+      "stored_text": "I enjoy gardening.",
+      "candidate_text": "I do not enjoy gardening.",
+      "expected_nli": "contradiction",
+      "review_applicable": true,
+      "eligibility_reason": "SAME_SUBJECT_SCOPE_ASSERTED"
+    },
+    {
+      "id": "MC003",
+      "group": "same_scope_conflict",
+      "stored_text": "I own no pets.",
+      "candidate_text": "I own a dog.",
+      "expected_nli": "contradiction",
+      "review_applicable": true,
+      "eligibility_reason": "SAME_SUBJECT_SCOPE_ASSERTED"
+    },
+    {
+      "id": "MC004",
+      "group": "same_scope_conflict",
+      "stored_text": "I eat meat.",
+      "candidate_text": "I do not eat meat.",
+      "expected_nli": "contradiction",
+      "review_applicable": true,
+      "eligibility_reason": "SAME_SUBJECT_SCOPE_ASSERTED"
+    },
+    {
+      "id": "MC005",
+      "group": "same_scope_conflict",
+      "stored_text": "I work remotely every weekday.",
+      "candidate_text": "I never work remotely.",
+      "expected_nli": "contradiction",
+      "review_applicable": true,
+      "eligibility_reason": "SAME_SUBJECT_SCOPE_ASSERTED"
+    },
+    {
+      "id": "MC006",
+      "group": "same_scope_conflict",
+      "stored_text": "I drink coffee every morning.",
+      "candidate_text": "I never drink coffee.",
+      "expected_nli": "contradiction",
+      "review_applicable": true,
+      "eligibility_reason": "SAME_SUBJECT_SCOPE_ASSERTED"
+    },
+    {
+      "id": "MC007",
+      "group": "same_scope_conflict",
+      "stored_text": "I own a bicycle.",
+      "candidate_text": "I do not own any bicycles.",
+      "expected_nli": "contradiction",
+      "review_applicable": true,
+      "eligibility_reason": "SAME_SUBJECT_SCOPE_ASSERTED"
+    },
+    {
+      "id": "MC008",
+      "group": "same_scope_conflict",
+      "stored_text": "I have a driver's license.",
+      "candidate_text": "I do not have a driver's license.",
+      "expected_nli": "contradiction",
+      "review_applicable": true,
+      "eligibility_reason": "SAME_SUBJECT_SCOPE_ASSERTED"
+    },
+    {
+      "id": "MC009",
+      "group": "same_scope_conflict",
+      "stored_text": "I speak Spanish.",
+      "candidate_text": "I cannot speak Spanish.",
+      "expected_nli": "contradiction",
+      "review_applicable": true,
+      "eligibility_reason": "SAME_SUBJECT_SCOPE_ASSERTED"
+    },
+    {
+      "id": "MC010",
+      "group": "same_scope_conflict",
+      "stored_text": "I always commute by train.",
+      "candidate_text": "I never commute by train.",
+      "expected_nli": "contradiction",
+      "review_applicable": true,
+      "eligibility_reason": "SAME_SUBJECT_SCOPE_ASSERTED"
+    },
+    {
+      "id": "MC011",
+      "group": "same_scope_conflict",
+      "stored_text": "I work as a teacher.",
+      "candidate_text": "I do not work as a teacher.",
+      "expected_nli": "contradiction",
+      "review_applicable": true,
+      "eligibility_reason": "SAME_SUBJECT_SCOPE_ASSERTED"
+    },
+    {
+      "id": "MC012",
+      "group": "same_scope_conflict",
+      "stored_text": "My current work shift starts at 08:00.",
+      "candidate_text": "My current work shift starts at 10:00, not 08:00.",
+      "expected_nli": "contradiction",
+      "review_applicable": true,
+      "eligibility_reason": "SAME_SUBJECT_SCOPE_ASSERTED"
+    },
+    {
+      "id": "MC013",
+      "group": "same_scope_restatement",
+      "stored_text": "I enjoy reading novels.",
+      "candidate_text": "I like reading novels.",
+      "expected_nli": "entailment",
+      "review_applicable": true,
+      "eligibility_reason": "SAME_SUBJECT_SCOPE_ASSERTED"
+    },
+    {
+      "id": "MC014",
+      "group": "same_scope_restatement",
+      "stored_text": "I own exactly two bicycles.",
+      "candidate_text": "I have exactly two bikes.",
+      "expected_nli": "entailment",
+      "review_applicable": true,
+      "eligibility_reason": "SAME_SUBJECT_SCOPE_ASSERTED"
+    },
+    {
+      "id": "MC015",
+      "group": "same_scope_restatement",
+      "stored_text": "I currently live in Leipzig.",
+      "candidate_text": "I live in Leipzig now.",
+      "expected_nli": "entailment",
+      "review_applicable": true,
+      "eligibility_reason": "SAME_SUBJECT_SCOPE_ASSERTED"
+    },
+    {
+      "id": "MC016",
+      "group": "same_scope_restatement",
+      "stored_text": "I prefer tea to coffee.",
+      "candidate_text": "Given the choice, I prefer tea over coffee.",
+      "expected_nli": "entailment",
+      "review_applicable": true,
+      "eligibility_reason": "SAME_SUBJECT_SCOPE_ASSERTED"
+    },
+    {
+      "id": "MC017",
+      "group": "same_scope_restatement",
+      "stored_text": "I work from home every Friday.",
+      "candidate_text": "Friday is my regular work-from-home day.",
+      "expected_nli": "entailment",
+      "review_applicable": true,
+      "eligibility_reason": "SAME_SUBJECT_SCOPE_ASSERTED"
+    },
+    {
+      "id": "MC018",
+      "group": "same_scope_restatement",
+      "stored_text": "I speak German fluently.",
+      "candidate_text": "I can speak German fluently.",
+      "expected_nli": "entailment",
+      "review_applicable": true,
+      "eligibility_reason": "SAME_SUBJECT_SCOPE_ASSERTED"
+    },
+    {
+      "id": "MC019",
+      "group": "same_scope_restatement",
+      "stored_text": "I do not eat meat.",
+      "candidate_text": "I avoid eating meat.",
+      "expected_nli": "entailment",
+      "review_applicable": true,
+      "eligibility_reason": "SAME_SUBJECT_SCOPE_ASSERTED"
+    },
+    {
+      "id": "MC020",
+      "group": "same_scope_restatement",
+      "stored_text": "I walk to work every weekday.",
+      "candidate_text": "I commute to work on foot every weekday.",
+      "expected_nli": "entailment",
+      "review_applicable": true,
+      "eligibility_reason": "SAME_SUBJECT_SCOPE_ASSERTED"
+    },
+    {
+      "id": "MC021",
+      "group": "independent_facts",
+      "stored_text": "I enjoy hiking.",
+      "candidate_text": "I enjoy swimming.",
+      "expected_nli": "neutral",
+      "review_applicable": false,
+      "eligibility_reason": "INDEPENDENT_PREDICATE"
+    },
+    {
+      "id": "MC022",
+      "group": "independent_facts",
+      "stored_text": "I play chess.",
+      "candidate_text": "I work as a programmer.",
+      "expected_nli": "neutral",
+      "review_applicable": false,
+      "eligibility_reason": "INDEPENDENT_PREDICATE"
+    },
+    {
+      "id": "MC023",
+      "group": "independent_facts",
+      "stored_text": "I have a cat.",
+      "candidate_text": "I have a dog.",
+      "expected_nli": "neutral",
+      "review_applicable": false,
+      "eligibility_reason": "INDEPENDENT_PREDICATE"
+    },
+    {
+      "id": "MC024",
+      "group": "independent_facts",
+      "stored_text": "I went running yesterday.",
+      "candidate_text": "I read a novel yesterday.",
+      "expected_nli": "neutral",
+      "review_applicable": false,
+      "eligibility_reason": "INDEPENDENT_PREDICATE"
+    },
+    {
+      "id": "MC025",
+      "group": "independent_facts",
+      "stored_text": "I prefer tea.",
+      "candidate_text": "I own a bicycle.",
+      "expected_nli": "neutral",
+      "review_applicable": false,
+      "eligibility_reason": "INDEPENDENT_PREDICATE"
+    },
+    {
+      "id": "MC026",
+      "group": "independent_facts",
+      "stored_text": "I go to the library weekly.",
+      "candidate_text": "I cook at home regularly.",
+      "expected_nli": "neutral",
+      "review_applicable": false,
+      "eligibility_reason": "INDEPENDENT_PREDICATE"
+    },
+    {
+      "id": "MC027",
+      "group": "independent_facts",
+      "stored_text": "I speak German.",
+      "candidate_text": "I like gardening.",
+      "expected_nli": "neutral",
+      "review_applicable": false,
+      "eligibility_reason": "INDEPENDENT_PREDICATE"
+    },
+    {
+      "id": "MC028",
+      "group": "independent_facts",
+      "stored_text": "I own a laptop.",
+      "candidate_text": "I listen to jazz.",
+      "expected_nli": "neutral",
+      "review_applicable": false,
+      "eligibility_reason": "INDEPENDENT_PREDICATE"
+    },
+    {
+      "id": "MC029",
+      "group": "temporal_change",
+      "stored_text": "I used to live in Bonn.",
+      "candidate_text": "I live in Cologne now.",
+      "expected_nli": "neutral",
+      "review_applicable": false,
+      "eligibility_reason": "DIFFERENT_TIME"
+    },
+    {
+      "id": "MC030",
+      "group": "temporal_change",
+      "stored_text": "I preferred coffee in 2020.",
+      "candidate_text": "I prefer tea in 2026.",
+      "expected_nli": "neutral",
+      "review_applicable": false,
+      "eligibility_reason": "DIFFERENT_TIME"
+    },
+    {
+      "id": "MC031",
+      "group": "temporal_change",
+      "stored_text": "I owned no bicycles in 2022.",
+      "candidate_text": "I bought a bicycle in 2024.",
+      "expected_nli": "neutral",
+      "review_applicable": false,
+      "eligibility_reason": "DIFFERENT_TIME"
+    },
+    {
+      "id": "MC032",
+      "group": "temporal_change",
+      "stored_text": "I stopped playing tennis in 2021.",
+      "candidate_text": "I started playing tennis again in 2026.",
+      "expected_nli": "neutral",
+      "review_applicable": false,
+      "eligibility_reason": "DIFFERENT_TIME"
+    },
+    {
+      "id": "MC033",
+      "group": "temporal_change",
+      "stored_text": "I worked as a teacher until 2021.",
+      "candidate_text": "I now work as a designer.",
+      "expected_nli": "neutral",
+      "review_applicable": false,
+      "eligibility_reason": "DIFFERENT_TIME"
+    },
+    {
+      "id": "MC034",
+      "group": "temporal_change",
+      "stored_text": "I had never visited Paris before 2020.",
+      "candidate_text": "I visited Paris in 2024.",
+      "expected_nli": "neutral",
+      "review_applicable": false,
+      "eligibility_reason": "DIFFERENT_TIME"
+    },
+    {
+      "id": "MC035",
+      "group": "temporal_change",
+      "stored_text": "I did not cycle during the winter.",
+      "candidate_text": "I now cycle every morning.",
+      "expected_nli": "neutral",
+      "review_applicable": false,
+      "eligibility_reason": "DIFFERENT_TIME"
+    },
+    {
+      "id": "MC036",
+      "group": "temporal_change",
+      "stored_text": "I disliked gardening as a child.",
+      "candidate_text": "I enjoy gardening today.",
+      "expected_nli": "neutral",
+      "review_applicable": false,
+      "eligibility_reason": "DIFFERENT_TIME"
+    },
+    {
+      "id": "MC037",
+      "group": "temporal_change",
+      "stored_text": "I rented an apartment last year.",
+      "candidate_text": "I own a house now.",
+      "expected_nli": "neutral",
+      "review_applicable": false,
+      "eligibility_reason": "DIFFERENT_TIME"
+    },
+    {
+      "id": "MC038",
+      "group": "temporal_change",
+      "stored_text": "I rarely cooked in 2021.",
+      "candidate_text": "I cook every day now.",
+      "expected_nli": "neutral",
+      "review_applicable": false,
+      "eligibility_reason": "DIFFERENT_TIME"
+    },
+    {
+      "id": "MC039",
+      "group": "intention_vs_outcome",
+      "stored_text": "I plan to begin running next month.",
+      "candidate_text": "I run each morning.",
+      "expected_nli": "neutral",
+      "review_applicable": false,
+      "eligibility_reason": "INTENTION_NOT_OUTCOME"
+    },
+    {
+      "id": "MC040",
+      "group": "intention_vs_outcome",
+      "stored_text": "I want to buy a laptop.",
+      "candidate_text": "I bought a laptop yesterday.",
+      "expected_nli": "neutral",
+      "review_applicable": false,
+      "eligibility_reason": "INTENTION_NOT_OUTCOME"
+    },
+    {
+      "id": "MC041",
+      "group": "intention_vs_outcome",
+      "stored_text": "I am considering learning Italian.",
+      "candidate_text": "I speak Italian fluently.",
+      "expected_nli": "neutral",
+      "review_applicable": false,
+      "eligibility_reason": "INTENTION_NOT_OUTCOME"
+    },
+    {
+      "id": "MC042",
+      "group": "intention_vs_outcome",
+      "stored_text": "I intend to apply for a new job.",
+      "candidate_text": "I accepted a job offer.",
+      "expected_nli": "neutral",
+      "review_applicable": false,
+      "eligibility_reason": "INTENTION_NOT_OUTCOME"
+    },
+    {
+      "id": "MC043",
+      "group": "intention_vs_outcome",
+      "stored_text": "I hope to cook dinner tonight.",
+      "candidate_text": "I cooked dinner last night.",
+      "expected_nli": "neutral",
+      "review_applicable": false,
+      "eligibility_reason": "INTENTION_NOT_OUTCOME"
+    },
+    {
+      "id": "MC044",
+      "group": "intention_vs_outcome",
+      "stored_text": "I promised to call my sister tomorrow.",
+      "candidate_text": "I called my sister yesterday.",
+      "expected_nli": "neutral",
+      "review_applicable": false,
+      "eligibility_reason": "INTENTION_NOT_OUTCOME"
+    },
+    {
+      "id": "MC045",
+      "group": "intention_vs_outcome",
+      "stored_text": "I may start cycling on weekends.",
+      "candidate_text": "I cycle on weekdays.",
+      "expected_nli": "neutral",
+      "review_applicable": false,
+      "eligibility_reason": "INTENTION_NOT_OUTCOME"
+    },
+    {
+      "id": "MC046",
+      "group": "intention_vs_outcome",
+      "stored_text": "I want to eat fewer sweets.",
+      "candidate_text": "I ate chocolate yesterday.",
+      "expected_nli": "neutral",
+      "review_applicable": false,
+      "eligibility_reason": "INTENTION_NOT_OUTCOME"
+    },
+    {
+      "id": "MC047",
+      "group": "hypothetical_conditional",
+      "stored_text": "If I move to Berlin, I will bike to work.",
+      "candidate_text": "I bike to work in Berlin.",
+      "expected_nli": "neutral",
+      "review_applicable": false,
+      "eligibility_reason": "NON_ASSERTED_HYPOTHETICAL"
+    },
+    {
+      "id": "MC048",
+      "group": "hypothetical_conditional",
+      "stored_text": "If I had more time, I would learn guitar.",
+      "candidate_text": "I play guitar daily.",
+      "expected_nli": "neutral",
+      "review_applicable": false,
+      "eligibility_reason": "NON_ASSERTED_HYPOTHETICAL"
+    },
+    {
+      "id": "MC049",
+      "group": "hypothetical_conditional",
+      "stored_text": "Suppose I owned a dog.",
+      "candidate_text": "I have a dog.",
+      "expected_nli": "neutral",
+      "review_applicable": false,
+      "eligibility_reason": "NON_ASSERTED_HYPOTHETICAL"
+    },
+    {
+      "id": "MC050",
+      "group": "hypothetical_conditional",
+      "stored_text": "Imagine that I changed careers.",
+      "candidate_text": "I work as a designer.",
+      "expected_nli": "neutral",
+      "review_applicable": false,
+      "eligibility_reason": "NON_ASSERTED_HYPOTHETICAL"
+    },
+    {
+      "id": "MC051",
+      "group": "hypothetical_conditional",
+      "stored_text": "If I save enough, I might buy a car.",
+      "candidate_text": "I own a car.",
+      "expected_nli": "neutral",
+      "review_applicable": false,
+      "eligibility_reason": "NON_ASSERTED_HYPOTHETICAL"
+    },
+    {
+      "id": "MC052",
+      "group": "hypothetical_conditional",
+      "stored_text": "I would exercise more if a gym were nearby.",
+      "candidate_text": "I exercise regularly.",
+      "expected_nli": "neutral",
+      "review_applicable": false,
+      "eligibility_reason": "NON_ASSERTED_HYPOTHETICAL"
+    },
+    {
+      "id": "MC053",
+      "group": "hypothetical_conditional",
+      "stored_text": "What if I became vegetarian?",
+      "candidate_text": "I eat meat.",
+      "expected_nli": "neutral",
+      "review_applicable": false,
+      "eligibility_reason": "NON_ASSERTED_HYPOTHETICAL"
+    },
+    {
+      "id": "MC054",
+      "group": "hypothetical_conditional",
+      "stored_text": "On holiday I might go skiing.",
+      "candidate_text": "I went skiing last year.",
+      "expected_nli": "neutral",
+      "review_applicable": false,
+      "eligibility_reason": "NON_ASSERTED_HYPOTHETICAL"
+    },
+    {
+      "id": "MC055",
+      "group": "attributed_quoted",
+      "stored_text": "My roommate dislikes coffee.",
+      "candidate_text": "I like coffee.",
+      "expected_nli": "neutral",
+      "review_applicable": false,
+      "eligibility_reason": "NON_SELF_REPORT_OR_QUOTED"
+    },
+    {
+      "id": "MC056",
+      "group": "attributed_quoted",
+      "stored_text": "Alex claims that I dislike mushrooms.",
+      "candidate_text": "I like mushrooms.",
+      "expected_nli": "neutral",
+      "review_applicable": false,
+      "eligibility_reason": "NON_SELF_REPORT_OR_QUOTED"
+    },
+    {
+      "id": "MC057",
+      "group": "attributed_quoted",
+      "stored_text": "I quoted a sign saying the library was closed.",
+      "candidate_text": "The library is open today.",
+      "expected_nli": "neutral",
+      "review_applicable": false,
+      "eligibility_reason": "NON_SELF_REPORT_OR_QUOTED"
+    },
+    {
+      "id": "MC058",
+      "group": "attributed_quoted",
+      "stored_text": "My partner says I work too much.",
+      "candidate_text": "I work 35 hours a week.",
+      "expected_nli": "neutral",
+      "review_applicable": false,
+      "eligibility_reason": "NON_SELF_REPORT_OR_QUOTED"
+    },
+    {
+      "id": "MC059",
+      "group": "attributed_quoted",
+      "stored_text": "My friend believes I live in Berlin.",
+      "candidate_text": "I live in Hamburg.",
+      "expected_nli": "neutral",
+      "review_applicable": false,
+      "eligibility_reason": "NON_SELF_REPORT_OR_QUOTED"
+    },
+    {
+      "id": "MC060",
+      "group": "attributed_quoted",
+      "stored_text": "Someone joked that I never cook.",
+      "candidate_text": "I cook often.",
+      "expected_nli": "neutral",
+      "review_applicable": false,
+      "eligibility_reason": "NON_SELF_REPORT_OR_QUOTED"
+    },
+    {
+      "id": "MC061",
+      "group": "attributed_quoted",
+      "stored_text": "I once said, 'I hate hiking'.",
+      "candidate_text": "I enjoy hiking now.",
+      "expected_nli": "neutral",
+      "review_applicable": false,
+      "eligibility_reason": "NON_SELF_REPORT_OR_QUOTED"
+    },
+    {
+      "id": "MC062",
+      "group": "attributed_quoted",
+      "stored_text": "My colleague thinks I cannot speak French.",
+      "candidate_text": "I speak French.",
+      "expected_nli": "neutral",
+      "review_applicable": false,
+      "eligibility_reason": "NON_SELF_REPORT_OR_QUOTED"
+    },
+    {
+      "id": "MC063",
+      "group": "subject_or_context_scope",
+      "stored_text": "My brother owns a motorcycle.",
+      "candidate_text": "I do not own a motorcycle.",
+      "expected_nli": "neutral",
+      "review_applicable": false,
+      "eligibility_reason": "DIFFERENT_SUBJECT_OR_CONTEXT"
+    },
+    {
+      "id": "MC064",
+      "group": "subject_or_context_scope",
+      "stored_text": "I keep my office at 19 degrees Celsius.",
+      "candidate_text": "I keep my bedroom at 22 degrees Celsius.",
+      "expected_nli": "neutral",
+      "review_applicable": false,
+      "eligibility_reason": "DIFFERENT_SUBJECT_OR_CONTEXT"
+    },
+    {
+      "id": "MC065",
+      "group": "subject_or_context_scope",
+      "stored_text": "My dog is named Luna.",
+      "candidate_text": "My cat is named Milo.",
+      "expected_nli": "neutral",
+      "review_applicable": false,
+      "eligibility_reason": "DIFFERENT_SUBJECT_OR_CONTEXT"
+    },
+    {
+      "id": "MC066",
+      "group": "subject_or_context_scope",
+      "stored_text": "My work laptop runs Linux.",
+      "candidate_text": "My home computer runs Windows.",
+      "expected_nli": "neutral",
+      "review_applicable": false,
+      "eligibility_reason": "DIFFERENT_SUBJECT_OR_CONTEXT"
+    },
+    {
+      "id": "MC067",
+      "group": "subject_or_context_scope",
+      "stored_text": "I avoid sugar on weekdays.",
+      "candidate_text": "I eat dessert on Saturdays.",
+      "expected_nli": "neutral",
+      "review_applicable": false,
+      "eligibility_reason": "DIFFERENT_SUBJECT_OR_CONTEXT"
+    },
+    {
+      "id": "MC068",
+      "group": "subject_or_context_scope",
+      "stored_text": "I speak Spanish at work.",
+      "candidate_text": "I usually speak English at home.",
+      "expected_nli": "neutral",
+      "review_applicable": false,
+      "eligibility_reason": "DIFFERENT_SUBJECT_OR_CONTEXT"
+    },
+    {
+      "id": "MC069",
+      "group": "subject_or_context_scope",
+      "stored_text": "I live in Berlin during the week.",
+      "candidate_text": "I stay in Potsdam on weekends.",
+      "expected_nli": "neutral",
+      "review_applicable": false,
+      "eligibility_reason": "DIFFERENT_SUBJECT_OR_CONTEXT"
+    },
+    {
+      "id": "MC070",
+      "group": "subject_or_context_scope",
+      "stored_text": "I go jogging in summer.",
+      "candidate_text": "I go skiing in winter.",
+      "expected_nli": "neutral",
+      "review_applicable": false,
+      "eligibility_reason": "DIFFERENT_SUBJECT_OR_CONTEXT"
+    },
+    {
+      "id": "MC071",
+      "group": "uncertain_modal",
+      "stored_text": "I might enjoy gardening.",
+      "candidate_text": "I do not enjoy gardening.",
+      "expected_nli": "neutral",
+      "review_applicable": false,
+      "eligibility_reason": "UNCERTAIN_OR_TENTATIVE"
+    },
+    {
+      "id": "MC072",
+      "group": "uncertain_modal",
+      "stored_text": "I think my appointment is on Friday.",
+      "candidate_text": "My appointment is on Thursday.",
+      "expected_nli": "neutral",
+      "review_applicable": false,
+      "eligibility_reason": "UNCERTAIN_OR_TENTATIVE"
+    },
+    {
+      "id": "MC073",
+      "group": "uncertain_modal",
+      "stored_text": "I heard that the cafe closes at six.",
+      "candidate_text": "The cafe closes at eight.",
+      "expected_nli": "neutral",
+      "review_applicable": false,
+      "eligibility_reason": "UNCERTAIN_OR_TENTATIVE"
+    },
+    {
+      "id": "MC074",
+      "group": "uncertain_modal",
+      "stored_text": "I may still own an old bicycle.",
+      "candidate_text": "I do not own a bicycle.",
+      "expected_nli": "neutral",
+      "review_applicable": false,
+      "eligibility_reason": "UNCERTAIN_OR_TENTATIVE"
+    },
+    {
+      "id": "MC075",
+      "group": "uncertain_modal",
+      "stored_text": "I suspect that I work too much.",
+      "candidate_text": "I work 35 hours per week.",
+      "expected_nli": "neutral",
+      "review_applicable": false,
+      "eligibility_reason": "UNCERTAIN_OR_TENTATIVE"
+    },
+    {
+      "id": "MC076",
+      "group": "uncertain_modal",
+      "stored_text": "I am not sure whether I prefer tea.",
+      "candidate_text": "I prefer coffee.",
+      "expected_nli": "neutral",
+      "review_applicable": false,
+      "eligibility_reason": "UNCERTAIN_OR_TENTATIVE"
+    },
+    {
+      "id": "MC077",
+      "group": "uncertain_modal",
+      "stored_text": "Perhaps I will go swimming tomorrow.",
+      "candidate_text": "I will be at the office tomorrow.",
+      "expected_nli": "neutral",
+      "review_applicable": false,
+      "eligibility_reason": "UNCERTAIN_OR_TENTATIVE"
+    },
+    {
+      "id": "MC078",
+      "group": "uncertain_modal",
+      "stored_text": "I might move away next year.",
+      "candidate_text": "I currently live in Leipzig.",
+      "expected_nli": "neutral",
+      "review_applicable": false,
+      "eligibility_reason": "UNCERTAIN_OR_TENTATIVE"
+    },
+    {
+      "id": "MC079",
+      "group": "explicit_correction",
+      "stored_text": "I live in Berlin.",
+      "candidate_text": "Correction: I live in Dresden, not Berlin.",
+      "expected_nli": "contradiction",
+      "review_applicable": true,
+      "eligibility_reason": "SAME_SUBJECT_SCOPE_ASSERTED"
+    },
+    {
+      "id": "MC080",
+      "group": "explicit_correction",
+      "stored_text": "I don't own a car.",
+      "candidate_text": "Actually, I own a car.",
+      "expected_nli": "contradiction",
+      "review_applicable": true,
+      "eligibility_reason": "SAME_SUBJECT_SCOPE_ASSERTED"
+    },
+    {
+      "id": "MC081",
+      "group": "explicit_correction",
+      "stored_text": "I don't like spicy food.",
+      "candidate_text": "I was wrong earlier; I do like spicy food.",
+      "expected_nli": "contradiction",
+      "review_applicable": true,
+      "eligibility_reason": "SAME_SUBJECT_SCOPE_ASSERTED"
+    },
+    {
+      "id": "MC082",
+      "group": "explicit_correction",
+      "stored_text": "My current project is written in Python.",
+      "candidate_text": "Correction: My current project is written in Rust, not Python.",
+      "expected_nli": "contradiction",
+      "review_applicable": true,
+      "eligibility_reason": "SAME_SUBJECT_SCOPE_ASSERTED"
+    },
+    {
+      "id": "MC083",
+      "group": "explicit_correction",
+      "stored_text": "I own exactly three bicycles.",
+      "candidate_text": "Correction: I own exactly two bicycles.",
+      "expected_nli": "contradiction",
+      "review_applicable": true,
+      "eligibility_reason": "SAME_SUBJECT_SCOPE_ASSERTED"
+    },
+    {
+      "id": "MC084",
+      "group": "explicit_correction",
+      "stored_text": "I take the train to work every day.",
+      "candidate_text": "Actually, I never take the train to work.",
+      "expected_nli": "contradiction",
+      "review_applicable": true,
+      "eligibility_reason": "SAME_SUBJECT_SCOPE_ASSERTED"
+    },
+    {
+      "id": "MC085",
+      "group": "explicit_correction",
+      "stored_text": "I have no garden.",
+      "candidate_text": "I need to correct that: I do have a garden.",
+      "expected_nli": "contradiction",
+      "review_applicable": true,
+      "eligibility_reason": "SAME_SUBJECT_SCOPE_ASSERTED"
+    },
+    {
+      "id": "MC086",
+      "group": "explicit_correction",
+      "stored_text": "I always work on Fridays.",
+      "candidate_text": "Correction: I never work on Fridays.",
+      "expected_nli": "contradiction",
+      "review_applicable": true,
+      "eligibility_reason": "SAME_SUBJECT_SCOPE_ASSERTED"
+    },
+    {
+      "id": "MC087",
+      "group": "multilingual_mixed",
+      "stored_text": "Ich wohne derzeit in Berlin.",
+      "candidate_text": "Ich wohne derzeit nicht in Berlin.",
+      "expected_nli": "contradiction",
+      "review_applicable": true,
+      "eligibility_reason": "SAME_SUBJECT_SCOPE_ASSERTED"
+    },
+    {
+      "id": "MC088",
+      "group": "multilingual_mixed",
+      "stored_text": "Ich trinke jeden Morgen Kaffee.",
+      "candidate_text": "Ich trinke nie Kaffee.",
+      "expected_nli": "contradiction",
+      "review_applicable": true,
+      "eligibility_reason": "SAME_SUBJECT_SCOPE_ASSERTED"
+    },
+    {
+      "id": "MC089",
+      "group": "multilingual_mixed",
+      "stored_text": "Ich habe ein Fahrrad.",
+      "candidate_text": "I do not own a bicycle.",
+      "expected_nli": "contradiction",
+      "review_applicable": true,
+      "eligibility_reason": "SAME_SUBJECT_SCOPE_ASSERTED"
+    },
+    {
+      "id": "MC090",
+      "group": "multilingual_mixed",
+      "stored_text": "I live in Leipzig.",
+      "candidate_text": "Ich wohne in Leipzig.",
+      "expected_nli": "entailment",
+      "review_applicable": true,
+      "eligibility_reason": "SAME_SUBJECT_SCOPE_ASSERTED"
+    },
+    {
+      "id": "MC091",
+      "group": "multilingual_mixed",
+      "stored_text": "Ich gehe gerne wandern.",
+      "candidate_text": "Ich mag Wandern.",
+      "expected_nli": "entailment",
+      "review_applicable": true,
+      "eligibility_reason": "SAME_SUBJECT_SCOPE_ASSERTED"
+    },
+    {
+      "id": "MC092",
+      "group": "multilingual_mixed",
+      "stored_text": "Früher habe ich in Köln gewohnt.",
+      "candidate_text": "Jetzt wohne ich in München.",
+      "expected_nli": "neutral",
+      "review_applicable": false,
+      "eligibility_reason": "DIFFERENT_TIME"
+    },
+    {
+      "id": "MC093",
+      "group": "multilingual_mixed",
+      "stored_text": "Ich möchte morgen laufen gehen.",
+      "candidate_text": "Ich bin gestern gelaufen.",
+      "expected_nli": "neutral",
+      "review_applicable": false,
+      "eligibility_reason": "DIFFERENT_TIME"
+    },
+    {
+      "id": "MC094",
+      "group": "multilingual_mixed",
+      "stored_text": "Mein Bruder wohnt in Bonn.",
+      "candidate_text": "I live in Bonn.",
+      "expected_nli": "neutral",
+      "review_applicable": false,
+      "eligibility_reason": "DIFFERENT_SUBJECT_OR_CONTEXT"
+    }
+  ]
+}
