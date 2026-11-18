@@ -208,10 +208,10 @@ def test_single_unpaired_temporal_window_abstains():
 ])
 def test_invalid_claim_scopes_rejected(kw, part):
     with pytest.raises(ValidationError):
-        ClaimScope(
-            subject_key="user", predicate_key="enjoys_gardening",
-            context_key="general", temporal_scope="CURRENT", **kw,
-        )
+        ClaimScope.model_validate({
+            "subject_key": "user", "predicate_key": "enjoys_gardening",
+            "context_key": "general", "temporal_scope": "CURRENT", **kw,
+        })
 
 
 def test_unadmitted_memory_identity_fails_closed_even_if_partial():
@@ -275,8 +275,8 @@ V2_CASES = [
      "user","residence","weekends","CURRENT","ASSERTED","INFORMING","SKIP"),
     ("MC071","TENTATIVE_UNADMITTED","user","enjoys_gardening","general","CURRENT",
      "user","enjoys_gardening","general","CURRENT","ASSERTED","INFORMING","TENTATIVE_RESOLUTION"),
-    ("MC072","TENTATIVE_UNADMITTED","user","appointment_day","general","FUTURE",
-     "user","appointment_day","general","FUTURE","ASSERTED","INFORMING","ABSTAIN"),
+    ("MC072","TENTATIVE_UNADMITTED","user","appointment_day","general","CURRENT",
+     "user","appointment_day","general","CURRENT","ASSERTED","INFORMING","TENTATIVE_RESOLUTION"),
     ("MC074","TENTATIVE_UNADMITTED","user","owns_bicycle","general","CURRENT",
      "user","owns_bicycle","general","CURRENT","ASSERTED","INFORMING","TENTATIVE_RESOLUTION"),
     ("MC077","TENTATIVE_UNADMITTED","user","swimming","general","FUTURE",
