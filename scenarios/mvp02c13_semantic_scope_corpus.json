@@ -1,0 +1,1300 @@
+{
+  "version": "mvp02c13.semantic_scope_corpus.v1",
+  "annotation_status": "DRAFT_AUTHOR_LABELED_NOT_INDEPENDENT",
+  "provenance": "New synthetic sentences and provisional labels authored with knowledge of the current deterministic Stage A/Memory grammar. NOT independently annotated, NOT held out for model selection, NOT a measure of deployment performance.",
+  "purpose": "Offline evaluation of source-grounded semantic dimensions and *narrow current/general self preference* scope extraction; does not model admitted Memory eligibility.",
+  "rubric": "narrow_current_scope=true iff source explicitly and unconditionally reports user's currently held enjoyment/dislike in general context for one known activity (gardening/reading/walking); no foreign subject, time/context qualifier, intention, quote, ambiguity or multi-claim. Exact full source turn must support the label. All draft labels need blinded independent review.",
+  "fields": [
+    "statement_type",
+    "temporal_scope",
+    "modality",
+    "pragmatic_function",
+    "subject_key",
+    "predicate_key",
+    "context_key",
+    "normalized_value",
+    "narrow_current_scope"
+  ],
+  "examples": [
+    {
+      "id": "SC001",
+      "group": "baseline_rules",
+      "text": "I enjoy gardening.",
+      "draft": {
+        "statement_type": "PREFERENCE",
+        "temporal_scope": "CURRENT",
+        "modality": "ASSERTED",
+        "pragmatic_function": "INFORMING",
+        "subject_key": "user",
+        "predicate_key": "enjoys_gardening",
+        "context_key": "general",
+        "normalized_value": "yes",
+        "narrow_current_scope": true
+      }
+    },
+    {
+      "id": "SC002",
+      "group": "baseline_rules",
+      "text": "I like gardening.",
+      "draft": {
+        "statement_type": "PREFERENCE",
+        "temporal_scope": "CURRENT",
+        "modality": "ASSERTED",
+        "pragmatic_function": "INFORMING",
+        "subject_key": "user",
+        "predicate_key": "enjoys_gardening",
+        "context_key": "general",
+        "normalized_value": "yes",
+        "narrow_current_scope": true
+      }
+    },
+    {
+      "id": "SC003",
+      "group": "baseline_rules",
+      "text": "I love gardening.",
+      "draft": {
+        "statement_type": "PREFERENCE",
+        "temporal_scope": "CURRENT",
+        "modality": "ASSERTED",
+        "pragmatic_function": "INFORMING",
+        "subject_key": "user",
+        "predicate_key": "enjoys_gardening",
+        "context_key": "general",
+        "normalized_value": "yes",
+        "narrow_current_scope": true
+      }
+    },
+    {
+      "id": "SC004",
+      "group": "baseline_rules",
+      "text": "I really enjoy gardening.",
+      "draft": {
+        "statement_type": "PREFERENCE",
+        "temporal_scope": "CURRENT",
+        "modality": "ASSERTED",
+        "pragmatic_function": "INFORMING",
+        "subject_key": "user",
+        "predicate_key": "enjoys_gardening",
+        "context_key": "general",
+        "normalized_value": "yes",
+        "narrow_current_scope": true
+      }
+    },
+    {
+      "id": "SC005",
+      "group": "baseline_rules",
+      "text": "I enjoy reading.",
+      "draft": {
+        "statement_type": "PREFERENCE",
+        "temporal_scope": "CURRENT",
+        "modality": "ASSERTED",
+        "pragmatic_function": "INFORMING",
+        "subject_key": "user",
+        "predicate_key": "enjoys_reading",
+        "context_key": "general",
+        "normalized_value": "yes",
+        "narrow_current_scope": true
+      }
+    },
+    {
+      "id": "SC006",
+      "group": "baseline_rules",
+      "text": "I like reading.",
+      "draft": {
+        "statement_type": "PREFERENCE",
+        "temporal_scope": "CURRENT",
+        "modality": "ASSERTED",
+        "pragmatic_function": "INFORMING",
+        "subject_key": "user",
+        "predicate_key": "enjoys_reading",
+        "context_key": "general",
+        "normalized_value": "yes",
+        "narrow_current_scope": true
+      }
+    },
+    {
+      "id": "SC007",
+      "group": "baseline_rules",
+      "text": "I enjoy walking.",
+      "draft": {
+        "statement_type": "PREFERENCE",
+        "temporal_scope": "CURRENT",
+        "modality": "ASSERTED",
+        "pragmatic_function": "INFORMING",
+        "subject_key": "user",
+        "predicate_key": "enjoys_walking",
+        "context_key": "general",
+        "normalized_value": "yes",
+        "narrow_current_scope": true
+      }
+    },
+    {
+      "id": "SC008",
+      "group": "baseline_rules",
+      "text": "I really love walking.",
+      "draft": {
+        "statement_type": "PREFERENCE",
+        "temporal_scope": "CURRENT",
+        "modality": "ASSERTED",
+        "pragmatic_function": "INFORMING",
+        "subject_key": "user",
+        "predicate_key": "enjoys_walking",
+        "context_key": "general",
+        "normalized_value": "yes",
+        "narrow_current_scope": true
+      }
+    },
+    {
+      "id": "SC009",
+      "group": "baseline_rules",
+      "text": "I don't enjoy gardening anymore.",
+      "draft": {
+        "statement_type": "PREFERENCE",
+        "temporal_scope": "CURRENT",
+        "modality": "ASSERTED",
+        "pragmatic_function": "CORRECTING",
+        "subject_key": "user",
+        "predicate_key": "enjoys_gardening",
+        "context_key": "general",
+        "normalized_value": "no",
+        "narrow_current_scope": true
+      }
+    },
+    {
+      "id": "SC010",
+      "group": "baseline_rules",
+      "text": "I don't enjoy reading anymore.",
+      "draft": {
+        "statement_type": "PREFERENCE",
+        "temporal_scope": "CURRENT",
+        "modality": "ASSERTED",
+        "pragmatic_function": "CORRECTING",
+        "subject_key": "user",
+        "predicate_key": "enjoys_reading",
+        "context_key": "general",
+        "normalized_value": "no",
+        "narrow_current_scope": true
+      }
+    },
+    {
+      "id": "SC011",
+      "group": "baseline_rules",
+      "text": "I used to enjoy gardening.",
+      "draft": {
+        "statement_type": "PREFERENCE",
+        "temporal_scope": "PAST_HABITUAL",
+        "modality": "ASSERTED",
+        "pragmatic_function": "INFORMING",
+        "subject_key": "user",
+        "predicate_key": "enjoys_gardening",
+        "context_key": "general",
+        "normalized_value": "yes",
+        "narrow_current_scope": false
+      }
+    },
+    {
+      "id": "SC012",
+      "group": "baseline_rules",
+      "text": "I enjoyed gardening yesterday.",
+      "draft": {
+        "statement_type": "EXPERIENCE",
+        "temporal_scope": "PAST_EVENT",
+        "modality": "ASSERTED",
+        "pragmatic_function": "INFORMING",
+        "subject_key": "user",
+        "predicate_key": "enjoys_gardening",
+        "context_key": "general",
+        "normalized_value": "yes",
+        "narrow_current_scope": false
+      }
+    },
+    {
+      "id": "SC013",
+      "group": "baseline_rules",
+      "text": "Maybe I should go walking tomorrow.",
+      "draft": {
+        "statement_type": "INTENTION",
+        "temporal_scope": "FUTURE",
+        "modality": "TENTATIVE",
+        "pragmatic_function": "INFORMING",
+        "subject_key": "user",
+        "predicate_key": "plans_walking",
+        "context_key": "general",
+        "normalized_value": null,
+        "narrow_current_scope": false
+      }
+    },
+    {
+      "id": "SC014",
+      "group": "baseline_rules",
+      "text": "I've gotten into gardening lately.",
+      "draft": {
+        "statement_type": "PREFERENCE",
+        "temporal_scope": "CURRENT",
+        "modality": "ASSERTED",
+        "pragmatic_function": "INFORMING",
+        "subject_key": "user",
+        "predicate_key": "enjoys_gardening",
+        "context_key": "general",
+        "normalized_value": "yes",
+        "narrow_current_scope": true
+      }
+    },
+    {
+      "id": "SC015",
+      "group": "paraphrase_gap",
+      "text": "I absolutely love gardening.",
+      "draft": {
+        "statement_type": "PREFERENCE",
+        "temporal_scope": "CURRENT",
+        "modality": "ASSERTED",
+        "pragmatic_function": "INFORMING",
+        "subject_key": "user",
+        "predicate_key": "enjoys_gardening",
+        "context_key": "general",
+        "normalized_value": "yes",
+        "narrow_current_scope": true
+      }
+    },
+    {
+      "id": "SC016",
+      "group": "paraphrase_gap",
+      "text": "Gardening is something I really enjoy.",
+      "draft": {
+        "statement_type": "PREFERENCE",
+        "temporal_scope": "CURRENT",
+        "modality": "ASSERTED",
+        "pragmatic_function": "INFORMING",
+        "subject_key": "user",
+        "predicate_key": "enjoys_gardening",
+        "context_key": "general",
+        "normalized_value": "yes",
+        "narrow_current_scope": true
+      }
+    },
+    {
+      "id": "SC017",
+      "group": "paraphrase_gap",
+      "text": "I am fond of reading.",
+      "draft": {
+        "statement_type": "PREFERENCE",
+        "temporal_scope": "CURRENT",
+        "modality": "ASSERTED",
+        "pragmatic_function": "INFORMING",
+        "subject_key": "user",
+        "predicate_key": "enjoys_reading",
+        "context_key": "general",
+        "normalized_value": "yes",
+        "narrow_current_scope": true
+      }
+    },
+    {
+      "id": "SC018",
+      "group": "paraphrase_gap",
+      "text": "Walking is one of my favorite things.",
+      "draft": {
+        "statement_type": "PREFERENCE",
+        "temporal_scope": "CURRENT",
+        "modality": "ASSERTED",
+        "pragmatic_function": "INFORMING",
+        "subject_key": "user",
+        "predicate_key": "enjoys_walking",
+        "context_key": "general",
+        "normalized_value": "yes",
+        "narrow_current_scope": true
+      }
+    },
+    {
+      "id": "SC019",
+      "group": "paraphrase_gap",
+      "text": "I do not enjoy gardening.",
+      "draft": {
+        "statement_type": "PREFERENCE",
+        "temporal_scope": "CURRENT",
+        "modality": "ASSERTED",
+        "pragmatic_function": "CORRECTING",
+        "subject_key": "user",
+        "predicate_key": "enjoys_gardening",
+        "context_key": "general",
+        "normalized_value": "no",
+        "narrow_current_scope": true
+      }
+    },
+    {
+      "id": "SC020",
+      "group": "paraphrase_gap",
+      "text": "I no longer enjoy reading.",
+      "draft": {
+        "statement_type": "PREFERENCE",
+        "temporal_scope": "CURRENT",
+        "modality": "ASSERTED",
+        "pragmatic_function": "CORRECTING",
+        "subject_key": "user",
+        "predicate_key": "enjoys_reading",
+        "context_key": "general",
+        "normalized_value": "no",
+        "narrow_current_scope": true
+      }
+    },
+    {
+      "id": "SC021",
+      "group": "paraphrase_gap",
+      "text": "I don't like reading.",
+      "draft": {
+        "statement_type": "PREFERENCE",
+        "temporal_scope": "CURRENT",
+        "modality": "ASSERTED",
+        "pragmatic_function": "INFORMING",
+        "subject_key": "user",
+        "predicate_key": "enjoys_reading",
+        "context_key": "general",
+        "normalized_value": "no",
+        "narrow_current_scope": true
+      }
+    },
+    {
+      "id": "SC022",
+      "group": "paraphrase_gap",
+      "text": "I do not enjoy walking.",
+      "draft": {
+        "statement_type": "PREFERENCE",
+        "temporal_scope": "CURRENT",
+        "modality": "ASSERTED",
+        "pragmatic_function": "INFORMING",
+        "subject_key": "user",
+        "predicate_key": "enjoys_walking",
+        "context_key": "general",
+        "normalized_value": "no",
+        "narrow_current_scope": true
+      }
+    },
+    {
+      "id": "SC023",
+      "group": "paraphrase_gap",
+      "text": "Gardening brings me joy.",
+      "draft": {
+        "statement_type": "PREFERENCE",
+        "temporal_scope": "CURRENT",
+        "modality": "ASSERTED",
+        "pragmatic_function": "INFORMING",
+        "subject_key": "user",
+        "predicate_key": "enjoys_gardening",
+        "context_key": "general",
+        "normalized_value": "yes",
+        "narrow_current_scope": true
+      }
+    },
+    {
+      "id": "SC024",
+      "group": "paraphrase_gap",
+      "text": "I dislike gardening.",
+      "draft": {
+        "statement_type": "PREFERENCE",
+        "temporal_scope": "CURRENT",
+        "modality": "ASSERTED",
+        "pragmatic_function": "INFORMING",
+        "subject_key": "user",
+        "predicate_key": "enjoys_gardening",
+        "context_key": "general",
+        "normalized_value": "no",
+        "narrow_current_scope": true
+      }
+    },
+    {
+      "id": "SC025",
+      "group": "temporal_context",
+      "text": "I enjoy gardening only during summer.",
+      "draft": {
+        "statement_type": "PREFERENCE",
+        "temporal_scope": "HABITUAL",
+        "modality": "ASSERTED",
+        "pragmatic_function": "INFORMING",
+        "subject_key": "user",
+        "predicate_key": "enjoys_gardening",
+        "context_key": "summer",
+        "normalized_value": "yes",
+        "narrow_current_scope": false
+      }
+    },
+    {
+      "id": "SC026",
+      "group": "temporal_context",
+      "text": "I enjoy gardening on weekends.",
+      "draft": {
+        "statement_type": "PREFERENCE",
+        "temporal_scope": "HABITUAL",
+        "modality": "ASSERTED",
+        "pragmatic_function": "INFORMING",
+        "subject_key": "user",
+        "predicate_key": "enjoys_gardening",
+        "context_key": "weekend",
+        "normalized_value": "yes",
+        "narrow_current_scope": false
+      }
+    },
+    {
+      "id": "SC027",
+      "group": "temporal_context",
+      "text": "I enjoy gardening at the office.",
+      "draft": {
+        "statement_type": "PREFERENCE",
+        "temporal_scope": "CURRENT",
+        "modality": "ASSERTED",
+        "pragmatic_function": "INFORMING",
+        "subject_key": "user",
+        "predicate_key": "enjoys_gardening",
+        "context_key": "office",
+        "normalized_value": "yes",
+        "narrow_current_scope": false
+      }
+    },
+    {
+      "id": "SC028",
+      "group": "temporal_context",
+      "text": "I enjoy gardening at home.",
+      "draft": {
+        "statement_type": "PREFERENCE",
+        "temporal_scope": "CURRENT",
+        "modality": "ASSERTED",
+        "pragmatic_function": "INFORMING",
+        "subject_key": "user",
+        "predicate_key": "enjoys_gardening",
+        "context_key": "home",
+        "normalized_value": "yes",
+        "narrow_current_scope": false
+      }
+    },
+    {
+      "id": "SC029",
+      "group": "temporal_context",
+      "text": "I enjoyed gardening in 2023.",
+      "draft": {
+        "statement_type": "EXPERIENCE",
+        "temporal_scope": "PAST_EVENT",
+        "modality": "ASSERTED",
+        "pragmatic_function": "INFORMING",
+        "subject_key": "user",
+        "predicate_key": "enjoys_gardening",
+        "context_key": "general",
+        "normalized_value": "yes",
+        "narrow_current_scope": false
+      }
+    },
+    {
+      "id": "SC030",
+      "group": "temporal_context",
+      "text": "I enjoyed gardening last winter.",
+      "draft": {
+        "statement_type": "EXPERIENCE",
+        "temporal_scope": "PAST_EVENT",
+        "modality": "ASSERTED",
+        "pragmatic_function": "INFORMING",
+        "subject_key": "user",
+        "predicate_key": "enjoys_gardening",
+        "context_key": "winter",
+        "normalized_value": "yes",
+        "narrow_current_scope": false
+      }
+    },
+    {
+      "id": "SC031",
+      "group": "temporal_context",
+      "text": "I used to enjoy reading.",
+      "draft": {
+        "statement_type": "PREFERENCE",
+        "temporal_scope": "PAST_HABITUAL",
+        "modality": "ASSERTED",
+        "pragmatic_function": "INFORMING",
+        "subject_key": "user",
+        "predicate_key": "enjoys_reading",
+        "context_key": "general",
+        "normalized_value": "yes",
+        "narrow_current_scope": false
+      }
+    },
+    {
+      "id": "SC032",
+      "group": "temporal_context",
+      "text": "I will enjoy gardening when I retire.",
+      "draft": {
+        "statement_type": "PREFERENCE",
+        "temporal_scope": "FUTURE",
+        "modality": "CONDITIONAL",
+        "pragmatic_function": "INFORMING",
+        "subject_key": "user",
+        "predicate_key": "enjoys_gardening",
+        "context_key": "general",
+        "normalized_value": "yes",
+        "narrow_current_scope": false
+      }
+    },
+    {
+      "id": "SC033",
+      "group": "temporal_context",
+      "text": "I enjoy reading after work.",
+      "draft": {
+        "statement_type": "PREFERENCE",
+        "temporal_scope": "HABITUAL",
+        "modality": "ASSERTED",
+        "pragmatic_function": "INFORMING",
+        "subject_key": "user",
+        "predicate_key": "enjoys_reading",
+        "context_key": "after_work",
+        "normalized_value": "yes",
+        "narrow_current_scope": false
+      }
+    },
+    {
+      "id": "SC034",
+      "group": "temporal_context",
+      "text": "I sometimes enjoy gardening.",
+      "draft": {
+        "statement_type": "PREFERENCE",
+        "temporal_scope": "HABITUAL",
+        "modality": "ASSERTED",
+        "pragmatic_function": "INFORMING",
+        "subject_key": "user",
+        "predicate_key": "enjoys_gardening",
+        "context_key": "sometimes",
+        "normalized_value": "yes",
+        "narrow_current_scope": false
+      }
+    },
+    {
+      "id": "SC035",
+      "group": "temporal_context",
+      "text": "I enjoy gardening only if it is sunny.",
+      "draft": {
+        "statement_type": "PREFERENCE",
+        "temporal_scope": "HABITUAL",
+        "modality": "CONDITIONAL",
+        "pragmatic_function": "INFORMING",
+        "subject_key": "user",
+        "predicate_key": "enjoys_gardening",
+        "context_key": "sunny",
+        "normalized_value": "yes",
+        "narrow_current_scope": false
+      }
+    },
+    {
+      "id": "SC036",
+      "group": "tentative_uncertain",
+      "text": "I might enjoy gardening.",
+      "draft": {
+        "statement_type": "PREFERENCE",
+        "temporal_scope": "CURRENT",
+        "modality": "TENTATIVE",
+        "pragmatic_function": "INFORMING",
+        "subject_key": "user",
+        "predicate_key": "enjoys_gardening",
+        "context_key": "general",
+        "normalized_value": "yes",
+        "narrow_current_scope": false
+      }
+    },
+    {
+      "id": "SC037",
+      "group": "tentative_uncertain",
+      "text": "Perhaps I enjoy gardening.",
+      "draft": {
+        "statement_type": "PREFERENCE",
+        "temporal_scope": "CURRENT",
+        "modality": "TENTATIVE",
+        "pragmatic_function": "INFORMING",
+        "subject_key": "user",
+        "predicate_key": "enjoys_gardening",
+        "context_key": "general",
+        "normalized_value": "yes",
+        "narrow_current_scope": false
+      }
+    },
+    {
+      "id": "SC038",
+      "group": "tentative_uncertain",
+      "text": "I think I like reading.",
+      "draft": {
+        "statement_type": "PREFERENCE",
+        "temporal_scope": "CURRENT",
+        "modality": "TENTATIVE",
+        "pragmatic_function": "INFORMING",
+        "subject_key": "user",
+        "predicate_key": "enjoys_reading",
+        "context_key": "general",
+        "normalized_value": "yes",
+        "narrow_current_scope": false
+      }
+    },
+    {
+      "id": "SC039",
+      "group": "tentative_uncertain",
+      "text": "I'm not sure I enjoy reading.",
+      "draft": {
+        "statement_type": "PREFERENCE",
+        "temporal_scope": "CURRENT",
+        "modality": "TENTATIVE",
+        "pragmatic_function": "INFORMING",
+        "subject_key": "user",
+        "predicate_key": "enjoys_reading",
+        "context_key": "general",
+        "normalized_value": "yes",
+        "narrow_current_scope": false
+      }
+    },
+    {
+      "id": "SC040",
+      "group": "tentative_uncertain",
+      "text": "Maybe I don't enjoy gardening anymore.",
+      "draft": {
+        "statement_type": "PREFERENCE",
+        "temporal_scope": "CURRENT",
+        "modality": "TENTATIVE",
+        "pragmatic_function": "INFORMING",
+        "subject_key": "user",
+        "predicate_key": "enjoys_gardening",
+        "context_key": "general",
+        "normalized_value": "no",
+        "narrow_current_scope": false
+      }
+    },
+    {
+      "id": "SC041",
+      "group": "tentative_uncertain",
+      "text": "I may still enjoy walking.",
+      "draft": {
+        "statement_type": "PREFERENCE",
+        "temporal_scope": "CURRENT",
+        "modality": "TENTATIVE",
+        "pragmatic_function": "INFORMING",
+        "subject_key": "user",
+        "predicate_key": "enjoys_walking",
+        "context_key": "general",
+        "normalized_value": "yes",
+        "narrow_current_scope": false
+      }
+    },
+    {
+      "id": "SC042",
+      "group": "tentative_uncertain",
+      "text": "I probably enjoy gardening.",
+      "draft": {
+        "statement_type": "PREFERENCE",
+        "temporal_scope": "CURRENT",
+        "modality": "TENTATIVE",
+        "pragmatic_function": "INFORMING",
+        "subject_key": "user",
+        "predicate_key": "enjoys_gardening",
+        "context_key": "general",
+        "normalized_value": "yes",
+        "narrow_current_scope": false
+      }
+    },
+    {
+      "id": "SC043",
+      "group": "tentative_uncertain",
+      "text": "I am considering gardening as a hobby.",
+      "draft": {
+        "statement_type": "INTENTION",
+        "temporal_scope": "CURRENT",
+        "modality": "TENTATIVE",
+        "pragmatic_function": "INFORMING",
+        "subject_key": "user",
+        "predicate_key": "plans_gardening",
+        "context_key": "general",
+        "normalized_value": null,
+        "narrow_current_scope": false
+      }
+    },
+    {
+      "id": "SC044",
+      "group": "intent_conditional",
+      "text": "If I had time, I would enjoy gardening.",
+      "draft": {
+        "statement_type": "PREFERENCE",
+        "temporal_scope": "CURRENT",
+        "modality": "HYPOTHETICAL",
+        "pragmatic_function": "INFORMING",
+        "subject_key": "user",
+        "predicate_key": "enjoys_gardening",
+        "context_key": "general",
+        "normalized_value": "yes",
+        "narrow_current_scope": false
+      }
+    },
+    {
+      "id": "SC045",
+      "group": "intent_conditional",
+      "text": "If it stops raining, I will enjoy gardening.",
+      "draft": {
+        "statement_type": "PREFERENCE",
+        "temporal_scope": "FUTURE",
+        "modality": "CONDITIONAL",
+        "pragmatic_function": "INFORMING",
+        "subject_key": "user",
+        "predicate_key": "enjoys_gardening",
+        "context_key": "general",
+        "normalized_value": "yes",
+        "narrow_current_scope": false
+      }
+    },
+    {
+      "id": "SC046",
+      "group": "intent_conditional",
+      "text": "Suppose I enjoyed gardening.",
+      "draft": {
+        "statement_type": "PREFERENCE",
+        "temporal_scope": "CURRENT",
+        "modality": "HYPOTHETICAL",
+        "pragmatic_function": "INFORMING",
+        "subject_key": "user",
+        "predicate_key": "enjoys_gardening",
+        "context_key": "general",
+        "normalized_value": "yes",
+        "narrow_current_scope": false
+      }
+    },
+    {
+      "id": "SC047",
+      "group": "intent_conditional",
+      "text": "I would enjoy reading if I had more time.",
+      "draft": {
+        "statement_type": "PREFERENCE",
+        "temporal_scope": "CURRENT",
+        "modality": "CONDITIONAL",
+        "pragmatic_function": "INFORMING",
+        "subject_key": "user",
+        "predicate_key": "enjoys_reading",
+        "context_key": "general",
+        "normalized_value": "yes",
+        "narrow_current_scope": false
+      }
+    },
+    {
+      "id": "SC048",
+      "group": "intent_conditional",
+      "text": "I plan to start gardening next month.",
+      "draft": {
+        "statement_type": "INTENTION",
+        "temporal_scope": "FUTURE",
+        "modality": "ASSERTED",
+        "pragmatic_function": "INFORMING",
+        "subject_key": "user",
+        "predicate_key": "plans_gardening",
+        "context_key": "general",
+        "normalized_value": null,
+        "narrow_current_scope": false
+      }
+    },
+    {
+      "id": "SC049",
+      "group": "intent_conditional",
+      "text": "I want to begin walking tomorrow.",
+      "draft": {
+        "statement_type": "INTENTION",
+        "temporal_scope": "FUTURE",
+        "modality": "ASSERTED",
+        "pragmatic_function": "INFORMING",
+        "subject_key": "user",
+        "predicate_key": "plans_walking",
+        "context_key": "general",
+        "normalized_value": null,
+        "narrow_current_scope": false
+      }
+    },
+    {
+      "id": "SC050",
+      "group": "intent_conditional",
+      "text": "If I liked gardening, I would spend more time outside.",
+      "draft": {
+        "statement_type": "PREFERENCE",
+        "temporal_scope": "CURRENT",
+        "modality": "HYPOTHETICAL",
+        "pragmatic_function": "INFORMING",
+        "subject_key": "user",
+        "predicate_key": "enjoys_gardening",
+        "context_key": "general",
+        "normalized_value": "yes",
+        "narrow_current_scope": false
+      }
+    },
+    {
+      "id": "SC051",
+      "group": "intent_conditional",
+      "text": "I hope to enjoy reading again.",
+      "draft": {
+        "statement_type": "INTENTION",
+        "temporal_scope": "FUTURE",
+        "modality": "ASSERTED",
+        "pragmatic_function": "INFORMING",
+        "subject_key": "user",
+        "predicate_key": "plans_reading",
+        "context_key": "general",
+        "normalized_value": null,
+        "narrow_current_scope": false
+      }
+    },
+    {
+      "id": "SC052",
+      "group": "attribution_entity",
+      "text": "My brother enjoys gardening.",
+      "draft": {
+        "statement_type": "PREFERENCE",
+        "temporal_scope": "CURRENT",
+        "modality": "ASSERTED",
+        "pragmatic_function": "INFORMING",
+        "subject_key": "brother",
+        "predicate_key": "enjoys_gardening",
+        "context_key": "general",
+        "normalized_value": "yes",
+        "narrow_current_scope": false
+      }
+    },
+    {
+      "id": "SC053",
+      "group": "attribution_entity",
+      "text": "My friend likes reading.",
+      "draft": {
+        "statement_type": "PREFERENCE",
+        "temporal_scope": "CURRENT",
+        "modality": "ASSERTED",
+        "pragmatic_function": "INFORMING",
+        "subject_key": "friend",
+        "predicate_key": "enjoys_reading",
+        "context_key": "general",
+        "normalized_value": "yes",
+        "narrow_current_scope": false
+      }
+    },
+    {
+      "id": "SC054",
+      "group": "attribution_entity",
+      "text": "My dog enjoys walking.",
+      "draft": {
+        "statement_type": "PREFERENCE",
+        "temporal_scope": "CURRENT",
+        "modality": "ASSERTED",
+        "pragmatic_function": "INFORMING",
+        "subject_key": "dog",
+        "predicate_key": "enjoys_walking",
+        "context_key": "general",
+        "normalized_value": "yes",
+        "narrow_current_scope": false
+      }
+    },
+    {
+      "id": "SC055",
+      "group": "attribution_entity",
+      "text": "My cat's name is Luna.",
+      "draft": {
+        "statement_type": "FACT",
+        "temporal_scope": "CURRENT",
+        "modality": "ASSERTED",
+        "pragmatic_function": "INFORMING",
+        "subject_key": "cat",
+        "predicate_key": "pet_name",
+        "context_key": "pet_cat",
+        "normalized_value": null,
+        "narrow_current_scope": false
+      }
+    },
+    {
+      "id": "SC056",
+      "group": "attribution_entity",
+      "text": "My dog's name is Milo.",
+      "draft": {
+        "statement_type": "FACT",
+        "temporal_scope": "CURRENT",
+        "modality": "ASSERTED",
+        "pragmatic_function": "INFORMING",
+        "subject_key": "dog",
+        "predicate_key": "pet_name",
+        "context_key": "pet_dog",
+        "normalized_value": null,
+        "narrow_current_scope": false
+      }
+    },
+    {
+      "id": "SC057",
+      "group": "attribution_entity",
+      "text": "My friend said, \"I enjoy gardening.\"",
+      "draft": {
+        "statement_type": "FACT",
+        "temporal_scope": "CURRENT",
+        "modality": "ASSERTED",
+        "pragmatic_function": "INFORMING",
+        "subject_key": "friend",
+        "predicate_key": "reported_preference",
+        "context_key": "general",
+        "normalized_value": null,
+        "narrow_current_scope": false
+      }
+    },
+    {
+      "id": "SC058",
+      "group": "attribution_entity",
+      "text": "According to my brother, I enjoy gardening.",
+      "draft": {
+        "statement_type": "PREFERENCE",
+        "temporal_scope": "CURRENT",
+        "modality": "UNKNOWN",
+        "pragmatic_function": "INFORMING",
+        "subject_key": "user",
+        "predicate_key": "enjoys_gardening",
+        "context_key": "general",
+        "normalized_value": "yes",
+        "narrow_current_scope": false
+      }
+    },
+    {
+      "id": "SC059",
+      "group": "attribution_entity",
+      "text": "She claims I enjoy gardening.",
+      "draft": {
+        "statement_type": "PREFERENCE",
+        "temporal_scope": "CURRENT",
+        "modality": "UNKNOWN",
+        "pragmatic_function": "INFORMING",
+        "subject_key": "user",
+        "predicate_key": "enjoys_gardening",
+        "context_key": "general",
+        "normalized_value": "yes",
+        "narrow_current_scope": false
+      }
+    },
+    {
+      "id": "SC060",
+      "group": "compound_multiple",
+      "text": "I enjoy gardening and reading.",
+      "draft": {
+        "statement_type": "PREFERENCE",
+        "temporal_scope": "CURRENT",
+        "modality": "ASSERTED",
+        "pragmatic_function": "INFORMING",
+        "subject_key": "user",
+        "predicate_key": null,
+        "context_key": "general",
+        "normalized_value": null,
+        "narrow_current_scope": false
+      }
+    },
+    {
+      "id": "SC061",
+      "group": "compound_multiple",
+      "text": "I enjoy gardening. I dislike reading.",
+      "draft": {
+        "statement_type": "PREFERENCE",
+        "temporal_scope": "CURRENT",
+        "modality": "ASSERTED",
+        "pragmatic_function": "INFORMING",
+        "subject_key": "user",
+        "predicate_key": null,
+        "context_key": "general",
+        "normalized_value": null,
+        "narrow_current_scope": false
+      }
+    },
+    {
+      "id": "SC062",
+      "group": "compound_multiple",
+      "text": "I enjoy gardening, but only in summer.",
+      "draft": {
+        "statement_type": "PREFERENCE",
+        "temporal_scope": "HABITUAL",
+        "modality": "ASSERTED",
+        "pragmatic_function": "INFORMING",
+        "subject_key": "user",
+        "predicate_key": "enjoys_gardening",
+        "context_key": "summer",
+        "normalized_value": "yes",
+        "narrow_current_scope": false
+      }
+    },
+    {
+      "id": "SC063",
+      "group": "compound_multiple",
+      "text": "I enjoy gardening, although I stopped last month.",
+      "draft": {
+        "statement_type": "PREFERENCE",
+        "temporal_scope": "UNSPECIFIED",
+        "modality": "ASSERTED",
+        "pragmatic_function": "INFORMING",
+        "subject_key": "user",
+        "predicate_key": "enjoys_gardening",
+        "context_key": "general",
+        "normalized_value": "yes",
+        "narrow_current_scope": false
+      }
+    },
+    {
+      "id": "SC064",
+      "group": "compound_multiple",
+      "text": "Gardening is fun for my brother, and I enjoy reading.",
+      "draft": {
+        "statement_type": "PREFERENCE",
+        "temporal_scope": "CURRENT",
+        "modality": "ASSERTED",
+        "pragmatic_function": "INFORMING",
+        "subject_key": "user",
+        "predicate_key": null,
+        "context_key": "general",
+        "normalized_value": null,
+        "narrow_current_scope": false
+      }
+    },
+    {
+      "id": "SC065",
+      "group": "compound_multiple",
+      "text": "I enjoy gardening more than walking.",
+      "draft": {
+        "statement_type": "PREFERENCE",
+        "temporal_scope": "CURRENT",
+        "modality": "ASSERTED",
+        "pragmatic_function": "INFORMING",
+        "subject_key": "user",
+        "predicate_key": "prefer_gardening_over_walking",
+        "context_key": "general",
+        "normalized_value": null,
+        "narrow_current_scope": false
+      }
+    },
+    {
+      "id": "SC066",
+      "group": "explicit_correction",
+      "text": "Actually, I don't enjoy gardening anymore.",
+      "draft": {
+        "statement_type": "PREFERENCE",
+        "temporal_scope": "CURRENT",
+        "modality": "ASSERTED",
+        "pragmatic_function": "CORRECTING",
+        "subject_key": "user",
+        "predicate_key": "enjoys_gardening",
+        "context_key": "general",
+        "normalized_value": "no",
+        "narrow_current_scope": true
+      }
+    },
+    {
+      "id": "SC067",
+      "group": "explicit_correction",
+      "text": "Correction: I do not enjoy gardening.",
+      "draft": {
+        "statement_type": "PREFERENCE",
+        "temporal_scope": "CURRENT",
+        "modality": "ASSERTED",
+        "pragmatic_function": "CORRECTING",
+        "subject_key": "user",
+        "predicate_key": "enjoys_gardening",
+        "context_key": "general",
+        "normalized_value": "no",
+        "narrow_current_scope": true
+      }
+    },
+    {
+      "id": "SC068",
+      "group": "explicit_correction",
+      "text": "I was wrong: I do not enjoy gardening.",
+      "draft": {
+        "statement_type": "PREFERENCE",
+        "temporal_scope": "CURRENT",
+        "modality": "ASSERTED",
+        "pragmatic_function": "CORRECTING",
+        "subject_key": "user",
+        "predicate_key": "enjoys_gardening",
+        "context_key": "general",
+        "normalized_value": "no",
+        "narrow_current_scope": true
+      }
+    },
+    {
+      "id": "SC069",
+      "group": "explicit_correction",
+      "text": "No, I actually like gardening.",
+      "draft": {
+        "statement_type": "PREFERENCE",
+        "temporal_scope": "CURRENT",
+        "modality": "ASSERTED",
+        "pragmatic_function": "CORRECTING",
+        "subject_key": "user",
+        "predicate_key": "enjoys_gardening",
+        "context_key": "general",
+        "normalized_value": "yes",
+        "narrow_current_scope": true
+      }
+    },
+    {
+      "id": "SC070",
+      "group": "explicit_correction",
+      "text": "I changed my mind; I prefer reading.",
+      "draft": {
+        "statement_type": "PREFERENCE",
+        "temporal_scope": "CURRENT",
+        "modality": "ASSERTED",
+        "pragmatic_function": "CORRECTING",
+        "subject_key": "user",
+        "predicate_key": "enjoys_reading",
+        "context_key": "general",
+        "normalized_value": "yes",
+        "narrow_current_scope": true
+      }
+    },
+    {
+      "id": "SC071",
+      "group": "explicit_correction",
+      "text": "I don't enjoy gardening anymore.",
+      "draft": {
+        "statement_type": "PREFERENCE",
+        "temporal_scope": "CURRENT",
+        "modality": "ASSERTED",
+        "pragmatic_function": "CORRECTING",
+        "subject_key": "user",
+        "predicate_key": "enjoys_gardening",
+        "context_key": "general",
+        "normalized_value": "no",
+        "narrow_current_scope": true
+      }
+    },
+    {
+      "id": "SC072",
+      "group": "explicit_correction",
+      "text": "I used to enjoy gardening, but not anymore.",
+      "draft": {
+        "statement_type": "PREFERENCE",
+        "temporal_scope": "CURRENT",
+        "modality": "ASSERTED",
+        "pragmatic_function": "CORRECTING",
+        "subject_key": "user",
+        "predicate_key": "enjoys_gardening",
+        "context_key": "general",
+        "normalized_value": "no",
+        "narrow_current_scope": true
+      }
+    },
+    {
+      "id": "SC073",
+      "group": "other_non_slot",
+      "text": "Do I enjoy gardening?",
+      "draft": {
+        "statement_type": "UNKNOWN",
+        "temporal_scope": "CURRENT",
+        "modality": "UNKNOWN",
+        "pragmatic_function": "ASKING",
+        "subject_key": "user",
+        "predicate_key": "enjoys_gardening",
+        "context_key": "general",
+        "normalized_value": null,
+        "narrow_current_scope": false
+      }
+    },
+    {
+      "id": "SC074",
+      "group": "other_non_slot",
+      "text": "Please remember that I enjoy gardening.",
+      "draft": {
+        "statement_type": "PREFERENCE",
+        "temporal_scope": "CURRENT",
+        "modality": "ASSERTED",
+        "pragmatic_function": "REQUESTING",
+        "subject_key": "user",
+        "predicate_key": "enjoys_gardening",
+        "context_key": "general",
+        "normalized_value": "yes",
+        "narrow_current_scope": false
+      }
+    },
+    {
+      "id": "SC075",
+      "group": "other_non_slot",
+      "text": "My favorite hobby is gardening.",
+      "draft": {
+        "statement_type": "PREFERENCE",
+        "temporal_scope": "CURRENT",
+        "modality": "ASSERTED",
+        "pragmatic_function": "INFORMING",
+        "subject_key": "user",
+        "predicate_key": "favorite_hobby",
+        "context_key": "general",
+        "normalized_value": null,
+        "narrow_current_scope": false
+      }
+    },
+    {
+      "id": "SC076",
+      "group": "other_non_slot",
+      "text": "I prefer reading over walking.",
+      "draft": {
+        "statement_type": "PREFERENCE",
+        "temporal_scope": "CURRENT",
+        "modality": "ASSERTED",
+        "pragmatic_function": "INFORMING",
+        "subject_key": "user",
+        "predicate_key": "prefer_reading_over_walking",
+        "context_key": "general",
+        "normalized_value": null,
+        "narrow_current_scope": false
+      }
+    },
+    {
+      "id": "SC077",
+      "group": "other_non_slot",
+      "text": "I planted flowers yesterday.",
+      "draft": {
+        "statement_type": "EXPERIENCE",
+        "temporal_scope": "PAST_EVENT",
+        "modality": "ASSERTED",
+        "pragmatic_function": "INFORMING",
+        "subject_key": "user",
+        "predicate_key": "planted_flowers",
+        "context_key": "general",
+        "normalized_value": null,
+        "narrow_current_scope": false
+      }
+    },
+    {
+      "id": "SC078",
+      "group": "other_non_slot",
+      "text": "Hello!",
+      "draft": {
+        "statement_type": "UNKNOWN",
+        "temporal_scope": "UNSPECIFIED",
+        "modality": "UNKNOWN",
+        "pragmatic_function": "UNKNOWN",
+        "subject_key": null,
+        "predicate_key": null,
+        "context_key": null,
+        "normalized_value": null,
+        "narrow_current_scope": false
+      }
+    },
+    {
+      "id": "SC079",
+      "group": "other_non_slot",
+      "text": "What did I tell you about gardening?",
+      "draft": {
+        "statement_type": "UNKNOWN",
+        "temporal_scope": "UNSPECIFIED",
+        "modality": "UNKNOWN",
+        "pragmatic_function": "ASKING",
+        "subject_key": "user",
+        "predicate_key": "memory_recall",
+        "context_key": "general",
+        "normalized_value": null,
+        "narrow_current_scope": false
+      }
+    },
+    {
+      "id": "SC080",
+      "group": "other_non_slot",
+      "text": "I have never tried gardening.",
+      "draft": {
+        "statement_type": "EXPERIENCE",
+        "temporal_scope": "PAST_HABITUAL",
+        "modality": "ASSERTED",
+        "pragmatic_function": "INFORMING",
+        "subject_key": "user",
+        "predicate_key": "tried_gardening",
+        "context_key": "general",
+        "normalized_value": null,
+        "narrow_current_scope": false
+      }
+    }
+  ]
+}
