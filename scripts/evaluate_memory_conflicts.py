@@ -190,11 +190,18 @@ def score_cases(cases: list[dict], predictions: dict[str, dict[str, float]]) -> 
             "oracle_false_alert_ids": [r["id"] for r in subset if r["oracle_filtered_alert"] and not r["expected_review"]],
         }
     groups = sorted({case["group"] for case in cases})
-    return {
+    output = {
         "summary": summarize(rows),
         "by_group": {g: summarize([r for r in rows if r["group"] == g]) for g in groups},
         "cases": rows,
     }
+    if all("expected_resolution" in row for row in rows):
+        resolution_types = sorted({row["expected_resolution"] for row in rows})
+        output["by_expected_resolution"] = {
+            kind: summarize([row for row in rows if row["expected_resolution"] == kind])
+            for kind in resolution_types
+        }
+    return output
 
 
 def _p95(values: list[float]) -> float:
