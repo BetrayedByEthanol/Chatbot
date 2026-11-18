@@ -103,7 +103,7 @@ def test_hypothesis_set_excludes_unknown_as_competing_label():
         "CORRECTING", "NOT_CORRECTING"
     }
     assert "UNKNOWN" in module.OLD_HYPOTHESES["modality"]
-    assert module.OLD_HYPOTHESES_VERSION if False else True
+    assert module.OLD_VERSION == "mvp02c14b.hypotheses.v1"
 
 
 def test_paired_comparison_uses_same_texts_model_and_validated_corpus():
