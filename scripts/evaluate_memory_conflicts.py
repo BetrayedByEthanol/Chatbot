@@ -26,6 +26,18 @@ from persona_agent.local_onnx import (
 )
 
 VERSION = "mvp02c10.memory_conflict_diagnostic.v1"
+VERSION_V2 = "mvp02c10.memory_conflict_diagnostic.v2"
+SUITE_STATUSES = {
+    VERSION: "DRAFT_UNREVIEWED",
+    VERSION_V2: "DRAFT_POLICY_REVIEWED",
+}
+STORED_CLAIM_STATUSES = frozenset((
+    "ADMITTED_ASSERTED", "TENTATIVE_UNADMITTED", "OTHER_UNADMITTED",
+))
+EXPECTED_RESOLUTIONS = frozenset((
+    "NONE", "POTENTIAL_MEMORY_CONFLICT", "EXPLICIT_USER_CORRECTION",
+    "TENTATIVE_CLAIM_RESOLVED",
+))
 THRESHOLD = 0.90  # Predeclared, uncalibrated diagnostic mark; not memory policy.
 LABELS = frozenset(("entailment", "neutral", "contradiction"))
 REASONS = frozenset((
@@ -38,6 +50,10 @@ FIELDS = frozenset((
     "id", "group", "stored_text", "candidate_text", "expected_nli",
     "review_applicable", "eligibility_reason",
 ))
+FIELDS_V2 = (FIELDS - {"review_applicable"}) | frozenset((
+    "scope_compatible", "stored_claim_status", "memory_conflict_eligible",
+    "expected_resolution",
+))
 
 
 def load_suite(path: Path) -> tuple[list[dict], str]:
@@ -46,16 +62,18 @@ def load_suite(path: Path) -> tuple[list[dict], str]:
     if len(raw) > 100_000:
         raise ValueError("memory diagnostic suite too large")
     obj = json.loads(raw)
-    if not isinstance(obj, dict) or obj.get("version") != VERSION:
+    if not isinstance(obj, dict) or obj.get("version") not in SUITE_STATUSES:
         raise ValueError("unsupported memory diagnostic suite version")
-    if obj.get("annotation_status") != "DRAFT_UNREVIEWED":
-        raise ValueError("unexpected annotation status; review requires new dataset version")
+    version = obj["version"]
+    if obj.get("annotation_status") != SUITE_STATUSES[version]:
+        raise ValueError("unexpected annotation status; independent review is not implied")
     items = obj.get("examples")
     if not isinstance(items, list) or not 3 <= len(items) <= 200:
         raise ValueError("memory diagnostic requires 3..200 examples")
     ids = set()
     for item in items:
-        if not isinstance(item, dict) or set(item) != FIELDS:
+        expected_fields = FIELDS if version == VERSION else FIELDS_V2
+        if not isinstance(item, dict) or set(item) != expected_fields:
             raise ValueError("invalid example fields")
         key = item["id"]
         if not isinstance(key, str) or not key.isascii() or not 1 <= len(key) <= 32 or key in ids:
@@ -69,13 +87,44 @@ def load_suite(path: Path) -> tuple[list[dict], str]:
                 raise ValueError("invalid example text")
         if item["expected_nli"] not in LABELS:
             raise ValueError("unrecognized NLI gold label")
-        if type(item["review_applicable"]) is not bool:
-            raise ValueError("review_applicable must be bool")
         reason = item["eligibility_reason"]
         if reason not in REASONS:
             raise ValueError("unrecognized eligibility reason")
-        if item["review_applicable"] != (reason == "SAME_SUBJECT_SCOPE_ASSERTED"):
-            raise ValueError("eligibility annotation inconsistent with reason")
+        if version == VERSION:
+            if type(item["review_applicable"]) is not bool:
+                raise ValueError("review_applicable must be bool")
+            if item["review_applicable"] != (reason == "SAME_SUBJECT_SCOPE_ASSERTED"):
+                raise ValueError("eligibility annotation inconsistent with reason")
+        else:
+            if (type(item["scope_compatible"]) is not bool
+                or type(item["memory_conflict_eligible"]) is not bool):
+                raise ValueError("v2 eligibility flags must be bool")
+            state = item["stored_claim_status"]
+            resolution = item["expected_resolution"]
+            if state not in STORED_CLAIM_STATUSES:
+                raise ValueError("invalid v2 stored claim status")
+            if resolution not in EXPECTED_RESOLUTIONS:
+                raise ValueError("invalid v2 expected resolution")
+            eligible = item["memory_conflict_eligible"]
+            if eligible != (item["scope_compatible"] and state == "ADMITTED_ASSERTED"):
+                raise ValueError("v2 conflict eligibility requires admitted source and compatible scope")
+            if (reason == "SAME_SUBJECT_SCOPE_ASSERTED") != eligible:
+                raise ValueError("v2 eligibility annotation inconsistent with reason")
+            if resolution == "TENTATIVE_CLAIM_RESOLVED":
+                if (state != "TENTATIVE_UNADMITTED"
+                    or not item["scope_compatible"] or eligible
+                    or item["expected_nli"] != "neutral"):
+                    raise ValueError("tentative resolution is not an authoritative memory conflict")
+            elif resolution == "EXPLICIT_USER_CORRECTION":
+                if (item["group"] != "explicit_correction" or not eligible
+                    or item["expected_nli"] != "contradiction"):
+                    raise ValueError("explicit corrections require asserted eligible contradictions")
+            elif resolution == "POTENTIAL_MEMORY_CONFLICT":
+                if (not eligible or item["expected_nli"] != "contradiction"
+                    or item["group"] == "explicit_correction"):
+                    raise ValueError("memory conflict resolution needs eligible contradiction")
+            elif eligible and item["expected_nli"] == "contradiction":
+                raise ValueError("eligible contradiction must have a review resolution")
     if {item["expected_nli"] for item in items} != LABELS:
         raise ValueError("suite must cover all NLI labels")
     return items, sha256(raw).hexdigest()
@@ -112,12 +161,18 @@ def score_cases(cases: list[dict], predictions: dict[str, dict[str, float]]) -> 
             raise ValueError("NLI scores must be finite normalized probabilities")
         pred = max(sorted(LABELS), key=lambda label: scores[label])
         raw_alert = scores["contradiction"] >= THRESHOLD
-        eligible = case["review_applicable"]
+        is_v2 = "memory_conflict_eligible" in case
+        eligible = (case["memory_conflict_eligible"] if is_v2
+                    else case["review_applicable"])
         expected_review = eligible and case["expected_nli"] == "contradiction"
         rows.append({
             "id": case["id"], "group": case["group"],
             "expected_nli": case["expected_nli"], "predicted_nli": pred,
             "review_applicable": eligible, "eligibility_reason": case["eligibility_reason"],
+            **({"scope_compatible": case["scope_compatible"],
+                "stored_claim_status": case["stored_claim_status"],
+                "memory_conflict_eligible": eligible,
+                "expected_resolution": case["expected_resolution"]} if is_v2 else {}),
             "expected_review": expected_review,
             "raw_alert": raw_alert,
             "oracle_filtered_alert": raw_alert and eligible,
@@ -135,11 +190,18 @@ def score_cases(cases: list[dict], predictions: dict[str, dict[str, float]]) -> 
             "oracle_false_alert_ids": [r["id"] for r in subset if r["oracle_filtered_alert"] and not r["expected_review"]],
         }
     groups = sorted({case["group"] for case in cases})
-    return {
+    output = {
         "summary": summarize(rows),
         "by_group": {g: summarize([r for r in rows if r["group"] == g]) for g in groups},
         "cases": rows,
     }
+    if all("expected_resolution" in row for row in rows):
+        resolution_types = sorted({row["expected_resolution"] for row in rows})
+        output["by_expected_resolution"] = {
+            kind: summarize([row for row in rows if row["expected_resolution"] == kind])
+            for kind in resolution_types
+        }
+    return output
 
 
 def _p95(values: list[float]) -> float:
@@ -200,7 +262,7 @@ def compare_variants(first: dict, second: dict) -> dict:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--suite", type=Path,
-                        default=Path("scenarios/mvp02c10_memory_conflict_diagnostic.json"))
+                        default=Path("scenarios/mvp02c10_memory_conflict_diagnostic_v2.json"))
     parser.add_argument("--model-dir", type=Path, default=Path(
                         "~/models/nli/finecat-nli-v2-xl").expanduser())
     parser.add_argument("--precisions", nargs="+", choices=("fp32", "int8"),
@@ -218,6 +280,7 @@ def main(argv=None) -> int:
         parser.error("refusing to overwrite existing report")
     try:
         cases, digest = load_suite(args.suite)
+        suite_metadata = json.loads(args.suite.read_text(encoding="utf-8"))
         model_dir = args.model_dir.expanduser().resolve()
         if model_dir.name != "finecat-nli-v2-xl":
             raise ValueError("this diagnostic accepts only the reviewed FineCat checkpoint")
@@ -229,17 +292,20 @@ def main(argv=None) -> int:
                                  args.repetitions, args.warmup)
                 for precision in args.precisions]
         report = {
-            "version": "mvp02c10.memory_conflict_report.v1",
+            "version": ("mvp02c10.memory_conflict_report.v2"
+                        if suite_metadata["version"] == VERSION_V2
+                        else "mvp02c10.memory_conflict_report.v1"),
             "created_at": datetime.now(timezone.utc).isoformat(),
             "suite_path": str(args.suite), "suite_sha256": digest,
-            "annotation_status": "DRAFT_UNREVIEWED",
+            "suite_version": suite_metadata["version"],
+            "annotation_status": suite_metadata["annotation_status"],
             "model": model_dir.name,
             "model_config_sha256": sha256((model_dir / "config.json").read_bytes()).hexdigest(),
             "threshold": THRESHOLD, "threads": args.threads,
             "runs": runs,
             "variant_comparison": compare_variants(runs[0], runs[1]) if len(runs) == 2 else None,
             "caveats": [
-                "All labels are draft; independent human review is required.",
+                "All labels are provisional; policy acceptance is not independent semantic adjudication.",
                 "Synthetic data is not a real-conversation or deployment accuracy estimate.",
                 "Oracle eligibility is annotated ground truth, NOT an implemented candidate gate.",
                 "Softmax scores are uncalibrated; 0.90 is diagnostic, NOT production policy.",
