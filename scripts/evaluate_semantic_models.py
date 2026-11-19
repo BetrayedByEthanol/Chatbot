@@ -9,7 +9,6 @@ deployment accuracy. Sources are synthetic author drafts, not reviewed gold.
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
 from hashlib import sha256
 import json
 import math
@@ -100,7 +99,9 @@ class ProbeLabels(BaseModel):
             raise ValueError("prediction must be a JSON object")
         if set(value) != set(LABEL_FIELDS):
             raise ValueError("all and only dimension fields are required")
-        item = cls.model_validate(value)
+        # Parse as JSON so legitimate arrays become typed tuples while
+        # Pydantic's strict scalar validation still rejects coercions.
+        item = cls.model_validate_json(json.dumps(value))
         if item.certainty not in ("ASSERTED", "TENTATIVE", "UNKNOWN"):
             raise ValueError("invalid certainty")
         if item.polarity not in ("POSITIVE", "NEGATIVE", "UNKNOWN"):
