@@ -158,6 +158,58 @@ def test_source_offsets_identity_and_relation_bounds_fail_closed():
         SemanticDimensionsV2.model_validate_json(json.dumps(payload))
 
 
+@pytest.mark.parametrize("case_id,span_path", [
+    ("SD001", ("claims", 0, "evidence")),
+    ("SD010", ("claims", 0, "subject_evidence")),
+    ("SD007", ("claims", 0, "qualifiers", 0, "evidence")),
+    ("SD004", ("message_signals", 0, "evidence")),
+    ("SD003", ("relations", 0, "evidence")),
+])
+def test_out_of_bounds_source_spans_are_rejected_for_all_evidence_kinds(
+    case_id, span_path,
+):
+    """Even a slice-equivalent quote must not extend past the source end."""
+    source_text, reference = _case(case_id)
+    payload = reference.model_dump(mode="json")
+    span = payload
+    for part in span_path:
+        span = span[part]
+    span["text"] = source_text[span["start"]:]
+    span["end"] = len(source_text) + 999
+    # The schema alone cannot check against the original text length.
+    corrupted = SemanticDimensionsV2.model_validate_json(json.dumps(payload))
+    assert source_text[span["start"]:span["end"]] == span["text"]
+    with pytest.raises(ValueError, match="unmatched source span"):
+        validate_semantic_dimensions(
+            corrupted, source_turn_id=reference.source_turn_id,
+            source_text=source_text,
+        )
+
+
+def test_offline_evaluator_rejects_oversized_source_offsets_before_scoring(tmp_path):
+    """Reject malformed model input instead of reporting missed/extra claims."""
+    row = _examples()[0]
+    bad = deepcopy(row["reference"])
+    bad["claims"][0]["evidence"].update(
+        end=999, text=row["text"],
+    )
+    predictions = {
+        "version": "mvp02c14d.predictions.v1",
+        "items": [{"id": row["id"], "interpretation": bad}],
+    }
+    source = tmp_path / "bad-predictions.json"
+    source.write_text(json.dumps(predictions), encoding="utf-8")
+    report = tmp_path / "report.json"
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT), "--suite", str(SUITE),
+         "--predictions", str(source), "--report", str(report)],
+        capture_output=True, text=True, timeout=15,
+    )
+    assert result.returncode != 0
+    assert not report.exists()
+    assert row["text"] not in result.stderr
+
+
 def test_unknown_is_not_false_and_extra_source_fields_are_rejected():
     text, example = _case("SD001")
     assert example.claims[0].habituality is None
