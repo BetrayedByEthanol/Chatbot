@@ -172,6 +172,67 @@ def test_valid_partial_failure_can_only_support_non_error_claims(tmp_path):
         assert candidate["dimensions"]["statement_type"]["coverage"] == 0.5
 
 
+def test_rejects_cross_backend_reference_denominator_mismatch(tmp_path):
+    # Same source suite, cases and claim counts. Mutating one backend's
+    # denominator in its score and ALL run metrics used to be accepted.
+    a = _fixtures(tmp_path, "a")
+    b = _fixtures(tmp_path, "b")
+    score = json.loads(b[0].read_text(encoding="utf-8"))
+    profile = json.loads(b[1].read_text(encoding="utf-8"))
+    for dimensions in [
+        score["by_dimension"],
+        *(run["by_dimension"] for run in profile["runs"]),
+    ]:
+        dimensions["certainty"].update({
+            "eligible": 0, "unscored_reference": 1,
+            "supported": 0, "correct": 0, "incorrect": 0, "abstained": 0,
+        })
+    b[0].write_text(json.dumps(score), encoding="utf-8")
+    b[1].write_text(json.dumps(profile), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="reference denominators differ across backends"):
+        mod.analyze_pairs([a, b])
+
+
+def test_rejects_later_repetition_reference_denominator_drift(tmp_path):
+    a = _fixtures(tmp_path, "a")
+    b = _fixtures(tmp_path, "b")
+    profile = json.loads(a[1].read_text(encoding="utf-8"))
+    # Each measured run still passes its own count arithmetic, but reference
+    # eligibility cannot change between repetitions of the same suite.
+    profile["runs"][1]["by_dimension"]["certainty"].update({
+        "eligible": 0, "unscored_reference": 1,
+        "supported": 0, "correct": 0, "incorrect": 0, "abstained": 0,
+    })
+    a[1].write_text(json.dumps(profile), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="reference denominators differ across repetitions"):
+        mod.analyze_pairs([a, b])
+
+
+def test_different_model_abstentions_preserve_shared_reference_denominators(tmp_path):
+    a = _fixtures(tmp_path, "a")
+    b = _fixtures(tmp_path, "b")
+    score = json.loads(b[0].read_text(encoding="utf-8"))
+    profile = json.loads(b[1].read_text(encoding="utf-8"))
+    for dimensions in [
+        score["by_dimension"],
+        *(run["by_dimension"] for run in profile["runs"]),
+    ]:
+        dimensions["certainty"].update({
+            "supported": 0, "correct": 0, "incorrect": 0,
+            "abstained": 1,
+        })
+    b[0].write_text(json.dumps(score), encoding="utf-8")
+    b[1].write_text(json.dumps(profile), encoding="utf-8")
+
+    report = mod.analyze_pairs([a, b])
+    assert report["decision"] == "NO_MODEL_SELECTED"
+    assert report["backends"][0]["dimensions"]["certainty"]["eligible"] == 1
+    assert report["backends"][1]["dimensions"]["certainty"]["eligible"] == 1
+    assert report["backends"][1]["dimensions"]["certainty"]["coverage"] == 0.0
+
+
 def test_rejects_run_scoring_disagreement_not_masked_by_repeat_averages(tmp_path):
     a = _fixtures(tmp_path, "a")
     b = _fixtures(tmp_path, "b")
