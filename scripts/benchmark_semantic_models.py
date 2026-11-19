@@ -97,6 +97,24 @@ def _model_provenance(*, backend_name: str, backend,
             "probe_revision": "spacy.blank_en.lexical_cues.v1"}
 
 
+def _decision_thresholds(*, backend_name: str, backend) -> dict | None:
+    """Read active NLI abstention cutoffs from the instantiated backend.
+
+    CLI defaults or arguments are not authoritative if an injected backend
+    overrides them. Other probes have no NLI score/margin cutoff.
+    """
+    if backend_name != "deberta":
+        return None
+    values = {}
+    for key in ("min_score", "min_margin"):
+        value = getattr(backend, key, None)
+        if (type(value) not in (float, int) or not math.isfinite(value)
+                or not 0 <= value <= 1):
+            raise ValueError("DeBERTa backend must expose valid NLI thresholds")
+        values[key] = float(value)
+    return values
+
+
 def _host() -> dict:
     return {
         "os": platform.system(), "architecture": platform.machine(),
@@ -136,6 +154,9 @@ def run_benchmark(*, suite: Path, backend, backend_name: str,
         raise TypeError("backend must identify itself")
     provenance = _model_provenance(backend_name=backend_name, backend=backend,
                                     model_dir=model_dir, model_name=model_name)
+    decision_thresholds = _decision_thresholds(
+        backend_name=backend_name, backend=backend
+    )
     warmup_times = []
     warmup_errors = 0
     for _ in range(warmups):
@@ -175,6 +196,7 @@ def run_benchmark(*, suite: Path, backend, backend_name: str,
         "prompt_version": first["prompt_version"],
         "backend": first["backend"],
         "model": provenance,
+        "nli_decision_thresholds": decision_thresholds,
         "host": _host(),
         "sample_cases": first["sample_cases"],
         "sample_claims": first["sample_claims"],
