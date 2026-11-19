@@ -9,7 +9,7 @@ admission. None of these contracts change.
 
 ## Motivation
 
-14H [real results](docs/mvp-02c14h-semantic-model-failure-diagnostics.md)
+14H [real results](mvp-02c14h-semantic-model-failure-diagnostics.md)
 showed JSON Schema output enforcement yielded **18/18 technically valid
 Qwen2.5:0.5B** outputs, versus **0/18** in unconstrained JSON mode.
 Despite that, the schema-constrained predictions matched provisional
