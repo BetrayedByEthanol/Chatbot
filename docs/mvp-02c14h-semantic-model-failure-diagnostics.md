@@ -38,6 +38,7 @@ Failure buckets (and only these names) are emitted:
 | Stage | Reported category |
 |---|---|
 | HTTP rejection | `HTTP_4XX`, `HTTP_5XX`, `HTTP_OTHER`, `HTTP_NON_200` |
+| Interrupted HTTP protocol (e.g. chunked response `IncompleteRead`) | `HTTP_PROTOCOL_ERROR` |
 | Connection/timeout | `TRANSPORT_ERROR`, `TRANSPORT_TIMEOUT` |
 | Outer response | `ENVELOPE_OVERSIZE`, `ENVELOPE_JSON_INVALID`, `ENVELOPE_INVALID` |
 | Inner model content | `CONTENT_INVALID`, `CONTENT_EMPTY`, `OUTPUT_TRUNCATED`, `CONTENT_JSON_INVALID` |
