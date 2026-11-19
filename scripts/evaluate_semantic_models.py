@@ -17,7 +17,7 @@ from statistics import median
 from time import perf_counter
 from typing import Protocol
 from urllib.parse import urlsplit
-from urllib.request import Request, urlopen
+from urllib.request import Request, ProxyHandler, build_opener
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -231,6 +231,8 @@ class OllamaJsonProbe:
         if type(timeout_s) not in (int, float) or not math.isfinite(timeout_s) or not 1 <= timeout_s <= 300:
             raise ValueError("timeout must be 1..300 seconds")
         self.url, self.model, self.timeout_s = url.rstrip("/"), model, timeout_s
+        # Do not allow environment HTTP_PROXY to receive conversation text.
+        self._opener = build_opener(ProxyHandler({}))
         self.backend_id = "ollama.local_json." + model
 
     def predict(self, *, source: str, quote: str) -> ProbeLabels:
@@ -260,7 +262,7 @@ class OllamaJsonProbe:
             self.url + "/api/chat", data=payload,
             headers={"Content-Type": "application/json"}, method="POST",
         )
-        with urlopen(request, timeout=self.timeout_s) as response:
+        with self._opener.open(request, timeout=self.timeout_s) as response:
             if response.status != 200:
                 raise RuntimeError("non-200 Ollama response")
             raw = response.read(262144 + 1)
