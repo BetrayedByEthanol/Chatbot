@@ -108,7 +108,7 @@ def test_probe_labels_validate_all_fields_strictly_without_conversion_errors():
         {"polarity": "LIKES"},
         {"bogus": "value"},
     ):
-        with pytest.raises((ValueError, Exception)):
+        with pytest.raises(ValueError):
             m.ProbeLabels.from_mapping({**values, **update})
     with pytest.raises(ValueError):
         m.ProbeLabels.from_mapping({"statement_type": "FACT"})
