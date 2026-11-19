@@ -1,0 +1,647 @@
+{
+  "version": "mvp02c14d.semantic_drafts.v1",
+  "annotation_status": "AUTHOR_DRAFT_NOT_INDEPENDENT",
+  "provenance": "New synthetic evaluation cases with provisional author-written interpretations; original MVP-02C.13 80-case corpus remains untouched. No independent annotators, no holdout, no training gold.",
+  "notes": "Claims are source-linked, multiple temporal references and qualifiers may coexist. Labels are provisional. Correction cues do not establish a correction target. Unknown dimensions are null or empty, never coerced to negative.",
+  "examples": [
+    {
+      "id": "SD001",
+      "text": "I enjoy gardening.",
+      "reference": {
+        "source_turn_id": "00000000-0000-4000-8000-000000000001",
+        "taxonomy_version": "mvp02c14d.semantic_dimensions.v1",
+        "interpreter_id": "author.provisional",
+        "interpreter_version": "v1",
+        "route": "AUTHOR_DRAFT",
+        "claims": [
+          {
+            "evidence": {
+              "start": 0,
+              "end": 17,
+              "text": "I enjoy gardening"
+            },
+            "statement_type": "PREFERENCE",
+            "temporal_references": [
+              "PRESENT"
+            ],
+            "habituality": null,
+            "certainty": "ASSERTED",
+            "conditionality": false,
+            "hypotheticality": false,
+            "polarity": "POSITIVE"
+          }
+        ],
+        "message_signals": [],
+        "relations": []
+      }
+    },
+    {
+      "id": "SD002",
+      "text": "I used to enjoy gardening, but now I prefer reading.",
+      "reference": {
+        "source_turn_id": "00000000-0000-4000-8000-000000000002",
+        "taxonomy_version": "mvp02c14d.semantic_dimensions.v1",
+        "interpreter_id": "author.provisional",
+        "interpreter_version": "v1",
+        "route": "AUTHOR_DRAFT",
+        "claims": [
+          {
+            "evidence": {
+              "start": 0,
+              "end": 25,
+              "text": "I used to enjoy gardening"
+            },
+            "statement_type": "PREFERENCE",
+            "temporal_references": [
+              "PAST"
+            ],
+            "habituality": null,
+            "certainty": "ASSERTED",
+            "conditionality": false,
+            "hypotheticality": false,
+            "polarity": "POSITIVE"
+          },
+          {
+            "evidence": {
+              "start": 31,
+              "end": 51,
+              "text": "now I prefer reading"
+            },
+            "statement_type": "PREFERENCE",
+            "temporal_references": [
+              "PRESENT"
+            ],
+            "habituality": null,
+            "certainty": "ASSERTED",
+            "conditionality": false,
+            "hypotheticality": false,
+            "polarity": "POSITIVE"
+          }
+        ],
+        "message_signals": [],
+        "relations": [
+          {
+            "kind": "STATE_CHANGE",
+            "evidence": {
+              "start": 27,
+              "end": 34,
+              "text": "but now"
+            },
+            "to_claim_index": 1,
+            "from_claim_index": 0
+          }
+        ]
+      }
+    },
+    {
+      "id": "SD003",
+      "text": "I don't enjoy gardening anymore.",
+      "reference": {
+        "source_turn_id": "00000000-0000-4000-8000-000000000003",
+        "taxonomy_version": "mvp02c14d.semantic_dimensions.v1",
+        "interpreter_id": "author.provisional",
+        "interpreter_version": "v1",
+        "route": "AUTHOR_DRAFT",
+        "claims": [
+          {
+            "evidence": {
+              "start": 0,
+              "end": 31,
+              "text": "I don't enjoy gardening anymore"
+            },
+            "statement_type": "PREFERENCE",
+            "temporal_references": [
+              "PRESENT"
+            ],
+            "habituality": null,
+            "certainty": "ASSERTED",
+            "conditionality": false,
+            "hypotheticality": false,
+            "polarity": "NEGATIVE"
+          }
+        ],
+        "message_signals": [],
+        "relations": [
+          {
+            "kind": "STATE_CHANGE",
+            "evidence": {
+              "start": 24,
+              "end": 31,
+              "text": "anymore"
+            },
+            "to_claim_index": 0
+          }
+        ]
+      }
+    },
+    {
+      "id": "SD004",
+      "text": "Correction: I do not enjoy gardening.",
+      "reference": {
+        "source_turn_id": "00000000-0000-4000-8000-000000000004",
+        "taxonomy_version": "mvp02c14d.semantic_dimensions.v1",
+        "interpreter_id": "author.provisional",
+        "interpreter_version": "v1",
+        "route": "AUTHOR_DRAFT",
+        "claims": [
+          {
+            "evidence": {
+              "start": 12,
+              "end": 36,
+              "text": "I do not enjoy gardening"
+            },
+            "statement_type": "PREFERENCE",
+            "temporal_references": [
+              "PRESENT"
+            ],
+            "habituality": null,
+            "certainty": "ASSERTED",
+            "conditionality": false,
+            "hypotheticality": false,
+            "polarity": "NEGATIVE"
+          }
+        ],
+        "message_signals": [
+          {
+            "kind": "CORRECTION_CUE",
+            "evidence": {
+              "start": 0,
+              "end": 11,
+              "text": "Correction:"
+            }
+          }
+        ],
+        "relations": []
+      }
+    },
+    {
+      "id": "SD005",
+      "text": "I do not enjoy gardening.",
+      "reference": {
+        "source_turn_id": "00000000-0000-4000-8000-000000000005",
+        "taxonomy_version": "mvp02c14d.semantic_dimensions.v1",
+        "interpreter_id": "author.provisional",
+        "interpreter_version": "v1",
+        "route": "AUTHOR_DRAFT",
+        "claims": [
+          {
+            "evidence": {
+              "start": 0,
+              "end": 24,
+              "text": "I do not enjoy gardening"
+            },
+            "statement_type": "PREFERENCE",
+            "temporal_references": [
+              "PRESENT"
+            ],
+            "habituality": null,
+            "certainty": "ASSERTED",
+            "conditionality": false,
+            "hypotheticality": false,
+            "polarity": "NEGATIVE"
+          }
+        ],
+        "message_signals": [],
+        "relations": []
+      }
+    },
+    {
+      "id": "SD006",
+      "text": "I might enjoy gardening.",
+      "reference": {
+        "source_turn_id": "00000000-0000-4000-8000-000000000006",
+        "taxonomy_version": "mvp02c14d.semantic_dimensions.v1",
+        "interpreter_id": "author.provisional",
+        "interpreter_version": "v1",
+        "route": "AUTHOR_DRAFT",
+        "claims": [
+          {
+            "evidence": {
+              "start": 0,
+              "end": 23,
+              "text": "I might enjoy gardening"
+            },
+            "statement_type": "PREFERENCE",
+            "temporal_references": [
+              "PRESENT"
+            ],
+            "habituality": null,
+            "certainty": "TENTATIVE",
+            "conditionality": false,
+            "hypotheticality": false,
+            "polarity": "POSITIVE"
+          }
+        ],
+        "message_signals": [],
+        "relations": []
+      }
+    },
+    {
+      "id": "SD007",
+      "text": "I enjoy gardening only if the weather is sunny.",
+      "reference": {
+        "source_turn_id": "00000000-0000-4000-8000-000000000007",
+        "taxonomy_version": "mvp02c14d.semantic_dimensions.v1",
+        "interpreter_id": "author.provisional",
+        "interpreter_version": "v1",
+        "route": "AUTHOR_DRAFT",
+        "claims": [
+          {
+            "evidence": {
+              "start": 0,
+              "end": 17,
+              "text": "I enjoy gardening"
+            },
+            "statement_type": "PREFERENCE",
+            "temporal_references": [
+              "PRESENT"
+            ],
+            "habituality": null,
+            "certainty": "ASSERTED",
+            "conditionality": true,
+            "hypotheticality": false,
+            "polarity": "POSITIVE",
+            "qualifiers": [
+              {
+                "kind": "CONDITION",
+                "evidence": {
+                  "start": 18,
+                  "end": 46,
+                  "text": "only if the weather is sunny"
+                }
+              }
+            ]
+          }
+        ],
+        "message_signals": [],
+        "relations": []
+      }
+    },
+    {
+      "id": "SD008",
+      "text": "I enjoyed gardening in 2023.",
+      "reference": {
+        "source_turn_id": "00000000-0000-4000-8000-000000000008",
+        "taxonomy_version": "mvp02c14d.semantic_dimensions.v1",
+        "interpreter_id": "author.provisional",
+        "interpreter_version": "v1",
+        "route": "AUTHOR_DRAFT",
+        "claims": [
+          {
+            "evidence": {
+              "start": 0,
+              "end": 27,
+              "text": "I enjoyed gardening in 2023"
+            },
+            "statement_type": "EXPERIENCE",
+            "temporal_references": [
+              "PAST"
+            ],
+            "habituality": null,
+            "certainty": "ASSERTED",
+            "conditionality": false,
+            "hypotheticality": false,
+            "polarity": "POSITIVE",
+            "qualifiers": [
+              {
+                "kind": "TIME",
+                "evidence": {
+                  "start": 20,
+                  "end": 27,
+                  "text": "in 2023"
+                }
+              }
+            ]
+          }
+        ],
+        "message_signals": [],
+        "relations": []
+      }
+    },
+    {
+      "id": "SD009",
+      "text": "I plan to start gardening next month.",
+      "reference": {
+        "source_turn_id": "00000000-0000-4000-8000-000000000009",
+        "taxonomy_version": "mvp02c14d.semantic_dimensions.v1",
+        "interpreter_id": "author.provisional",
+        "interpreter_version": "v1",
+        "route": "AUTHOR_DRAFT",
+        "claims": [
+          {
+            "evidence": {
+              "start": 0,
+              "end": 36,
+              "text": "I plan to start gardening next month"
+            },
+            "statement_type": "INTENTION",
+            "temporal_references": [
+              "PRESENT",
+              "FUTURE"
+            ],
+            "habituality": null,
+            "certainty": "ASSERTED",
+            "conditionality": false,
+            "hypotheticality": false,
+            "polarity": "POSITIVE",
+            "qualifiers": [
+              {
+                "kind": "TIME",
+                "evidence": {
+                  "start": 26,
+                  "end": 36,
+                  "text": "next month"
+                }
+              }
+            ]
+          }
+        ],
+        "message_signals": [],
+        "relations": []
+      }
+    },
+    {
+      "id": "SD010",
+      "text": "My brother enjoys gardening.",
+      "reference": {
+        "source_turn_id": "00000000-0000-4000-8000-000000000010",
+        "taxonomy_version": "mvp02c14d.semantic_dimensions.v1",
+        "interpreter_id": "author.provisional",
+        "interpreter_version": "v1",
+        "route": "AUTHOR_DRAFT",
+        "claims": [
+          {
+            "evidence": {
+              "start": 0,
+              "end": 27,
+              "text": "My brother enjoys gardening"
+            },
+            "statement_type": "PREFERENCE",
+            "temporal_references": [
+              "PRESENT"
+            ],
+            "habituality": null,
+            "certainty": "ASSERTED",
+            "conditionality": false,
+            "hypotheticality": false,
+            "polarity": "POSITIVE",
+            "subject_evidence": {
+              "start": 0,
+              "end": 10,
+              "text": "My brother"
+            },
+            "qualifiers": [
+              {
+                "kind": "ATTRIBUTION",
+                "evidence": {
+                  "start": 0,
+                  "end": 10,
+                  "text": "My brother"
+                }
+              }
+            ]
+          }
+        ],
+        "message_signals": [],
+        "relations": []
+      }
+    },
+    {
+      "id": "SD011",
+      "text": "I enjoy gardening. I dislike reading.",
+      "reference": {
+        "source_turn_id": "00000000-0000-4000-8000-000000000011",
+        "taxonomy_version": "mvp02c14d.semantic_dimensions.v1",
+        "interpreter_id": "author.provisional",
+        "interpreter_version": "v1",
+        "route": "AUTHOR_DRAFT",
+        "claims": [
+          {
+            "evidence": {
+              "start": 0,
+              "end": 17,
+              "text": "I enjoy gardening"
+            },
+            "statement_type": "PREFERENCE",
+            "temporal_references": [
+              "PRESENT"
+            ],
+            "habituality": null,
+            "certainty": "ASSERTED",
+            "conditionality": false,
+            "hypotheticality": false,
+            "polarity": "POSITIVE"
+          },
+          {
+            "evidence": {
+              "start": 19,
+              "end": 36,
+              "text": "I dislike reading"
+            },
+            "statement_type": "PREFERENCE",
+            "temporal_references": [
+              "PRESENT"
+            ],
+            "habituality": null,
+            "certainty": "ASSERTED",
+            "conditionality": false,
+            "hypotheticality": false,
+            "polarity": "NEGATIVE"
+          }
+        ],
+        "message_signals": [],
+        "relations": []
+      }
+    },
+    {
+      "id": "SD012",
+      "text": "I go walking every weekend.",
+      "reference": {
+        "source_turn_id": "00000000-0000-4000-8000-000000000012",
+        "taxonomy_version": "mvp02c14d.semantic_dimensions.v1",
+        "interpreter_id": "author.provisional",
+        "interpreter_version": "v1",
+        "route": "AUTHOR_DRAFT",
+        "claims": [
+          {
+            "evidence": {
+              "start": 0,
+              "end": 26,
+              "text": "I go walking every weekend"
+            },
+            "statement_type": "FACT",
+            "temporal_references": [
+              "PRESENT"
+            ],
+            "habituality": true,
+            "certainty": "ASSERTED",
+            "conditionality": false,
+            "hypotheticality": false,
+            "polarity": "POSITIVE",
+            "qualifiers": [
+              {
+                "kind": "TIME",
+                "evidence": {
+                  "start": 13,
+                  "end": 26,
+                  "text": "every weekend"
+                }
+              }
+            ]
+          }
+        ],
+        "message_signals": [],
+        "relations": []
+      }
+    },
+    {
+      "id": "SD013",
+      "text": "I used to enjoy gardening, but not anymore.",
+      "reference": {
+        "source_turn_id": "00000000-0000-4000-8000-000000000013",
+        "taxonomy_version": "mvp02c14d.semantic_dimensions.v1",
+        "interpreter_id": "author.provisional",
+        "interpreter_version": "v1",
+        "route": "AUTHOR_DRAFT",
+        "claims": [
+          {
+            "evidence": {
+              "start": 0,
+              "end": 25,
+              "text": "I used to enjoy gardening"
+            },
+            "statement_type": "PREFERENCE",
+            "temporal_references": [
+              "PAST"
+            ],
+            "habituality": null,
+            "certainty": "ASSERTED",
+            "conditionality": false,
+            "hypotheticality": false,
+            "polarity": "POSITIVE"
+          },
+          {
+            "evidence": {
+              "start": 31,
+              "end": 42,
+              "text": "not anymore"
+            },
+            "statement_type": "PREFERENCE",
+            "temporal_references": [
+              "PRESENT"
+            ],
+            "habituality": null,
+            "certainty": "ASSERTED",
+            "conditionality": false,
+            "hypotheticality": false,
+            "polarity": "NEGATIVE"
+          }
+        ],
+        "message_signals": [],
+        "relations": [
+          {
+            "kind": "STATE_CHANGE",
+            "evidence": {
+              "start": 27,
+              "end": 42,
+              "text": "but not anymore"
+            },
+            "to_claim_index": 1,
+            "from_claim_index": 0
+          }
+        ]
+      }
+    },
+    {
+      "id": "SD014",
+      "text": "If I had more time, I would enjoy gardening.",
+      "reference": {
+        "source_turn_id": "00000000-0000-4000-8000-000000000014",
+        "taxonomy_version": "mvp02c14d.semantic_dimensions.v1",
+        "interpreter_id": "author.provisional",
+        "interpreter_version": "v1",
+        "route": "AUTHOR_DRAFT",
+        "claims": [
+          {
+            "evidence": {
+              "start": 20,
+              "end": 43,
+              "text": "I would enjoy gardening"
+            },
+            "statement_type": "PREFERENCE",
+            "temporal_references": [
+              "PRESENT"
+            ],
+            "habituality": null,
+            "certainty": "ASSERTED",
+            "conditionality": true,
+            "hypotheticality": true,
+            "polarity": "POSITIVE",
+            "qualifiers": [
+              {
+                "kind": "CONDITION",
+                "evidence": {
+                  "start": 0,
+                  "end": 18,
+                  "text": "If I had more time"
+                }
+              }
+            ]
+          }
+        ],
+        "message_signals": [],
+        "relations": []
+      }
+    },
+    {
+      "id": "SD015",
+      "text": "Actually, I don't enjoy gardening anymore.",
+      "reference": {
+        "source_turn_id": "00000000-0000-4000-8000-000000000015",
+        "taxonomy_version": "mvp02c14d.semantic_dimensions.v1",
+        "interpreter_id": "author.provisional",
+        "interpreter_version": "v1",
+        "route": "AUTHOR_DRAFT",
+        "claims": [
+          {
+            "evidence": {
+              "start": 10,
+              "end": 41,
+              "text": "I don't enjoy gardening anymore"
+            },
+            "statement_type": "PREFERENCE",
+            "temporal_references": [
+              "PRESENT"
+            ],
+            "habituality": null,
+            "certainty": "ASSERTED",
+            "conditionality": false,
+            "hypotheticality": false,
+            "polarity": "NEGATIVE"
+          }
+        ],
+        "message_signals": [
+          {
+            "kind": "CORRECTION_CUE",
+            "evidence": {
+              "start": 0,
+              "end": 8,
+              "text": "Actually"
+            }
+          }
+        ],
+        "relations": [
+          {
+            "kind": "STATE_CHANGE",
+            "evidence": {
+              "start": 34,
+              "end": 41,
+              "text": "anymore"
+            },
+            "to_claim_index": 0
+          }
+        ]
+      }
+    }
+  ]
+}
