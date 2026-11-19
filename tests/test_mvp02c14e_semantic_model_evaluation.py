@@ -230,7 +230,11 @@ def test_ollama_local_only_json_and_source_redaction(monkeypatch):
         seen.append((req.full_url, json.loads(req.data), timeout))
         return Response()
 
-    monkeypatch.setattr(m, "urlopen", fake_urlopen)
+    class FakeOpener:
+        def open(self, req, *, timeout):
+            return fake_urlopen(req, timeout=timeout)
+
+    monkeypatch.setattr(m, "build_opener", lambda handler: FakeOpener())
     backend = m.OllamaJsonProbe(model="qwen2.5:7b")
     prediction = backend.predict(
         source="I no longer enjoy gardening.",
@@ -255,7 +259,11 @@ def test_ollama_invalid_json_fails_closed(monkeypatch):
         def read(self, _):
             return json.dumps({"message": {"content": '{"polarity": "NEGATIVE"}'}}).encode()
 
-    monkeypatch.setattr(m, "urlopen", lambda *_args, **_kwargs: Response())
+    class FakeOpener:
+        def open(self, *_args, **_kwargs):
+            return Response()
+
+    monkeypatch.setattr(m, "build_opener", lambda handler: FakeOpener())
     with pytest.raises(ValueError):
         m.OllamaJsonProbe(model="test").predict(source="a", quote="a")
 
