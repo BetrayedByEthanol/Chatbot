@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 from hashlib import sha256
+from http.client import HTTPException
 import json
 import math
 from pathlib import Path
@@ -311,6 +312,12 @@ class OllamaJsonProbe:
             self._diagnostic("HTTP_4XX" if 400 <= exc.code < 500
                              else "HTTP_5XX" if 500 <= exc.code < 600
                              else "HTTP_OTHER")
+            raise
+        except HTTPException:
+            # IncompleteRead and other HTTP protocol failures are neither
+            # URLError nor OSError. Emit exactly one safe event so the offline
+            # diagnostic report can account for the interrupted model call.
+            self._diagnostic("HTTP_PROTOCOL_ERROR")
             raise
         except TimeoutError:
             self._diagnostic("TRANSPORT_TIMEOUT")
