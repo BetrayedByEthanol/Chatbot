@@ -18,12 +18,27 @@ mod = importlib.import_module("benchmark_semantic_models")
 evalmod = importlib.import_module("evaluate_semantic_models")
 
 
+class StubLoadedTokenizer:
+    """Models the actual tokenizer serialization boundary without HF weights."""
+
+    def __init__(self, config=b'{"do_lower_case":true}'):
+        self.config = config
+
+    def save_pretrained(self, destination: str):
+        folder = Path(destination)
+        (folder / "tokenizer.json").write_bytes(b'{"model":{"type":"WordPiece"}}')
+        (folder / "tokenizer_config.json").write_bytes(self.config)
+
+
 class FixedProbe:
     backend_id = "test.fixed.realistic.response"
 
     def __init__(self, *, fail=False):
         self.calls = []
         self.fail = fail
+        self.client = SimpleNamespace(
+            _pipeline=SimpleNamespace(tokenizer=StubLoadedTokenizer())
+        )
 
     def predict(self, *, source, quote):
         self.calls.append((source, quote))
@@ -69,6 +84,13 @@ def _fake_deberta_checkpoint(root: Path) -> Path:
     root.mkdir()
     (root / "config.json").write_text('{"model_type":"deberta-v2"}', encoding="utf-8")
     (root / "model.safetensors").write_bytes(b"mock-only-not-a-real-model")
+    (root / "tokenizer.json").write_bytes(b'{"vocab":{"hello":0}}')
+    (root / "tokenizer_config.json").write_text(
+        '{"do_lower_case":true}', encoding="utf-8"
+    )
+    (root / "special_tokens_map.json").write_text(
+        '{"unk_token":"[UNK]"}', encoding="utf-8"
+    )
     return root
 
 
@@ -86,7 +108,75 @@ def test_nondefault_effective_deberta_thresholds_are_archived(tmp_path):
         "min_score": .87, "min_margin": .23,
     }
     assert profile["model"]["weights_sha256"]
+    tokenizer = profile["model"]["tokenizer"]
+    assert tokenizer["source_file_sha256"]["tokenizer.json"]
+    assert tokenizer["source_file_sha256"]["tokenizer_config.json"]
+    assert tokenizer["source_file_sha256"]["special_tokens_map.json"]
+    assert tokenizer["effective_file_sha256"]["tokenizer_config.json"]
+    assert tokenizer["effective_tokenizer_sha256"]
     assert "I enjoy gardening" not in json.dumps(profile)
+
+
+
+def test_tokenizer_artifact_changes_produce_different_checkpoint_fingerprints(tmp_path):
+    model_dir = _fake_deberta_checkpoint(tmp_path / "deberta")
+    backend = FixedProbe()
+    args = dict(
+        backend_name="deberta", backend=backend,
+        model_dir=model_dir, model_name=None,
+    )
+    first = mod._model_provenance(**args)
+    # Model config, native weights, and loaded tokenizer are unchanged.
+    (model_dir / "tokenizer.json").write_bytes(b'{"vocab":{"hello":1}}')
+    second = mod._model_provenance(**args)
+    assert first["weights_sha256"] == second["weights_sha256"]
+    assert first["model_config_sha256"] == second["model_config_sha256"]
+    assert (first["tokenizer"]["source_file_sha256"]["tokenizer.json"]
+            != second["tokenizer"]["source_file_sha256"]["tokenizer.json"])
+    assert (first["tokenizer"]["effective_tokenizer_sha256"]
+            == second["tokenizer"]["effective_tokenizer_sha256"])
+
+
+def test_tokenizer_settings_and_loaded_snapshot_change_provenance(tmp_path):
+    model_dir = _fake_deberta_checkpoint(tmp_path / "deberta")
+    backend = FixedProbe()
+    args = dict(
+        backend_name="deberta", backend=backend,
+        model_dir=model_dir, model_name=None,
+    )
+    original = mod._model_provenance(**args)
+    (model_dir / "tokenizer_config.json").write_text(
+        '{"do_lower_case":false}', encoding="utf-8"
+    )
+    (model_dir / "special_tokens_map.json").write_text(
+        '{"unk_token":"[UNKNOWN]"}', encoding="utf-8"
+    )
+    backend.client._pipeline.tokenizer.config = b'{"do_lower_case":false}'
+    changed = mod._model_provenance(**args)
+    assert original["weights_sha256"] == changed["weights_sha256"]
+    assert original["model_config_sha256"] == changed["model_config_sha256"]
+    for name in ("tokenizer_config.json", "special_tokens_map.json"):
+        assert (original["tokenizer"]["source_file_sha256"][name]
+                != changed["tokenizer"]["source_file_sha256"][name])
+    assert (original["tokenizer"]["effective_tokenizer_sha256"]
+            != changed["tokenizer"]["effective_tokenizer_sha256"])
+
+
+def test_deberta_provenance_requires_real_tokenizer_inputs_and_loaded_state(tmp_path):
+    model_dir = _fake_deberta_checkpoint(tmp_path / "deberta")
+    backend = FixedProbe()
+    (model_dir / "tokenizer.json").unlink()
+    args = dict(
+        backend_name="deberta", backend=backend,
+        model_dir=model_dir, model_name=None,
+    )
+    with pytest.raises(ValueError, match="tokenizer inputs"):
+        mod._model_provenance(**args)
+    (model_dir / "spm.model").write_bytes(b"test-sentencepiece-file")
+    assert mod._model_provenance(**args)["tokenizer"]["source_file_sha256"]["spm.model"]
+    backend.client._pipeline.tokenizer = object()
+    with pytest.raises(ValueError, match="loaded Transformers tokenizer"):
+        mod._model_provenance(**args)
 
 
 def test_cli_records_backend_thresholds_not_requested_cli_values(tmp_path):
