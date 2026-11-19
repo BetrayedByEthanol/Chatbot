@@ -5,7 +5,7 @@ or end-to-end claim extraction capability.
 """
 from __future__ import annotations
 
-import importlib.util
+import importlib
 import json
 from pathlib import Path
 import subprocess
@@ -23,10 +23,9 @@ def _module():
     scripts = str(ROOT / "scripts")
     if scripts not in sys.path:
         sys.path.insert(0, scripts)
-    spec = importlib.util.spec_from_file_location("mvp02c14e_eval", SCRIPT)
-    instance = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(instance)
-    return instance
+    # Import normally so postponed Pydantic annotations can resolve against
+    # a registered module namespace on every supported Python version.
+    return importlib.import_module("evaluate_semantic_models")
 
 
 class ScriptedBackend:
