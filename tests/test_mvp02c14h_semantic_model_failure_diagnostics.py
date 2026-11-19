@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib
+from http.client import IncompleteRead, RemoteDisconnected
 import json
 from pathlib import Path
 import sys
@@ -148,6 +149,72 @@ def test_http_and_transport_error_codes_have_no_exception_message(
         backend.predict(source="SECRET", quote="SECRET")
     assert codes == [expected]
     assert "SECRET" not in json.dumps(codes)
+
+
+def test_incomplete_chunked_response_emits_one_safe_protocol_error(monkeypatch):
+    class IncompleteResponse(Response):
+        def read(self, _):
+            # Bytes may contain private model content; they must never reach
+            # the diagnostic observer or archived report.
+            raise IncompleteRead(b"SECRET_partial_model_response", 100)
+
+    backend, codes, _ = _fake_probe(
+        monkeypatch, response=IncompleteResponse(b""))
+    with pytest.raises(IncompleteRead):
+        backend.predict(source="SECRET_private_input", quote="SECRET_claim")
+    assert codes == ["HTTP_PROTOCOL_ERROR"]
+    assert "SECRET" not in json.dumps(codes)
+
+
+def test_other_http_protocol_error_is_classified_before_reraising(monkeypatch):
+    backend, codes, _ = _fake_probe(
+        monkeypatch, error=RemoteDisconnected("SECRET_socket_closed"))
+    with pytest.raises(RemoteDisconnected):
+        backend.predict(source="SECRET_private_input", quote="SECRET_claim")
+    assert codes == ["HTTP_PROTOCOL_ERROR"]
+    assert "SECRET" not in json.dumps(codes)
+
+
+def test_chunked_read_failure_is_counted_in_written_diagnostic_report(
+    monkeypatch, tmp_path,
+):
+    # Warmup succeeds; the measured JSON-mode claim fails *inside read()*,
+    # while schema-mode warmup and claim both succeed. The report must still
+    # be written with one fixed category for the failed claim.
+    requests = []
+
+    class InterruptedResponse(Response):
+        def read(self, _):
+            raise IncompleteRead(b"SECRET_partial_response", 20)
+
+    class Opener:
+        def open(self, request, *, timeout):
+            details = json.loads(request.data)
+            requests.append(details["format"])
+            if len(requests) == 2:
+                return InterruptedResponse(b"")
+            return _response(json.dumps(GOOD_LABELS))
+
+    monkeypatch.setattr(probe_mod, "build_opener", lambda _proxy: Opener())
+    path = tmp_path / "diagnostics.json"
+    result = diag.main(
+        ["--model", "qwen2.5:0.5b", "--case-ids", "SD001",
+         "--report", str(path)],
+        provenance_resolver=_identity,
+    )
+    assert result == 0
+    output = json.loads(path.read_text(encoding="utf-8"))
+    assert output["sample_claims"] == 1
+    json_run, schema_run = output["modes"]
+    assert json_run["warmup_code"] == "VALID_PREDICTION"
+    assert json_run["status"] == "NO_VALID_PREDICTIONS"
+    assert json_run["error_claims"] == 1
+    assert json_run["valid_prediction_claims"] == 0
+    assert json_run["failure_histogram"] == {"HTTP_PROTOCOL_ERROR": 1}
+    assert schema_run["error_claims"] == 0
+    assert schema_run["valid_prediction_claims"] == 1
+    assert schema_run["failure_histogram"] == {}
+    assert "SECRET" not in path.read_text(encoding="utf-8")
 
 
 class DeterministicDiagnosticBackend:
