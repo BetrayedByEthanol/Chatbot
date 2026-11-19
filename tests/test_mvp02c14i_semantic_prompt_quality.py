@@ -191,6 +191,43 @@ def test_model_digest_drift_across_prompt_variants_fails_closed():
         mod.run_experiment(**args, repetitions=1)
 
 
+def test_reference_eligibility_cannot_change_across_repetitions(monkeypatch):
+    original = mod._run_mode
+    seen = 0
+
+    def mutated(*, factory, **kwargs):
+        nonlocal seen
+        seen += 1
+        result, backend = original(factory=factory, **kwargs)
+        if seen == 3:  # second baseline run; all its statement labels abstain
+            counts = result["by_dimension"]["statement_type"]
+            counts["eligible"] -= 1
+            counts["unscored_reference"] += 1
+            counts["abstained"] -= 1
+        return result, backend
+
+    monkeypatch.setattr(mod, "_run_mode", mutated)
+    with pytest.raises(ValueError, match="reference eligibility changed"):
+        mod.run_experiment(**_args(), repetitions=2)
+
+
+def test_prompt_variants_must_use_same_json_schema(monkeypatch):
+    original = mod._run_mode
+    seen = 0
+
+    def mutated(*, factory, **kwargs):
+        nonlocal seen
+        seen += 1
+        result, backend = original(factory=factory, **kwargs)
+        if seen == 2:
+            result["format_schema_sha256"] = "f" * 64
+        return result, backend
+
+    monkeypatch.setattr(mod, "_run_mode", mutated)
+    with pytest.raises(ValueError, match="unpaired prompt experiment"):
+        mod.run_experiment(**_args(), repetitions=1)
+
+
 def test_invalid_failure_histogram_rejected():
     result = {
         "sample_claims": 1, "valid_prediction_claims": 0, "error_claims": 1,
