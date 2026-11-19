@@ -8,6 +8,7 @@ on:
       - "scripts/benchmark_semantic_models.py"
       - "scripts/evaluate_semantic_models.py"
       - "scripts/diagnose_semantic_model_failures.py"
+      - "scripts/evaluate_semantic_prompt_quality.py"
       - "scripts/compare_semantic_model_reports.py"
       - "scripts/analyze_semantic_benchmark_results.py"
       - "scenarios/mvp02c14d_semantic_drafts.json"
@@ -131,6 +132,40 @@ jobs:
               if item["error_claims"]:
                   print("::warning::Ollama " + item["mode"] + " diagnostic errors: "
                         + json.dumps(item["failure_histogram"], sort_keys=True))
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as output:
+              output.write("\n".join(lines) + "\n")
+          PY
+      - name: MVP-02C.14I real schema-mode prompt quality comparison
+        run: |
+          python scripts/evaluate_semantic_prompt_quality.py \
+            --model "$OLLAMA_MODEL" \
+            --ollama-url http://127.0.0.1:11434 --timeout-s 90 \
+            --repetitions 2 \
+            --report evidence/ollama-prompt-quality.json
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          evidence = json.loads(Path("evidence/ollama-prompt-quality.json").read_text())
+          assert evidence["decision"] == "NO_PROMPT_APPROVED_FOR_PRODUCTION"
+          lines = ["", "## 14I: schema-mode semantic prompt quality (author drafts)", "",
+                   "**Not independently adjudicated. No prompt approved for production.**", "",
+                   "| Prompt | Run | Valid / claims | Statement correct / eligible | Temporal correct / eligible |",
+                   "|---|---:|---:|---:|---:|"]
+          for candidate in evidence["candidates"]:
+              for run in candidate["repetitions"]:
+                  fields = run["by_dimension"]
+                  statement, temporal = fields["statement_type"], fields["temporal_references"]
+                  lines.append(
+                      f"| {candidate['variant']} | {run['index']} | "
+                      f"{run['valid_prediction_claims']}/{run['sample_claims']} | "
+                      f"{statement['correct']}/{statement['eligible']} | "
+                      f"{temporal['correct']}/{temporal['eligible']} |"
+                  )
+                  if run["error_claims"]:
+                      print("::warning::14I diagnostic invalid predictions for "
+                            + candidate["variant"] + ": "
+                            + str(run["error_claims"]))
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as output:
               output.write("\n".join(lines) + "\n")
           PY

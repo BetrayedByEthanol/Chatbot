@@ -238,12 +238,64 @@ OLLAMA_LABEL_SCHEMA_V1 = {
 }
 
 
+# v14I: isolated offline prompt-comparison profile. The original instruction
+# is identical in the baseline branch; no production routing is changed.
+OLLAMA_PROMPT_VARIANTS = ("baseline", "semantic_scope_v1")
+OLLAMA_PROMPT_VERSIONS = {
+    "baseline": PROMPT_VERSION,
+    "semantic_scope_v1": "mvp02c14i.semantic_scope_prompt.v1",
+}
+
+
+def _ollama_instruction(variant: str) -> str:
+    if variant not in OLLAMA_PROMPT_VARIANTS:
+        raise ValueError("unsupported Ollama prompt variant")
+    instruction = (
+        "Classify the TARGET CLAIM in the context of the FULL MESSAGE. "
+        "Output ONLY JSON with exactly: statement_type "
+        "(FACT, PREFERENCE, EXPERIENCE, INTENTION, OPINION, UNKNOWN), "
+        "certainty (ASSERTED, TENTATIVE, UNKNOWN), polarity "
+        "(POSITIVE, NEGATIVE, UNKNOWN), habituality, conditionality, "
+        "hypotheticality (each true, false or null), temporal_references "
+        "(array of zero or more of PAST, PRESENT, FUTURE). "
+        "Use null or UNKNOWN if uncertain. A present intention can mention "
+        "future time; a change in a preference does not necessarily correct "
+        "the prior conversation. Never invent missing source text."
+    )
+    if variant == "semantic_scope_v1":
+        instruction += (
+            " Focus on the TARGET CLAIM; surrounding words are context only. "
+            "Statement type: PREFERENCE expresses likes, dislikes or choices; "
+            "FACT describes a factual state or routine; EXPERIENCE describes "
+            "a lived event; INTENTION describes a plan to act; OPINION gives "
+            "an evaluative judgment. Do not confuse a preference with a fact "
+            "merely because it is asserted. "
+            "For temporal_references, classify the time of what the target "
+            "claim says, not the time of a separate nearby claim. PAST refers "
+            "to a former state or event, PRESENT to a current state or routine, "
+            "and FUTURE to a future event or plan. Include multiple references "
+            "only when they genuinely apply to the same target claim. "
+            "A conditional or counterfactual context can govern a target "
+            "claim even when the conditional phrase is outside its quote. "
+            "Negation changes polarity, not automatically the statement type. "
+            "Use UNKNOWN/null when the evidence does not support a label; "
+            "do not infer certainty, time or intent from unrelated claims."
+        )
+    return instruction
+
+
+def _ollama_generation_options() -> dict:
+    """Keep the recorded 14I decoding parameters identical to the real request."""
+    return {"temperature": 0, "num_predict": 350}
+
+
 class OllamaJsonProbe:
     """Local-only Ollama structured prediction; no external service fallback."""
 
     def __init__(self, *, model: str, url: str = "http://127.0.0.1:11434",
                  timeout_s: float = 60.0, format_mode: str = "json",
-                 diagnostic_sink: Callable[[str], None] | None = None):
+                 diagnostic_sink: Callable[[str], None] | None = None,
+                 prompt_variant: str = "baseline"):
         parsed = urlsplit(url)
         if (parsed.scheme != "http"
                 or (parsed.hostname or "").casefold() not in (
@@ -259,6 +311,9 @@ class OllamaJsonProbe:
             raise ValueError("timeout must be 1..300 seconds")
         if format_mode not in ("json", "schema"):
             raise ValueError("format_mode must be json or schema")
+        if prompt_variant not in OLLAMA_PROMPT_VARIANTS:
+            raise ValueError("unsupported Ollama prompt variant")
+        self.prompt_variant = prompt_variant
         if diagnostic_sink is not None and not callable(diagnostic_sink):
             raise ValueError("invalid diagnostic sink")
         self.format_mode, self._diagnostic_sink = format_mode, diagnostic_sink
@@ -274,23 +329,12 @@ class OllamaJsonProbe:
             self._diagnostic_sink(code)
 
     def predict(self, *, source: str, quote: str) -> ProbeLabels:
-        instruction = (
-            "Classify the TARGET CLAIM in the context of the FULL MESSAGE. "
-            "Output ONLY JSON with exactly: statement_type "
-            "(FACT, PREFERENCE, EXPERIENCE, INTENTION, OPINION, UNKNOWN), "
-            "certainty (ASSERTED, TENTATIVE, UNKNOWN), polarity "
-            "(POSITIVE, NEGATIVE, UNKNOWN), habituality, conditionality, "
-            "hypotheticality (each true, false or null), temporal_references "
-            "(array of zero or more of PAST, PRESENT, FUTURE). "
-            "Use null or UNKNOWN if uncertain. A present intention can mention "
-            "future time; a change in a preference does not necessarily correct "
-            "the prior conversation. Never invent missing source text."
-        )
+        instruction = _ollama_instruction(self.prompt_variant)
         payload = json.dumps({
             "model": self.model, "stream": False,
             "format": ("json" if self.format_mode == "json"
                        else OLLAMA_LABEL_SCHEMA_V1),
-            "options": {"temperature": 0, "num_predict": 350},
+            "options": _ollama_generation_options(),
             "messages": [
                 {"role": "system", "content": instruction},
                 {"role": "user", "content": (
