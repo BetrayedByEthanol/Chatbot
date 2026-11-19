@@ -85,6 +85,48 @@ full run uses all 15 synthetic examples / 18 reference claim spans.
 The report is write-once; use a fresh filename for each run and
 preserve suite hash, schema hash and Ollama model digest.
 
+## Real execution results (19 November 2026)
+
+The first real 14H [GitHub Actions run 44544523936](https://github.com/BetrayedByEthanol/Chatbot/actions/runs/44544523936)
+completed successfully. Evidence artifact ID `14539577156`, containing
+`ollama-failure-diagnostics.json` with raw-file SHA-256:
+`51370c14117aafdce7b38654e878e6e57fdad04d96b98e6735402d1407d17a47`.
+Both modes used **the same** 15 author-draft cases / 18 oracle claim
+spans, source-suite SHA-256
+`ef9745f194ff22e2f8f96203719e5119ab40fb4a605eebf00f20f0dc7b69c610`,
+and verified Ollama model digest
+`a8b0c51577010a279d933d14c2a8ab4b268079d44c5c8830c0a93900f1827c67`.
+
+| Actual diagnostic result | Legacy `format: "json"` | Opt-in JSON Schema format |
+|---|---:|---:|
+| Valid strict label objects | **0/18** | **18/18** |
+| Invalid backend outputs | **18/18** | **0/18** |
+| Failed warmup | Yes (`LABEL_VALUE_INVALID`) | No |
+| Dominant failure category | `LABEL_VALUE_INVALID` (18) | None |
+| Median model-call time | 1,740.648 ms | 1,650.643 ms |
+| Draft statement-type agreement | Not measurable | 4/18 |
+| Draft certainty agreement | Not measurable | 11/18 |
+| Draft polarity agreement | Not measurable | 17/18 |
+| Draft temporal-set agreement | Not measurable | 1/18 |
+
+The **technical failure class is now confirmed**: the JSON-mode
+responses had a parseable envelope, parseable inner JSON object and
+exactly the required seven field names, but **one or more field values
+failed strict validation**. The current **fixed-code-only evidence does
+not identify which field or original value was invalid**; do not invent
+a more specific cause. The constrained-schema variant eliminated those
+validation failures on this 18-claim run with the same model digest.
+This strongly implicates unconstrained output values, **not transport
+or JSON syntax**, as the cause of the historical all-error result.
+
+Crucially, technical validity did **not** imply semantic competence:
+the constrained-schema run matched only **4/18** statement-type and
+**1/18** temporal-set author-draft labels, while conditionality,
+hypotheticality and habituality largely or entirely abstained.
+Those are **development-only conditional agreement counts**, not
+independent accuracy. The schema variant is **not** approved for
+production. The v14F original JSON-mode probe remains unchanged.
+
 ## Interpretation and next decisions
 
 - If JSON mode reports `LABEL_FIELD_SET_INVALID` or
