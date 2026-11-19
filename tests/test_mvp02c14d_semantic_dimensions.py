@@ -297,6 +297,147 @@ def test_evaluator_counts_missing_claims_abstentions_unknown_and_false_cues():
     assert report["by_temporal_label"]["PAST"]["tp"] == 1
 
 
+def test_sd007_dropped_condition_changes_qualifier_score_not_primary_claim_score():
+    text, reference = _case("SD007")
+    missing = reference.claims[0].model_copy(update={"qualifiers": ()})
+    predicted = reference.model_copy(update={"claims": (missing,)})
+    validate_semantic_dimensions(
+        predicted, source_turn_id=reference.source_turn_id, source_text=text,
+    )
+    perfect = evaluate_dimension_pairs([("SD007", reference, reference)])
+    lost = evaluate_dimension_pairs([("SD007", reference, predicted)])
+    assert lost["claim_alignment"] == perfect["claim_alignment"] == {
+        "matched_claims": 1, "missed_claims": 0, "extra_claims": 0,
+    }
+    assert lost["by_dimension"] == perfect["by_dimension"]
+    assert perfect["qualifier_alignment"] == {
+        "matched": 1, "missed": 0, "extra": 0,
+    }
+    assert lost["qualifier_alignment"] == {
+        "matched": 0, "missed": 1, "extra": 0,
+    }
+    assert lost["by_qualifier_kind"]["CONDITION"] == {
+        "matched": 0, "missed": 1, "extra": 0,
+    }
+    assert lost["cases"][0]["missed_qualifiers"] == 1
+    assert lost["cases"][0]["matched_qualifiers"] == 0
+
+
+def test_qualifier_kind_and_span_are_part_of_identity():
+    text, reference = _case("SD007")
+    original = reference.claims[0].qualifiers[0]
+    moved_span = SourceSpan(
+        start=original.evidence.start - 1,
+        end=original.evidence.end,
+        text=text[original.evidence.start - 1:original.evidence.end],
+    )
+    for altered in (
+        original.model_copy(update={"kind": "TIME"}),
+        original.model_copy(update={"evidence": moved_span}),
+    ):
+        edited_claim = reference.claims[0].model_copy(
+            update={"qualifiers": (altered,)}
+        )
+        predicted = reference.model_copy(update={"claims": (edited_claim,)})
+        validate_semantic_dimensions(
+            predicted, source_turn_id=reference.source_turn_id,
+            source_text=text,
+        )
+        report = evaluate_dimension_pairs([("SD007", reference, predicted)])
+        assert report["qualifier_alignment"] == {
+            "matched": 0, "missed": 1, "extra": 1,
+        }
+        assert report["by_qualifier_kind"]["CONDITION"]["missed"] == 1
+        assert report["cases"][0]["extra_qualifiers"] == 1
+
+
+def test_qualifier_counts_handle_duplicates_extras_and_multiple_kinds():
+    _, with_condition = _case("SD007")
+    _, with_time = _case("SD009")
+    _, with_attribution = _case("SD010")
+    condition = with_condition.claims[0].qualifiers[0]
+    repeated = with_condition.claims[0].model_copy(
+        update={"qualifiers": (condition, condition)}
+    )
+    repeated_pred = with_condition.model_copy(update={"claims": (repeated,)})
+    duplicate_report = evaluate_dimension_pairs([
+        ("SD007", with_condition, repeated_pred),
+    ])
+    assert duplicate_report["qualifier_alignment"] == {
+        "matched": 1, "missed": 0, "extra": 1,
+    }
+
+    without_condition = with_condition.model_copy(update={
+        "claims": (with_condition.claims[0].model_copy(
+            update={"qualifiers": ()}
+        ),)
+    })
+    report = evaluate_dimension_pairs([
+        ("SD007", with_condition, without_condition),
+        ("SD009", with_time, with_time),
+        ("SD010", with_attribution, with_attribution),
+    ])
+    assert report["qualifier_alignment"] == {
+        "matched": 2, "missed": 1, "extra": 0,
+    }
+    assert report["by_qualifier_kind"]["CONDITION"]["missed"] == 1
+    assert report["by_qualifier_kind"]["TIME"]["matched"] == 1
+    assert report["by_qualifier_kind"]["ATTRIBUTION"]["matched"] == 1
+    assert [case["missed_qualifiers"] for case in report["cases"]] == [1, 0, 0]
+
+
+def test_unexpected_qualifier_on_aligned_unqualified_claim_is_extra():
+    text, reference = _case("SD001")
+    fabricated = reference.claims[0].model_copy(update={
+        "qualifiers": (
+            # Lexically grounded does not mean semantically justified.
+            # The evaluator must still flag this unexpected qualifier.
+            {"kind": "TIME", "evidence": {
+                "start": 0, "end": 1, "text": text[:1],
+            }},
+        )
+    })
+    # Validate the nested schema as well: model_copy(update=...) skips checks.
+    payload = reference.model_dump(mode="json")
+    payload["claims"][0]["qualifiers"] = list(fabricated.qualifiers)
+    predicted = SemanticDimensionsV2.model_validate_json(json.dumps(payload))
+    validate_semantic_dimensions(
+        predicted, source_turn_id=reference.source_turn_id, source_text=text,
+    )
+    report = evaluate_dimension_pairs([("SD001", reference, predicted)])
+    assert report["qualifier_alignment"] == {
+        "matched": 0, "missed": 0, "extra": 1,
+    }
+    assert report["by_qualifier_kind"]["TIME"]["extra"] == 1
+
+
+def test_cli_qualifier_loss_changes_text_free_report(tmp_path):
+    row = next(row for row in _examples() if row["id"] == "SD007")
+    prediction = deepcopy(row["reference"])
+    source = tmp_path / "predictions.json"
+    reports = []
+    for loss in (False, True):
+        case = deepcopy(prediction)
+        if loss:
+            case["claims"][0]["qualifiers"] = []
+        source.write_text(json.dumps({
+            "version": "mvp02c14d.predictions.v1",
+            "items": [{"id": "SD007", "interpretation": case}],
+        }), encoding="utf-8")
+        output = tmp_path / ("dropped.json" if loss else "perfect.json")
+        run = subprocess.run(
+            [sys.executable, str(SCRIPT), "--suite", str(SUITE),
+             "--predictions", str(source), "--report", str(output)],
+            capture_output=True, text=True, timeout=15,
+        )
+        assert run.returncode == 0, run.stderr
+        reports.append(json.loads(output.read_text(encoding="utf-8")))
+        assert row["text"] not in output.read_text(encoding="utf-8")
+    assert reports[0]["metrics"]["qualifier_alignment"]["matched"] == 1
+    assert reports[1]["metrics"]["qualifier_alignment"]["missed"] == 1
+    assert reports[0]["metrics"]["by_dimension"] == reports[1]["metrics"]["by_dimension"]
+
+
 def test_null_dimensions_not_rewarded_and_non_null_guesses_are_unverified():
     _, reference = _case("SD001")
     assert reference.claims[0].habituality is None
