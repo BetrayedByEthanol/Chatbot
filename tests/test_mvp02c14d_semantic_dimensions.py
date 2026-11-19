@@ -572,9 +572,33 @@ def test_cli_reversed_relation_changes_text_free_report(tmp_path):
         payload = report.read_text(encoding="utf-8")
         assert row["text"] not in payload
         reports.append(json.loads(payload))
-    assert reports[0]["metrics"]["relation_alignment"]["matched"] == 1
-    assert reports[1]["metrics"]["relation_alignment"]["missed"] == 1
-    assert reports[1]["metrics"]["relation_alignment"]["extra"] == 1
+    # The CLI evaluates the entire suite, even though only SD002 has an
+    # injected prediction. Other cases legitimately contribute missed
+    # relations to both reports. Verify SD002 directly and compare deltas.
+    correct, reversed_metrics = (report["metrics"] for report in reports)
+    by_case = [
+        next(case for case in metrics["cases"] if case["id"] == "SD002")
+        for metrics in (correct, reversed_metrics)
+    ]
+    assert (
+        by_case[0]["matched_relations"],
+        by_case[0]["missed_relations"],
+        by_case[0]["extra_relations"],
+    ) == (1, 0, 0)
+    assert (
+        by_case[1]["matched_relations"],
+        by_case[1]["missed_relations"],
+        by_case[1]["extra_relations"],
+    ) == (0, 1, 1)
+    for key, change in (("matched", -1), ("missed", 1), ("extra", 1)):
+        assert (
+            reversed_metrics["relation_alignment"][key]
+            - correct["relation_alignment"][key]
+        ) == change
+    for before_case, after_case in zip(correct["cases"], reversed_metrics["cases"]):
+        assert before_case["id"] == after_case["id"]
+        if before_case["id"] != "SD002":
+            assert before_case == after_case
 
 
 def test_null_dimensions_not_rewarded_and_non_null_guesses_are_unverified():
