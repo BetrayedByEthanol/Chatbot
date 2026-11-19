@@ -111,6 +111,67 @@ def test_refuses_false_success_or_score_profile_mismatch(tmp_path):
         mod.analyze_pairs([a, b])
 
 
+def test_rejects_all_errored_claims_with_forged_perfect_agreement(tmp_path):
+    # All individual dimensions are arithmetically self-consistent, but a
+    # failed model call cannot support any of the dimensions.
+    a = _fixtures(tmp_path, "a")
+    b = _fixtures(tmp_path, "b")
+    score = json.loads(a[0].read_text(encoding="utf-8"))
+    profile = json.loads(a[1].read_text(encoding="utf-8"))
+    score["error_claims"] = 1
+    score["cases"][0]["errors"] = 1
+    for run in profile["runs"]:
+        run["error_claims"] = 1
+    a[0].write_text(json.dumps(score), encoding="utf-8")
+    a[1].write_text(json.dumps(profile), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="supported predictions exceed non-error"):
+        mod.analyze_pairs([a, b])
+
+
+def test_rejects_later_repetition_with_supported_predictions_on_errors(tmp_path):
+    a = _fixtures(tmp_path, "a")
+    b = _fixtures(tmp_path, "b")
+    profile = json.loads(a[1].read_text(encoding="utf-8"))
+    # The first run is valid and matches the score report; the second run
+    # reports an error, but preserves the previously supported dimensions.
+    profile["runs"][1]["error_claims"] = 1
+    a[1].write_text(json.dumps(profile), encoding="utf-8")
+    with pytest.raises(ValueError, match="supported predictions exceed non-error"):
+        mod.analyze_pairs([a, b])
+
+
+def test_valid_partial_failure_can_only_support_non_error_claims(tmp_path):
+    a = _fixtures(tmp_path, "a")
+    b = _fixtures(tmp_path, "b")
+    # One failed and one successful claim: supporting exactly one dimension
+    # on one claim is legitimate and must not be rejected.
+    for score_file, profile_file in (a, b):
+        score = json.loads(score_file.read_text(encoding="utf-8"))
+        profile = json.loads(profile_file.read_text(encoding="utf-8"))
+        score["sample_claims"] = profile["sample_claims"] = 2
+        score["cases"][0]["reference_claims"] = 2
+        score["cases"][0]["errors"] = 1
+        score["error_claims"] = 1
+        for metrics in score["by_dimension"].values():
+            metrics["eligible"] = 2
+            metrics["abstained"] = 1
+        for run in profile["runs"]:
+            run["error_claims"] = 1
+            for metrics in run["by_dimension"].values():
+                metrics["eligible"] = 2
+                metrics["abstained"] = 1
+        score_file.write_text(json.dumps(score), encoding="utf-8")
+        profile_file.write_text(json.dumps(profile), encoding="utf-8")
+
+    report = mod.analyze_pairs([a, b])
+    assert report["decision"] == "NO_MODEL_SELECTED"
+    for candidate in report["backends"]:
+        assert candidate["errors_per_run"] == [1, 1]
+        assert candidate["dimensions"]["statement_type"]["supported"] == 1
+        assert candidate["dimensions"]["statement_type"]["coverage"] == 0.5
+
+
 def test_rejects_run_scoring_disagreement_not_masked_by_repeat_averages(tmp_path):
     a = _fixtures(tmp_path, "a")
     b = _fixtures(tmp_path, "b")
