@@ -102,6 +102,62 @@ statement-type/temporal draft matches) in the job UI. A green
 workflow means **the experiment executed and its integrity checks
 passed**, not that a candidate is better.
 
+## Actual real-model outcome — 19 November 2026
+
+The real [GitHub Actions run 44573149562](https://github.com/BetrayedByEthanol/Chatbot/actions/runs/44573149562)
+**passed** and archived artifact ID `14556905186`. Its
+`ollama-prompt-quality.json` has raw-file SHA-256
+`caca6eabc0ab3cce40f1469785c0b2998eedfe21313830eed4bd4fa073f074be`.
+Both variants used **the same** verified local Qwen2.5:0.5B
+digest `a8b0c51577010a279d933d14c2a8ab4b268079d44c5c8830c0a93900f1827c67`,
+15 synthetic cases, 18 reference claims, identical schema and
+generation settings. All **four runs had 18/18 technically valid
+outputs**, zero model errors and valid warmups.
+
+**Correct author-draft labels / 18 eligible claims** (unless stated):
+
+| Dimension | Baseline, run 1 | Baseline, run 2 | Candidate, run 1 | Candidate, run 2 |
+|---|---:|---:|---:|---:|
+| Statement type | **4/18** | **4/18** | 1/18 | 1/18 |
+| Certainty | 12/18 | **14/18** | **0/18** | **0/18** |
+| Polarity | **18/18** | **18/18** | 17/18 | 17/18 |
+| Temporal reference set | 0/18 | 0/18 | 1/18 | 1/18 |
+| Conditionality | 0 supported | 0 supported | 0 supported | 0 supported |
+| Hypotheticality | 0 supported | 0 supported | 0 supported | 0 supported |
+| Habituality | 0 supported | 0 supported | 0 supported | 0 supported |
+
+Both variants emitted temporal sets for all 18 claims, so temporal
+results indicate **draft disagreement rather than abstention**.
+Baseline supported 17/18 certainty labels; the candidate
+**abstained on all 18**. The candidate's small temporal-set
+increase (+1/18) is accompanied by a material loss of
+statement-type matches (−3/18), certainty coverage (17/18 → 0/18)
+and polarity matches (−1/18), reproduced in both runs.
+The candidate's total model inference time was about 21.6–22.1 s
+per suite, versus 19.8–20.0 s for baseline, on the same CI runner.
+
+**Outcome: the proposed instruction did not improve overall
+classification quality on this development dataset. Reject
+`semantic_scope_v1` as a promotion candidate.** Do not silently
+replace the old prompt or assume the baseline is accurate enough
+for Memory-related decisions. In particular, both variants
+remain unreliable at temporal-set identification and both
+abstain on critical conditional/hypothetical features.
+
+The 14H schema-mode baseline had one temporal-set draft match
+on its earlier run, whereas both 14I baseline repetitions had
+zero. Temperature zero does not guarantee fully identical
+inference outcomes across separate executions. This reinforces
+the need for repetitions and independent evaluation.
+
+**Decision 14I-D4 (evidence):** retain the general-purpose
+prompt candidate as a versioned **negative experimental result**
+and make no production-model or production-prompt selection.
+Do not repeatedly tune to these same 15 author-written cases.
+Future comparison must use a separately adjudicated evaluation
+set and actual intended model sizes/checkpoints; DeBERTa and
+Qwen2.5:7B remain unmeasured in this milestone.
+
 ## Interpretation
 
 A plausible improvement must show more correct eligible *draft*
