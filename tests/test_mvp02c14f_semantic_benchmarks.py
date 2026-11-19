@@ -59,9 +59,75 @@ def test_benchmark_warmup_and_repetitions_are_nonleaking_and_paired():
     assert profile["runs"][0]["by_dimension"] == report["by_dimension"]
     assert profile["timing"]["p95_suite_ms"] >= profile["timing"]["median_suite_ms"]
     assert profile["model"]["trained_pipeline"] is False
+    assert profile["nli_decision_thresholds"] is None
     payload = json.dumps(profile)
     assert "I enjoy gardening" not in payload
     assert "I used to enjoy" not in payload
+
+
+def _fake_deberta_checkpoint(root: Path) -> Path:
+    root.mkdir()
+    (root / "config.json").write_text('{"model_type":"deberta-v2"}', encoding="utf-8")
+    (root / "model.safetensors").write_bytes(b"mock-only-not-a-real-model")
+    return root
+
+
+def test_nondefault_effective_deberta_thresholds_are_archived(tmp_path):
+    backend = FixedProbe()
+    backend.min_score = .87
+    backend.min_margin = .23
+    model_dir = _fake_deberta_checkpoint(tmp_path / "mock-deberta")
+    report, profile = mod.run_benchmark(
+        suite=SUITE, backend=backend, backend_name="deberta",
+        case_ids=("SD001",), repetitions=2, warmups=0, model_dir=model_dir,
+    )
+    assert report["sample_claims"] == 1
+    assert profile["nli_decision_thresholds"] == {
+        "min_score": .87, "min_margin": .23,
+    }
+    assert profile["model"]["weights_sha256"]
+    assert "I enjoy gardening" not in json.dumps(profile)
+
+
+def test_cli_records_backend_thresholds_not_requested_cli_values(tmp_path):
+    backend = FixedProbe()
+    backend.min_score = .91
+    backend.min_margin = .42
+    checkpoint = _fake_deberta_checkpoint(tmp_path / "mock-deberta")
+    result = tmp_path / "score.json"
+    profile = tmp_path / "profile.json"
+    args = [
+        "--backend", "deberta", "--model-dir", str(checkpoint),
+        "--min-score", "0.21", "--min-margin", "0.04",
+        "--case-ids", "SD001", "--repetitions", "1", "--warmups", "0",
+        "--report", str(result), "--profile", str(profile),
+    ]
+    assert mod.main(args, injected_backend=backend) == 0
+    saved = json.loads(profile.read_text(encoding="utf-8"))
+    assert saved["nli_decision_thresholds"] == {
+        "min_score": .91, "min_margin": .42,
+    }
+    assert json.loads(result.read_text(encoding="utf-8"))["sample_claims"] == 1
+
+
+@pytest.mark.parametrize("key,value", [
+    ("min_score", None), ("min_score", -0.1), ("min_score", float("nan")),
+    ("min_margin", 1.1), ("min_margin", "0.25"), ("min_margin", True),
+])
+def test_deberta_missing_or_invalid_active_thresholds_fail_closed(
+    tmp_path, key, value,
+):
+    backend = FixedProbe()
+    backend.min_score = .65
+    backend.min_margin = .10
+    setattr(backend, key, value)
+    model_dir = _fake_deberta_checkpoint(tmp_path / "mock-deberta")
+    with pytest.raises(ValueError, match="valid NLI thresholds"):
+        mod.run_benchmark(
+            suite=SUITE, backend=backend, backend_name="deberta",
+            case_ids=("SD001",), repetitions=1, warmups=0,
+            model_dir=model_dir,
+        )
 
 
 def test_benchmark_invalid_outputs_are_measured_as_errors_not_truth():
