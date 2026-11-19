@@ -47,6 +47,31 @@ def _binary_score(counts: dict, expected: bool, observed: bool):
     counts[name] += 1
 
 
+def _relation_identities(interpretation: SemanticDimensionsV2) -> Counter:
+    """Count directed relation identities by referenced claim *evidence*, not index.
+
+    The source and target claim indices are local to one interpretation; using
+    them directly would treat a harmless reordering as a semantic error.
+    Include the relation's own evidence span and preserve duplicate proposals.
+    """
+    claim_spans = tuple(
+        (claim.evidence.start, claim.evidence.end)
+        for claim in interpretation.claims
+    )
+    return Counter(
+        (
+            relation.kind,
+            relation.evidence.start, relation.evidence.end,
+            (
+                claim_spans[relation.from_claim_index]
+                if relation.from_claim_index is not None else None
+            ),
+            claim_spans[relation.to_claim_index],
+        )
+        for relation in interpretation.relations
+    )
+
+
 def evaluate_dimension_pairs(
     cases: Sequence[tuple[str, SemanticDimensionsV2, SemanticDimensionsV2]],
 ) -> dict:
@@ -54,8 +79,10 @@ def evaluate_dimension_pairs(
 
     Claims align only by exact (start,end) evidence spans. For aligned claims,
     qualifier identity is (kind, start, end); missing, extra and misidentified
-    qualifiers are counted independently of scalar dimensions. Unknown
-    reference dimensions are unscored, rather than assumed negative.
+    qualifiers are counted independently of scalar dimensions. Directed
+    relation identity is (kind, relation evidence span, from-claim evidence
+    span or None, to-claim evidence span), so claim order is irrelevant.
+    Unknown reference dimensions are unscored, rather than assumed negative.
     Qualifiers on unmatched claims are represented by claim omissions/extras,
     not double-counted as qualifier errors.
     """
@@ -66,6 +93,7 @@ def evaluate_dimension_pairs(
     # A qualifier has no meaningful "true negative" in an open span space.
     qualifier_totals = Counter()
     qualifier_by_kind = {name: Counter() for name in QUALIFIER_KINDS}
+    relation_totals = Counter()
     totals = Counter()
     per_case = []
     seen = set()
@@ -150,16 +178,43 @@ def evaluate_dimension_pairs(
         pred_signals = {s.kind for s in prediction.message_signals}
         for name in SIGNALS:
             _binary_score(signals[name], name in ref_signals, name in pred_signals)
-        ref_relations = {s.kind for s in reference.relations}
-        pred_relations = {s.kind for s in prediction.relations}
+        ref_relations = _relation_identities(reference)
+        pred_relations = _relation_identities(prediction)
+        matched_relations = ref_relations & pred_relations
+        missed_relations = ref_relations - pred_relations
+        extra_relations = pred_relations - ref_relations
+        for outcome, entries in (
+            ("matched", matched_relations),
+            ("missed", missed_relations),
+            ("extra", extra_relations),
+        ):
+            relation_totals[outcome] += sum(entries.values())
         for name in RELATIONS:
-            _binary_score(relations[name], name in ref_relations, name in pred_relations)
+            # Per-kind TP/FP/FN count *directed relation instances*, including
+            # duplicated or incorrectly linked proposals, not mere kind presence.
+            relations[name]["tp"] += sum(
+                count for identity, count in matched_relations.items()
+                if identity[0] == name
+            )
+            relations[name]["fn"] += sum(
+                count for identity, count in missed_relations.items()
+                if identity[0] == name
+            )
+            relations[name]["fp"] += sum(
+                count for identity, count in extra_relations.items()
+                if identity[0] == name
+            )
+            if not any(k[0] == name for k in ref_relations | pred_relations):
+                relations[name]["tn"] += 1
         per_case.append({
             "id": case_id, "matched_claims": len(common),
             "missed_claims": missed, "extra_claims": extra,
             "matched_qualifiers": case_qualifiers["matched"],
             "missed_qualifiers": case_qualifiers["missed"],
             "extra_qualifiers": case_qualifiers["extra"],
+            "matched_relations": sum(matched_relations.values()),
+            "missed_relations": sum(missed_relations.values()),
+            "extra_relations": sum(extra_relations.values()),
         })
     return {
         "total": len(cases),
@@ -176,6 +231,9 @@ def evaluate_dimension_pairs(
         },
         "by_temporal_label": temporal,
         "by_message_signal": signals,
+        "relation_alignment": {
+            name: relation_totals[name] for name in ("matched", "missed", "extra")
+        },
         "by_relation": relations,
         "cases": per_case,
     }
