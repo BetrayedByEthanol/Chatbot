@@ -32,6 +32,15 @@ not approval to deploy.
   archived alongside checkpoint hashes. They are read from the backend rather
   than assuming CLI argument values. Other backends store null because NLI
   thresholds do not apply.
+  DeBERTa fingerprints additionally archive hashes of local tokenizer inputs
+  (`tokenizer.json` or `spm.model`, tokenizer configuration, special/added
+  tokens, and known vocabulary/merges files), together with the SHA-256
+  hashes of artifacts serialized by the **loaded Transformers tokenizer**
+  using `save_pretrained`. The latter captures the effective tokenizer
+  configuration actually used by inference, including formats not explicitly
+  enumerated in the source file list. Both source and effective tokenizer
+  fingerprints are recorded under `model.tokenizer`; identical model weights
+  alone do not establish a reproducible classification configuration.
 
 ## Real CI smoke benchmark
 
