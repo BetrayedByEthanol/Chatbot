@@ -50,6 +50,28 @@ and empty temporal sets where evidence is insufficient. They may
 consult the full sentence, not reference labels, model outputs,
 historical model errors or other reviewers' answers.
 
+### Predeclared annotation rubric (not case-specific answers)
+
+Reviewers apply **exactly the same frozen taxonomy** before seeing
+another person's annotations. Use the **target quote in full-message
+context**, not unrelated claims or conversational assumptions.
+
+| Dimension | Valid labels and evidence rule |
+|---|---|
+| `statement_type` | `FACT` (factual state or routine), `PREFERENCE` (like/dislike/choice), `EXPERIENCE` (lived occurrence), `INTENTION` (plan to act), `OPINION` (evaluative judgment), `UNKNOWN` if not resolvable. |
+| `certainty` | `ASSERTED` when the proposition is presented as asserted; `TENTATIVE` with epistemic uncertainty; `UNKNOWN` when evidence is insufficient. Do not infer certainty from other clauses. |
+| `polarity` | `NEGATIVE` for a negated proposition or explicit negative preference, `POSITIVE` for an affirmed proposition; `UNKNOWN` when neither is supportable. |
+| `habituality` | `true` for documented recurring behavior, `false` for a clearly nonrecurring event, `null` if the text does not resolve recurrence. |
+| `conditionality` | `true` when the target claim is conditional on an expressed requirement, `false` when clearly unconditional, `null` if unresolved. A condition can appear outside the target quote. |
+| `hypotheticality` | `true` for imagined/counterfactual claims, `false` for clearly nonhypothetical ones, `null` for uncertainty. Distinguish possibility from actual current state. |
+| `temporal_references` | Array of distinct `PAST`, `PRESENT`, `FUTURE` as supported for the **same claim**; `[]` when unresolved. These are temporal references, not timestamps or a single exclusive tense. |
+
+Do **not** equate unknown with false, lack of future text with
+PRESENT, negation with a change of topic, or state change with a
+verified conversation correction. Any taxonomic uncertainty must
+be resolved before the protocol is frozen for a larger study;
+record disagreements rather than silently changing definitions.
+
 A third **distinct human adjudicator** reviews the two completed
 submissions after each is sealed, resolves all items independently,
 and supplies a rationale for every disagreement. All three sign
