@@ -28,6 +28,23 @@ def _module():
     return importlib.import_module("evaluate_semantic_models")
 
 
+def test_probe_module_is_import_registered_for_pydantic_forward_refs():
+    module = _module()
+    assert sys.modules[module.__name__] is module
+    assert module.ProbeLabels.__pydantic_complete__
+    parsed = module.ProbeLabels.from_mapping({
+        "statement_type": "PREFERENCE",
+        "certainty": "ASSERTED",
+        "polarity": "POSITIVE",
+        "habituality": None,
+        "conditionality": False,
+        "hypotheticality": False,
+        "temporal_references": ["PRESENT"],
+    })
+    assert parsed.statement_type == "PREFERENCE"
+    assert parsed.temporal_references == ("PRESENT",)
+
+
 class ScriptedBackend:
     backend_id = "test.scripted"
 
