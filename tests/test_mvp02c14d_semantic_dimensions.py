@@ -151,11 +151,11 @@ def test_source_offsets_identity_and_relation_bounds_fail_closed():
     payload = example.model_dump(mode="json")
     payload["relations"][0]["to_claim_index"] = 9
     with pytest.raises(ValidationError, match="relation target"):
-        SemanticDimensionsV2.model_validate(payload)
+        SemanticDimensionsV2.model_validate_json(json.dumps(payload))
     payload = example.model_dump(mode="json")
     payload["claims"][0]["temporal_references"] = ["PAST", "PAST"]
     with pytest.raises(ValidationError, match="unique"):
-        SemanticDimensionsV2.model_validate(payload)
+        SemanticDimensionsV2.model_validate_json(json.dumps(payload))
 
 
 def test_unknown_is_not_false_and_extra_source_fields_are_rejected():
@@ -172,11 +172,10 @@ def test_unknown_is_not_false_and_extra_source_fields_are_rejected():
 
 
 def test_learning_candidate_requires_review_pointer_and_does_not_inherit_model_truth():
+    invalid = _candidate(status="INDEPENDENTLY_REVIEWED").model_dump(mode="json")
+    invalid["review_ref"] = None
     with pytest.raises(ValidationError, match="review reference"):
-        _candidate(status="INDEPENDENTLY_REVIEWED").model_copy(
-            update={"review_ref": None}
-        ).model_validate({**_candidate(status="INDEPENDENTLY_REVIEWED").model_dump(),
-                         "review_ref": None})
+        SemanticLearningCandidate.model_validate_json(json.dumps(invalid))
     pending = _candidate()
     assert assess_training_candidate(
         pending, _policy(pending)
