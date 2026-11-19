@@ -146,6 +146,8 @@ PYTHONPATH=src python scripts/compare_independent_semantic_models.py run \
   --report artifacts/14j-private/qwen7b-metrics.json
 
 PYTHONPATH=src python scripts/compare_independent_semantic_models.py compare \
+  --packet scenarios/mvp02c14j_blind_claim_packet.json \
+  --gold artifacts/14j-private/adjudicated.json \
   --reports artifacts/14j-private/spacy-metrics.json \
             artifacts/14j-private/deberta-metrics.json \
             artifacts/14j-private/qwen7b-metrics.json \
@@ -166,9 +168,11 @@ environment, per-repetition errors, abstentions, support,
 conditional agreement, and reviewed-label agreement on
 **all eligible reference claims**. Model exceptions become
 abstentions, **not incorrect semantic predictions**.
-Paired comparison verifies identical source/reference hashes,
-cases and per-dimension eligible/unscored-reference denominators
-for **every repetition of every model**. Outputs omit source
+Paired comparison reopens the locally adjudicated reference,
+verifies identical source/reference hashes and cases, and checks
+per-dimension eligible/unscored-reference denominators against the
+**actual gold fixture** for every repetition of every model (not
+merely against another possibly tampered report). Outputs omit source
 text, predictions and raw exception messages; they say
 `NO_PRODUCTION_MODEL_SELECTED` even when results look promising.
 The labels are **human-process-attested**, not verified by code.
