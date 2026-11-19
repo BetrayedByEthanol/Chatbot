@@ -438,6 +438,147 @@ def test_cli_qualifier_loss_changes_text_free_report(tmp_path):
     assert reports[0]["metrics"]["by_dimension"] == reports[1]["metrics"]["by_dimension"]
 
 
+def test_sd002_reversed_state_change_is_missed_and_extra_not_a_match():
+    source, reference = _case("SD002")
+    original_relation = reference.relations[0]
+    reversed_relation = original_relation.model_copy(update={
+        "from_claim_index": original_relation.to_claim_index,
+        "to_claim_index": original_relation.from_claim_index,
+    })
+    predicted = reference.model_copy(update={"relations": (reversed_relation,)})
+    validate_semantic_dimensions(
+        predicted, source_turn_id=reference.source_turn_id, source_text=source,
+    )
+    perfect = evaluate_dimension_pairs([("SD002", reference, reference)])
+    reversed_report = evaluate_dimension_pairs([("SD002", reference, predicted)])
+    assert perfect["relation_alignment"] == {
+        "matched": 1, "missed": 0, "extra": 0,
+    }
+    assert reversed_report["relation_alignment"] == {
+        "matched": 0, "missed": 1, "extra": 1,
+    }
+    assert reversed_report["by_relation"]["STATE_CHANGE"] == {
+        "tp": 0, "fp": 1, "fn": 1, "tn": 0,
+    }
+    assert reversed_report["cases"][0]["missed_relations"] == 1
+    assert reversed_report["cases"][0]["extra_relations"] == 1
+    assert reversed_report["claim_alignment"] == perfect["claim_alignment"]
+    assert reversed_report["by_dimension"] == perfect["by_dimension"]
+
+
+def test_relation_scoring_is_stable_after_claim_reordering_and_endpoint_remapping():
+    source, reference = _case("SD002")
+    reordered = reference.model_copy(update={
+        "claims": tuple(reversed(reference.claims)),
+        "relations": (reference.relations[0].model_copy(update={
+            "from_claim_index": 1, "to_claim_index": 0,
+        }),),
+    })
+    validate_semantic_dimensions(
+        reordered, source_turn_id=reference.source_turn_id, source_text=source,
+    )
+    report = evaluate_dimension_pairs([("SD002", reference, reordered)])
+    assert report["claim_alignment"] == {
+        "matched_claims": 2, "missed_claims": 0, "extra_claims": 0,
+    }
+    assert report["relation_alignment"] == {
+        "matched": 1, "missed": 0, "extra": 0,
+    }
+    assert report["by_relation"]["STATE_CHANGE"]["tp"] == 1
+    assert report["by_relation"]["STATE_CHANGE"]["fp"] == 0
+    assert report["by_relation"]["STATE_CHANGE"]["fn"] == 0
+
+
+def test_wrong_endpoint_missing_source_and_duplicate_relations_score_separately():
+    source, reference = _case("SD002")
+    original = reference.relations[0]
+    variants = (
+        (original.model_copy(update={"from_claim_index": None}), (0, 1, 1)),
+        (original.model_copy(update={"to_claim_index": 0}), (0, 1, 1)),
+    )
+    for wrong, expected in variants:
+        # Self-links are invalid for two-ended relations, so choose a valid
+        # endpoint change when it would otherwise duplicate the source.
+        if wrong.from_claim_index == wrong.to_claim_index:
+            continue
+        predicted = reference.model_copy(update={"relations": (wrong,)})
+        validate_semantic_dimensions(
+            predicted, source_turn_id=reference.source_turn_id, source_text=source,
+        )
+        scored = evaluate_dimension_pairs([("SD002", reference, predicted)])
+        assert tuple(scored["relation_alignment"][key]
+                     for key in ("matched", "missed", "extra")) == expected
+
+    repeated = reference.model_copy(update={
+        "relations": (original, original),
+    })
+    scored = evaluate_dimension_pairs([("SD002", reference, repeated)])
+    assert scored["relation_alignment"] == {
+        "matched": 1, "missed": 0, "extra": 1,
+    }
+    assert scored["by_relation"]["STATE_CHANGE"]["tp"] == 1
+    assert scored["by_relation"]["STATE_CHANGE"]["fp"] == 1
+
+    unary_source, unary = _case("SD003")
+    assert unary.relations[0].from_claim_index is None
+    assert evaluate_dimension_pairs([
+        ("SD003", unary, unary),
+    ])["relation_alignment"]["matched"] == 1
+
+
+def test_relation_evidence_span_and_kind_change_count_as_missed_and_extra():
+    source, reference = _case("SD002")
+    original = reference.relations[0]
+    altered_span = SourceSpan(
+        start=original.evidence.start,
+        end=original.evidence.end - 1,
+        text=source[original.evidence.start:original.evidence.end - 1],
+    )
+    for changed in (
+        original.model_copy(update={"kind": "CONTRAST"}),
+        original.model_copy(update={"evidence": altered_span}),
+    ):
+        prediction = reference.model_copy(update={"relations": (changed,)})
+        validate_semantic_dimensions(
+            prediction, source_turn_id=reference.source_turn_id,
+            source_text=source,
+        )
+        report = evaluate_dimension_pairs([("SD002", reference, prediction)])
+        assert report["relation_alignment"] == {
+            "matched": 0, "missed": 1, "extra": 1,
+        }
+
+
+def test_cli_reversed_relation_changes_text_free_report(tmp_path):
+    row = next(row for row in _examples() if row["id"] == "SD002")
+    source = tmp_path / "relation-predictions.json"
+    reports = []
+    for reverse in (False, True):
+        candidate = deepcopy(row["reference"])
+        if reverse:
+            edge = candidate["relations"][0]
+            edge["from_claim_index"], edge["to_claim_index"] = (
+                edge["to_claim_index"], edge["from_claim_index"]
+            )
+        source.write_text(json.dumps({
+            "version": "mvp02c14d.predictions.v1",
+            "items": [{"id": "SD002", "interpretation": candidate}],
+        }), encoding="utf-8")
+        report = tmp_path / ("reversed.json" if reverse else "correct.json")
+        process = subprocess.run(
+            [sys.executable, str(SCRIPT), "--suite", str(SUITE),
+             "--predictions", str(source), "--report", str(report)],
+            capture_output=True, text=True, timeout=15,
+        )
+        assert process.returncode == 0, process.stderr
+        payload = report.read_text(encoding="utf-8")
+        assert row["text"] not in payload
+        reports.append(json.loads(payload))
+    assert reports[0]["metrics"]["relation_alignment"]["matched"] == 1
+    assert reports[1]["metrics"]["relation_alignment"]["missed"] == 1
+    assert reports[1]["metrics"]["relation_alignment"]["extra"] == 1
+
+
 def test_null_dimensions_not_rewarded_and_non_null_guesses_are_unverified():
     _, reference = _case("SD001")
     assert reference.claims[0].habituality is None
