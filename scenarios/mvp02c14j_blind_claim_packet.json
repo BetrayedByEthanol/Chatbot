@@ -1,0 +1,331 @@
+{
+  "version": "mvp02c14j.blind_claim_packet.v1",
+  "annotation_status": "UNLABELED_REVIEW_PACKET",
+  "independent_labels_available": false,
+  "origin": "NEW_AUTHOR_SYNTHETIC_TEXT_NO_SEMANTIC_REFERENCE_LABELS",
+  "scope": "OFFLINE_ORACLE_CLAIM_SPANS_CLASSIFICATION_ONLY",
+  "instructions": "Two independent human reviewers label identical target quotes using full source context without seeing model predictions, author drafts, or one another's answers. A third independent adjudicator resolves discrepancies. Claim spans are author-proposed and do not evaluate extraction.",
+  "cases": [
+    {
+      "id": "JR001",
+      "text": "On Tuesdays I normally cycle to work.",
+      "claims": [
+        {
+          "start": 12,
+          "end": 36,
+          "text": "I normally cycle to work"
+        }
+      ]
+    },
+    {
+      "id": "JR002",
+      "text": "I stopped cycling last spring, although I still own a bicycle.",
+      "claims": [
+        {
+          "start": 0,
+          "end": 29,
+          "text": "I stopped cycling last spring"
+        },
+        {
+          "start": 40,
+          "end": 61,
+          "text": "I still own a bicycle"
+        }
+      ]
+    },
+    {
+      "id": "JR003",
+      "text": "Next Thursday I will attend a pottery class.",
+      "claims": [
+        {
+          "start": 14,
+          "end": 43,
+          "text": "I will attend a pottery class"
+        }
+      ]
+    },
+    {
+      "id": "JR004",
+      "text": "I might start painting if my schedule clears.",
+      "claims": [
+        {
+          "start": 0,
+          "end": 22,
+          "text": "I might start painting"
+        }
+      ]
+    },
+    {
+      "id": "JR005",
+      "text": "I wish I could travel more often.",
+      "claims": [
+        {
+          "start": 0,
+          "end": 32,
+          "text": "I wish I could travel more often"
+        }
+      ]
+    },
+    {
+      "id": "JR006",
+      "text": "I dislike loud restaurants, but my sister loves them.",
+      "claims": [
+        {
+          "start": 0,
+          "end": 26,
+          "text": "I dislike loud restaurants"
+        },
+        {
+          "start": 32,
+          "end": 52,
+          "text": "my sister loves them"
+        }
+      ]
+    },
+    {
+      "id": "JR007",
+      "text": "Yesterday I considered joining a choir.",
+      "claims": [
+        {
+          "start": 10,
+          "end": 38,
+          "text": "I considered joining a choir"
+        }
+      ]
+    },
+    {
+      "id": "JR008",
+      "text": "I have never learned to swim.",
+      "claims": [
+        {
+          "start": 0,
+          "end": 28,
+          "text": "I have never learned to swim"
+        }
+      ]
+    },
+    {
+      "id": "JR009",
+      "text": "Every other Sunday, I bake bread.",
+      "claims": [
+        {
+          "start": 20,
+          "end": 32,
+          "text": "I bake bread"
+        }
+      ]
+    },
+    {
+      "id": "JR010",
+      "text": "If the train is late, I will work from home.",
+      "claims": [
+        {
+          "start": 22,
+          "end": 43,
+          "text": "I will work from home"
+        }
+      ]
+    },
+    {
+      "id": "JR011",
+      "text": "I used to prefer tea; now I drink coffee.",
+      "claims": [
+        {
+          "start": 0,
+          "end": 20,
+          "text": "I used to prefer tea"
+        },
+        {
+          "start": 26,
+          "end": 40,
+          "text": "I drink coffee"
+        }
+      ]
+    },
+    {
+      "id": "JR012",
+      "text": "It would be wonderful to live closer to the sea.",
+      "claims": [
+        {
+          "start": 0,
+          "end": 47,
+          "text": "It would be wonderful to live closer to the sea"
+        }
+      ]
+    },
+    {
+      "id": "JR013",
+      "text": "My colleague claims I enjoy karaoke, but I have never tried it.",
+      "claims": [
+        {
+          "start": 20,
+          "end": 35,
+          "text": "I enjoy karaoke"
+        },
+        {
+          "start": 41,
+          "end": 62,
+          "text": "I have never tried it"
+        }
+      ]
+    },
+    {
+      "id": "JR014",
+      "text": "I plan to apply for a cooking course next month.",
+      "claims": [
+        {
+          "start": 0,
+          "end": 47,
+          "text": "I plan to apply for a cooking course next month"
+        }
+      ]
+    },
+    {
+      "id": "JR015",
+      "text": "Perhaps my new job will be more interesting.",
+      "claims": [
+        {
+          "start": 8,
+          "end": 43,
+          "text": "my new job will be more interesting"
+        }
+      ]
+    },
+    {
+      "id": "JR016",
+      "text": "I generally prefer walking to driving.",
+      "claims": [
+        {
+          "start": 0,
+          "end": 37,
+          "text": "I generally prefer walking to driving"
+        }
+      ]
+    },
+    {
+      "id": "JR017",
+      "text": "The museum was closed when I arrived.",
+      "claims": [
+        {
+          "start": 0,
+          "end": 36,
+          "text": "The museum was closed when I arrived"
+        }
+      ]
+    },
+    {
+      "id": "JR018",
+      "text": "I would not adopt a puppy unless I had more time.",
+      "claims": [
+        {
+          "start": 0,
+          "end": 25,
+          "text": "I would not adopt a puppy"
+        }
+      ]
+    },
+    {
+      "id": "JR019",
+      "text": "My brother used to work nights, but he now works mornings.",
+      "claims": [
+        {
+          "start": 0,
+          "end": 30,
+          "text": "My brother used to work nights"
+        },
+        {
+          "start": 36,
+          "end": 57,
+          "text": "he now works mornings"
+        }
+      ]
+    },
+    {
+      "id": "JR020",
+      "text": "I think the sequel is less engaging than the original.",
+      "claims": [
+        {
+          "start": 8,
+          "end": 53,
+          "text": "the sequel is less engaging than the original"
+        }
+      ]
+    },
+    {
+      "id": "JR021",
+      "text": "Will I still like this hobby in a year?",
+      "claims": [
+        {
+          "start": 0,
+          "end": 39,
+          "text": "Will I still like this hobby in a year?"
+        }
+      ]
+    },
+    {
+      "id": "JR022",
+      "text": "Please remind me to water the plants tomorrow.",
+      "claims": [
+        {
+          "start": 0,
+          "end": 45,
+          "text": "Please remind me to water the plants tomorrow"
+        }
+      ]
+    },
+    {
+      "id": "JR023",
+      "text": "I have been learning Spanish recently.",
+      "claims": [
+        {
+          "start": 0,
+          "end": 37,
+          "text": "I have been learning Spanish recently"
+        }
+      ]
+    },
+    {
+      "id": "JR024",
+      "text": "Suppose I had the day off: I would visit the mountains.",
+      "claims": [
+        {
+          "start": 27,
+          "end": 54,
+          "text": "I would visit the mountains"
+        }
+      ]
+    },
+    {
+      "id": "JR025",
+      "text": "I used to dislike climbing, but I enjoy it these days.",
+      "claims": [
+        {
+          "start": 0,
+          "end": 26,
+          "text": "I used to dislike climbing"
+        },
+        {
+          "start": 32,
+          "end": 53,
+          "text": "I enjoy it these days"
+        }
+      ]
+    },
+    {
+      "id": "JR026",
+      "text": "My friend said, \"I never eat breakfast,\" but I do.",
+      "claims": [
+        {
+          "start": 17,
+          "end": 38,
+          "text": "I never eat breakfast"
+        },
+        {
+          "start": 45,
+          "end": 49,
+          "text": "I do"
+        }
+      ]
+    }
+  ]
+}
