@@ -15,9 +15,11 @@ import math
 import os
 from pathlib import Path
 import platform
+import re
 import resource
 from statistics import median
 from time import perf_counter
+from urllib.request import Request
 
 from evaluate_semantic_models import (
     DebertaNliProbe, OllamaJsonProbe, ProbeLabels,
@@ -39,7 +41,8 @@ def _package_version(name: str) -> str | None:
         return None
 
 
-def _model_provenance(*, backend_name: str, model_dir: Path | None,
+def _model_provenance(*, backend_name: str, backend,
+                      model_dir: Path | None,
                       model_name: str | None) -> dict:
     if backend_name == "deberta":
         assert model_dir is not None
@@ -65,10 +68,31 @@ def _model_provenance(*, backend_name: str, model_dir: Path | None,
             "weights_local_only": True,
         }
     if backend_name == "ollama":
-        # Model tags are mutable. A tag alone is not an immutable fingerprint;
-        # the workflow also archives the local `ollama list` digest.
-        return {"model_name": model_name, "model_tag_is_mutable": True,
-                "digest_verified": False}
+        # Capture the resolved local model digest, not just a mutable tag.
+        # Use the same proxy-free loopback client as the inference backend.
+        request = Request(backend.url + "/api/tags")
+        with backend._opener.open(request, timeout=10) as response:
+            blob = response.read(262145)
+        if len(blob) > 262144:
+            raise ValueError("oversized local Ollama tags response")
+        data = json.loads(blob)
+        if not isinstance(data, dict) or not isinstance(data.get("models"), list):
+            raise ValueError("invalid local Ollama model metadata")
+        models = [item for item in data["models"]
+                  if isinstance(item, dict)
+                  and (item.get("name") == model_name
+                       or item.get("model") == model_name)]
+        if len(models) != 1:
+            raise ValueError("configured model not present on local Ollama")
+        model = models[0]
+        digest = model.get("digest")
+        if not isinstance(digest, str) or re.fullmatch("[0-9a-f]{64}", digest) is None:
+            raise ValueError("missing immutable Ollama model digest")
+        return {
+            "model_name": model_name, "model_tag_is_mutable": True,
+            "digest_verified": True, "digest": digest,
+            "size_bytes": model.get("size"),
+        }
     return {"model_name": "spacy.blank_en", "trained_pipeline": False,
             "probe_revision": "spacy.blank_en.lexical_cues.v1"}
 
@@ -110,7 +134,7 @@ def run_benchmark(*, suite: Path, backend, backend_name: str,
         raise ValueError("unsupported backend")
     if not isinstance(getattr(backend, "backend_id", None), str):
         raise TypeError("backend must identify itself")
-    provenance = _model_provenance(backend_name=backend_name,
+    provenance = _model_provenance(backend_name=backend_name, backend=backend,
                                     model_dir=model_dir, model_name=model_name)
     warmup_times = []
     warmup_errors = 0
