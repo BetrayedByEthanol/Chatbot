@@ -494,13 +494,11 @@ def test_wrong_endpoint_missing_source_and_duplicate_relations_score_separately(
     original = reference.relations[0]
     variants = (
         (original.model_copy(update={"from_claim_index": None}), (0, 1, 1)),
-        (original.model_copy(update={"to_claim_index": 0}), (0, 1, 1)),
+        (original.model_copy(update={
+            "from_claim_index": 1, "to_claim_index": 0,
+        }), (0, 1, 1)),
     )
     for wrong, expected in variants:
-        # Self-links are invalid for two-ended relations, so choose a valid
-        # endpoint change when it would otherwise duplicate the source.
-        if wrong.from_claim_index == wrong.to_claim_index:
-            continue
         predicted = reference.model_copy(update={"relations": (wrong,)})
         validate_semantic_dimensions(
             predicted, source_turn_id=reference.source_turn_id, source_text=source,
