@@ -8,6 +8,7 @@ on:
       - "scripts/benchmark_semantic_models.py"
       - "scripts/evaluate_semantic_models.py"
       - "scripts/compare_semantic_model_reports.py"
+      - "scripts/analyze_semantic_benchmark_results.py"
       - "scenarios/mvp02c14d_semantic_drafts.json"
 
 concurrency:
@@ -79,6 +80,32 @@ jobs:
                   "median_suite_ms": profile["timing"]["median_suite_ms"],
                   "run_error_counts": [r["error_claims"] for r in profile["runs"]],
               }, sort_keys=True))
+          PY
+      - name: Classify benchmark validity and model selection blockers
+        run: |
+          python scripts/analyze_semantic_benchmark_results.py \
+            --pair evidence/spacy-scores.json evidence/spacy-profile.json \
+            --pair evidence/qwen-scores.json evidence/qwen-profile.json \
+            --run-id ${{ github.run_id }} \
+            --report evidence/selection-analysis.json
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          data = json.loads(Path("evidence/selection-analysis.json").read_text())
+          lines = ["## Semantic benchmark validity (not model approval)", "",
+                   f"Selection decision: **{data['decision']}**", ""]
+          for item in data["backends"]:
+              lines.append(f"- **{item['backend']}**: {item['output_status']}; "
+                           f"model errors per run: {item['errors_per_run']}; "
+                           f"blocked: {', '.join(item['blockers'])}")
+              if item["output_status"] in ("NO_VALID_MODEL_OUTPUT",
+                                            "PARTIAL_MODEL_ERRORS",
+                                            "NO_SUPPORTED_DIMENSIONS"):
+                  print("::warning::Model benchmark has unreliable or absent semantic predictions: "
+                        + item["backend"] + "; see selection-analysis.json")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as output:
+              output.write("\n".join(lines) + "\n")
           PY
       - name: Archive text-free evidence (including partial runs)
         if: always()
