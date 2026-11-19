@@ -65,7 +65,7 @@ avoided previous predictions. Outputs are marked
 human judgments remain external prerequisites.
 
 Run from repository root with a Python environment installed using
-`python -m pip install -e ".[test]"`, and `PYTHONPATH=src`:
+`python -m pip install -e ".[test,semantic-eval]"`, and `PYTHONPATH=src`:
 
 ```bash
 mkdir -p artifacts/14j-private
@@ -152,7 +152,9 @@ PYTHONPATH=src python scripts/compare_independent_semantic_models.py compare \
   --report artifacts/14j-private/paired-summary.json
 ```
 
-Qwen runs with explicit JSON Schema to avoid v14H's invalid JSON
+For the local DeBERTa adapter, install the optional `zeroshot` dependencies
+(including Torch, Transformers and SentencePiece) separately and provide
+already available checkpoint weights/tokenizer. Qwen runs with explicit JSON Schema to avoid v14H's invalid JSON
 value issue; DeBERTa uses its existing NLI abstention cutoffs.
 No model is downloaded automatically; DeBERTa requires local
 valid native weights and tokenizer. Ollama is loopback-only
