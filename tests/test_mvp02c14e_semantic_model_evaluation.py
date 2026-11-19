@@ -294,3 +294,67 @@ def test_subprocess_no_model_dependencies_for_parser_and_guardrails():
         cwd=str(ROOT), capture_output=True, text=True, timeout=15,
     )
     assert result.returncode == 0, result.stderr
+
+def test_paired_comparison_checks_matching_suite_and_coverage(tmp_path):
+    m = _module()
+    from compare_semantic_model_reports import compare_reports
+    backend = ScriptedBackend(m)
+    a = m.evaluate_probe(
+        SUITE, backend=backend, case_ids=("SD001", "SD007"),
+    )
+    b = json.loads(json.dumps(a))
+    b["backend"] = "other.model"
+    b["by_dimension"]["certainty"]["correct"] = 1
+    b["by_dimension"]["certainty"]["incorrect"] = 1
+    paths = [tmp_path / "a.json", tmp_path / "b.json"]
+    for path, payload in zip(paths, (a, b)):
+        path.write_text(json.dumps(payload), encoding="utf-8")
+    compared = compare_reports(paths)
+    assert compared["paired_case_ids"] == ["SD001", "SD007"]
+    assert compared["paired_claims"] == 2
+    assert compared["backends"][0]["dimensions"]["certainty"]["coverage"] == 1.0
+    assert compared["backends"][1]["dimensions"]["certainty"]["overall_draft_agreement"] == 0.5
+    assert "I enjoy gardening" not in json.dumps(compared)
+    with pytest.raises(ValueError, match="duplicate model"):
+        b["backend"] = a["backend"]
+        paths[1].write_text(json.dumps(b), encoding="utf-8")
+        compare_reports(paths)
+
+
+def test_paired_comparison_rejects_different_case_selections(tmp_path):
+    m = _module()
+    from compare_semantic_model_reports import compare_reports
+    a = m.evaluate_probe(
+        SUITE, backend=ScriptedBackend(m), case_ids=("SD001", "SD007"),
+    )
+    b = m.evaluate_probe(
+        SUITE, backend=ScriptedBackend(m), case_ids=("SD002", "SD007"),
+    )
+    b["backend"] = "second.model"
+    paths = [tmp_path / "a.json", tmp_path / "b.json"]
+    for path, value in zip(paths, (a, b)):
+        path.write_text(json.dumps(value), encoding="utf-8")
+    with pytest.raises(ValueError, match="not paired"):
+        compare_reports(paths)
+
+
+def test_comparison_cli_write_once_and_no_source_echo(tmp_path):
+    m = _module()
+    from compare_semantic_model_reports import main as compare_main
+    a = m.evaluate_probe(SUITE, backend=ScriptedBackend(m), case_ids=("SD001",))
+    b = json.loads(json.dumps(a))
+    b["backend"] = "independent.test.backend"
+    paths = [tmp_path / "first.json", tmp_path / "second.json"]
+    for path, payload in zip(paths, (a, b)):
+        path.write_text(json.dumps(payload), encoding="utf-8")
+    output = tmp_path / "comparison.json"
+    args = [
+        "--reports", *(str(path) for path in paths),
+        "--output", str(output),
+    ]
+    assert compare_main(args) == 0
+    raw = output.read_text(encoding="utf-8")
+    assert "I enjoy gardening" not in raw
+    with pytest.raises(SystemExit):
+        compare_main(args)
+    assert output.read_text(encoding="utf-8") == raw
