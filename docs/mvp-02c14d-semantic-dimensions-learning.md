@@ -64,13 +64,21 @@ an untouched holdout, and not a basis for deployment quality claims. Keep
 unchanged for historical regression comparison.
 
 `semantic_dimension_evaluation.py` compares injected predictions with
-reference cases: exact-span aligned/missed/extra claims; per-dimension eligible,
-supported, correct, incorrect, abstained, unscored-reference and unverified
-prediction counts; temporal-label TP/FP/FN/TN on known-reference claims;
-message correction cues and semantic transitions scored **separately**.
-Unknown reference dimensions are **not** silently converted into negatives.
-The initial comparator uses strict exact span alignment (a conservative
-extraction diagnostic, not semantic equivalence).
+reference cases: exact-span aligned/missed/extra claims; **per-aligned-claim
+qualifier coverage** by kind and exact source span (matched/missed/extra,
+including repeated qualifiers), both per case and aggregated by kind;
+per-dimension eligible, supported, correct, incorrect, abstained,
+unscored-reference and unverified prediction counts; temporal-label
+TP/FP/FN/TN on known-reference claims; message correction cues and semantic
+transitions scored **separately**. Qualifiers on unmatched claims are
+accounted for through claim omissions/extras rather than counted twice.
+There is no meaningful qualifier true-negative metric because possible
+source spans are open-ended. Unknown reference dimensions are **not**
+silently converted into negatives. The comparator uses strict exact span
+alignment (a conservative extraction diagnostic, not semantic equivalence).
+A prediction that keeps SD007's primary claim but drops its external
+CONDITION qualifier loses qualifier recall, even if its scalar
+conditionality classification remains unchanged.
 
 Use a predictions JSON file shaped as:
 
