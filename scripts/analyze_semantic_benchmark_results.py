@@ -148,10 +148,18 @@ def analyze_pairs(paths: list[tuple[Path, Path]], *, artifact_run_id: int | None
         count = score["sample_claims"]
         run_errors = [run["error_claims"] for run in profile["runs"]]
         error_fractions = [_ratio(errors, count) for errors in run_errors]
+        total_supported = sum(
+            score["by_dimension"][key]["supported"] for key in LABEL_FIELDS
+        )
         output_status = (
             "NO_VALID_MODEL_OUTPUT" if all(errors == count for errors in run_errors)
             else "PARTIAL_MODEL_ERRORS" if any(run_errors)
+            else "NO_SUPPORTED_DIMENSIONS" if total_supported == 0
             else "NO_MODEL_ERRORS_OBSERVED"
+        )
+        repetition_drift = any(
+            run["by_dimension"] != profile["runs"][0]["by_dimension"]
+            for run in profile["runs"][1:]
         )
         dimensions = {}
         for dimension in LABEL_FIELDS:
@@ -169,6 +177,10 @@ def analyze_pairs(paths: list[tuple[Path, Path]], *, artifact_run_id: int | None
             blockers.append("ALL_CLASSIFICATIONS_FAILED")
         elif output_status == "PARTIAL_MODEL_ERRORS":
             blockers.append("PARTIAL_CLASSIFICATION_ERRORS")
+        elif output_status == "NO_SUPPORTED_DIMENSIONS":
+            blockers.append("ALL_DIMENSIONS_ABSTAINED")
+        if repetition_drift:
+            blockers.append("RUN_TO_RUN_DIMENSION_DRIFT")
         if any(
             metrics["eligible"] < MIN_REVIEWED_ELIGIBLE_PROPOSAL
             for metrics in dimensions.values()
@@ -197,6 +209,7 @@ def analyze_pairs(paths: list[tuple[Path, Path]], *, artifact_run_id: int | None
             "error_fractions_per_run": error_fractions,
             "warmup_errors": profile.get("warmup", {}).get("errors"),
             "output_status": output_status,
+            "run_to_run_dimension_drift": repetition_drift,
             "dimensions": dimensions,
             "median_suite_ms": profile.get("timing", {}).get("median_suite_ms"),
             "median_claim_inference_ms": score.get("median_claim_inference_ms"),
