@@ -69,9 +69,18 @@ qualifier coverage** by kind and exact source span (matched/missed/extra,
 including repeated qualifiers), both per case and aggregated by kind;
 per-dimension eligible, supported, correct, incorrect, abstained,
 unscored-reference and unverified prediction counts; temporal-label
-TP/FP/FN/TN on known-reference claims; message correction cues and semantic
-transitions scored **separately**. Qualifiers on unmatched claims are
-accounted for through claim omissions/extras rather than counted twice.
+TP/FP/FN/TN on known-reference claims; message correction cues and
+**directed relation instances** scored separately. Each relation matches on
+(kind, relation evidence span, optional source-claim evidence span,
+destination-claim evidence span), rather than relation-kind presence or
+claim-list indices. Reordering claims without changing which evidence
+spans the relation connects is score-neutral; reversing direction, linking
+the wrong claim, altering evidence, or duplicating a relation produces
+missed/extra counts. Per-case `matched_relations`, `missed_relations`,
+`extra_relations`, overall `relation_alignment`, and per-kind
+`by_relation` TP/FP/FN/TN preserve these differences without exposing
+the source text. Qualifiers on unmatched claims are accounted for through
+claim omissions/extras rather than counted twice.
 There is no meaningful qualifier true-negative metric because possible
 source spans are open-ended. Unknown reference dimensions are **not**
 silently converted into negatives. The comparator uses strict exact span
