@@ -133,7 +133,11 @@ Before considering a model:
 
 `scripts/analyze_semantic_benchmark_results.py` validates paired v14F
 score/profile contracts, v14E dimension arithmetic, per-run errors, case IDs
-and versioned provenance. It emits a write-once **text-free** analysis
+and versioned provenance. Reference-derived `eligible` and
+`unscored_reference` counts must match **per dimension** across every
+backend and every measured repetition: model abstention and failures may change
+coverage, but cannot alter frozen reference-label denominators. It emits a
+write-once **text-free** analysis
 containing coverage, conditional *draft* agreement, error fractions, repeated
 run drift, model-selection blockers, and explicitly **NO_MODEL_SELECTED**.
 
