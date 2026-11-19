@@ -1,0 +1,90 @@
+name: MVP-02C.14F real semantic model benchmark
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/mvp02c14f-semantic-benchmark.yml"
+      - "scripts/benchmark_semantic_models.py"
+      - "scripts/evaluate_semantic_models.py"
+      - "scripts/compare_semantic_model_reports.py"
+      - "scenarios/mvp02c14d_semantic_drafts.json"
+
+concurrency:
+  group: semantic-benchmark-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  real-local-model-benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    env:
+      PYTHONPATH: src
+      OMP_NUM_THREADS: "2"
+      TOKENIZERS_PARALLELISM: "false"
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      OLLAMA_MODEL: qwen2.5:0.5b
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install real local spaCy tokenizer and runtime
+        run: python -m pip install -e ".[test,semantic-eval]"
+      - name: Run actual spaCy lexical baseline on all 15 synthetic cases
+        run: |
+          mkdir -p evidence
+          python scripts/benchmark_semantic_models.py \
+            --backend spacy --warmups 1 --repetitions 2 \
+            --report evidence/spacy-scores.json \
+            --profile evidence/spacy-profile.json
+      - name: Start local Ollama service and install real small Qwen model
+        run: |
+          docker run -d --name semantic-ollama \
+            -p 127.0.0.1:11434:11434 ollama/ollama:latest
+          for attempt in $(seq 1 90); do
+            if curl --fail --silent http://127.0.0.1:11434/api/tags > /dev/null; then
+              break
+            fi
+            sleep 2
+          done
+          curl --fail --silent http://127.0.0.1:11434/api/tags > /dev/null
+          docker exec semantic-ollama ollama pull "$OLLAMA_MODEL"
+          docker exec semantic-ollama ollama list
+      - name: Run actual local Qwen2.5 0.5B classification on same 15 cases
+        run: |
+          python scripts/benchmark_semantic_models.py \
+            --backend ollama --model "$OLLAMA_MODEL" \
+            --ollama-url http://127.0.0.1:11434 --timeout-s 90 \
+            --warmups 1 --repetitions 2 \
+            --report evidence/qwen-scores.json \
+            --profile evidence/qwen-profile.json
+      - name: Generate paired diagnostic comparison
+        run: |
+          python scripts/compare_semantic_model_reports.py \
+            --reports evidence/spacy-scores.json evidence/qwen-scores.json \
+            --output evidence/spacy-qwen-paired.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          for name in ("spacy", "qwen"):
+              profile = json.loads(Path(f"evidence/{name}-profile.json").read_text())
+              print(json.dumps({
+                  "backend": profile["backend"],
+                  "model": profile["model"]["model_name"],
+                  "claims": profile["sample_claims"],
+                  "median_suite_ms": profile["timing"]["median_suite_ms"],
+                  "run_error_counts": [r["error_claims"] for r in profile["runs"]],
+              }, sort_keys=True))
+          PY
+      - name: Archive text-free evidence (including partial runs)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mvp02c14f-real-spacy-qwen-benchmark
+          path: evidence/*.json
+          retention-days: 14
+          if-no-files-found: warn
