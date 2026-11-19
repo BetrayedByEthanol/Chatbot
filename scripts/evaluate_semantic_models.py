@@ -10,12 +10,14 @@ from __future__ import annotations
 
 import argparse
 from hashlib import sha256
+from http.client import HTTPException
 import json
 import math
 from pathlib import Path
 from statistics import median
 from time import perf_counter
-from typing import Protocol
+from typing import Callable, Protocol
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import Request, ProxyHandler, build_opener
 
@@ -212,11 +214,36 @@ class DebertaNliProbe:
         })
 
 
+# Explicit schema is an opt-in offline experiment; the existing v14E JSON-mode
+# benchmark remains unchanged. Never relax strict ProbeLabels validation.
+OLLAMA_LABEL_SCHEMA_V1 = {
+    "type": "object", "additionalProperties": False,
+    "properties": {
+        "statement_type": {
+            "type": "string",
+            "enum": ["FACT", "PREFERENCE", "EXPERIENCE", "INTENTION", "OPINION", "UNKNOWN"],
+        },
+        "certainty": {"type": "string", "enum": ["ASSERTED", "TENTATIVE", "UNKNOWN"]},
+        "polarity": {"type": "string", "enum": ["POSITIVE", "NEGATIVE", "UNKNOWN"]},
+        "habituality": {"type": ["boolean", "null"]},
+        "conditionality": {"type": ["boolean", "null"]},
+        "hypotheticality": {"type": ["boolean", "null"]},
+        "temporal_references": {
+            "type": "array",
+            "items": {"type": "string", "enum": ["PAST", "PRESENT", "FUTURE"]},
+            "maxItems": 3, "uniqueItems": True,
+        },
+    },
+    "required": list(LABEL_FIELDS),
+}
+
+
 class OllamaJsonProbe:
     """Local-only Ollama structured prediction; no external service fallback."""
 
     def __init__(self, *, model: str, url: str = "http://127.0.0.1:11434",
-                 timeout_s: float = 60.0):
+                 timeout_s: float = 60.0, format_mode: str = "json",
+                 diagnostic_sink: Callable[[str], None] | None = None):
         parsed = urlsplit(url)
         if (parsed.scheme != "http"
                 or (parsed.hostname or "").casefold() not in (
@@ -230,10 +257,21 @@ class OllamaJsonProbe:
             raise ValueError("model name required")
         if type(timeout_s) not in (int, float) or not math.isfinite(timeout_s) or not 1 <= timeout_s <= 300:
             raise ValueError("timeout must be 1..300 seconds")
+        if format_mode not in ("json", "schema"):
+            raise ValueError("format_mode must be json or schema")
+        if diagnostic_sink is not None and not callable(diagnostic_sink):
+            raise ValueError("invalid diagnostic sink")
+        self.format_mode, self._diagnostic_sink = format_mode, diagnostic_sink
         self.url, self.model, self.timeout_s = url.rstrip("/"), model, timeout_s
         # Do not allow environment HTTP_PROXY to receive conversation text.
         self._opener = build_opener(ProxyHandler({}))
         self.backend_id = "ollama.local_json." + model
+
+    def _diagnostic(self, code: str) -> None:
+        # Deliberately only fixed internal categories, NEVER exception repr,
+        # model text, source, response bodies, request payloads or URLs.
+        if self._diagnostic_sink is not None:
+            self._diagnostic_sink(code)
 
     def predict(self, *, source: str, quote: str) -> ProbeLabels:
         instruction = (
@@ -249,7 +287,9 @@ class OllamaJsonProbe:
             "the prior conversation. Never invent missing source text."
         )
         payload = json.dumps({
-            "model": self.model, "stream": False, "format": "json",
+            "model": self.model, "stream": False,
+            "format": ("json" if self.format_mode == "json"
+                       else OLLAMA_LABEL_SCHEMA_V1),
             "options": {"temperature": 0, "num_predict": 350},
             "messages": [
                 {"role": "system", "content": instruction},
@@ -262,19 +302,72 @@ class OllamaJsonProbe:
             self.url + "/api/chat", data=payload,
             headers={"Content-Type": "application/json"}, method="POST",
         )
-        with self._opener.open(request, timeout=self.timeout_s) as response:
-            if response.status != 200:
-                raise RuntimeError("non-200 Ollama response")
-            raw = response.read(262144 + 1)
+        try:
+            with self._opener.open(request, timeout=self.timeout_s) as response:
+                if response.status != 200:
+                    self._diagnostic("HTTP_NON_200")
+                    raise RuntimeError("non-200 Ollama response")
+                raw = response.read(262144 + 1)
+        except HTTPError as exc:
+            self._diagnostic("HTTP_4XX" if 400 <= exc.code < 500
+                             else "HTTP_5XX" if 500 <= exc.code < 600
+                             else "HTTP_OTHER")
+            raise
+        except HTTPException:
+            # IncompleteRead and other HTTP protocol failures are neither
+            # URLError nor OSError. Emit exactly one safe event so the offline
+            # diagnostic report can account for the interrupted model call.
+            self._diagnostic("HTTP_PROTOCOL_ERROR")
+            raise
+        except TimeoutError:
+            self._diagnostic("TRANSPORT_TIMEOUT")
+            raise
+        except URLError as exc:
+            self._diagnostic("TRANSPORT_TIMEOUT" if isinstance(exc.reason, TimeoutError)
+                             else "TRANSPORT_ERROR")
+            raise
+        except OSError:
+            self._diagnostic("TRANSPORT_ERROR")
+            raise
         if len(raw) > 262144:
+            self._diagnostic("ENVELOPE_OVERSIZE")
             raise ValueError("Ollama response too large")
-        result = json.loads(raw)
+        try:
+            result = json.loads(raw)
+        except (ValueError, UnicodeDecodeError):
+            self._diagnostic("ENVELOPE_JSON_INVALID")
+            raise
         if not isinstance(result, dict) or not isinstance(result.get("message"), dict):
+            self._diagnostic("ENVELOPE_INVALID")
             raise ValueError("invalid Ollama envelope")
         content = result["message"].get("content")
         if not isinstance(content, str) or len(content) > 10000:
+            self._diagnostic("CONTENT_INVALID")
             raise ValueError("invalid Ollama content")
-        return ProbeLabels.from_mapping(json.loads(content))
+        if not content.strip():
+            self._diagnostic("CONTENT_EMPTY")
+            raise ValueError("empty Ollama content")
+        try:
+            labels = json.loads(content)
+        except (ValueError, UnicodeDecodeError):
+            self._diagnostic(
+                "OUTPUT_TRUNCATED" if result.get("done_reason") == "length"
+                else "CONTENT_JSON_INVALID"
+            )
+            raise
+        if not isinstance(labels, dict):
+            self._diagnostic("LABEL_NOT_OBJECT")
+            raise ValueError("model labels must be an object")
+        if set(labels) != set(LABEL_FIELDS):
+            self._diagnostic("LABEL_FIELD_SET_INVALID")
+            raise ValueError("model labels have missing or extra fields")
+        try:
+            validated = ProbeLabels.from_mapping(labels)
+        except (ValueError, TypeError, ValidationError):
+            self._diagnostic("LABEL_VALUE_INVALID")
+            raise
+        self._diagnostic("VALID_PREDICTION")
+        return validated
 
 
 def _blank_counts() -> dict:

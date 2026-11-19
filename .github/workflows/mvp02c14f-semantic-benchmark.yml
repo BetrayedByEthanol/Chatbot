@@ -7,6 +7,7 @@ on:
       - ".github/workflows/mvp02c14f-semantic-benchmark.yml"
       - "scripts/benchmark_semantic_models.py"
       - "scripts/evaluate_semantic_models.py"
+      - "scripts/diagnose_semantic_model_failures.py"
       - "scripts/compare_semantic_model_reports.py"
       - "scripts/analyze_semantic_benchmark_results.py"
       - "scenarios/mvp02c14d_semantic_drafts.json"
@@ -104,6 +105,32 @@ jobs:
                                             "NO_SUPPORTED_DIMENSIONS"):
                   print("::warning::Model benchmark has unreliable or absent semantic predictions: "
                         + item["backend"] + "; see selection-analysis.json")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as output:
+              output.write("\n".join(lines) + "\n")
+          PY
+      - name: MVP-02C.14H real Ollama JSON versus schema failure diagnostics
+        run: |
+          python scripts/diagnose_semantic_model_failures.py \
+            --model "$OLLAMA_MODEL" \
+            --ollama-url http://127.0.0.1:11434 --timeout-s 90 \
+            --modes json schema \
+            --report evidence/ollama-failure-diagnostics.json
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          doc = json.loads(Path("evidence/ollama-failure-diagnostics.json").read_text())
+          lines = ["", "## 14H: local Ollama output failure diagnostics", "",
+                   "**Not a model selection or memory admission gate.**", ""]
+          for item in doc["modes"]:
+              line = (f"- **{item['mode']}**: {item['status']} "
+                      f"(valid {item['valid_prediction_claims']}/"
+                      f"{item['sample_claims']}, errors {item['error_claims']}); "
+                      f"failure codes: {json.dumps(item['failure_histogram'], sort_keys=True)}")
+              lines.append(line)
+              if item["error_claims"]:
+                  print("::warning::Ollama " + item["mode"] + " diagnostic errors: "
+                        + json.dumps(item["failure_histogram"], sort_keys=True))
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as output:
               output.write("\n".join(lines) + "\n")
           PY
