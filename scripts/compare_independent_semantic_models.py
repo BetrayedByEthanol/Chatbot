@@ -16,7 +16,7 @@ from time import perf_counter
 from benchmark_semantic_models import _decision_thresholds, _host, _model_provenance
 from evaluate_semantic_models import (
     DebertaNliProbe, LABEL_FIELDS, OllamaJsonProbe, ProbeLabels,
-    SpacyStructuralProbe, _add_score, _blank_counts,
+    SpacyStructuralProbe, _add_score, _blank_counts, _unknown,
 )
 from review_independent_semantic_labels import (
     GOLD_STATUS, GOLD_VERSION, load_packet,
@@ -190,9 +190,25 @@ def benchmark_reviewed(*, gold_path: Path, packet_path: Path, backend,
     }
 
 
-def compare_reports(paths: list[Path]) -> dict:
+def compare_reports(paths: list[Path], *, gold_path: Path,
+                    packet_path: Path) -> dict:
     if not 2 <= len(paths) <= 5:
         raise ValueError("need 2..5 model reports")
+    gold, actual_gold_sha, actual_packet_sha = load_reviewed_reference(
+        gold_path=gold_path, packet_path=packet_path
+    )
+    expected_ids = [case["id"] for case in gold["cases"]]
+    expected_claims = gold["claim_count"]
+    # Anchor the reference denominators to the actual human fixture;
+    # mere cross-backend equality could conceal uniformly corrupted labels.
+    expected_denominators = tuple(
+        (field,
+         sum(not _unknown(field, claim["labels"][field])
+             for case in gold["cases"] for claim in case["claims"]),
+         sum(_unknown(field, claim["labels"][field])
+             for case in gold["cases"] for claim in case["claims"]))
+        for field in LABEL_FIELDS
+    )
     loaded = [_load(path) for path in paths]
     first = loaded[0][0]
     same = ("reviewed_reference_sha256", "source_packet_sha256", "case_ids",
@@ -201,9 +217,16 @@ def compare_reports(paths: list[Path]) -> dict:
     baseline_denominators = None
     summaries = []
     for report, digest in loaded:
-        if report.get("version") != VERSION or (
-            any(report.get(key) != first.get(key) for key in same)
-        ):
+        if (report.get("version") != VERSION
+                or report.get("reference_status") != GOLD_STATUS
+                or report.get("human_independence")
+                    != "HUMAN_ATTESTED_NOT_TECHNICALLY_VERIFIABLE"
+                or report.get("reviewed_reference_sha256") != actual_gold_sha
+                or report.get("source_packet_sha256") != actual_packet_sha
+                or report.get("case_ids") != expected_ids
+                or report.get("sample_cases") != len(expected_ids)
+                or report.get("sample_claims") != expected_claims
+                or any(report.get(key) != first.get(key) for key in same)):
             raise ValueError("unpaired or unreviewed model reports")
         identity = report.get("backend")
         if not isinstance(identity, str) or identity in seen:
@@ -234,6 +257,8 @@ def compare_reports(paths: list[Path]) -> dict:
                         or score["supported"] > run["claims"] - run["errors"]):
                     raise ValueError("corrupted model scoring arithmetic")
                 denoms.append((field, score["eligible"], score["unscored_reference"]))
+            if tuple(denoms) != expected_denominators:
+                raise ValueError("reference denominators disagree with reviewed fixture")
             if baseline_denominators is None:
                 baseline_denominators = denoms
             elif denoms != baseline_denominators:
@@ -306,6 +331,8 @@ def main(argv=None) -> int:
     run.add_argument("--report", type=Path, required=True)
     compare = subs.add_parser("compare")
     compare.add_argument("--reports", nargs="+", type=Path, required=True)
+    compare.add_argument("--gold", type=Path, required=True)
+    compare.add_argument("--packet", type=Path, required=True)
     compare.add_argument("--report", type=Path, required=True)
     args = parser.parse_args(argv)
     if args.report.exists():
@@ -320,7 +347,8 @@ def main(argv=None) -> int:
                 repetitions=args.repetitions,
             )
         else:
-            result = compare_reports(args.reports)
+            result = compare_reports(args.reports, gold_path=args.gold,
+                                     packet_path=args.packet)
         _write_once(args.report, result)
     except (OSError, ValueError, TypeError, KeyError):
         parser.error("missing validated human reference, local model or paired reports")
