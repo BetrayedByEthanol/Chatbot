@@ -18,7 +18,7 @@ from benchmark_semantic_models import _model_provenance
 from diagnose_semantic_model_failures import _run_mode
 from evaluate_semantic_models import (
     LABEL_FIELDS, OLLAMA_PROMPT_VARIANTS, OLLAMA_PROMPT_VERSIONS,
-    OllamaJsonProbe, _ollama_instruction,
+    OllamaJsonProbe, _ollama_generation_options, _ollama_instruction,
 )
 
 VERSION = "mvp02c14i.semantic_prompt_quality_experiment.v1"
@@ -188,7 +188,7 @@ def run_experiment(
         "sample_claims": pairing[3],
         "schema_sha256": pairing[4],
         "format_mode": "schema",
-        "generation": {"temperature": 0, "num_predict": 350},
+        "generation": _ollama_generation_options(),
         "experiment_order": "INTERLEAVED_BASELINE_CANDIDATE",
         "candidates": compared,
         "aggregate_differences_by_repetition": deltas,
