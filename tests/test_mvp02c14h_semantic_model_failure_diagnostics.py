@@ -110,7 +110,8 @@ def test_invalid_ollama_content_classified_without_original_text(
         backend.predict(source="SECRET_private", quote="SECRET_claim")
     assert codes == [expected]
     assert "SECRET" not in json.dumps(codes)
-    assert content not in json.dumps(codes)
+    if content:
+        assert content not in json.dumps(codes)
 
 
 @pytest.mark.parametrize("raw,expected", [
