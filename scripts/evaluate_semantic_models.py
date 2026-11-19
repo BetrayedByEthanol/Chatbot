@@ -284,6 +284,11 @@ def _ollama_instruction(variant: str) -> str:
     return instruction
 
 
+def _ollama_generation_options() -> dict:
+    """Keep the recorded 14I decoding parameters identical to the real request."""
+    return {"temperature": 0, "num_predict": 350}
+
+
 class OllamaJsonProbe:
     """Local-only Ollama structured prediction; no external service fallback."""
 
@@ -329,7 +334,7 @@ class OllamaJsonProbe:
             "model": self.model, "stream": False,
             "format": ("json" if self.format_mode == "json"
                        else OLLAMA_LABEL_SCHEMA_V1),
-            "options": {"temperature": 0, "num_predict": 350},
+            "options": _ollama_generation_options(),
             "messages": [
                 {"role": "system", "content": instruction},
                 {"role": "user", "content": (
