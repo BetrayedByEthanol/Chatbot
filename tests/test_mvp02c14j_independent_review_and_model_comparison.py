@@ -197,7 +197,8 @@ def test_paired_model_comparison_requires_same_gold_and_denominators(tmp_path):
     paths = (tmp_path / "a-report.json", tmp_path / "b-report.json")
     for path, record in zip(paths, (a, b)):
         path.write_text(json.dumps(record))
-    output = quality.compare_reports(list(paths))
+    output = quality.compare_reports(
+        list(paths), gold_path=gold, packet_path=PACKET)
     assert output["decision"] == "NO_PRODUCTION_MODEL_SELECTED"
     assert output["candidates"][0]["runs"][0]["errors"] == 0
     assert output["candidates"][1]["runs"][0]["errors"] == 33
@@ -207,7 +208,7 @@ def test_paired_model_comparison_requires_same_gold_and_denominators(tmp_path):
     })
     paths[1].write_text(json.dumps(b))
     with pytest.raises(ValueError, match="reference denominators"):
-        quality.compare_reports(list(paths))
+        quality.compare_reports(list(paths), gold_path=gold, packet_path=PACKET)
 
 
 def test_unverified_reference_rejected_before_backend_is_ever_called(tmp_path):
@@ -240,3 +241,45 @@ def test_write_once_form_cli_and_bounded_repetitions(tmp_path):
             gold_path=gold, packet_path=PACKET,
             backend=StubProbe(), backend_name="spacy", repetitions=5,
             provenance_resolver=_fingerprint)
+
+
+def test_rejects_uniform_reference_denominator_tampering_in_all_candidates(tmp_path):
+    gold, _ = _gold(tmp_path)
+    a = quality.benchmark_reviewed(
+        gold_path=gold, packet_path=PACKET, backend=StubProbe(),
+        backend_name="ollama", model_name="test-local", repetitions=1,
+        provenance_resolver=_fingerprint)
+    b = quality.benchmark_reviewed(
+        gold_path=gold, packet_path=PACKET, backend=StubProbe(),
+        backend_name="spacy", repetitions=1,
+        provenance_resolver=_fingerprint)
+    a["backend"], b["backend"] = "backend-a", "backend-b"
+    # Both reports falsely claim reference certainty is unknown everywhere.
+    # Mere cross-backend denominator agreement must NOT legitimize it.
+    for report in (a, b):
+        report["runs"][0]["by_dimension"]["certainty"].update({
+            "eligible": 0, "unscored_reference": 33,
+            "supported": 0, "correct": 0, "incorrect": 0, "abstained": 0,
+        })
+    paths = (tmp_path / "a-score.json", tmp_path / "b-score.json")
+    for path, report in zip(paths, (a, b)):
+        path.write_text(json.dumps(report))
+    with pytest.raises(ValueError, match="disagree with reviewed fixture"):
+        quality.compare_reports(
+            list(paths), gold_path=gold, packet_path=PACKET)
+
+
+def test_rejects_reports_without_human_review_status(tmp_path):
+    gold, _ = _gold(tmp_path)
+    report = quality.benchmark_reviewed(
+        gold_path=gold, packet_path=PACKET, backend=StubProbe(),
+        backend_name="ollama", model_name="test-local", repetitions=1,
+        provenance_resolver=_fingerprint)
+    a = tmp_path / "a.json"
+    b = tmp_path / "b.json"
+    a.write_text(json.dumps(report))
+    report["backend"] = "other"
+    report["reference_status"] = "AUTHOR_DRAFT_NOT_INDEPENDENT"
+    b.write_text(json.dumps(report))
+    with pytest.raises(ValueError, match="unpaired or unreviewed"):
+        quality.compare_reports([a, b], gold_path=gold, packet_path=PACKET)
