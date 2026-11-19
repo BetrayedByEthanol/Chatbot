@@ -617,6 +617,35 @@ def test_null_dimensions_not_rewarded_and_non_null_guesses_are_unverified():
     assert report["by_dimension"]["temporal_references"]["abstained"] == 1
 
 
+def test_temporal_abstention_is_not_counted_as_negative_per_label():
+    _, reference = _case("SD001")
+    abstaining = reference.claims[0].model_copy(
+        update={"temporal_references": ()}
+    )
+    prediction = reference.model_copy(update={"claims": (abstaining,)})
+    report = evaluate_dimension_pairs([("SD001", reference, prediction)])
+    assert report["by_dimension"]["temporal_references"]["abstained"] == 1
+    for label in ("PAST", "PRESENT", "FUTURE"):
+        assert report["by_temporal_label"][label] == {
+            "tp": 0, "fp": 0, "fn": 0, "tn": 0,
+            "abstained": 1, "unscored_reference": 0,
+        }
+
+
+def test_unknown_reference_temporal_does_not_imply_negative_truth():
+    _, reference = _case("SD001")
+    unknown = reference.claims[0].model_copy(
+        update={"temporal_references": ()}
+    )
+    ref = reference.model_copy(update={"claims": (unknown,)})
+    report = evaluate_dimension_pairs([("SD001", ref, reference)])
+    for label in ("PAST", "PRESENT", "FUTURE"):
+        assert report["by_temporal_label"][label] == {
+            "tp": 0, "fp": 0, "fn": 0, "tn": 0,
+            "abstained": 0, "unscored_reference": 1,
+        }
+
+
 def test_offline_cli_injected_predictions_do_not_leak_text_and_write_once(tmp_path):
     rows = _examples()
     predictions = {
