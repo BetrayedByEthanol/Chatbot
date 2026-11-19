@@ -120,6 +120,8 @@ def test_rejects_run_scoring_disagreement_not_masked_by_repeat_averages(tmp_path
     a[1].write_text(json.dumps(profile))
     result = mod.analyze_pairs([a, b])
     assert result["decision"] == "NO_MODEL_SELECTED"
+    assert result["backends"][0]["run_to_run_dimension_drift"] is True
+    assert "RUN_TO_RUN_DIMENSION_DRIFT" in result["backends"][0]["blockers"]
     # First-run score isn't silently merged with second-run differences.
     assert result["backends"][0]["dimensions"]["certainty"]["correct"] == 1
 
