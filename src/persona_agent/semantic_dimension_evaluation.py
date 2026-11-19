@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections import Counter
 from typing import Sequence
 
-from .semantic_dimension_contracts import SemanticDimensionsV2, TemporalReference
+from .semantic_dimension_contracts import SemanticDimensionsV2, TemporalReference, QualifierKind
 
 DIMENSIONS = (
     "statement_type", "certainty", "habituality", "conditionality",
@@ -18,6 +18,9 @@ DIMENSIONS = (
 TEMPORAL_LABELS: tuple[TemporalReference, ...] = ("PAST", "PRESENT", "FUTURE")
 SIGNALS = ("CORRECTION_CUE", "PRIOR_REFERENCE", "QUESTION", "REQUEST")
 RELATIONS = ("STATE_CHANGE", "CONTRAST")
+QUALIFIER_KINDS: tuple[QualifierKind, ...] = (
+    "TIME", "PLACE", "CONDITION", "ATTRIBUTION", "OTHER",
+)
 
 
 def _unknown(dimension: str, value) -> bool:
@@ -49,14 +52,20 @@ def evaluate_dimension_pairs(
 ) -> dict:
     """Compare actual structured predictions to draft labels, never gold as input.
 
-    Claims align only by exact (start,end) evidence spans. Unknown reference
-    dimensions are unscored, rather than assumed negative. Missing model
-    dimensions are abstentions, not correct unknown predictions.
+    Claims align only by exact (start,end) evidence spans. For aligned claims,
+    qualifier identity is (kind, start, end); missing, extra and misidentified
+    qualifiers are counted independently of scalar dimensions. Unknown
+    reference dimensions are unscored, rather than assumed negative.
+    Qualifiers on unmatched claims are represented by claim omissions/extras,
+    not double-counted as qualifier errors.
     """
     dimensions = {name: _counts() for name in DIMENSIONS}
     temporal = {name: _confusion() for name in TEMPORAL_LABELS}
     signals = {name: _confusion() for name in SIGNALS}
     relations = {name: _confusion() for name in RELATIONS}
+    # A qualifier has no meaningful "true negative" in an open span space.
+    qualifier_totals = Counter()
+    qualifier_by_kind = {name: Counter() for name in QUALIFIER_KINDS}
     totals = Counter()
     per_case = []
     seen = set()
@@ -84,8 +93,29 @@ def evaluate_dimension_pairs(
         totals["matched_claims"] += len(common)
         totals["missed_claims"] += missed
         totals["extra_claims"] += extra
+        case_qualifiers = Counter()
         for key in common:
             gold, proposed = expected[key], observed[key]
+            # Compare full (kind, span) identity, preserving multiplicity.
+            # Equal primary claim spans must not hide lost conditions,
+            # temporal context or attribution qualifiers.
+            ref_qualifiers = Counter(
+                (q.kind, q.evidence.start, q.evidence.end)
+                for q in gold.qualifiers
+            )
+            pred_qualifiers = Counter(
+                (q.kind, q.evidence.start, q.evidence.end)
+                for q in proposed.qualifiers
+            )
+            for outcome, differences in (
+                ("matched", ref_qualifiers & pred_qualifiers),
+                ("missed", ref_qualifiers - pred_qualifiers),
+                ("extra", pred_qualifiers - ref_qualifiers),
+            ):
+                for (kind, _start, _end), count in differences.items():
+                    qualifier_totals[outcome] += count
+                    qualifier_by_kind[kind][outcome] += count
+                    case_qualifiers[outcome] += count
             for name in DIMENSIONS:
                 desired = getattr(gold, name)
                 actual = getattr(proposed, name)
@@ -127,6 +157,9 @@ def evaluate_dimension_pairs(
         per_case.append({
             "id": case_id, "matched_claims": len(common),
             "missed_claims": missed, "extra_claims": extra,
+            "matched_qualifiers": case_qualifiers["matched"],
+            "missed_qualifiers": case_qualifiers["missed"],
+            "extra_qualifiers": case_qualifiers["extra"],
         })
     return {
         "total": len(cases),
@@ -134,6 +167,13 @@ def evaluate_dimension_pairs(
             "matched_claims", "missed_claims", "extra_claims"
         )},
         "by_dimension": dimensions,
+        "qualifier_alignment": {
+            name: qualifier_totals[name] for name in ("matched", "missed", "extra")
+        },
+        "by_qualifier_kind": {
+            kind: {name: counts[name] for name in ("matched", "missed", "extra")}
+            for kind, counts in qualifier_by_kind.items()
+        },
         "by_temporal_label": temporal,
         "by_message_signal": signals,
         "by_relation": relations,
