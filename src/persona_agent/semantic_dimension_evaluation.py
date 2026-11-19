@@ -87,7 +87,10 @@ def evaluate_dimension_pairs(
     not double-counted as qualifier errors.
     """
     dimensions = {name: _counts() for name in DIMENSIONS}
-    temporal = {name: _confusion() for name in TEMPORAL_LABELS}
+    temporal = {
+        name: {**_confusion(), "abstained": 0, "unscored_reference": 0}
+        for name in TEMPORAL_LABELS
+    }
     signals = {name: _confusion() for name in SIGNALS}
     relations = {name: _confusion() for name in RELATIONS}
     # A qualifier has no meaningful "true negative" in an open span space.
