@@ -58,7 +58,21 @@ PYTHONPATH=src python scripts/evaluate_semantic_models.py \
 
 Do **not** compare a four-case subset with an entire suite. For a controlled
 paired comparison, run **the same case IDs**, local hardware, model versions,
-batch settings and thresholds. Model loading is not included in per-claim
+batch settings and thresholds. The comparison CLI rejects different source
+suite hashes, case selections, reference claim counts, dimension sets or
+duplicate backend identities:
+
+```bash
+PYTHONPATH=src python scripts/compare_semantic_model_reports.py \
+    --reports artifacts/mvp02c14e-spacy.json artifacts/mvp02c14e-deberta.json \
+              artifacts/mvp02c14e-qwen.json \
+    --output artifacts/mvp02c14e-paired-comparison.json
+```
+
+The comparison reports **draft-label agreement**, both conditional on
+supported predictions and over all eligible reference labels, plus coverage
+and abstentions. They are not estimates of unbiased real-world accuracy.
+ Model loading is not included in per-claim
 latency: measure separately for deployment. The report includes exact suite
 content hash, prompt version, model backend identity, sample claim counts,
 per-dimension coverage/abstentions and draft-label agreement, temporal
