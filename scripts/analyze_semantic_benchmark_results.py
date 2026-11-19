@@ -63,6 +63,15 @@ def _ratio(numerator: int, denominator: int) -> float | None:
     return round(numerator / denominator, 6) if denominator else None
 
 
+def _reference_denominators(dimensions: dict) -> dict[str, tuple[int, int]]:
+    """These counts depend only on frozen reference labels, never on a backend."""
+    return {
+        field: (dimensions[field]["eligible"],
+                dimensions[field]["unscored_reference"])
+        for field in LABEL_FIELDS
+    }
+
+
 def _load_pair(score_path: Path, profile_path: Path) -> dict:
     score, score_sha = _load(score_path)
     profile, profile_sha = _load(profile_path)
@@ -131,6 +140,11 @@ def _load_pair(score_path: Path, profile_path: Path) -> dict:
     if score["error_claims"] != profile["runs"][0]["error_claims"]:
         raise ValueError("first-run error counts differ")
 
+    reference_denominators = _reference_denominators(score["by_dimension"])
+    for run in profile["runs"]:
+        if _reference_denominators(run["by_dimension"]) != reference_denominators:
+            raise ValueError("reference denominators differ across repetitions")
+
     return {
         "score": score, "profile": profile,
         "score_sha256": score_sha, "profile_sha256": profile_sha,
@@ -157,6 +171,11 @@ def analyze_pairs(paths: list[tuple[Path, Path]], *, artifact_run_id: int | None
             raise ValueError("benchmark inputs are not paired")
     if len({item["score"]["backend"] for item in inputs}) != len(inputs):
         raise ValueError("duplicate backend identity")
+    reference_denominators = _reference_denominators(first["by_dimension"])
+    for item in inputs[1:]:
+        if (_reference_denominators(item["score"]["by_dimension"])
+                != reference_denominators):
+            raise ValueError("reference denominators differ across backends")
     backends = []
     for entry in inputs:
         score, profile = entry["score"], entry["profile"]
