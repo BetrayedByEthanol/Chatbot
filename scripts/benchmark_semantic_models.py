@@ -18,6 +18,7 @@ import platform
 import re
 import resource
 from statistics import median
+from tempfile import TemporaryDirectory
 from time import perf_counter
 from urllib.request import Request
 
@@ -41,6 +42,67 @@ def _package_version(name: str) -> str | None:
         return None
 
 
+# Source files that a local Transformers tokenizer can load. Snapshotting the
+# actual instantiated tokenizer below also covers less common tokenizer formats.
+_TOKENIZER_SOURCE_FILES = frozenset({
+    "tokenizer.json", "tokenizer_config.json", "special_tokens_map.json",
+    "added_tokens.json", "spm.model", "spiece.model", "spiece.vocab",
+    "sentencepiece.bpe.model", "sentencepiece.model", "tokenizer.model",
+    "tokenizer.vocab", "vocab.json", "vocab.txt", "vocab.bpe",
+    "merges.txt", "encoder.json", "dict.txt",
+})
+
+
+def _sha256_file(path: Path) -> str:
+    digest = sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(4 * 1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _tokenizer_provenance(folder: Path, backend) -> dict:
+    """Hash local tokenizer inputs AND the actual loaded tokenizer snapshot.
+
+    Tokenizer configuration, added/special tokens and vocab may change output
+    despite identical model weights/config. The HF pipeline loads the tokenizer
+    from this checkpoint folder; save_pretrained serializes the effective
+    tokenizer used for inference (including custom vocab format).
+    """
+    source = {
+        name: _sha256_file(folder / name)
+        for name in sorted(_TOKENIZER_SOURCE_FILES)
+        if (folder / name).is_file()
+    }
+    if not any(name in source for name in ("tokenizer.json", "spm.model")):
+        raise ValueError("missing local tokenizer inputs")
+
+    pipeline = getattr(getattr(backend, "client", None), "_pipeline", None)
+    tokenizer = getattr(pipeline, "tokenizer", None)
+    if not callable(getattr(tokenizer, "save_pretrained", None)):
+        raise ValueError("loaded Transformers tokenizer required for provenance")
+    with TemporaryDirectory(prefix="semantic-tokenizer-fingerprint-") as location:
+        root = Path(location)
+        tokenizer.save_pretrained(str(root))
+        serialized = {
+            path.relative_to(root).as_posix(): _sha256_file(path)
+            for path in sorted(root.rglob("*"))
+            if path.is_file()
+        }
+    if not serialized:
+        raise ValueError("loaded tokenizer has no serializable artifacts")
+
+    # Include names as well as digests in the aggregate: adding/removing
+    # tokenizer settings must change the fingerprint even if bytes repeat.
+    snapshot = json.dumps(serialized, sort_keys=True, separators=(",", ":"))
+    return {
+        "source_file_sha256": source,
+        "effective_file_sha256": serialized,
+        "effective_tokenizer_sha256": sha256(snapshot.encode("utf-8")).hexdigest(),
+        "effective_tokenizer_method": "loaded_tokenizer.save_pretrained",
+    }
+
+
 def _model_provenance(*, backend_name: str, backend,
                       model_dir: Path | None,
                       model_name: str | None) -> dict:
@@ -55,17 +117,15 @@ def _model_provenance(*, backend_name: str, backend,
         if selected is None:
             raise ValueError("missing local native model weights")
         # Content hash avoids aliasing distinct checkpoints under the same tag.
-        digest = sha256()
-        with selected.open("rb") as stream:
-            for chunk in iter(lambda: stream.read(4 * 1024 * 1024), b""):
-                digest.update(chunk)
+        # The effective tokenizer also affects inference and must be recorded.
         return {
             "model_name": folder.name, "model_config_sha256":
                 sha256(config.read_bytes()).hexdigest(),
             "weight_format": selected.suffix,
             "weights_size_bytes": selected.stat().st_size,
-            "weights_sha256": digest.hexdigest(),
+            "weights_sha256": _sha256_file(selected),
             "weights_local_only": True,
+            "tokenizer": _tokenizer_provenance(folder, backend),
         }
     if backend_name == "ollama":
         # Capture the resolved local model digest, not just a mutable tag.
