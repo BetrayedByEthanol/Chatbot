@@ -144,6 +144,8 @@ def validate_semantic_dimensions(
     spans.extend(relation.evidence for relation in interpretation.relations)
 
     for span in spans:
-        if source_text[span.start:span.end] != span.text:
+        # Python slices clamp oversized end offsets, so equality alone cannot
+        # prove that the proposed source interval exists within the turn.
+        if span.end > len(source_text) or source_text[span.start:span.end] != span.text:
             raise ValueError("unmatched source span or dropped source evidence")
     return interpretation
