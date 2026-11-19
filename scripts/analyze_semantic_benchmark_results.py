@@ -38,7 +38,8 @@ def _number(value, name: str) -> int:
     return value
 
 
-def _counts(record: dict, *, field: str, claim_count: int):
+def _counts(record: dict, *, field: str, claim_count: int,
+            error_claims: int):
     if not isinstance(record, dict):
         raise ValueError("invalid dimension metrics")
     keys = ("eligible", "supported", "correct", "incorrect", "abstained",
@@ -50,6 +51,11 @@ def _counts(record: dict, *, field: str, claim_count: int):
         raise ValueError("inconsistent eligible counts")
     if values["eligible"] + values["unscored_reference"] != claim_count:
         raise ValueError(f"inconsistent reference labels: {field}")
+    # evaluate_probe converts a failed backend prediction to all-unknown
+    # labels. It cannot contribute a supported dimension, even when the
+    # author's reference is known. Reject forged agreement on errored claims.
+    if values["supported"] > claim_count - error_claims:
+        raise ValueError(f"supported predictions exceed non-error claims: {field}")
     return values
 
 
@@ -108,9 +114,18 @@ def _load_pair(score_path: Path, profile_path: Path) -> dict:
         if set(run["by_dimension"]) != set(LABEL_FIELDS):
             raise ValueError("unexpected run dimensions")
         for dim in LABEL_FIELDS:
-            _counts(run["by_dimension"][dim], field=dim, claim_count=count)
+            _counts(
+                run["by_dimension"][dim], field=dim, claim_count=count,
+                error_claims=errors,
+            )
+    score_errors = _number(score["error_claims"], "score errors")
+    if score_errors > count:
+        raise ValueError("score errors exceed claim count")
     for dim in LABEL_FIELDS:
-        _counts(score["by_dimension"][dim], field=dim, claim_count=count)
+        _counts(
+            score["by_dimension"][dim], field=dim, claim_count=count,
+            error_claims=score_errors,
+        )
         if score["by_dimension"][dim] != profile["runs"][0]["by_dimension"][dim]:
             raise ValueError("score report differs from measured first run")
     if score["error_claims"] != profile["runs"][0]["error_claims"]:
