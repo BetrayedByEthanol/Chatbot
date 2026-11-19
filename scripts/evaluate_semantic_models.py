@@ -140,7 +140,7 @@ class SpacyStructuralProbe:
         past = "used to" in joined or bool(words & {"yesterday", "ago", "2023"})
         present = bool(words & {"now", "currently", "today"})
         future = "next month" in joined or bool(words & {"tomorrow", "next"})
-        negative = bool(words & {"not", "no", "never", "dislike", "don't"})
+        negative = bool(words & {"not", "n't", "no", "never", "dislike", "hate", "don't"})
         tentative = bool(words & {"might", "maybe", "perhaps", "possibly"})
         conditional = "if" in words
         hypothetical = "would" in words
