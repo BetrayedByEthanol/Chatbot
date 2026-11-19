@@ -26,6 +26,12 @@ not approval to deploy.
   hardware and library versions, local model fingerprint and write-once,
   **text-free** evidence. It writes one standard v14E report per backend for
   paired comparison and one v14F repetition/provenance profile.
+  For DeBERTa the profile records the **effective** instantiated
+  `nli_decision_thresholds.min_score` and `nli_decision_thresholds.min_margin`.
+  These cutoffs determine supported versus abstained predictions and must be
+  archived alongside checkpoint hashes. They are read from the backend rather
+  than assuming CLI argument values. Other backends store null because NLI
+  thresholds do not apply.
 
 ## Real CI smoke benchmark
 
