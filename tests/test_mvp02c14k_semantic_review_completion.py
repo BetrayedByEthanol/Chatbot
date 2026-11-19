@@ -253,7 +253,14 @@ def test_cli_pending_report_is_write_once(tmp_path):
     assert output.read_bytes() == recorded
 
 
-def test_cli_unreviewed_input_does_not_create_benchmark_report(tmp_path):
+def test_cli_unreviewed_input_does_not_create_benchmark_report(tmp_path, monkeypatch):
+    model_constructions = []
+
+    def forbidden_model_factory(_):
+        model_constructions.append(True)
+        raise AssertionError("model should not be constructed before human review")
+
+    monkeypatch.setattr(gate, "_instantiate", forbidden_model_factory)
     outfile = tmp_path / "fake-score.json"
     args = [
         "run", "--packet", str(PACKET), "--gold", str(tmp_path / "missing.json"),
@@ -265,4 +272,5 @@ def test_cli_unreviewed_input_does_not_create_benchmark_report(tmp_path):
     ]
     with pytest.raises(SystemExit):
         gate.main(args)
+    assert model_constructions == []
     assert not outfile.exists()
