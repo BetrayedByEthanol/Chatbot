@@ -87,7 +87,10 @@ def evaluate_dimension_pairs(
     not double-counted as qualifier errors.
     """
     dimensions = {name: _counts() for name in DIMENSIONS}
-    temporal = {name: _confusion() for name in TEMPORAL_LABELS}
+    temporal = {
+        name: {**_confusion(), "abstained": 0, "unscored_reference": 0}
+        for name in TEMPORAL_LABELS
+    }
     signals = {name: _confusion() for name in SIGNALS}
     relations = {name: _confusion() for name in RELATIONS}
     # A qualifier has no meaningful "true negative" in an open span space.
@@ -168,12 +171,21 @@ def evaluate_dimension_pairs(
             # An unresolved reference time is NOT proof of absent temporal
             # labels. Per-label confusion is scored on known-reference claims.
             if gold.temporal_references:
+                if not proposed.temporal_references:
+                    # Empty means unresolved; never score it as three negatives.
+                    for label in TEMPORAL_LABELS:
+                        temporal[label]["abstained"] += 1
+                else:
+                    for label in TEMPORAL_LABELS:
+                        _binary_score(
+                            temporal[label],
+                            label in gold.temporal_references,
+                            label in proposed.temporal_references,
+                        )
+            else:
+                # Draft reference is unknown; its absence is not a negative.
                 for label in TEMPORAL_LABELS:
-                    _binary_score(
-                        temporal[label],
-                        label in gold.temporal_references,
-                        label in proposed.temporal_references,
-                    )
+                    temporal[label]["unscored_reference"] += 1
         ref_signals = {s.kind for s in reference.message_signals}
         pred_signals = {s.kind for s in prediction.message_signals}
         for name in SIGNALS:
