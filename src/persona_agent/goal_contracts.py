@@ -126,7 +126,7 @@ class GoalView(BaseModel):
     success_criterion:str
     horizon:GoalHorizon
     status:GoalStatus
-    creation_authority:Literal["USER_APPROVED","DELEGATED_MILESTONE","DELEGATED_VERIFIED"]="USER_APPROVED"
+    creation_authority:Literal["USER_APPROVED","DELEGATED_MILESTONE","DELEGATED_VERIFIED","DELEGATED_REVIEWED"]="USER_APPROVED"
     version:int=Field(ge=1)
     selected_strategy_id:UUID|None
     evidence_count:int=Field(ge=0)
