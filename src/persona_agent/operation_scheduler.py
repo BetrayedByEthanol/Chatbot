@@ -485,7 +485,7 @@ def _eligible_for_policy(cursor, operation: dict, selected: dict | None) -> bool
     elif (operation["background_epoch"] is not None
           and operation["background_epoch"] != selected["background_epoch"]):
         return False
-    if operation["operation_type"]==GOAL_EVALUATION_OPERATION:
+    if operation.get("operation_type")==GOAL_EVALUATION_OPERATION:
         # A goal assessment is NOT an AGENT task, and never grants tools.
         # It has its own exact staged Goal + READY epoch admission gate.
         cursor.execute(
