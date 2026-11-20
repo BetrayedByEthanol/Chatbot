@@ -980,3 +980,122 @@ def test_count_proof_rejects_mismatched_period_unit_and_result_claims():
         "Read 1 book per month and sell the rest",
         "Read at least 1 book per month",
     )
+
+
+@pytest.mark.parametrize("parent_outcome,parent_criterion,child_outcome,child_criterion",[
+    (
+        "Complete 4 hour marathons per month",
+        "Complete at least 4 hour marathons per month",
+        "Complete 1 hour marathons per month",
+        "Complete at least 1 hour marathons per month",
+    ),
+    (
+        "Complete 4 hour-long marathons per month",
+        "Complete at least 4 hour-long marathons per month",
+        "Complete 1 hour-long marathons per month",
+        "Complete at least 1 hour-long marathons per month",
+    ),
+    (
+        "Complete 4 km runs per week",
+        "Complete at least 4 km runs per week",
+        "Complete 1 km runs per week",
+        "Complete at least 1 km runs per week",
+    ),
+])
+def test_ambiguous_numeric_modifier_is_not_quantitative_proof(
+    parent_outcome,parent_criterion,child_outcome,child_criterion,
+):
+    assert not proven_count_milestone(
+        parent_outcome,parent_criterion,child_outcome,child_criterion,
+    )
+
+
+def test_ambiguous_marathon_duration_stays_pending_review(dsn):
+    user,instance,_=seed(dsn)
+    conversation=uuid4()
+    source=turn(dsn,user,instance,conversation,
+                "I want to complete four-hour marathons.")
+    parent=CreateGoalCommand(
+        instance_id=instance,expected_generation=1,
+        idempotency_key=str(uuid4()),conversation_id=conversation,
+        evidence_turn_id=source.turn_id,
+        evidence_quote="I want to complete four-hour marathons",
+        goal_id=uuid4(),title="Marathon training",
+        desired_outcome="Complete 4 hour marathons per month",
+        success_criterion="Complete 4 hour marathons per month",
+        horizon="MEDIUM",
+    )
+    call(dsn,create_goal,actor(user),authorize(dsn,user,instance,parent))
+    proposed=generalized_command(
+        dsn,instance,parent.goal_id,title="Lower marathon duration",
+        outcome="Complete 1 hour marathons per month",
+        criterion="Complete 1 hour marathons per month",
+    )
+    result=call(dsn,propose_derived_subgoal,goal_evaluator(user),proposed)
+    assert result.status=="PENDING_REVIEW"
+    assert result.accepted_goal_event_id is None
+    assert len(call(dsn,list_goals,actor(user),instance))==1
+    assert call(dsn,list_goals,actor(user),instance)[0].version==1
+    pending=call(dsn,list_pending_subgoal_proposals,actor(user),instance)
+    assert len(pending)==1 and pending[0].proposal_id==proposed.proposal_id
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT count(*) FROM goal_records WHERE parent_goal_id=%s",
+            (parent.goal_id,),
+        ).fetchone()[0]==0
+
+
+@pytest.mark.parametrize("outcome,criterion,title,horizon",[
+    (
+        "Read one book per month",
+        "Read at least one book per month",
+        "Different title", "SHORT",
+    ),
+    (
+        "Read at least 1 book per month",
+        "Read 1 books per month",
+        "Reading progression", "MEDIUM",
+    ),
+    (
+        "  Read   1  books  per   month  ",
+        "  Read  at least   one  book per month ",
+        "Whitespace variation", "OPEN",
+    ),
+])
+def test_normalized_accepted_milestones_cannot_duplicate(
+    dsn,outcome,criterion,title,horizon,
+):
+    user,instance,_,root_id=approved_book_goal(dsn)
+    first=generalized_command(dsn,instance,root_id)
+    assert call(dsn,propose_derived_subgoal,goal_evaluator(user),
+                first).status=="ACCEPTED"
+    variant=generalized_command(
+        dsn,instance,root_id,title=title,
+        outcome=outcome,criterion=criterion,
+    ).model_copy(update={"horizon":horizon})
+    with pytest.raises(VersionConflict,match="equivalent|duplicate"):
+        call(dsn,propose_derived_subgoal,goal_evaluator(user),variant)
+    goals=call(dsn,list_goals,actor(user),instance)
+    assert len(goals)==2
+    assert next(x for x in goals if x.goal_id==root_id).version==2
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            """SELECT count(*) FROM goal_subgoal_proposals
+               WHERE parent_goal_id=%s AND status='ACCEPTED'""",
+            (root_id,),
+        ).fetchone()[0]==1
+        assert conn.execute(
+            """SELECT count(*) FROM events
+               WHERE user_id=%s AND instance_id=%s
+                 AND event_type='goal.created.v1'""",
+            (user,instance),
+        ).fetchone()[0]==2
+
+
+def test_qualified_countable_unit_still_proves_lower_session_count():
+    assert proven_count_milestone(
+        "Complete 4 exercise sessions per week",
+        "Complete at least 4 exercise sessions per week",
+        "Complete 1 exercise session per week",
+        "Complete at least one exercise session per week",
+    )
