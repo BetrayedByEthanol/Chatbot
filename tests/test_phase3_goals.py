@@ -1099,3 +1099,574 @@ def test_qualified_countable_unit_still_proves_lower_session_count():
         "Complete 1 exercise session per week",
         "Complete at least one exercise session per week",
     )
+
+
+# MVP-03A.3: model findings are evidence; the Goal owner performs adoption.
+import json
+
+from persona_agent.conversation_contracts import ModelReply
+from persona_agent.goal_semantic_review import review_pending_subgoal
+from persona_agent.goal_semantic_review_contracts import ReviewSubgoalCommand
+
+
+def semantic_reviewer(user):
+    return TrustedPlatformActor(user_id=user,source_id="goal.semantic_review.v1")
+
+
+def semantic_command(instance,proposal_id):
+    return ReviewSubgoalCommand(
+        instance_id=instance,expected_generation=1,
+        proposal_id=proposal_id,review_id=uuid4(),idempotency_key=str(uuid4()),
+    )
+
+
+def semantic_finding(*,alignment="ALIGNED",parent_quote="Read 3 books per month",
+                     child_quote="Read 15 pages per day",**overrides):
+    fields={
+        "alignment":alignment,
+        "parent_evidence_quote":parent_quote,
+        "child_evidence_quote":child_quote,
+        "contribution_reason":"Daily reading practice supports the approved monthly book target.",
+        "within_parent_scope":True,
+        "measurable":True,
+        "supports_not_replaces_parent":True,
+        "changes_parent_objective":False,
+        "requires_new_permissions":False,
+        "creates_new_user_commitment":False,
+    }
+    fields.update(overrides)
+    return fields
+
+
+class FakeSemanticGateway:
+    def __init__(self,fields,*,callback=None,raw=None):
+        self.fields=fields
+        self.callback=callback
+        self.raw=raw
+        self.calls=0
+
+    def generate(self,messages):
+        self.calls+=1
+        assert len(messages)==2
+        assert messages[0].role=="system"
+        assert messages[1].role=="user"
+        if self.callback:
+            self.callback()
+        return ModelReply(
+            model_id="fake-goal-reviewer",
+            text=self.raw if self.raw is not None else json.dumps(self.fields),
+        )
+
+
+def pending_reading_habit(dsn,*,outcome="Read 15 pages per day",
+                          criterion="Read 15 pages per day",
+                          title="Practice reading every day"):
+    user,instance,_,root=approved_book_goal(dsn)
+    proposed=generalized_command(
+        dsn,instance,root,title=title,
+        outcome=outcome,criterion=criterion,
+    )
+    first=call(dsn,propose_derived_subgoal,goal_evaluator(user),proposed)
+    assert first.status=="PENDING_REVIEW"
+    return user,instance,root,proposed
+
+
+def test_semantic_subgoal_review_accepts_aligned_measurable_child(dsn):
+    user,instance,root,proposal=pending_reading_habit(dsn)
+    gateway=FakeSemanticGateway(semantic_finding())
+    command=semantic_command(instance,proposal.proposal_id)
+    result=call(dsn,review_pending_subgoal,
+                semantic_reviewer(user),command,gateway)
+    assert result.alignment=="ALIGNED" and result.decision=="ACCEPTED"
+    assert result.accepted_goal_event_id is not None
+    assert gateway.calls==1
+    replay=call(dsn,review_pending_subgoal,
+                semantic_reviewer(user),command,gateway)
+    assert replay.replayed and replay.event_id==result.event_id
+    assert gateway.calls==1  # no duplicate paid inference on replay
+    goals=call(dsn,list_goals,actor(user),instance)
+    assert len(goals)==2
+    parent=next(x for x in goals if x.goal_id==root)
+    child=next(x for x in goals if x.goal_id==proposal.proposed_goal_id)
+    assert parent.version==2
+    assert parent.desired_outcome=="Read 3 books per month"
+    assert child.creation_authority=="DELEGATED_REVIEWED"
+    assert child.desired_outcome=="Read 15 pages per day"
+    assert child.title=="Read 15 pages per day"  # no untrusted candidate title
+    assert child.parent_goal_id==root
+    assert call(dsn,list_pending_subgoal_proposals,
+                actor(user),instance)==()
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        ledger=conn.execute(
+            """SELECT model_id,finding,owner_decision,
+                      parent_evidence_quote,child_evidence_quote,
+                      accepted_goal_event_id
+               FROM goal_subgoal_semantic_reviews WHERE review_id=%s""",
+            (command.review_id,),
+        ).fetchone()
+        assert ledger[:3]==("fake-goal-reviewer","ALIGNED","ACCEPTED")
+        assert ledger[3]=="Read 3 books per month"
+        assert ledger[4]=="Read 15 pages per day"
+        assert ledger[5]==result.accepted_goal_event_id
+        assert conn.execute(
+            "SELECT count(*) FROM outbox WHERE event_id IN (%s,%s)",
+            (result.event_id,result.accepted_goal_event_id),
+        ).fetchone()[0]==2
+    with pytest.raises(VersionConflict,match="already reviewed"):
+        call(dsn,review_pending_subgoal,semantic_reviewer(user),
+             semantic_command(instance,proposal.proposal_id),gateway)
+    assert gateway.calls==1
+
+
+@pytest.mark.parametrize("alignment,decision",[
+    ("UNCERTAIN","DEFERRED"),
+    ("DRIFT_DETECTED","REJECTED"),
+    ("BLOCKED","REJECTED"),
+])
+def test_semantic_unreliable_finding_never_admits_goal(dsn,alignment,decision):
+    user,instance,root,proposal=pending_reading_habit(dsn)
+    gateway=FakeSemanticGateway(semantic_finding(alignment=alignment))
+    result=call(dsn,review_pending_subgoal,semantic_reviewer(user),
+                semantic_command(instance,proposal.proposal_id),gateway)
+    assert result.decision==decision
+    assert result.accepted_goal_event_id is None
+    assert len(call(dsn,list_goals,actor(user),instance))==1
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT status FROM goal_subgoal_proposals WHERE proposal_id=%s",
+            (proposal.proposal_id,),
+        ).fetchone()[0]==decision
+        assert conn.execute(
+            "SELECT count(*) FROM goal_records WHERE parent_goal_id=%s",
+            (root,),
+        ).fetchone()[0]==0
+
+
+@pytest.mark.parametrize("bad",[
+    {"requires_new_permissions":True},
+    {"creates_new_user_commitment":True},
+    {"within_parent_scope":False},
+    {"changes_parent_objective":True},
+    {"measurable":False},
+])
+def test_aligned_model_claim_cannot_override_owner_safety_gate(dsn,bad):
+    user,instance,_,proposal=pending_reading_habit(dsn)
+    finding=semantic_finding(**bad)
+    result=call(dsn,review_pending_subgoal,semantic_reviewer(user),
+                semantic_command(instance,proposal.proposal_id),
+                FakeSemanticGateway(finding))
+    assert result.alignment=="ALIGNED"
+    assert result.decision=="DEFERRED"
+    assert result.accepted_goal_event_id is None
+    assert len(call(dsn,list_goals,actor(user),instance))==1
+
+
+def test_semantic_review_does_not_take_model_evidence_on_faith(dsn):
+    user,instance,root,proposal=pending_reading_habit(dsn)
+    command=semantic_command(instance,proposal.proposal_id)
+    with pytest.raises(ValueError,match="invented parent evidence"):
+        call(dsn,review_pending_subgoal,semantic_reviewer(user),command,
+             FakeSemanticGateway(semantic_finding(
+                 parent_quote="User authorized buying premium books",
+             )))
+    with pytest.raises(ValueError,match="schema"):
+        call(dsn,review_pending_subgoal,semantic_reviewer(user),command,
+             FakeSemanticGateway({},raw='{"alignment":"ALIGNED"}'))
+    assert len(call(dsn,list_goals,actor(user),instance))==1
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT status FROM goal_subgoal_proposals WHERE proposal_id=%s",
+            (proposal.proposal_id,),
+        ).fetchone()[0]=="PENDING_REVIEW"
+        assert conn.execute(
+            "SELECT count(*) FROM goal_subgoal_semantic_reviews WHERE proposal_id=%s",
+            (proposal.proposal_id,),
+        ).fetchone()[0]==0
+
+
+def test_semantic_review_superseded_if_parent_version_changes_during_inference(dsn):
+    user,instance,root,proposal=pending_reading_habit(dsn)
+    def concurrent_parent_advance():
+        other=generalized_command(dsn,instance,root,count=1)
+        assert call(dsn,propose_derived_subgoal,goal_evaluator(user),
+                    other).status=="ACCEPTED"
+
+    gateway=FakeSemanticGateway(
+        semantic_finding(),callback=concurrent_parent_advance,
+    )
+    result=call(dsn,review_pending_subgoal,
+                semantic_reviewer(user),semantic_command(instance,proposal.proposal_id),
+                gateway)
+    assert result.decision=="SUPERSEDED"
+    goals=call(dsn,list_goals,actor(user),instance)
+    assert len(goals)==2  # only the independent, concurrently accepted child
+    assert all(g.goal_id!=proposal.proposed_goal_id for g in goals)
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT status FROM goal_subgoal_proposals WHERE proposal_id=%s",
+            (proposal.proposal_id,),
+        ).fetchone()[0]=="SUPERSEDED"
+
+
+def test_semantic_review_denied_when_root_paused_during_inference(dsn):
+    user,instance,root,proposal=pending_reading_habit(dsn)
+    def concurrent_pause():
+        with psycopg.connect(dsn,autocommit=True) as conn:
+            conversation=conn.execute(
+                "SELECT source_conversation_id FROM goal_records WHERE goal_id=%s",
+                (root,),
+            ).fetchone()[0]
+        source=turn(dsn,user,instance,conversation,"Pause my reading goal.")
+        cmd=SetGoalStatusCommand(
+            instance_id=instance,expected_generation=1,
+            idempotency_key=str(uuid4()),conversation_id=conversation,
+            evidence_turn_id=source.turn_id,
+            evidence_quote="Pause my reading goal.",
+            goal_id=root,expected_goal_version=1,new_status="PAUSED",
+        )
+        call(dsn,set_goal_status,actor(user),
+             authorize(dsn,user,instance,cmd))
+    gateway=FakeSemanticGateway(semantic_finding(),callback=concurrent_pause)
+    with pytest.raises(VersionConflict,match="ancestor"):
+        call(dsn,review_pending_subgoal,semantic_reviewer(user),
+             semantic_command(instance,proposal.proposal_id),gateway)
+    assert len(call(dsn,list_goals,actor(user),instance))==1
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT status FROM goal_subgoal_proposals WHERE proposal_id=%s",
+            (proposal.proposal_id,),
+        ).fetchone()[0]=="PENDING_REVIEW"
+
+
+def test_reviewed_goal_retains_valid_provenance_for_further_decomposition(dsn):
+    user,instance,root,proposal=pending_reading_habit(dsn)
+    gateway=FakeSemanticGateway(semantic_finding())
+    result=call(dsn,review_pending_subgoal,semantic_reviewer(user),
+                semantic_command(instance,proposal.proposal_id),gateway)
+    assert result.decision=="ACCEPTED"
+    # Second generation is mechanically checked, not treated as new user authority.
+    child=generalized_command(
+        dsn,instance,proposal.proposed_goal_id,
+        outcome="Read 3 pages per day",criterion="Read 3 pages per day",
+    )
+    accepted=call(dsn,propose_derived_subgoal,goal_evaluator(user),child)
+    assert accepted.status=="ACCEPTED"
+    goals=call(dsn,list_goals,actor(user),instance)
+    assert len(goals)==3
+    assert next(x for x in goals if x.goal_id==root).desired_outcome=="Read 3 books per month"
+
+
+def test_review_ignores_model_approval_of_new_external_commitment(dsn):
+    user,instance,root,proposal=pending_reading_habit(
+        dsn,outcome="Join one paid book club per week",
+        criterion="Join one paid book club per week",
+        title="Join an external club",
+    )
+    model=FakeSemanticGateway(semantic_finding(
+        child_quote="Join one paid book club per week",
+    ))
+    result=call(dsn,review_pending_subgoal,semantic_reviewer(user),
+                semantic_command(instance,proposal.proposal_id),model)
+    assert result.decision=="DEFERRED"
+    assert len(call(dsn,list_goals,actor(user),instance))==1
+
+
+def test_semantic_owner_rejects_raised_target_even_if_model_is_aligned(dsn):
+    user,instance,_,proposal=pending_reading_habit(
+        dsn,outcome="Read 8 books per month",
+        criterion="Read 8 books per month",
+        title="Read more books",
+    )
+    gateway=FakeSemanticGateway(semantic_finding(
+        parent_quote="Read 3 books per month",
+        child_quote="Read 8 books per month",
+    ))
+    result=call(dsn,review_pending_subgoal,semantic_reviewer(user),
+                semantic_command(instance,proposal.proposal_id),gateway)
+    assert result.decision=="DEFERRED"
+    assert len(call(dsn,list_goals,actor(user),instance))==1
+
+
+def test_semantic_owner_defers_numeric_property_modifier(dsn):
+    user,instance,_=seed(dsn)
+    conversation=uuid4()
+    source=turn(dsn,user,instance,conversation,"I want to finish marathons.")
+    root=CreateGoalCommand(
+        instance_id=instance,expected_generation=1,
+        idempotency_key=str(uuid4()),conversation_id=conversation,
+        evidence_turn_id=source.turn_id,
+        evidence_quote="I want to finish marathons",
+        goal_id=uuid4(),title="Marathon goal",
+        desired_outcome="Complete 4 hour marathons per month",
+        success_criterion="Complete 4 hour marathons per month",
+        horizon="MEDIUM",
+    )
+    call(dsn,create_goal,actor(user),authorize(dsn,user,instance,root))
+    proposal=generalized_command(
+        dsn,instance,root.goal_id,
+        title="Fast marathon",outcome="Complete 1 hour marathons per month",
+        criterion="Complete 1 hour marathons per month",
+    )
+    assert call(dsn,propose_derived_subgoal,goal_evaluator(user),
+                proposal).status=="PENDING_REVIEW"
+    model=FakeSemanticGateway(semantic_finding(
+        parent_quote="Complete 4 hour marathons per month",
+        child_quote="Complete 1 hour marathons per month",
+    ))
+    review=call(dsn,review_pending_subgoal,semantic_reviewer(user),
+                semantic_command(instance,proposal.proposal_id),model)
+    assert review.decision=="DEFERRED"
+    assert len(call(dsn,list_goals,actor(user),instance))==1
+
+
+def test_semantic_inference_not_inside_database_transaction(dsn):
+    user,instance,_,proposal=pending_reading_habit(dsn)
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        def assert_idle():
+            assert conn.info.transaction_status==psycopg.pq.TransactionStatus.IDLE
+        gateway=FakeSemanticGateway(semantic_finding(),callback=assert_idle)
+        result=review_pending_subgoal(
+            conn,semantic_reviewer(user),semantic_command(
+                instance,proposal.proposal_id,
+            ),gateway,
+        )
+    assert result.decision=="ACCEPTED"
+
+
+def test_reviewed_child_with_embedded_purchase_is_not_auto_adopted(dsn):
+    user,instance,_,proposal=pending_reading_habit(
+        dsn,outcome="Read 15 pages per day and buy premium books",
+        criterion="Read 15 pages per day",
+        title="Daily reading habit",
+    )
+    reply=FakeSemanticGateway(semantic_finding(
+        child_quote="Read 15 pages per day",
+    ))
+    result=call(dsn,review_pending_subgoal,semantic_reviewer(user),
+                semantic_command(instance,proposal.proposal_id),reply)
+    assert result.decision=="DEFERRED"
+    assert len(call(dsn,list_goals,actor(user),instance))==1
+
+
+def test_preexisting_stale_proposal_retires_without_model_review(dsn):
+    """Two proposals at v1; accepting one supersedes the unreviewed sibling."""
+    user,instance,root,first=pending_reading_habit(dsn)
+    stale=generalized_command(
+        dsn,instance,root,title="Read a smaller daily amount",
+        outcome="Read 5 pages per day",
+        criterion="Read 5 pages per day",
+    )
+    assert call(dsn,propose_derived_subgoal,goal_evaluator(user),
+                stale).status=="PENDING_REVIEW"
+    assert len(call(dsn,list_pending_subgoal_proposals,
+                    actor(user),instance))==2
+
+    adopted=call(dsn,review_pending_subgoal,semantic_reviewer(user),
+                 semantic_command(instance,first.proposal_id),
+                 FakeSemanticGateway(semantic_finding()))
+    assert adopted.decision=="ACCEPTED"
+    assert next(x for x in call(dsn,list_goals,actor(user),instance)
+                if x.goal_id==root).version==2
+
+    no_inference=FakeSemanticGateway({},raw="INVALID MODEL OUTPUT")
+    review=semantic_command(instance,stale.proposal_id)
+    retired=call(dsn,review_pending_subgoal,semantic_reviewer(user),
+                 review,no_inference)
+    assert retired.decision=="SUPERSEDED"
+    assert retired.alignment is None  # no fabricated semantic finding
+    assert retired.accepted_goal_event_id is None
+    assert no_inference.calls==0
+    replay=call(dsn,review_pending_subgoal,semantic_reviewer(user),
+                review,no_inference)
+    assert replay.replayed and replay.event_id==retired.event_id
+    assert no_inference.calls==0
+    assert call(dsn,list_pending_subgoal_proposals,
+                actor(user),instance)==()
+
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        row=conn.execute(
+            """SELECT p.status,e.event_type,e.trust_level,e.payload
+               FROM goal_subgoal_proposals p
+               JOIN events e ON e.event_id=%s
+               WHERE p.proposal_id=%s""",
+            (retired.event_id,stale.proposal_id),
+        ).fetchone()
+        assert row[0]=="SUPERSEDED"
+        assert row[1]=="goal.subgoal.superseded.v1"
+        assert row[2]=="TRUSTED_PLATFORM"
+        assert row[3]["reason"]=="PARENT_VERSION_CHANGED"
+        assert row[3]["model_invoked"] is False
+        assert row[3]["expected_parent_version"]==1
+        assert row[3]["observed_parent_version"]==2
+        assert conn.execute(
+            "SELECT count(*) FROM outbox WHERE event_id=%s",
+            (retired.event_id,),
+        ).fetchone()[0]==1
+        assert conn.execute(
+            "SELECT count(*) FROM goal_subgoal_semantic_reviews WHERE proposal_id=%s",
+            (stale.proposal_id,),
+        ).fetchone()[0]==0
+
+    # Retired proposals no longer contribute to the pending-review budget:
+    # a new candidate at the updated parent revision can be staged.
+    fresh=generalized_command(
+        dsn,instance,root,title="Another supporting reading habit",
+        outcome="Read 10 pages per day",
+        criterion="Read 10 pages per day",
+    )
+    result=call(dsn,propose_derived_subgoal,goal_evaluator(user),fresh)
+    assert result.status=="PENDING_REVIEW"
+    pending=call(dsn,list_pending_subgoal_proposals,actor(user),instance)
+    assert len(pending)==1 and pending[0].proposal_id==fresh.proposal_id
+
+
+def test_pre_review_retirement_after_authenticated_parent_pause(dsn):
+    user,instance,root,proposal=pending_reading_habit(dsn)
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        conv=conn.execute(
+            "SELECT source_conversation_id FROM goal_records WHERE goal_id=%s",
+            (root,),
+        ).fetchone()[0]
+    source=turn(dsn,user,instance,conv,"Pause my reading goal.")
+    status=SetGoalStatusCommand(
+        instance_id=instance,expected_generation=1,
+        idempotency_key=str(uuid4()),conversation_id=conv,
+        evidence_turn_id=source.turn_id,
+        evidence_quote="Pause my reading goal.",
+        goal_id=root,expected_goal_version=1,new_status="PAUSED",
+    )
+    call(dsn,set_goal_status,actor(user),
+         authorize(dsn,user,instance,status))
+    gateway=FakeSemanticGateway(semantic_finding())
+    retired=call(dsn,review_pending_subgoal,semantic_reviewer(user),
+                 semantic_command(instance,proposal.proposal_id),gateway)
+    assert retired.decision=="SUPERSEDED" and retired.alignment is None
+    assert gateway.calls==0
+    assert len(call(dsn,list_goals,actor(user),instance))==1
+    assert call(dsn,list_pending_subgoal_proposals,
+                actor(user),instance)==()
+
+
+def test_stale_retry_respects_receipt_before_parent_lock(dsn,monkeypatch):
+    """Regression: a retry must not hold parent while waiting on a receipt.
+
+    The original review holds its newly inserted command receipt and is
+    suspended before locking the parent. A same-key retry sees a stale
+    parent and must wait on that receipt WITHOUT acquiring a parent lock.
+    This reproduces the lock inversion from the P2 review deterministically.
+    """
+    import time
+    from threading import Event
+    import persona_agent.goal_semantic_review as review_module
+
+    user,instance,root,proposal=pending_reading_habit(dsn)
+    command=semantic_command(instance,proposal.proposal_id)
+    actor_value=semantic_reviewer(user)
+    first_receipt_owned=Event()
+    release_first=Event()
+    retry_retirement_entered=Event()
+
+    # Make the model's source revision stale before the original reviewer
+    # reaches its final transaction, exactly as in the reported race.
+    def advance_parent():
+        milestone=generalized_command(dsn,instance,root,count=1)
+        assert call(dsn,propose_derived_subgoal,goal_evaluator(user),
+                    milestone).status=="ACCEPTED"
+
+    gateway=FakeSemanticGateway(
+        semantic_finding(),callback=advance_parent,
+    )
+    original_chain=review_module._locked_active_goal_ancestry
+    original_retire=review_module._retire_stale_before_inference
+
+    def pause_review_after_receipt(cur,who,instance_id,parent_id):
+        if who.source_id=="goal.semantic_review.v1":
+            first_receipt_owned.set()
+            assert release_first.wait(12), "review finalization not released"
+        return original_chain(cur,who,instance_id,parent_id)
+
+    def observe_stale_retirement(*args,**kwargs):
+        retry_retirement_entered.set()
+        return original_retire(*args,**kwargs)
+
+    monkeypatch.setattr(
+        review_module,"_locked_active_goal_ancestry",
+        pause_review_after_receipt,
+    )
+    monkeypatch.setattr(
+        review_module,"_retire_stale_before_inference",
+        observe_stale_retirement,
+    )
+
+    def attempt_retry():
+        with psycopg.connect(dsn,autocommit=True) as conn:
+            conn.execute("SET application_name='goal-stale-review-retry'")
+            # The stale path must NOT invoke this invalid model.
+            invalid_gateway=FakeSemanticGateway({},raw="not valid JSON")
+            result=review_pending_subgoal(
+                conn,actor_value,command,invalid_gateway,
+            )
+            assert invalid_gateway.calls==0
+            return result
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        original=pool.submit(
+            call,dsn,review_pending_subgoal,actor_value,command,gateway,
+        )
+        try:
+            assert first_receipt_owned.wait(12), "original did not claim receipt"
+            retry=pool.submit(attempt_retry)
+            assert retry_retirement_entered.wait(12), "retry did not see stale parent"
+
+            # Wait until the retry is actually blocked by a PostgreSQL lock.
+            # With the fix that lock is the uncommitted idempotency receipt;
+            # with the old implementation, it is the same receipt AFTER
+            # acquiring the parent row (creating the deadlock).
+            blocked=False
+            for _ in range(80):
+                with psycopg.connect(dsn,autocommit=True) as observer:
+                    blocked=observer.execute(
+                        """SELECT EXISTS(
+                            SELECT 1 FROM pg_stat_activity
+                            WHERE application_name='goal-stale-review-retry'
+                              AND wait_event_type='Lock'
+                        )"""
+                    ).fetchone()[0]
+                if blocked:
+                    break
+                time.sleep(0.05)
+            assert blocked, "stale retry did not block on receipt"
+
+            # The parent must remain available while that retry is blocked.
+            with psycopg.connect(dsn,autocommit=True) as conn:
+                with conn.transaction():
+                    assert conn.execute(
+                        """SELECT goal_id FROM goal_records
+                           WHERE goal_id=%s FOR UPDATE NOWAIT""",
+                        (root,),
+                    ).fetchone()[0]==root
+        finally:
+            release_first.set()
+
+        first=original.result(timeout=15)
+        second=retry.result(timeout=15)
+        assert first.decision=="SUPERSEDED"
+        assert second.replayed and second.event_id==first.event_id
+        assert second.decision=="SUPERSEDED"
+        assert gateway.calls==1
+
+    assert call(dsn,list_pending_subgoal_proposals,
+                actor(user),instance)==()
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            """SELECT count(*) FROM goal_subgoal_semantic_reviews
+               WHERE proposal_id=%s""",
+            (proposal.proposal_id,),
+        ).fetchone()[0]==1
+        assert conn.execute(
+            """SELECT count(*) FROM command_receipts
+               WHERE user_id=%s AND instance_id=%s
+                 AND command_type='goal.subgoal.semantic_review.v1'
+                 AND idempotency_key=%s""",
+            (user,instance,command.idempotency_key),
+        ).fetchone()[0]==1
