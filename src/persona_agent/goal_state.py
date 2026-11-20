@@ -299,6 +299,66 @@ def create_goal(
 
 
 
+
+def _locked_active_goal_ancestry(
+    cur, actor: TrustedPlatformActor, instance_id: UUID, parent_id: UUID,
+) -> dict:
+    """Fence the entire delegation chain against a concurrent status change.
+
+    Read only the ancestry IDs first, then lock every row in UUID order,
+    matching the stable order used by Task._active_goal_chain. The immediate
+    parent takes FOR UPDATE (for its later version bump), and ancestors take
+    FOR SHARE (for status stability). Never lock the immediate parent first:
+    doing so reverses the order used by task admission and can deadlock.
+    No model or external work happens while these locks are held.
+    """
+    cur.execute(
+        """WITH RECURSIVE ancestry AS (
+               SELECT goal_id,parent_goal_id,depth,
+                      ARRAY[goal_id]::uuid[] AS path
+               FROM goal_records
+               WHERE goal_id=%s AND user_id=%s AND instance_id=%s
+               UNION ALL
+               SELECT g.goal_id,g.parent_goal_id,g.depth,
+                      a.path || g.goal_id
+               FROM goal_records g
+               JOIN ancestry a ON g.goal_id=a.parent_goal_id
+               WHERE g.user_id=%s AND g.instance_id=%s
+                 AND NOT g.goal_id=ANY(a.path)
+                 AND cardinality(a.path)<=%s
+           )
+           SELECT goal_id,parent_goal_id,depth FROM ancestry""",
+        (parent_id,actor.user_id,instance_id,actor.user_id,instance_id,
+         _MAX_SUBGOAL_DEPTH + 1),
+    )
+    ancestry=cur.fetchall()
+    if not ancestry:
+        raise PermissionDenied("delegation parent outside user/persona scope")
+    if (len(ancestry)>_MAX_SUBGOAL_DEPTH+1
+        or len({x["goal_id"] for x in ancestry})!=len(ancestry)
+        or ancestry[0]["goal_id"]!=parent_id
+        or ancestry[-1]["parent_goal_id"] is not None):
+        raise VersionConflict("invalid or incomplete goal ancestry")
+
+    # Every observed link must still exist after locks are acquired.
+    locked={}
+    for goal_id in sorted((x["goal_id"] for x in ancestry)):
+        locked[goal_id]=_goal(
+            cur,actor,instance_id,goal_id,
+            lock="UPDATE" if goal_id==parent_id else "SHARE",
+        )
+    for index,observed in enumerate(ancestry):
+        row=locked[observed["goal_id"]]
+        if (row["parent_goal_id"]!=observed["parent_goal_id"]
+            or row["depth"]!=observed["depth"]
+            or row["status"]!="ACTIVE"
+            or row["depth"]!=len(ancestry)-index-1
+            or (index+1<len(ancestry) and
+                row["parent_goal_id"]!=ancestry[index+1]["goal_id"])):
+            raise VersionConflict("goal or ancestor paused, abandoned or changed")
+    return locked[parent_id]
+
+
 def derive_weekly_walking_milestone(
     connection: Connection,
     actor: TrustedPlatformActor,
@@ -357,10 +417,10 @@ def derive_weekly_walking_milestone(
                 ).model_copy(update={"replayed":True})
 
             _selected(cur,actor,command)
-            parent = _goal(cur,actor,command.instance_id,command.parent_goal_id)
+            parent = _locked_active_goal_ancestry(
+                cur,actor,command.instance_id,command.parent_goal_id,
+            )
             _version(parent,command.expected_parent_version)
-            if parent["status"] != "ACTIVE":
-                raise VersionConflict("parent goal is not active")
             if parent["depth"] >= _MAX_SUBGOAL_DEPTH:
                 raise VersionConflict("goal decomposition depth limit")
 
