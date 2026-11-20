@@ -57,9 +57,21 @@ Review calls use P0 command receipts and transactional outbox.
 
 A model failure or malformed output leaves the proposal
 `PENDING_REVIEW`; it can be retried. After a completed review, same-key
-replay returns the previous result **without model inference**. Any newer
-parent revision invalidates an in-flight review result; a still-active
-stale proposal is marked `SUPERSEDED`, rather than adopted.
+replay returns the previous result **without model inference**.
+
+**Already-stale proposals are retired before inference begins:** if the
+parent is no longer active, its revision differs from the proposal's pinned
+version, or its source event changed, the Goal owner locks the parent and
+proposal, rechecks staleness, then atomically writes `SUPERSEDED`, a
+`goal.subgoal.superseded.v1` event, transactional outbox entry and command
+receipt. This avoids wasting a model call and removes the proposal from
+`list_pending_subgoal_proposals` and the 24-candidate pending budget.
+Pre-review supersession has `alignment=None` because no model assessment
+occurred; its status-change event provides the audit trail instead of
+fabricating a semantic review record.
+
+Any newer parent revision also invalidates an **in-flight** review result;
+that proposal is marked `SUPERSEDED` rather than adopted.
 
 There is no DB transaction or row lock held during LLM evaluation.
 Final state mutation uses the existing selection-generation and
@@ -86,5 +98,6 @@ full-ancestry locking contracts.
 `tests/test_phase3_goals.py` includes real PostgreSQL flows for adopted,
 rejected, deferred and superseded candidates, invalid model evidence, strict
 scope flags, replay without repeat inference, parent status revocation during
-model work, parent CAS changes during inference, outbox/provenance, and
-further decomposition of semantically reviewed children.
+model work, parent CAS changes during inference, pre-inference retirement
+of stale siblings (without model calls), replay, removal from the pending
+budget, outbox/provenance, and further decomposition of reviewed children.
