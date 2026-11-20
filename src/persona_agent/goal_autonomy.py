@@ -112,17 +112,29 @@ def schedule_goal_evaluation(
                          )
                          AND NOT EXISTS(
                            SELECT 1 FROM goal_autonomy_jobs prior
+                           LEFT JOIN operations old_operation
+                             ON old_operation.operation_id=prior.operation_id
                            WHERE prior.user_id=g.user_id
                              AND prior.instance_id=g.instance_id
                              AND prior.goal_id=g.goal_id
                              AND prior.parent_version=g.version
+                             AND (
+                               -- A completed assessment is enough until
+                               -- the actual Goal owner changes its version.
+                               prior.status IN ('PROPOSED','NO_PROPOSAL')
+                               OR old_operation.status='FAILED'
+                               -- Current-epoch work is unique; old-epoch
+                               -- staged work cannot carry a P0 lease into
+                               -- a later Background selection.
+                               OR prior.background_epoch=%s
+                             )
                          )
                        ORDER BY CASE g.horizon
                                 WHEN 'LONG' THEN 0 WHEN 'MEDIUM' THEN 1
                                 WHEN 'SHORT' THEN 2 ELSE 3 END,
                                 g.created_at,g.goal_id LIMIT 1
                        FOR SHARE OF g""",
-                    (actor.user_id,instance_id),
+                    (actor.user_id,instance_id,background_epoch),
                 )
                 candidate=cur.fetchone()
                 if candidate is None:
@@ -130,7 +142,7 @@ def schedule_goal_evaluation(
                 operation_id=uuid5(
                     NAMESPACE_URL,
                     f"goal-autonomy/{actor.user_id}/{instance_id}/"
-                    f"{candidate['goal_id']}/{candidate['version']}",
+                    f"{candidate['goal_id']}/{candidate['version']}/{background_epoch}",
                 )
                 cur.execute(
                     """INSERT INTO goal_autonomy_jobs(
@@ -138,7 +150,7 @@ def schedule_goal_evaluation(
                          parent_version,parent_created_event_id,
                          expected_generation,background_epoch)
                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
-                       ON CONFLICT(user_id,instance_id,goal_id,parent_version)
+                       ON CONFLICT(user_id,instance_id,goal_id,parent_version,background_epoch)
                        DO NOTHING RETURNING *""",
                     (operation_id,actor.user_id,instance_id,
                      candidate["goal_id"],candidate["version"],
