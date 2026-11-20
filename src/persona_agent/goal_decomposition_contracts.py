@@ -109,3 +109,19 @@ def proposal_digest(command: ProposeDerivedSubgoalCommand) -> str:
             command.success_criterion.strip().casefold(),
             command.horizon)
     return sha256("\0".join(fields).encode("utf-8")).hexdigest()
+
+
+class DerivedSubgoalProposalView(BaseModel):
+    model_config=ConfigDict(frozen=True,extra="forbid")
+    proposal_id: UUID
+    proposed_goal_id: UUID
+    parent_goal_id: UUID
+    expected_parent_version: int=Field(ge=1)
+    source_parent_event_id: UUID
+    title: str
+    desired_outcome: str
+    success_criterion: str
+    horizon: GoalHorizon
+    contribution_note: str
+    status: Literal["ACCEPTED","PENDING_REVIEW"]
+    decision_method: Literal["DETERMINISTIC_COUNT_MILESTONE","REVIEW_REQUIRED"]
