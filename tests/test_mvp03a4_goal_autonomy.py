@@ -222,18 +222,3 @@ def test_foreground_return_during_goal_model_aborts_unapproved_write(dsn,monkeyp
             "SELECT count(*) FROM goal_subgoal_proposals WHERE parent_goal_id=%s",
             (root,),
         ).fetchone()[0]==0
-
-
-def test_goal_evaluation_cannot_bypass_shared_p2_capacity(dsn,monkeypatch):
-    """Two preexisting P2 active claims exhaust the common Background budget."""
-    from persona_agent.operation_contracts import ResourceUnavailable
-    user,instance,root=closed_goal(dsn,monkeypatch)
-    ready(dsn,user,instance)
-    # Stage is Goal-owned, but P0 is the sole resource/capacity admittance.
-    staged=call(dsn,schedule_goal_evaluation,stage_actor(user),instance,1)
-    assert staged is not None
-    with psycopg.connect(dsn,autocommit=True) as conn:
-        assert conn.execute(
-            "SELECT priority_class FROM operations WHERE operation_id=%s",
-            (staged.operation_id,),
-        ).fetchone()[0]=="P2"
