@@ -198,6 +198,120 @@ def _previous(connection,actor,command,fp):
             return _saved_result(cur,actor,command,fp)
 
 
+
+def _retire_stale_before_inference(
+    connection:Connection,actor:TrustedPlatformActor,
+    command:ReviewSubgoalCommand,fingerprint:str,
+)->SemanticSubgoalReviewResult | None:
+    """Recheck, then durably supersede a stale candidate without an LLM call.
+
+    Lock selection, parent and proposal in that order, as with normal Goal
+    admission. Parent version and source-event checks are repeated under
+    the lock so a stale preview never becomes an unchecked state change.
+    No semantic review row is fabricated because no inference occurred.
+    """
+    with connection.transaction():
+        with connection.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                "SELECT 1 FROM persona_instances WHERE user_id=%s AND id=%s",
+                (actor.user_id,command.instance_id),
+            )
+            if cur.fetchone() is None:
+                raise PermissionDenied("semantic review persona scope invalid")
+            _selected(cur,actor,command)
+            # FOR UPDATE serializes parent changes; the proposal lock below
+            # follows the same parent-before-proposal order as adoption.
+            cur.execute(
+                """SELECT goal_id,version,status,created_event_id
+                   FROM goal_records
+                   WHERE goal_id=(
+                       SELECT parent_goal_id FROM goal_subgoal_proposals
+                       WHERE proposal_id=%s AND user_id=%s AND instance_id=%s
+                   ) AND user_id=%s AND instance_id=%s
+                   FOR UPDATE""",
+                (command.proposal_id,actor.user_id,command.instance_id,
+                 actor.user_id,command.instance_id),
+            )
+            parent=cur.fetchone()
+            if parent is None:
+                raise PermissionDenied("proposal parent outside persona scope")
+            cur.execute(
+                """SELECT * FROM goal_subgoal_proposals
+                   WHERE proposal_id=%s AND user_id=%s AND instance_id=%s
+                   FOR UPDATE""",
+                (command.proposal_id,actor.user_id,command.instance_id),
+            )
+            current=cur.fetchone()
+            if current is None:
+                raise PermissionDenied("proposal outside persona scope")
+            if current["status"]!="PENDING_REVIEW":
+                saved=_saved_result(cur,actor,command,fingerprint)
+                if saved is not None:
+                    return saved
+                raise VersionConflict("subgoal proposal is already reviewed")
+
+            reason=(
+                "PARENT_INACTIVE" if parent["status"]!="ACTIVE" else
+                "PARENT_VERSION_CHANGED"
+                if parent["version"]!=current["expected_parent_version"] else
+                "PARENT_SOURCE_CHANGED"
+                if parent["created_event_id"]!=current["source_parent_event_id"]
+                else None
+            )
+            if reason is None:
+                # Preview may be out of date only in the opposite direction
+                # after a concurrent update; never supersede a current item.
+                return None
+
+            receipt_id=uuid4()
+            cur.execute(
+                """INSERT INTO command_receipts(
+                     receipt_id,user_id,instance_id,command_type,
+                     idempotency_key,request_fingerprint)
+                   VALUES (%s,%s,%s,%s,%s,%s)
+                   ON CONFLICT(user_id,instance_id,command_type,idempotency_key)
+                   DO NOTHING RETURNING receipt_id""",
+                (receipt_id,actor.user_id,command.instance_id,_KIND,
+                 command.idempotency_key,fingerprint),
+            )
+            if cur.fetchone() is None:
+                saved=_saved_result(cur,actor,command,fingerprint)
+                if saved is None:
+                    raise IdempotencyConflict("review receipt incomplete")
+                return saved
+
+            event_id=_publish(
+                cur,actor,command.instance_id,"goal.subgoal.superseded.v1",{
+                    "proposal_id":str(command.proposal_id),
+                    "review_id":str(command.review_id),
+                    "parent_goal_id":str(current["parent_goal_id"]),
+                    "expected_parent_version":current["expected_parent_version"],
+                    "observed_parent_version":parent["version"],
+                    "source_parent_event_id":str(current["source_parent_event_id"]),
+                    "observed_parent_event_id":str(parent["created_event_id"]),
+                    "reason":reason,
+                    "model_invoked":False,
+                    "authorizes_execution":False,
+                },receipt_id,
+            )
+            cur.execute(
+                """UPDATE goal_subgoal_proposals SET status='SUPERSEDED'
+                   WHERE proposal_id=%s AND user_id=%s AND instance_id=%s
+                     AND status='PENDING_REVIEW'""",
+                (command.proposal_id,actor.user_id,command.instance_id),
+            )
+            result=SemanticSubgoalReviewResult(
+                proposal_id=command.proposal_id,review_id=command.review_id,
+                alignment=None,decision="SUPERSEDED",event_id=event_id,
+            )
+            cur.execute(
+                """UPDATE command_receipts
+                   SET event_id=%s,result_json=%s::jsonb WHERE receipt_id=%s""",
+                (event_id,result.model_dump_json(),receipt_id),
+            )
+            return result
+
+
 def review_pending_subgoal(
     connection:Connection,actor:TrustedPlatformActor,
     command:ReviewSubgoalCommand,gateway:TextModelGateway,
@@ -220,7 +334,15 @@ def review_pending_subgoal(
     if (proposal["current_parent_status"]!="ACTIVE"
         or proposal["expected_parent_version"]!=proposal["current_parent_version"]
         or proposal["source_parent_event_id"]!=proposal["current_parent_event"]):
-        raise VersionConflict("parent changed before semantic review")
+        # Stale proposals must not occupy the review queue or its finite
+        # candidate budget indefinitely. This path records SUPERSEDED with
+        # its own source-linked event and receipt, without model inference.
+        retired=_retire_stale_before_inference(
+            connection,actor,command,fingerprint,
+        )
+        if retired is not None:
+            return retired
+        raise VersionConflict("parent changed during stale retirement")
 
     # Explicitly no connection.transaction() is active during inference.
     reply=gateway.generate(_messages(proposal))
