@@ -46,6 +46,15 @@ _MEASURED=re.compile(
 )
 
 
+# Numerical duration, distance or price qualifiers are not unit counts.
+_PROPERTY_MODIFIER=re.compile(
+    r"\b(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)"
+    r"\s+(?:hours?|minutes?|seconds?|kilometers?|metres?|meters?|"
+    r"miles?|kilograms?|pounds?|dollars?|euros?|km|kg)\s+"
+    r"[a-z][a-z-]+\b",re.I,
+)
+
+
 def _scoped_actor(actor:TrustedPlatformActor)->None:
     if (type(actor) is not TrustedPlatformActor
         or actor.source_id!="goal.semantic_review.v1"):
@@ -150,7 +159,19 @@ def _owner_decision(finding:SemanticSubgoalFinding,proposal:dict)->str:
         and bool(_MEASURED.search(proposal["success_criterion"]))
         and not any(_EFFECT_VERBS.search(proposal[key].strip())
                     for key in ("title","desired_outcome","success_criterion"))
+        and not any(_PROPERTY_MODIFIER.search(proposal[key])
+                    for key in ("desired_outcome","success_criterion"))
     )
+    parent_measure=verified_count_measure(
+        proposal["parent_outcome"],proposal["parent_criterion"],
+    )
+    child_measure=verified_count_measure(
+        proposal["desired_outcome"],proposal["success_criterion"],
+    )
+    if (parent_measure is not None and child_measure is not None
+        and parent_measure[:3]==child_measure[:3]
+        and child_measure[3]>=parent_measure[3]):
+        safe=False
     return "ACCEPTED" if safe else "DEFERRED"
 
 
