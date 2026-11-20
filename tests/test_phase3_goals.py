@@ -534,3 +534,143 @@ def test_incorrectly_labelled_user_report_remains_unreviewed(dsn):
     assert reported[0].classification_status=="UNREVIEWED"
     assert reported[0].source_quote=="did not prepare a healthy lunch"
     assert call(dsn,list_goals,actor(user),instance)[0].status=="ACTIVE"
+
+
+# MVP-03A.1: narrow Goal-owned delegated decomposition, with NO new user
+# confirmation for a contributing child and NO grant to dispatch tools.
+from persona_agent.goal_delegation_contracts import (
+    DeriveWeeklyWalkingMilestoneCommand, weekly_walk_target,
+)
+from persona_agent.goal_state import derive_weekly_walking_milestone
+from persona_agent.lifecycle import TrustedPlatformActor
+
+
+def approved_walking_root(dsn, *, criterion="Complete three walks per week"):
+    user,instance,_=seed(dsn)
+    conversation=uuid4()
+    source=turn(dsn,user,instance,conversation,
+                "I want to walk three times a week.")
+    goal_id=uuid4()
+    proposed=CreateGoalCommand(
+        instance_id=instance,expected_generation=1,
+        idempotency_key=str(uuid4()),conversation_id=conversation,
+        evidence_turn_id=source.turn_id,
+        evidence_quote="I want to walk three times a week",
+        goal_id=goal_id,title="Walk regularly",
+        desired_outcome="Walk three times per week",
+        success_criterion=criterion,horizon="OPEN",
+    )
+    call(dsn,create_goal,actor(user),authorize(dsn,user,instance,proposed))
+    return user,instance,goal_id
+
+
+def derived_walking_cmd(instance,parent,*,count=1,version=1):
+    return DeriveWeeklyWalkingMilestoneCommand(
+        instance_id=instance,expected_generation=1,
+        idempotency_key=str(uuid4()),goal_id=uuid4(),
+        parent_goal_id=parent,expected_parent_version=version,
+        weekly_walks=count,
+    )
+
+
+def goal_decomposer(user):
+    return TrustedPlatformActor(
+        user_id=user,source_id="goal.delegation.v1",
+    )
+
+
+def test_delegated_weekly_walk_milestone_is_bounded_and_source_linked(dsn):
+    user,instance,parent=approved_walking_root(dsn)
+    command=derived_walking_cmd(instance,parent,count=1)
+    result=call(dsn,derive_weekly_walking_milestone,
+                goal_decomposer(user),command)
+    assert result.action=="GOAL_CREATED"
+    assert call(dsn,derive_weekly_walking_milestone,
+                goal_decomposer(user),command).replayed
+    goals=call(dsn,list_goals,actor(user),instance)
+    assert len(goals)==2
+    root_goal,child=goals
+    assert root_goal.goal_id==parent and root_goal.version==2
+    assert root_goal.desired_outcome=="Walk three times per week"
+    assert root_goal.creation_authority=="USER_APPROVED"
+    assert child.goal_id==command.goal_id
+    assert child.parent_goal_id==parent and child.depth==1
+    assert child.creation_authority=="DELEGATED_MILESTONE"
+    assert child.desired_outcome=="Walk 1 time per week"
+    assert child.success_criterion=="Complete at least 1 walk per week"
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        event=conn.execute(
+            """SELECT e.trust_level,e.payload,g.source_turn_id,
+                      g.created_event_id
+               FROM goal_records g JOIN events e
+                 ON e.event_id=g.created_event_id
+               WHERE g.goal_id=%s""",(command.goal_id,),
+        ).fetchone()
+        assert event[0]=="TRUSTED_PLATFORM"
+        assert event[1]["authority"]=="DELEGATED_PARENT"
+        assert event[1]["parent_created_event_id"]
+        assert event[1]["child_weekly_walks"]==1
+        assert conn.execute(
+            "SELECT count(*) FROM outbox WHERE event_id=%s",
+            (event[3],),
+        ).fetchone()[0]==1
+        assert conn.execute(
+            "SELECT count(*) FROM goal_records WHERE parent_goal_id=%s",
+            (parent,),
+        ).fetchone()[0]==1
+
+
+def test_delegation_denies_unproven_contribution_and_duplicate_child(dsn):
+    user,instance,parent=approved_walking_root(dsn)
+    candidate=derived_walking_cmd(instance,parent,count=3)
+    with pytest.raises(PermissionDenied,match="noncontributing"):
+        call(dsn,derive_weekly_walking_milestone,goal_decomposer(user),candidate)
+    with pytest.raises(PermissionDenied):
+        call(dsn,derive_weekly_walking_milestone,actor(user),
+             derived_walking_cmd(instance,parent))
+    wrong_source=TrustedPlatformActor(
+        user_id=user,source_id="some.other.worker",
+    )
+    with pytest.raises(PermissionDenied):
+        call(dsn,derive_weekly_walking_milestone,wrong_source,
+             derived_walking_cmd(instance,parent))
+    first=derived_walking_cmd(instance,parent,count=1)
+    call(dsn,derive_weekly_walking_milestone,goal_decomposer(user),first)
+    duplicate=derived_walking_cmd(instance,parent,count=1,version=2)
+    with pytest.raises(VersionConflict,match="equivalent"):
+        call(dsn,derive_weekly_walking_milestone,goal_decomposer(user),duplicate)
+    with pytest.raises(VersionConflict,match="version"):
+        call(dsn,derive_weekly_walking_milestone,goal_decomposer(user),
+             derived_walking_cmd(instance,parent,count=2,version=1))
+    with pytest.raises(IdempotencyConflict):
+        call(dsn,derive_weekly_walking_milestone,goal_decomposer(user),
+             first.model_copy(update={"weekly_walks":2}))
+    assert len(call(dsn,list_goals,actor(user),instance))==2
+
+
+def test_delegation_rejects_ambiguous_parent_and_stale_selection(dsn):
+    user,instance,parent=approved_walking_root(
+        dsn,criterion="Complete two walks per week",
+    )
+    with pytest.raises(PermissionDenied,match="unproven"):
+        call(dsn,derive_weekly_walking_milestone,goal_decomposer(user),
+             derived_walking_cmd(instance,parent))
+    assert len(call(dsn,list_goals,actor(user),instance))==1
+
+    another_user,another_instance,another_parent=approved_walking_root(dsn)
+    with pytest.raises(PermissionDenied):
+        call(dsn,derive_weekly_walking_milestone,goal_decomposer(user),
+             derived_walking_cmd(another_instance,another_parent))
+    assert len(call(dsn,list_goals,actor(another_user),another_instance))==1
+
+
+def test_weekly_milestone_parser_abstains_on_unsupported_goal_forms():
+    assert weekly_walk_target("Walk three times per week",
+                              "Complete three walks per week")==3
+    assert weekly_walk_target("Walk 1 time per week",
+                              "Complete at least 1 walk per week")==1
+    assert weekly_walk_target("Walk three times per week",
+                              "Complete two walks per week") is None
+    assert weekly_walk_target("Exercise more", "Get healthier") is None
+    assert weekly_walk_target("Walk three times per week and run daily",
+                              "Complete three walks per week") is None
