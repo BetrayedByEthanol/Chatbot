@@ -35,7 +35,7 @@ Goal evaluator (`TrustedPlatformActor` with an admitted
   `goal_subgoal_proposals`, with version pins, text, rationale, source
   evidence, an event and outbox entry. It is **not** a `goal_records`
   entry, task, procedure or operation.
-- Both outcomes are an idempotent Goal command. Pending proposals do not
+- For a proven candidate, the accepted goal title is derived from the\n  verified child outcome (bounded to 120 characters), not from potentially\n  misleading free-form proposal title text.\n- Both outcomes are an idempotent Goal command. Pending proposals do not
   increase parent goal version; accepted children increment that version.
   No external I/O or LLM call takes place inside the Goal transaction.
   Existing exact user approval for new main goals is unchanged.
