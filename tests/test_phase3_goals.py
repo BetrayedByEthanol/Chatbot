@@ -674,3 +674,98 @@ def test_weekly_milestone_parser_abstains_on_unsupported_goal_forms():
     assert weekly_walk_target("Exercise more", "Get healthier") is None
     assert weekly_walk_target("Walk three times per week and run daily",
                               "Complete three walks per week") is None
+
+
+def change_walking_root_status(dsn, user, instance, root_id, *, status, version):
+    """Exercise the existing authenticated user status-command contract."""
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        conversation=conn.execute(
+            "SELECT source_conversation_id FROM goal_records WHERE goal_id=%s",
+            (root_id,),
+        ).fetchone()[0]
+    phrase=("Pause" if status=="PAUSED" else "Abandon")+" my walking goal."
+    source=turn(dsn,user,instance,conversation,phrase)
+    proposed=SetGoalStatusCommand(
+        instance_id=instance,expected_generation=1,
+        idempotency_key=str(uuid4()),conversation_id=conversation,
+        evidence_turn_id=source.turn_id,evidence_quote=phrase,
+        goal_id=root_id,expected_goal_version=version,new_status=status,
+    )
+    return call(dsn,set_goal_status,actor(user),
+                authorize(dsn,user,instance,proposed))
+
+
+@pytest.mark.parametrize("root_status",["PAUSED","ABANDONED"])
+def test_delegated_grandchild_denied_when_root_authority_withdrawn(
+    dsn, root_status,
+):
+    user,instance,root_id=approved_walking_root(dsn)
+    first=derived_walking_cmd(instance,root_id,count=2,version=1)
+    call(dsn,derive_weekly_walking_milestone,goal_decomposer(user),first)
+    assert change_walking_root_status(
+        dsn,user,instance,root_id,status=root_status,version=2,
+    ).action=="STATUS_CHANGED"
+    # The intermediate milestone is still ACTIVE: no cascading status edit.
+    views=call(dsn,list_goals,actor(user),instance)
+    assert next(x for x in views if x.goal_id==first.goal_id).status=="ACTIVE"
+    grandchild=derived_walking_cmd(instance,first.goal_id,count=1,version=1)
+    with pytest.raises(VersionConflict,match="ancestor"):
+        call(dsn,derive_weekly_walking_milestone,goal_decomposer(user),
+             grandchild)
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT count(*) FROM goal_records WHERE parent_goal_id=%s",
+            (first.goal_id,),
+        ).fetchone()[0]==0
+        assert conn.execute(
+            """SELECT count(*) FROM events WHERE user_id=%s AND instance_id=%s
+               AND event_type='goal.created.v1'""",(user,instance),
+        ).fetchone()[0]==2
+
+
+def test_ancestor_status_is_locked_through_delegated_grandchild_commit(
+    dsn, monkeypatch,
+):
+    """A concurrent status writer cannot revoke root authority mid-commit."""
+    from threading import Event
+    import persona_agent.goal_state as goal_module
+
+    user,instance,root_id=approved_walking_root(dsn)
+    first=derived_walking_cmd(instance,root_id,count=2,version=1)
+    call(dsn,derive_weekly_walking_milestone,goal_decomposer(user),first)
+    grandchild=derived_walking_cmd(instance,first.goal_id,count=1,version=1)
+    entered,proceed=Event(),Event()
+    original_publish=goal_module._publish
+
+    def paused_publish(cur, actor_value, instance_value, kind, detail, receipt):
+        if (type(actor_value) is TrustedPlatformActor
+            and kind=="goal.created.v1"
+            and detail.get("goal_id")==str(grandchild.goal_id)):
+            entered.set()
+            if not proceed.wait(10):
+                raise TimeoutError("test did not release locked transaction")
+        return original_publish(cur,actor_value,instance_value,kind,detail,receipt)
+
+    monkeypatch.setattr(goal_module,"_publish",paused_publish)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future=pool.submit(call,dsn,derive_weekly_walking_milestone,
+                           goal_decomposer(user),grandchild)
+        try:
+            assert entered.wait(10), "delegation did not reach locked commit"
+            with psycopg.connect(dsn,autocommit=True) as conn:
+                # Root is a strict ancestor, NOT the immediate parent.
+                # A pause uses FOR UPDATE on this row and must be blocked.
+                with pytest.raises(psycopg.errors.LockNotAvailable):
+                    with conn.transaction():
+                        conn.execute(
+                            """SELECT goal_id FROM goal_records
+                               WHERE goal_id=%s FOR UPDATE NOWAIT""",
+                            (root_id,),
+                        ).fetchone()
+        finally:
+            proceed.set()
+        assert future.result(timeout=15).action=="GOAL_CREATED"
+    assert change_walking_root_status(
+        dsn,user,instance,root_id,status="PAUSED",version=2,
+    ).action=="STATUS_CHANGED"
+    assert len(call(dsn,list_goals,actor(user),instance))==3
