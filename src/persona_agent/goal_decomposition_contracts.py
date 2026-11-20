@@ -54,10 +54,11 @@ class DerivedSubgoalProposalResult(BaseModel):
     replayed: bool = False
 
 
-# A small, *proof-producing* class of generic measurable goals, not
-# semantic similarity. Both approved parent fields and candidate fields
-# must agree exactly on verb, singularized unit, period and count.
-# Examples: "Read 3 books per month" or "Complete 4 exercise sessions per week".
+# Automatic acceptance covers explicitly enumerated countable units only.
+# Never assume that arbitrary words following a number name counted objects:
+# "4 hour marathons" might describe marathon duration, not four marathons.
+# Unsupported units/qualifiers stay PENDING_REVIEW, even when parent and
+# candidate strings appear structurally similar.
 _WORD_NUMBER={"one":1,"two":2,"three":3,"four":4,"five":5,
               "six":6,"seven":7,"eight":8,"nine":9,"ten":10}
 _AMOUNT=r"(?:[1-9][0-9]?|one|two|three|four|five|six|seven|eight|nine|ten)"
@@ -67,47 +68,91 @@ _MEASURE=re.compile(
     flags=re.IGNORECASE,
 )
 
+# Explicit lexical normalization (not general singularization or semantic
+# inference). Multiword units are admitted only by an audited phrase.
+_COUNTABLE_UNITS={
+    "book":"book", "books":"book",
+    "article":"article", "articles":"article",
+    "chapter":"chapter", "chapters":"chapter",
+    "page":"page", "pages":"page",
+    "walk":"walk", "walks":"walk",
+    "run":"run", "runs":"run",
+    "workout":"workout", "workouts":"workout",
+    "meal":"meal", "meals":"meal",
+    "lesson":"lesson", "lessons":"lesson",
+    "session":"session", "sessions":"session",
+    "exercise":"exercise", "exercises":"exercise",
+    "meeting":"meeting", "meetings":"meeting",
+    "visit":"visit", "visits":"visit",
+    "marathon":"marathon", "marathons":"marathon",
+    "recipe":"recipe", "recipes":"recipe",
+    "exercise session":"exercise session",
+    "exercise sessions":"exercise session",
+    "training session":"training session",
+    "training sessions":"training session",
+}
+
 
 def _measure(text: str) -> tuple[str,str,str,int] | None:
+    """Normalize an unambiguous instance count; abstain for unknown phrases."""
     match=_MEASURE.fullmatch(" ".join(text.split()))
     if match is None:
         return None
-    count=match["count"].lower()
+    canonical_unit=_COUNTABLE_UNITS.get(match["unit"].casefold())
+    if canonical_unit is None:
+        return None
+    count=match["count"].casefold()
     number=int(count) if count.isdigit() else _WORD_NUMBER[count]
-    # A one-unit singular is treated as equivalent to its plural version,
-    # not a semantic inference. Both strings must otherwise match.
-    words=match["unit"].casefold().split()
-    last=words[-1]
-    if last.endswith("ies") and len(last)>3:
-        words[-1]=last[:-3]+"y"
-    elif last.endswith("s") and not last.endswith(("ss","us")) and len(last)>3:
-        words[-1]=last[:-1]
-    return (match["verb"].casefold()," ".join(words),
+    return (match["verb"].casefold(),canonical_unit,
             match["period"].casefold(),number)
+
+
+def verified_count_measure(
+    desired_outcome: str, success_criterion: str,
+) -> tuple[str,str,str,int] | None:
+    """Both fields must describe the identical, supported count measure."""
+    outcome=_measure(desired_outcome)
+    criterion=_measure(success_criterion)
+    if outcome is None or criterion!=outcome:
+        return None
+    return outcome
 
 
 def proven_count_milestone(
     parent_outcome: str,parent_criterion: str,
     child_outcome: str,child_criterion: str,
 ) -> bool:
-    """Fail closed except exact one-dimensional, same-period count reductions.
+    """Only accept an unambiguous, same-unit, lower-count milestone.
 
-    A strict quantitative reduction creates only a *supporting milestone*.
-    No claim of user completion, task eligibility or tool permission follows.
+    Ambiguous duration/distance/property modifiers are not proof of
+    authorized subgoal contribution, and require owner review.
     """
-    p1,p2=_measure(parent_outcome),_measure(parent_criterion)
-    c1,c2=_measure(child_outcome),_measure(child_criterion)
-    if None in (p1,p2,c1,c2) or p1!=p2 or c1!=c2:
-        return False
-    return p1[:3]==c1[:3] and 1<=c1[3]<p1[3]
+    parent=verified_count_measure(parent_outcome,parent_criterion)
+    child=verified_count_measure(child_outcome,child_criterion)
+    return (
+        parent is not None and child is not None
+        and parent[:3]==child[:3] and 1<=child[3]<parent[3]
+    )
 
 
-def proposal_digest(command: ProposeDerivedSubgoalCommand) -> str:
-    """Deduplicate equivalent candidate definitions on the same parent."""
-    fields=(command.title.strip().casefold(),
-            command.desired_outcome.strip().casefold(),
-            command.success_criterion.strip().casefold(),
-            command.horizon)
+def proposal_digest(
+    command: ProposeDerivedSubgoalCommand,
+    *, accepted_measure: tuple[str,str,str,int] | None = None,
+) -> str:
+    """Canonical digest for proven counts, textual digest for review candidates.
+
+    Title, horizon, words/digits, optional 'at least', plurality and
+    whitespace cannot distinguish two otherwise identical accepted counts.
+    Text for pending semantic review remains evidence, not a count proof.
+    """
+    if accepted_measure is not None:
+        fields=("COUNT_MILESTONE_V1",*map(str,accepted_measure))
+    else:
+        fields=("REVIEW_TEXT_V1",
+                " ".join(command.title.casefold().split()),
+                " ".join(command.desired_outcome.casefold().split()),
+                " ".join(command.success_criterion.casefold().split()),
+                command.horizon)
     return sha256("\0".join(fields).encode("utf-8")).hexdigest()
 
 
