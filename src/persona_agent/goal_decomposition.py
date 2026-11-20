@@ -13,7 +13,7 @@ from psycopg.rows import dict_row
 
 from .goal_decomposition_contracts import (
     DerivedSubgoalProposalResult,DerivedSubgoalProposalView,ProposeDerivedSubgoalCommand,
-    proven_count_milestone,proposal_digest,
+    proven_count_milestone,verified_count_measure,proposal_digest,
 )
 from .goal_state import (
     _MAX_CHILDREN,_MAX_SUBGOAL_DEPTH,_locked_active_goal_ancestry,
@@ -169,7 +169,29 @@ def propose_derived_subgoal(
                          parent["desired_outcome"],parent["success_criterion"],
                          command.desired_outcome,command.success_criterion,
                      ))
-            if not checked:
+            accepted_measure=(
+                verified_count_measure(
+                    command.desired_outcome,command.success_criterion,
+                ) if checked else None
+            )
+            if checked:
+                # The parent is locked FOR UPDATE through this transaction,
+                # serializing sibling creation with all other Goal writes.
+                # Compare the same canonical measure used by admission,
+                # not the raw wording ("1 book" vs "one books", etc.).
+                # The existing child budget makes this scan bounded.
+                cur.execute(
+                    """SELECT desired_outcome,success_criterion
+                       FROM goal_records WHERE parent_goal_id=%s
+                         AND user_id=%s AND instance_id=%s""",
+                    (command.parent_goal_id,actor.user_id,command.instance_id),
+                )
+                for sibling in cur.fetchall():
+                    if verified_count_measure(
+                        sibling["desired_outcome"],sibling["success_criterion"],
+                    )==accepted_measure:
+                        raise VersionConflict("equivalent subgoal already exists")
+            else:
                 # Prevent unbounded model candidate accumulation.
                 cur.execute(
                     """SELECT count(*) AS n FROM goal_subgoal_proposals
@@ -180,7 +202,9 @@ def propose_derived_subgoal(
                 if cur.fetchone()["n"]>=24:
                     raise VersionConflict("subgoal review candidate budget reached")
 
-            digest=proposal_digest(command)
+            digest=proposal_digest(
+                command,accepted_measure=accepted_measure,
+            )
             cur.execute(
                 """SELECT 1 FROM goal_subgoal_proposals
                    WHERE user_id=%s AND instance_id=%s AND parent_goal_id=%s
