@@ -20,7 +20,7 @@ CREATE TABLE goal_autonomy_jobs (
   model_id text,
   staged_at timestamptz NOT NULL DEFAULT clock_timestamp(),
   evaluated_at timestamptz,
-  UNIQUE(user_id,instance_id,goal_id,parent_version),
+  UNIQUE(user_id,instance_id,goal_id,parent_version,background_epoch),
   FOREIGN KEY(goal_id,user_id,instance_id)
     REFERENCES goal_records(goal_id,user_id,instance_id),
   FOREIGN KEY(parent_created_event_id,user_id,instance_id)
