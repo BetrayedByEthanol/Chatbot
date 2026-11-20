@@ -926,9 +926,21 @@ def test_generalized_grandchild_fenced_after_root_paused(dsn):
     first=generalized_command(dsn,instance,root_id,count=3)
     assert call(dsn,propose_derived_subgoal,goal_evaluator(user),
                 first).status=="ACCEPTED"
-    change_walking_root_status(
-        dsn,user,instance,root_id,status="PAUSED",version=2,
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        conversation=conn.execute(
+            "SELECT source_conversation_id FROM goal_records WHERE goal_id=%s",
+            (root_id,),
+        ).fetchone()[0]
+    source=turn(dsn,user,instance,conversation,"Pause my reading goal.")
+    changed=SetGoalStatusCommand(
+        instance_id=instance,expected_generation=1,
+        idempotency_key=str(uuid4()),conversation_id=conversation,
+        evidence_turn_id=source.turn_id,
+        evidence_quote="Pause my reading goal.",
+        goal_id=root_id,expected_goal_version=2,new_status="PAUSED",
     )
+    call(dsn,set_goal_status,actor(user),
+         authorize(dsn,user,instance,changed))
     descendant=generalized_command(dsn,instance,first.proposed_goal_id,count=1)
     with pytest.raises(VersionConflict,match="ancestor"):
         call(dsn,propose_derived_subgoal,goal_evaluator(user),descendant)
