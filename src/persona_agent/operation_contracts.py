@@ -10,6 +10,7 @@ from psycopg import Connection
 from psycopg.pq import TransactionStatus
 
 from .tool_contracts import PROCEDURE_AGENT_OPERATION, SLOW_TOOL, RESOURCE_KEY
+from .goal_autonomy_contracts import GOAL_EVALUATION_OPERATION
 
 
 class Priority(str, Enum):
@@ -220,8 +221,35 @@ def count_active_background_p2(cursor, user_id: UUID, instance_id: UUID,
                     AND o.input_versions->>'task'=a.task_version::text
                     AND o.input_versions->>'procedure_run'=a.run_version::text
                     AND o.input_versions->>'procedure_step'=a.step_version::text
-                  ))""",
-        (user_id,instance_id,background_epoch,PROCEDURE_AGENT_OPERATION),
+                  )
+                  OR (o.operation_type=%s AND EXISTS(
+                    SELECT 1 FROM goal_autonomy_jobs job
+                    JOIN background_ready_epochs ready
+                      ON ready.user_id=job.user_id
+                     AND ready.instance_id=job.instance_id
+                     AND ready.background_epoch=job.background_epoch
+                    JOIN background_preparation_epochs epoch
+                      ON epoch.user_id=job.user_id
+                     AND epoch.instance_id=job.instance_id
+                     AND epoch.background_epoch=job.background_epoch
+                    JOIN goal_records goal
+                      ON goal.goal_id=job.goal_id
+                     AND goal.user_id=job.user_id
+                     AND goal.instance_id=job.instance_id
+                    WHERE job.operation_id=o.operation_id
+                      AND job.status='STAGED'
+                      AND job.expected_generation=o.selection_generation
+                      AND job.background_epoch=o.background_epoch
+                      AND epoch.selection_generation=o.selection_generation
+                      AND epoch.status='PENDING'
+                      AND epoch.preparation_stage='READY'
+                      AND goal.status='ACTIVE'
+                      AND goal.version=job.parent_version
+                      AND goal.created_event_id=job.parent_created_event_id
+                  ))
+                  )""",
+        (user_id,instance_id,background_epoch,PROCEDURE_AGENT_OPERATION,
+         GOAL_EVALUATION_OPERATION),
     )
     return cursor.fetchone()["active"]
 
