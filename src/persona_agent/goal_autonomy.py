@@ -74,6 +74,13 @@ def schedule_goal_evaluation(
                 (actor.user_id,instance_id),
             )
             cur.execute(
+                """UPDATE background_preparation_epochs
+                   SET goal_autonomy_polled_at=clock_timestamp()
+                   WHERE user_id=%s AND instance_id=%s AND background_epoch=%s
+                     AND status='PENDING' AND preparation_stage='READY'""",
+                (actor.user_id,instance_id,background_epoch),
+            )
+            cur.execute(
                 """SELECT j.* FROM goal_autonomy_jobs j
                    WHERE j.user_id=%s AND j.instance_id=%s
                      AND j.background_epoch=%s
@@ -188,7 +195,8 @@ def run_goal_evaluation_scan(connection:Connection,*,limit:int=24)->tuple[GoalEv
                WHERE selected.mode='BACKGROUND'
                  AND epoch.status='PENDING'
                  AND epoch.preparation_stage='READY'
-               ORDER BY ready.ready_at,ready.user_id LIMIT %s""",
+               ORDER BY epoch.goal_autonomy_polled_at NULLS FIRST,
+                        ready.ready_at,ready.user_id LIMIT %s""",
             (limit,),
         )
         epochs=tuple(cur.fetchall())
