@@ -1,3 +1,7 @@
+-- One persisted cursor avoids a low scan limit starving later READY personas.
+ALTER TABLE background_preparation_epochs
+  ADD COLUMN goal_autonomy_polled_at timestamptz;
+
 -- MVP-03A.4: one bounded Goal evaluation opportunity per approved goal
 -- revision. Jobs bind P2 to an already READY Background epoch, not tools.
 CREATE TABLE goal_autonomy_jobs (
