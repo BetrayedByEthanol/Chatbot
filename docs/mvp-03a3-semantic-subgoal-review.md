@@ -70,6 +70,14 @@ Pre-review supersession has `alignment=None` because no model assessment
 occurred; its status-change event provides the audit trail instead of
 fabricating a semantic review record.
 
+**Concurrency lock ordering:** both the post-model adoption path and the
+pre-model stale-retirement path claim the identical command receipt **before**
+acquiring selection/parent/proposal locks. A same-key retry racing an in-flight
+model evaluation therefore blocks on the receipt without holding its parent,
+avoiding the PostgreSQL receipt↔parent deadlock. When the locked recheck no
+longer finds a stale proposal, its transaction rolls back the newly claimed
+receipt rather than persisting an incomplete idempotency entry.
+
 Any newer parent revision also invalidates an **in-flight** review result;
 that proposal is marked `SUPERSEDED` rather than adopted.
 
