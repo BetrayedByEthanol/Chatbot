@@ -69,7 +69,8 @@ def _authorized_lineage(cur,actor,instance_id,parent):
                    and payload.get("approval_turn_id") is not None)
         else:
             valid=(row["creation_authority"] in (
-                       "DELEGATED_MILESTONE","DELEGATED_VERIFIED")
+                       "DELEGATED_MILESTONE","DELEGATED_VERIFIED",
+                       "DELEGATED_REVIEWED")
                    and row["trust_level"]=="TRUSTED_PLATFORM"
                    and payload.get("authority")=="DELEGATED_PARENT"
                    and payload.get("parent_goal_id")==str(row["parent_goal_id"]))
