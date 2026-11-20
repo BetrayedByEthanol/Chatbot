@@ -202,10 +202,10 @@ def _previous(connection,actor,command,fp):
 def _retire_stale_before_inference(
     connection:Connection,actor:TrustedPlatformActor,
     command:ReviewSubgoalCommand,fingerprint:str,
-)->SemanticSubgoalReviewResult | None:
+)->SemanticSubgoalReviewResult:
     """Recheck, then durably supersede a stale candidate without an LLM call.
 
-    Lock selection, parent and proposal in that order, as with normal Goal
+    Claim receipt, then lock selection, parent and proposal, as with Goal
     admission. Parent version and source-event checks are repeated under
     the lock so a stale preview never becomes an unchecked state change.
     No semantic review row is fabricated because no inference occurred.
@@ -218,6 +218,29 @@ def _retire_stale_before_inference(
             )
             if cur.fetchone() is None:
                 raise PermissionDenied("semantic review persona scope invalid")
+            # Claim the same idempotency receipt FIRST, before acquiring
+            # selection, parent or proposal locks. Normal review finalization
+            # follows exactly this order: receipt -> selection -> parent ->
+            # proposal. Conflicting retries wait on the receipt, never
+            # while holding the parent row (which would deadlock a review
+            # currently finalizing against that same receipt).
+            receipt_id=uuid4()
+            cur.execute(
+                """INSERT INTO command_receipts(
+                     receipt_id,user_id,instance_id,command_type,
+                     idempotency_key,request_fingerprint)
+                   VALUES (%s,%s,%s,%s,%s,%s)
+                   ON CONFLICT(user_id,instance_id,command_type,idempotency_key)
+                   DO NOTHING RETURNING receipt_id""",
+                (receipt_id,actor.user_id,command.instance_id,_KIND,
+                 command.idempotency_key,fingerprint),
+            )
+            if cur.fetchone() is None:
+                saved=_saved_result(cur,actor,command,fingerprint)
+                if saved is None:
+                    raise IdempotencyConflict("review receipt incomplete")
+                return saved
+
             _selected(cur,actor,command)
             # FOR UPDATE serializes parent changes; the proposal lock below
             # follows the same parent-before-proposal order as adoption.
@@ -259,26 +282,11 @@ def _retire_stale_before_inference(
                 else None
             )
             if reason is None:
-                # Preview may be out of date only in the opposite direction
-                # after a concurrent update; never supersede a current item.
-                return None
+                # Preview changed between read and locked recheck: abort,
+                # rolling back the newly claimed receipt rather than leaving
+                # an incomplete idempotency record.
+                raise VersionConflict("parent changed during stale retirement")
 
-            receipt_id=uuid4()
-            cur.execute(
-                """INSERT INTO command_receipts(
-                     receipt_id,user_id,instance_id,command_type,
-                     idempotency_key,request_fingerprint)
-                   VALUES (%s,%s,%s,%s,%s,%s)
-                   ON CONFLICT(user_id,instance_id,command_type,idempotency_key)
-                   DO NOTHING RETURNING receipt_id""",
-                (receipt_id,actor.user_id,command.instance_id,_KIND,
-                 command.idempotency_key,fingerprint),
-            )
-            if cur.fetchone() is None:
-                saved=_saved_result(cur,actor,command,fingerprint)
-                if saved is None:
-                    raise IdempotencyConflict("review receipt incomplete")
-                return saved
 
             event_id=_publish(
                 cur,actor,command.instance_id,"goal.subgoal.superseded.v1",{
@@ -337,12 +345,9 @@ def review_pending_subgoal(
         # Stale proposals must not occupy the review queue or its finite
         # candidate budget indefinitely. This path records SUPERSEDED with
         # its own source-linked event and receipt, without model inference.
-        retired=_retire_stale_before_inference(
+        return _retire_stale_before_inference(
             connection,actor,command,fingerprint,
         )
-        if retired is not None:
-            return retired
-        raise VersionConflict("parent changed during stale retirement")
 
     # Explicitly no connection.transaction() is active during inference.
     reply=gateway.generate(_messages(proposal))
