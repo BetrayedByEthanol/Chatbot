@@ -2,7 +2,7 @@
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
 
 Alignment = Literal["ALIGNED","UNCERTAIN","DRIFT_DETECTED","BLOCKED"]
 Decision = Literal["ACCEPTED","DEFERRED","REJECTED","SUPERSEDED"]
@@ -24,12 +24,12 @@ class SemanticSubgoalFinding(BaseModel):
     parent_evidence_quote: str=Field(min_length=3,max_length=300)
     child_evidence_quote: str=Field(min_length=3,max_length=300)
     contribution_reason: str=Field(min_length=10,max_length=500)
-    within_parent_scope: bool
-    measurable: bool
-    supports_not_replaces_parent: bool
-    changes_parent_objective: bool
-    requires_new_permissions: bool
-    creates_new_user_commitment: bool
+    within_parent_scope: StrictBool
+    measurable: StrictBool
+    supports_not_replaces_parent: StrictBool
+    changes_parent_objective: StrictBool
+    requires_new_permissions: StrictBool
+    creates_new_user_commitment: StrictBool
 
     @model_validator(mode="after")
     def require_nonblank(self):
