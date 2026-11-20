@@ -31,7 +31,7 @@ class ProposeDerivedSubgoalCommand(BaseModel):
     contribution_note: str=Field(min_length=1,max_length=500)
 
     @model_validator(mode="after")
-    def validate(self):
+    def validate_nonblank(self):
         if self.proposed_goal_id==self.parent_goal_id:
             raise ValueError("subgoal cannot be its own parent")
         if not all(x.strip() for x in (
