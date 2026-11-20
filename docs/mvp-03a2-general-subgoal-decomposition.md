@@ -22,8 +22,12 @@ Goal evaluator (`TrustedPlatformActor` with an admitted
 - A model-proposed candidate **never** acquires authority by its rationale.
   Only a deterministic, exact quantitative proof can admit a child during
   this increment: both parent fields and both proposed child fields must
-  describe the same verb, countable unit and day/week/month period, with a
-  strictly smaller positive target.
+  describe the same verb, **explicitly allowlisted countable unit**, and
+  day/week/month period, with a strictly smaller positive target.
+  Ambiguous modifiers such as `Complete 4 hour marathons per month`
+  (where 4 may describe duration rather than quantity), and unknown
+  multiword units, are not mechanically proven and enter `PENDING_REVIEW`.
+  Audited phrases such as `exercise sessions` remain supported.
 - Example automatically admitted: approved `Read 3 books per month` with
   success `Read at least 3 books per month`; candidate `Read 1 book per
   month` with matching success criterion. The goal owner verifies the
@@ -38,6 +42,13 @@ Goal evaluator (`TrustedPlatformActor` with an admitted
 - For a proven candidate, the accepted goal title is derived from the
   verified child outcome (bounded to 120 characters), not from potentially
   misleading free-form proposal title text.
+- Accepted lower-count milestones are deduplicated against **all existing
+  siblings** by the same normalized `(verb, unit, period, count)` used for
+  contribution proof, under the parent row lock. This prevents repeated
+  children across numeric words/digits, singular/plural, optional `at least`,
+  spacing, titles or horizons. Accepted proposal digests also use that
+  canonical measure, not the supplied text; review-only candidates retain
+  text-based digests.
 - Both outcomes are an idempotent Goal command. Pending proposals do not
   increase parent goal version; accepted children increment that version.
   No external I/O or LLM call takes place inside the Goal transaction.
@@ -70,7 +81,9 @@ The P3 PostgreSQL integration suite includes:
 3. Parent source-event forgery, unauthorized actor and idempotency mismatch.
 4. Stale parent-version protection, safe nested decomposition and
    paused-ancestor gating.
-5. Mismatched unit/period/criterion and action-text contamination
-   remain in review rather than becoming approved children.
+5. Mismatched unit/period/criterion, numeric property modifiers
+   (e.g. marathon duration) and action-text contamination remain in review.
+6. Rephrased equivalents of accepted milestones cannot create duplicate
+   child goals or exhaust the parent's breadth budget.
 
 No new global scheduler, mandatory classifier or model call was introduced.
