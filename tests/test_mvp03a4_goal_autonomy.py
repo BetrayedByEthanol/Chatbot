@@ -196,3 +196,44 @@ def test_unstaged_goal_p2_cannot_be_enqueued(dsn,monkeypatch):
     with pytest.raises(PermissionDenied):
         call(dsn,enqueue_operation,stage_actor(user),command)
     assert len(call(dsn,goals.list_goals,goals.actor(user),instance))==1
+
+
+def test_foreground_return_during_goal_model_aborts_unapproved_write(dsn,monkeypatch):
+    from persona_agent.lifecycle import (
+        record_primary_activity,PrimaryActivityCommand,
+    )
+    from persona_agent.operation_contracts import StaleOperation
+    user,instance,root=closed_goal(dsn,monkeypatch)
+    ready(dsn,user,instance)
+    call(dsn,schedule_goal_evaluation,stage_actor(user),instance,1)
+    def user_return():
+        call(dsn,record_primary_activity,user_actor(user),
+             PrimaryActivityCommand(
+                 instance_id=instance,expected_generation=1,
+                 idempotency_key=str(uuid4()),
+             ))
+    model=OpportunityModel(outcome(),callback=user_return)
+    with pytest.raises((StaleOperation,StaleSelection,PermissionDenied)):
+        call(dsn,run_one_goal_evaluation,model,worker_id="mvp03a4-return")
+    assert model.calls==1
+    assert len(call(dsn,goals.list_goals,goals.actor(user),instance))==1
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT count(*) FROM goal_subgoal_proposals WHERE parent_goal_id=%s",
+            (root,),
+        ).fetchone()[0]==0
+
+
+def test_goal_evaluation_cannot_bypass_shared_p2_capacity(dsn,monkeypatch):
+    """Two preexisting P2 active claims exhaust the common Background budget."""
+    from persona_agent.operation_contracts import ResourceUnavailable
+    user,instance,root=closed_goal(dsn,monkeypatch)
+    ready(dsn,user,instance)
+    # Stage is Goal-owned, but P0 is the sole resource/capacity admittance.
+    staged=call(dsn,schedule_goal_evaluation,stage_actor(user),instance,1)
+    assert staged is not None
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT priority_class FROM operations WHERE operation_id=%s",
+            (staged.operation_id,),
+        ).fetchone()[0]=="P2"
