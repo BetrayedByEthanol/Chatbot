@@ -772,7 +772,8 @@ def test_ancestor_status_is_locked_through_delegated_grandchild_commit(
 
 
 # MVP-03A.2: arbitrary bounded candidate path, proof-or-review admission.
-from persona_agent.goal_decomposition import propose_derived_subgoal
+from persona_agent.goal_decomposition import (propose_derived_subgoal,
+    list_pending_subgoal_proposals)
 from persona_agent.goal_decomposition_contracts import (
     ProposeDerivedSubgoalCommand,proven_count_milestone,
 )
@@ -871,6 +872,9 @@ def test_arbitrary_candidate_is_durable_but_non_actionable(dsn):
     assert result.decision_method=="REVIEW_REQUIRED"
     assert result.accepted_goal_event_id is None
     assert len(call(dsn,list_goals,actor(user),instance))==1
+    queue=call(dsn,list_pending_subgoal_proposals,actor(user),instance)
+    assert len(queue)==1 and queue[0].proposal_id==cmd.proposal_id
+    assert queue[0].status=="PENDING_REVIEW"
     with psycopg.connect(dsn,autocommit=True) as conn:
         row=conn.execute(
             """SELECT status,expected_parent_version,
