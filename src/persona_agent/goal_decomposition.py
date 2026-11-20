@@ -22,7 +22,12 @@ from .goal_state import (
 )
 from .lifecycle import TrustedPlatformActor
 from .contracts import TrustedActor
-from .operation_contracts import require_idle
+from .operation_contracts import (
+    OperationLease,require_claim,require_current_authority,require_idle,
+)
+from .goal_autonomy_contracts import (
+    GOAL_EVALUATION_OPERATION,GOAL_EVALUATION_SOURCE,
+)
 from .runtime import (
     IdempotencyConflict,PermissionDenied,VersionConflict,_fingerprint,
 )
@@ -83,7 +88,7 @@ def _authorized_lineage(cur,actor,instance_id,parent):
 
 def propose_derived_subgoal(
     connection:Connection,actor:TrustedPlatformActor,
-    command:ProposeDerivedSubgoalCommand,
+    command:ProposeDerivedSubgoalCommand,*,lease:OperationLease|None=None,
 )->DerivedSubgoalProposalResult:
     """Stage, or auto-accept a *proved* quantitative child, in one transaction.
 
@@ -91,8 +96,13 @@ def propose_derived_subgoal(
     admission and operation authorization are intentionally not exposed here.
     """
     require_idle(connection)
+    background=(type(actor) is TrustedPlatformActor
+                and actor.source_id==GOAL_EVALUATION_SOURCE)
     if (type(actor) is not TrustedPlatformActor
-        or actor.source_id!="goal.decomposition.v1"):
+        or actor.source_id not in ("goal.decomposition.v1",
+                                  GOAL_EVALUATION_SOURCE)
+        or (background and lease is None)
+        or (not background and lease is not None)):
         raise PermissionDenied("subgoal proposal requires trusted Goal evaluator")
     receipt_id=uuid4()
     command_type="goal.subgoal.propose.v1"
@@ -131,7 +141,50 @@ def propose_derived_subgoal(
                     saved["result_json"]
                 ).model_copy(update={"replayed":True})
 
-            _selected(cur,actor,command)
+            if background:
+                # P0 lease and selection are fenced in THIS Goal transaction,
+                # not merely at the worker's earlier inference snapshot.
+                # Lock order: command receipt -> operation -> selection ->
+                # sorted ancestor goals. Background cannot reuse Foreground's
+                # unrestricted trusted-evaluator source.
+                op=require_claim(cur,lease)
+                if (op["operation_type"]!=GOAL_EVALUATION_OPERATION
+                    or op["origin"]!="GOAL"
+                    or op["priority_class"]!="P2"
+                    or op["effect_class"]!="NONE"
+                    or op["execution_policy"]!="BACKGROUND_RESUMABLE"
+                    or op["user_id"]!=actor.user_id
+                    or op["instance_id"]!=command.instance_id
+                    or op["selection_generation"]!=command.expected_generation):
+                    raise PermissionDenied("Goal evaluation lease does not authorize this proposal")
+                require_current_authority(cur,op)
+                cur.execute(
+                    """SELECT 1 FROM goal_autonomy_jobs job
+                       JOIN background_ready_epochs ready
+                         ON ready.user_id=job.user_id
+                        AND ready.instance_id=job.instance_id
+                        AND ready.background_epoch=job.background_epoch
+                       JOIN background_preparation_epochs epoch
+                         ON epoch.user_id=job.user_id
+                        AND epoch.instance_id=job.instance_id
+                        AND epoch.background_epoch=job.background_epoch
+                       WHERE job.operation_id=%s AND job.user_id=%s
+                         AND job.instance_id=%s AND job.goal_id=%s
+                         AND job.parent_version=%s AND job.status='STAGED'
+                         AND job.expected_generation=%s
+                         AND job.background_epoch=%s
+                         AND epoch.selection_generation=%s
+                         AND epoch.status='PENDING'
+                         AND epoch.preparation_stage='READY'""",
+                    (lease.operation_id,actor.user_id,command.instance_id,
+                     command.parent_goal_id,command.expected_parent_version,
+                     command.expected_generation,lease.background_epoch,
+                     command.expected_generation),
+                )
+                if cur.fetchone() is None:
+                    raise PermissionDenied("Goal job lacks current READY authorization")
+            else:
+                _selected(cur,actor,command)
             parent=_locked_active_goal_ancestry(
                 cur,actor,command.instance_id,command.parent_goal_id,
             )
