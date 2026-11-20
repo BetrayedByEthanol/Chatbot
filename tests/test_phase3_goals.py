@@ -1446,3 +1446,102 @@ def test_reviewed_child_with_embedded_purchase_is_not_auto_adopted(dsn):
                 semantic_command(instance,proposal.proposal_id),reply)
     assert result.decision=="DEFERRED"
     assert len(call(dsn,list_goals,actor(user),instance))==1
+
+
+def test_preexisting_stale_proposal_retires_without_model_review(dsn):
+    """Two proposals at v1; accepting one supersedes the unreviewed sibling."""
+    user,instance,root,first=pending_reading_habit(dsn)
+    stale=generalized_command(
+        dsn,instance,root,title="Read a smaller daily amount",
+        outcome="Read 5 pages per day",
+        criterion="Read 5 pages per day",
+    )
+    assert call(dsn,propose_derived_subgoal,goal_evaluator(user),
+                stale).status=="PENDING_REVIEW"
+    assert len(call(dsn,list_pending_subgoal_proposals,
+                    actor(user),instance))==2
+
+    adopted=call(dsn,review_pending_subgoal,semantic_reviewer(user),
+                 semantic_command(instance,first.proposal_id),
+                 FakeSemanticGateway(semantic_finding()))
+    assert adopted.decision=="ACCEPTED"
+    assert next(x for x in call(dsn,list_goals,actor(user),instance)
+                if x.goal_id==root).version==2
+
+    no_inference=FakeSemanticGateway({},raw="INVALID MODEL OUTPUT")
+    review=semantic_command(instance,stale.proposal_id)
+    retired=call(dsn,review_pending_subgoal,semantic_reviewer(user),
+                 review,no_inference)
+    assert retired.decision=="SUPERSEDED"
+    assert retired.alignment is None  # no fabricated semantic finding
+    assert retired.accepted_goal_event_id is None
+    assert no_inference.calls==0
+    replay=call(dsn,review_pending_subgoal,semantic_reviewer(user),
+                review,no_inference)
+    assert replay.replayed and replay.event_id==retired.event_id
+    assert no_inference.calls==0
+    assert call(dsn,list_pending_subgoal_proposals,
+                actor(user),instance)==()
+
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        row=conn.execute(
+            """SELECT p.status,e.event_type,e.trust_level,e.payload
+               FROM goal_subgoal_proposals p
+               JOIN events e ON e.event_id=%s
+               WHERE p.proposal_id=%s""",
+            (retired.event_id,stale.proposal_id),
+        ).fetchone()
+        assert row[0]=="SUPERSEDED"
+        assert row[1]=="goal.subgoal.superseded.v1"
+        assert row[2]=="TRUSTED_PLATFORM"
+        assert row[3]["reason"]=="PARENT_VERSION_CHANGED"
+        assert row[3]["model_invoked"] is False
+        assert row[3]["expected_parent_version"]==1
+        assert row[3]["observed_parent_version"]==2
+        assert conn.execute(
+            "SELECT count(*) FROM outbox WHERE event_id=%s",
+            (retired.event_id,),
+        ).fetchone()[0]==1
+        assert conn.execute(
+            "SELECT count(*) FROM goal_subgoal_semantic_reviews WHERE proposal_id=%s",
+            (stale.proposal_id,),
+        ).fetchone()[0]==0
+
+    # Retired proposals no longer contribute to the pending-review budget:
+    # a new candidate at the updated parent revision can be staged.
+    fresh=generalized_command(
+        dsn,instance,root,title="Another supporting reading habit",
+        outcome="Read 10 pages per day",
+        criterion="Read 10 pages per day",
+    )
+    result=call(dsn,propose_derived_subgoal,goal_evaluator(user),fresh)
+    assert result.status=="PENDING_REVIEW"
+    pending=call(dsn,list_pending_subgoal_proposals,actor(user),instance)
+    assert len(pending)==1 and pending[0].proposal_id==fresh.proposal_id
+
+
+def test_pre_review_retirement_after_authenticated_parent_pause(dsn):
+    user,instance,root,proposal=pending_reading_habit(dsn)
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        conv=conn.execute(
+            "SELECT source_conversation_id FROM goal_records WHERE goal_id=%s",
+            (root,),
+        ).fetchone()[0]
+    source=turn(dsn,user,instance,conv,"Pause my reading goal.")
+    status=SetGoalStatusCommand(
+        instance_id=instance,expected_generation=1,
+        idempotency_key=str(uuid4()),conversation_id=conv,
+        evidence_turn_id=source.turn_id,
+        evidence_quote="Pause my reading goal.",
+        goal_id=root,expected_goal_version=1,new_status="PAUSED",
+    )
+    call(dsn,set_goal_status,actor(user),
+         authorize(dsn,user,instance,status))
+    gateway=FakeSemanticGateway(semantic_finding())
+    retired=call(dsn,review_pending_subgoal,semantic_reviewer(user),
+                 semantic_command(instance,proposal.proposal_id),gateway)
+    assert retired.decision=="SUPERSEDED" and retired.alignment is None
+    assert gateway.calls==0
+    assert len(call(dsn,list_goals,actor(user),instance))==1
+    assert call(dsn,list_pending_subgoal_proposals,
+                actor(user),instance)==()
