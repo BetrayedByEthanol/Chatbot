@@ -224,13 +224,23 @@ def test_foreground_return_during_goal_model_aborts_unapproved_write(dsn,monkeyp
         ).fetchone()[0]==0
 
 
+def prioritize_goal_operation(dsn,operation_id):
+    """Put this fixture's P2 job ahead of unrelated shared-DB jobs."""
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        conn.execute(
+            "UPDATE operations SET eligible_at='1970-01-01T00:00:00+00'::timestamptz "
+            "WHERE operation_id=%s AND status IN ('QUEUED','RETRY_WAIT')",
+            (operation_id,),
+        )
+
+
 def test_capacity_pressure_does_not_abort_other_ready_epochs(dsn,monkeypatch):
     import persona_agent.goal_autonomy as autonomy
     from persona_agent.operation_contracts import ResourceUnavailable
-    first_user,first_instance,_=closed_goal(dsn,monkeypatch)
+    first_user,first_instance,first_root=closed_goal(dsn,monkeypatch)
     ready(dsn,first_user,first_instance)
     monkeypatch.undo()
-    second_user,second_instance,_=closed_goal(dsn,monkeypatch)
+    second_user,second_instance,second_root=closed_goal(dsn,monkeypatch)
     ready(dsn,second_user,second_instance)
     original=autonomy.schedule_goal_evaluation
     visited=[]
@@ -238,21 +248,28 @@ def test_capacity_pressure_does_not_abort_other_ready_epochs(dsn,monkeypatch):
         visited.append(actor.user_id)
         if actor.user_id==first_user:
             raise ResourceUnavailable("P2 capacity currently full")
+        # Other tests share this PostgreSQL database: don't add unrelated
+        # operations merely by scanning existing READY epochs.
+        if actor.user_id!=second_user:
+            return None
         return original(connection,actor,instance_id,epoch)
     monkeypatch.setattr(autonomy,"schedule_goal_evaluation",admission)
     scheduled=call(dsn,autonomy.run_goal_evaluation_scan,limit=24)
     assert first_user in visited and second_user in visited
-    assert len(scheduled)==1 and scheduled[0].goal_id is not None
-    # The suite shares one PostgreSQL database. Retire both READY jobs so
-    # a later run_one_goal_evaluation cannot claim another test's operation.
-    monkeypatch.setattr(autonomy,"schedule_goal_evaluation",original)
-    first=call(dsn,autonomy.schedule_goal_evaluation,
-               stage_actor(first_user),first_instance,1)
-    assert first is not None
+    assert any(item.goal_id==second_root for item in scheduled)
+    assert not any(item.goal_id==first_root for item in scheduled)
+    ours=next(item for item in scheduled if item.goal_id==second_root)
+    prioritize_goal_operation(dsn,ours.operation_id)
     assert call(dsn,run_one_goal_evaluation,OpportunityModel(None),
-                worker_id="capacity-cleanup-1")=="NO_PROPOSAL"
-    assert call(dsn,run_one_goal_evaluation,OpportunityModel(None),
-                worker_id="capacity-cleanup-2")=="NO_PROPOSAL"
+                worker_id="capacity-cleanup")=="NO_PROPOSAL"
+    # Retire the intentionally capacity-rejected READY epoch from this test:
+    # its user returned before any Goal operation was admitted.
+    from persona_agent.lifecycle import record_primary_activity,PrimaryActivityCommand
+    call(dsn,record_primary_activity,user_actor(first_user),
+         PrimaryActivityCommand(
+             instance_id=first_instance,expected_generation=1,
+             idempotency_key=str(uuid4()),
+         ))
 
 
 def test_model_transport_failure_retries_and_releases_resources(dsn,monkeypatch):
@@ -263,9 +280,16 @@ def test_model_transport_failure_retries_and_releases_resources(dsn,monkeypatch)
     class UnavailableModel:
         def generate(self,messages):
             raise ModelUnavailable("local provider unavailable")
-    staged,executed=call(dsn,run_goal_evaluation_tick,UnavailableModel())
-    assert len(staged)==1 and executed is None
-    op_id=staged[0].operation_id
+    staged=call(dsn,schedule_goal_evaluation,stage_actor(user),instance,1)
+    prioritize_goal_operation(dsn,staged.operation_id)
+    # Only expose this test's stage to the tick; capacity and fairness are
+    # exercised separately, with no accidental global scan side effects.
+    import persona_agent.goal_autonomy_worker as worker
+    monkeypatch.setattr(worker,"run_goal_evaluation_scan",
+                        lambda connection,limit: (staged,))
+    seen,executed=call(dsn,run_goal_evaluation_tick,UnavailableModel())
+    assert seen==(staged,) and executed is None
+    op_id=staged.operation_id
     with psycopg.connect(dsn,autocommit=True) as conn:
         op=conn.execute(
             "SELECT status,attempt_count FROM operations WHERE operation_id=%s",
@@ -277,7 +301,7 @@ def test_model_transport_failure_retries_and_releases_resources(dsn,monkeypatch)
             (op_id,),
         ).fetchone()[0]==0
         conn.execute(
-            "UPDATE operations SET eligible_at=clock_timestamp()-interval '1 second' WHERE operation_id=%s",
+            "UPDATE operations SET eligible_at='1970-01-01T00:00:00+00'::timestamptz WHERE operation_id=%s",
             (op_id,),
         )
     model=OpportunityModel(outcome())
@@ -290,6 +314,7 @@ def test_candidate_finalization_rolls_back_atomically(dsn,monkeypatch):
     user,instance,root=closed_goal(dsn,monkeypatch)
     ready(dsn,user,instance)
     staged=call(dsn,schedule_goal_evaluation,stage_actor(user),instance,1)
+    prioritize_goal_operation(dsn,staged.operation_id)
     original=autonomy._finalize_goal_evaluation_locked
     def crash_before_finalization(*args,**kwargs):
         raise RuntimeError("simulated crash after Goal mutation")
@@ -311,7 +336,7 @@ def test_candidate_finalization_rolls_back_atomically(dsn,monkeypatch):
             (staged.operation_id,),
         ).fetchone()[0]=="RETRY_WAIT"
         conn.execute(
-            "UPDATE operations SET eligible_at=clock_timestamp()-interval '1 second' WHERE operation_id=%s",
+            "UPDATE operations SET eligible_at='1970-01-01T00:00:00+00'::timestamptz WHERE operation_id=%s",
             (staged.operation_id,),
         )
     monkeypatch.setattr(autonomy,"_finalize_goal_evaluation_locked",original)
@@ -325,6 +350,7 @@ def test_no_proposal_result_is_atomic_with_p0_completion(dsn,monkeypatch):
     user,instance,root=closed_goal(dsn,monkeypatch)
     ready(dsn,user,instance)
     staged=call(dsn,schedule_goal_evaluation,stage_actor(user),instance,1)
+    prioritize_goal_operation(dsn,staged.operation_id)
     original=autonomy.event_for
     def fail_event(*args,**kwargs):
         raise RuntimeError("simulated completion interruption")
@@ -343,7 +369,7 @@ def test_no_proposal_result_is_atomic_with_p0_completion(dsn,monkeypatch):
             (staged.operation_id,),
         ).fetchone()[0]=="RETRY_WAIT"
         conn.execute(
-            "UPDATE operations SET eligible_at=clock_timestamp()-interval '1 second' WHERE operation_id=%s",
+            "UPDATE operations SET eligible_at='1970-01-01T00:00:00+00'::timestamptz WHERE operation_id=%s",
             (staged.operation_id,),
         )
     assert call(dsn,run_one_goal_evaluation,OpportunityModel(None),
@@ -355,6 +381,7 @@ def test_expired_lease_after_ancestry_lock_cannot_commit(dsn,monkeypatch):
     user,instance,root=closed_goal(dsn,monkeypatch)
     ready(dsn,user,instance)
     staged=call(dsn,schedule_goal_evaluation,stage_actor(user),instance,1)
+    prioritize_goal_operation(dsn,staged.operation_id)
     original=decomposition._locked_active_goal_ancestry
     def expire_after_lock(cur,actor,instance_id,parent_id):
         parent=original(cur,actor,instance_id,parent_id)
@@ -385,7 +412,7 @@ def test_expired_lease_after_ancestry_lock_cannot_commit(dsn,monkeypatch):
             (staged.operation_id,),
         ).fetchone()[0]=="RETRY_WAIT"
         conn.execute(
-            "UPDATE operations SET eligible_at=clock_timestamp()-interval '1 second' WHERE operation_id=%s",
+            "UPDATE operations SET eligible_at='1970-01-01T00:00:00+00'::timestamptz WHERE operation_id=%s",
             (staged.operation_id,),
         )
     assert call(dsn,run_one_goal_evaluation,OpportunityModel(None),
