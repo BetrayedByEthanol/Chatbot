@@ -49,9 +49,9 @@ _MEASURED=re.compile(
 # Numerical duration, distance or price qualifiers are not unit counts.
 _PROPERTY_MODIFIER=re.compile(
     r"\b(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)"
-    r"\s+(?:hours?|minutes?|seconds?|kilometers?|metres?|meters?|"
-    r"miles?|kilograms?|pounds?|dollars?|euros?|km|kg)\s+"
-    r"[a-z][a-z-]+\b",re.I,
+    r"[\s-]+(?:hours?|minutes?|seconds?|kilometers?|metres?|meters?|"
+    r"miles?|kilograms?|pounds?|dollars?|euros?|km|kg)"
+    r"(?:[- ]long)?[\s-]+[a-z][a-z-]+\b",re.I,
 )
 
 
