@@ -1545,3 +1545,128 @@ def test_pre_review_retirement_after_authenticated_parent_pause(dsn):
     assert len(call(dsn,list_goals,actor(user),instance))==1
     assert call(dsn,list_pending_subgoal_proposals,
                 actor(user),instance)==()
+
+
+def test_stale_retry_respects_receipt_before_parent_lock(dsn,monkeypatch):
+    """Regression: a retry must not hold parent while waiting on a receipt.
+
+    The original review holds its newly inserted command receipt and is
+    suspended before locking the parent. A same-key retry sees a stale
+    parent and must wait on that receipt WITHOUT acquiring a parent lock.
+    This reproduces the lock inversion from the P2 review deterministically.
+    """
+    import time
+    from threading import Event
+    import persona_agent.goal_semantic_review as review_module
+
+    user,instance,root,proposal=pending_reading_habit(dsn)
+    command=semantic_command(instance,proposal.proposal_id)
+    actor_value=semantic_reviewer(user)
+    first_receipt_owned=Event()
+    release_first=Event()
+    retry_retirement_entered=Event()
+
+    # Make the model's source revision stale before the original reviewer
+    # reaches its final transaction, exactly as in the reported race.
+    def advance_parent():
+        milestone=generalized_command(dsn,instance,root,count=1)
+        assert call(dsn,propose_derived_subgoal,goal_evaluator(user),
+                    milestone).status=="ACCEPTED"
+
+    gateway=FakeSemanticGateway(
+        semantic_finding(),callback=advance_parent,
+    )
+    original_chain=review_module._locked_active_goal_ancestry
+    original_retire=review_module._retire_stale_before_inference
+
+    def pause_review_after_receipt(cur,who,instance_id,parent_id):
+        if who.source_id=="goal.semantic_review.v1":
+            first_receipt_owned.set()
+            assert release_first.wait(12), "review finalization not released"
+        return original_chain(cur,who,instance_id,parent_id)
+
+    def observe_stale_retirement(*args,**kwargs):
+        retry_retirement_entered.set()
+        return original_retire(*args,**kwargs)
+
+    monkeypatch.setattr(
+        review_module,"_locked_active_goal_ancestry",
+        pause_review_after_receipt,
+    )
+    monkeypatch.setattr(
+        review_module,"_retire_stale_before_inference",
+        observe_stale_retirement,
+    )
+
+    def attempt_retry():
+        with psycopg.connect(dsn,autocommit=True) as conn:
+            conn.execute("SET application_name='goal-stale-review-retry'")
+            # The stale path must NOT invoke this invalid model.
+            invalid_gateway=FakeSemanticGateway({},raw="not valid JSON")
+            result=review_pending_subgoal(
+                conn,actor_value,command,invalid_gateway,
+            )
+            assert invalid_gateway.calls==0
+            return result
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        original=pool.submit(
+            call,dsn,review_pending_subgoal,actor_value,command,gateway,
+        )
+        try:
+            assert first_receipt_owned.wait(12), "original did not claim receipt"
+            retry=pool.submit(attempt_retry)
+            assert retry_retirement_entered.wait(12), "retry did not see stale parent"
+
+            # Wait until the retry is actually blocked by a PostgreSQL lock.
+            # With the fix that lock is the uncommitted idempotency receipt;
+            # with the old implementation, it is the same receipt AFTER
+            # acquiring the parent row (creating the deadlock).
+            blocked=False
+            for _ in range(80):
+                with psycopg.connect(dsn,autocommit=True) as observer:
+                    blocked=observer.execute(
+                        """SELECT EXISTS(
+                            SELECT 1 FROM pg_stat_activity
+                            WHERE application_name='goal-stale-review-retry'
+                              AND wait_event_type='Lock'
+                        )"""
+                    ).fetchone()[0]
+                if blocked:
+                    break
+                time.sleep(0.05)
+            assert blocked, "stale retry did not block on receipt"
+
+            # The parent must remain available while that retry is blocked.
+            with psycopg.connect(dsn,autocommit=True) as conn:
+                with conn.transaction():
+                    assert conn.execute(
+                        """SELECT goal_id FROM goal_records
+                           WHERE goal_id=%s FOR UPDATE NOWAIT""",
+                        (root,),
+                    ).fetchone()[0]==root
+        finally:
+            release_first.set()
+
+        first=original.result(timeout=15)
+        second=retry.result(timeout=15)
+        assert first.decision=="SUPERSEDED"
+        assert second.replayed and second.event_id==first.event_id
+        assert second.decision=="SUPERSEDED"
+        assert gateway.calls==1
+
+    assert call(dsn,list_pending_subgoal_proposals,
+                actor(user),instance)==()
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            """SELECT count(*) FROM goal_subgoal_semantic_reviews
+               WHERE proposal_id=%s""",
+            (proposal.proposal_id,),
+        ).fetchone()[0]==1
+        assert conn.execute(
+            """SELECT count(*) FROM command_receipts
+               WHERE user_id=%s AND instance_id=%s
+                 AND command_type='goal.subgoal.semantic_review.v1'
+                 AND idempotency_key=%s""",
+            (user,instance,command.idempotency_key),
+        ).fetchone()[0]==1
