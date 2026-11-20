@@ -325,6 +325,12 @@ def derive_weekly_walking_milestone(
     with connection.transaction():
         with connection.cursor(row_factory=dict_row) as cur:
             cur.execute(
+                "SELECT 1 FROM persona_instances WHERE user_id=%s AND id=%s",
+                (actor.user_id,command.instance_id),
+            )
+            if cur.fetchone() is None:
+                raise PermissionDenied("delegation instance outside user/persona scope")
+            cur.execute(
                 """INSERT INTO command_receipts(
                      receipt_id,user_id,instance_id,command_type,
                      idempotency_key,request_fingerprint
