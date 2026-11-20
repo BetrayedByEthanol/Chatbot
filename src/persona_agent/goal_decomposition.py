@@ -12,14 +12,16 @@ from psycopg import Connection
 from psycopg.rows import dict_row
 
 from .goal_decomposition_contracts import (
-    DerivedSubgoalProposalResult,ProposeDerivedSubgoalCommand,
+    DerivedSubgoalProposalResult,DerivedSubgoalProposalView,ProposeDerivedSubgoalCommand,
     proven_count_milestone,proposal_digest,
 )
 from .goal_state import (
     _MAX_CHILDREN,_MAX_SUBGOAL_DEPTH,_locked_active_goal_ancestry,
+    _read_selected,
     _publish,_selected,
 )
 from .lifecycle import TrustedPlatformActor
+from .contracts import TrustedActor
 from .operation_contracts import require_idle
 from .runtime import (
     IdempotencyConflict,PermissionDenied,VersionConflict,_fingerprint,
@@ -271,3 +273,32 @@ def propose_derived_subgoal(
                 (proposal_event,result.model_dump_json(),receipt_id),
             )
             return result
+
+
+def list_pending_subgoal_proposals(
+    connection:Connection,actor:TrustedActor,instance_id,*,limit:int=40,
+)->tuple[DerivedSubgoalProposalView,...]:
+    """Scoped, bounded read-only Goal review queue; not executable work."""
+    require_idle(connection)
+    if type(actor) is not TrustedActor:
+        raise PermissionDenied("subgoal review read requires authenticated user")
+    if not 1<=limit<=100:
+        raise ValueError("invalid review queue limit")
+    with connection.transaction():
+        with connection.cursor(row_factory=dict_row) as cur:
+            _read_selected(cur,actor,instance_id)
+            cur.execute(
+                """SELECT proposal_id,proposed_goal_id,parent_goal_id,
+                          expected_parent_version,source_parent_event_id,
+                          title,desired_outcome,success_criterion,horizon,
+                          contribution_note,status,decision_method
+                   FROM goal_subgoal_proposals
+                   WHERE user_id=%s AND instance_id=%s
+                     AND status='PENDING_REVIEW'
+                   ORDER BY created_at,proposal_id LIMIT %s""",
+                (actor.user_id,instance_id,limit),
+            )
+            return tuple(
+                DerivedSubgoalProposalView.model_validate(dict(row))
+                for row in cur.fetchall()
+            )
