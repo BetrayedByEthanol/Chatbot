@@ -11,6 +11,10 @@ from .contracts import TrustedActor
 from .lifecycle import TrustedPlatformActor
 from .summary_contracts import SUMMARY_OPERATION, SUMMARY_CAPABILITY, SUMMARY_RESOURCE
 from .cognitive_contracts import COGNITIVE_OPERATION, COGNITIVE_CAPABILITY, COGNITIVE_RESOURCE
+from .goal_autonomy_contracts import (
+    GOAL_EVALUATION_OPERATION,GOAL_EVALUATION_CAPABILITY,
+    GOAL_EVALUATION_RESOURCE,GOAL_EVALUATION_SOURCE,
+)
 from .operation_contracts import (
     EffectClass, EnqueueOperation, EnqueueResult, InvalidOperation, Origin,
     OperationLease, Policy, Priority, ResourceUnavailable, Status,
@@ -122,9 +126,25 @@ def enqueue_operation(
         and command.concurrency_group==f"procedure.agent:{command.operation_id}"
         and command.idempotency_key==f"procedure-agent:{command.operation_id}"
     )
+    is_goal_evaluation_admission=(
+        platform and actor.source_id=="goal.autonomy.scheduler"
+        and command.operation_type==GOAL_EVALUATION_OPERATION
+        and command.origin is Origin.GOAL
+        and command.effect_class is EffectClass.NONE
+        and command.execution_policy is Policy.BACKGROUND_RESUMABLE
+        and command.priority_class is Priority.P2
+        and command.resources=={GOAL_EVALUATION_RESOURCE:1}
+        and command.capabilities==(GOAL_EVALUATION_CAPABILITY,)
+        and command.concurrency_group==f"goal.evaluation:{command.instance_id}"
+        and not command.dependencies and command.task_id is None
+        and command.eligible_at is None and command.deadline is None
+        and command.timeout_seconds==300 and command.max_attempts==3
+        and not command.input_versions
+        and command.idempotency_key==f"goal-eval:{command.operation_id}"
+    )
     if platform and not (
         is_summary_admission or is_cognitive_admission
-        or is_background_agent_admission
+        or is_background_agent_admission or is_goal_evaluation_admission
     ):
         raise PermissionDenied("platform admission is restricted to staged summary or cognitive operations or exact approved Background steps")
     # A caller can repair a job staged by the OTHER authorized producer,
@@ -148,6 +168,41 @@ def enqueue_operation(
 
     with connection.transaction():
         with connection.cursor(row_factory=dict_row) as cur:
+            if is_goal_evaluation_admission:
+                # No generic P2 Goal-origin grant. An immutable staged job
+                # must be bound to this exact READY Background epoch.
+                cur.execute(
+                    """SELECT 1 FROM goal_autonomy_jobs j
+                       JOIN persona_selection selected
+                         ON selected.user_id=j.user_id
+                        AND selected.instance_id=j.instance_id
+                        AND selected.generation=j.expected_generation
+                        AND selected.background_epoch=j.background_epoch
+                        AND selected.mode='BACKGROUND'
+                       JOIN background_preparation_epochs epoch
+                         ON epoch.user_id=j.user_id
+                        AND epoch.instance_id=j.instance_id
+                        AND epoch.background_epoch=j.background_epoch
+                        AND epoch.selection_generation=selected.generation
+                       JOIN background_ready_epochs ready
+                         ON ready.user_id=j.user_id
+                        AND ready.instance_id=j.instance_id
+                        AND ready.background_epoch=j.background_epoch
+                       JOIN goal_records g
+                         ON g.goal_id=j.goal_id AND g.user_id=j.user_id
+                        AND g.instance_id=j.instance_id
+                       WHERE j.operation_id=%s AND j.user_id=%s
+                         AND j.instance_id=%s
+                         AND j.expected_generation=%s AND j.status='STAGED'
+                         AND epoch.status='PENDING'
+                         AND epoch.preparation_stage='READY'
+                         AND g.status='ACTIVE' AND g.version=j.parent_version
+                         AND g.created_event_id=j.parent_created_event_id""",
+                    (command.operation_id,actor.user_id,command.instance_id,
+                     command.expected_generation),
+                )
+                if cur.fetchone() is None:
+                    raise PermissionDenied("Goal evaluation lacks staged READY epoch grant")
             if is_cognitive_admission:
                 # Stage-before-enqueue is a separately committed Cognitive
                 # domain authorization, not a blanket platform permission.
@@ -228,6 +283,21 @@ def enqueue_operation(
             ):
                 raise StaleSelection("enqueue selection generation invalid")
 
+            if is_goal_evaluation_admission:
+                if selected["mode"]!="BACKGROUND":
+                    raise PermissionDenied("Goal evaluation requires Background")
+                # A goal evaluation uses the same bounded P2 capacity as
+                # registered autonomous agent operations.
+                cur.execute(
+                    """SELECT pg_advisory_xact_lock(
+                         hashtextextended(%s::text||':'||%s::text,41))""",
+                    (actor.user_id,command.instance_id),
+                )
+                if count_active_background_p2(
+                    cur,actor.user_id,command.instance_id,
+                    selected["background_epoch"],
+                )>=2:
+                    raise ResourceUnavailable("Background P2 admission budget is full")
             if command.operation_type==PROCEDURE_AGENT_OPERATION:
                 if is_background_agent_admission:
                     if selected["mode"]!="BACKGROUND":
@@ -290,7 +360,7 @@ def enqueue_operation(
             # Bind ephemeral work to one Background epoch from admission.
             # An operation queued in Foreground targets only the next epoch.
             admitted_background_epoch = None
-            if is_background_agent_admission:
+            if is_background_agent_admission or is_goal_evaluation_admission:
                 admitted_background_epoch = selected["background_epoch"]
             elif command.execution_policy == Policy.BACKGROUND_EPHEMERAL:
                 admitted_background_epoch = selected["background_epoch"] + (
@@ -415,6 +485,36 @@ def _eligible_for_policy(cursor, operation: dict, selected: dict | None) -> bool
     elif (operation["background_epoch"] is not None
           and operation["background_epoch"] != selected["background_epoch"]):
         return False
+    if operation["operation_type"]==GOAL_EVALUATION_OPERATION:
+        # A goal assessment is NOT an AGENT task, and never grants tools.
+        # It has its own exact staged Goal + READY epoch admission gate.
+        cursor.execute(
+            """SELECT 1 FROM goal_autonomy_jobs j
+               JOIN background_ready_epochs ready
+                 ON ready.user_id=j.user_id
+                AND ready.instance_id=j.instance_id
+                AND ready.background_epoch=j.background_epoch
+               JOIN background_preparation_epochs epoch
+                 ON epoch.user_id=j.user_id
+                AND epoch.instance_id=j.instance_id
+                AND epoch.background_epoch=j.background_epoch
+               JOIN goal_records g ON g.goal_id=j.goal_id
+                 AND g.user_id=j.user_id AND g.instance_id=j.instance_id
+               WHERE j.operation_id=%s AND j.user_id=%s
+                 AND j.instance_id=%s AND j.status='STAGED'
+                 AND j.expected_generation=%s
+                 AND j.background_epoch=%s
+                 AND epoch.selection_generation=%s
+                 AND epoch.status='PENDING'
+                 AND epoch.preparation_stage='READY'
+                 AND g.status='ACTIVE'
+                 AND g.version=j.parent_version
+                 AND g.created_event_id=j.parent_created_event_id""",
+            (operation["operation_id"],operation["user_id"],
+             operation["instance_id"],selected["generation"],
+             selected["background_epoch"],selected["generation"]),
+        )
+        return cursor.fetchone() is not None
     # P4-03: a global epoch seal alone is insufficient. Autonomous work
     # must target an explicitly aligned task and its exact checked version.
     if (operation["task_id"] is None
