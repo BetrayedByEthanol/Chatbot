@@ -162,10 +162,11 @@ def propose_derived_subgoal(
             if cur.fetchone() is not None:
                 raise VersionConflict("equivalent subgoal already exists")
 
-            checked=proven_count_milestone(
-                parent["desired_outcome"],parent["success_criterion"],
-                command.desired_outcome,command.success_criterion,
-            )
+            checked=(len(command.desired_outcome.strip())<=120
+                     and proven_count_milestone(
+                         parent["desired_outcome"],parent["success_criterion"],
+                         command.desired_outcome,command.success_criterion,
+                     ))
             if not checked:
                 # Prevent unbounded model candidate accumulation.
                 cur.execute(
@@ -229,7 +230,7 @@ def propose_derived_subgoal(
                               'DELEGATED_VERIFIED')""",
                     (command.proposed_goal_id,actor.user_id,command.instance_id,
                      command.parent_goal_id,parent["depth"]+1,
-                     command.title.strip(),command.desired_outcome.strip(),
+                     command.desired_outcome.strip(),command.desired_outcome.strip(),
                      command.success_criterion.strip(),command.horizon,
                      parent["source_conversation_id"],parent["source_turn_id"],
                      parent["source_quote"],goal_event),
