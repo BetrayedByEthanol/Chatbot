@@ -1,5 +1,7 @@
 """P3-01 domain-owned goal tree and strategy acceptance.
 
+Authenticated user commands create approved roots; a narrowly trusted
+platform command may derive an evidence-checked child within that authority.
 Only authenticated, selected Foreground user commands may create approved
 goals, report progress or select a candidate strategy. A model reflection,
 memory candidate or instruction delivered is not evidence of real-world
@@ -15,6 +17,10 @@ from psycopg import Connection
 from psycopg.rows import dict_row
 
 from .contracts import TrustedActor
+from .lifecycle import TrustedPlatformActor
+from .goal_delegation_contracts import (
+    DeriveWeeklyWalkingMilestoneCommand, weekly_walk_target, milestone_fields,
+)
 from .conversation import _require_actor
 from .goal_contracts import (
     CreateGoalCommand,EvidenceView,GoalCommandResult,GoalUserCommand,GoalView,
@@ -33,9 +39,11 @@ _MAX_SUBGOAL_DEPTH=5
 _MAX_CHILDREN=12
 
 
-def _publish(cur,actor:TrustedActor,instance_id:UUID,kind:str,
+def _publish(cur,actor:TrustedActor | TrustedPlatformActor,instance_id:UUID,kind:str,
              detail:dict,receipt_id:UUID)->UUID:
     """Goal-owned per-instance journal stream and P0 atomic outbox."""
+    trust = ("TRUSTED_PLATFORM" if type(actor) is TrustedPlatformActor
+             else "AUTHENTICATED_USER")
     stream_id=uuid5(
         NAMESPACE_URL,
         f"persona-agent/goal/{actor.user_id}/{instance_id}",
@@ -61,9 +69,9 @@ def _publish(cur,actor:TrustedActor,instance_id:UUID,kind:str,
              event_id,event_type,schema_version,user_id,instance_id,
              stream_id,stream_sequence,source_id,trust_level,correlation_id,
              payload
-           ) VALUES (%s,%s,1,%s,%s,%s,%s,%s,'AUTHENTICATED_USER',%s,%s::jsonb)""",
+           ) VALUES (%s,%s,1,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)""",
         (event_id,kind,actor.user_id,instance_id,stream_id,
-         sequence["last_sequence"],actor.source_id,receipt_id,
+         sequence["last_sequence"],actor.source_id,trust,receipt_id,
          json.dumps(detail)),
     )
     cur.execute(
@@ -290,6 +298,229 @@ def create_goal(
     return _command(connection,actor,command,"goal.create.v1",apply)
 
 
+
+
+def _locked_active_goal_ancestry(
+    cur, actor: TrustedPlatformActor, instance_id: UUID, parent_id: UUID,
+) -> dict:
+    """Fence the entire delegation chain against a concurrent status change.
+
+    Read only the ancestry IDs first, then lock every row in UUID order,
+    matching the stable order used by Task._active_goal_chain. The immediate
+    parent takes FOR UPDATE (for its later version bump), and ancestors take
+    FOR SHARE (for status stability). Never lock the immediate parent first:
+    doing so reverses the order used by task admission and can deadlock.
+    No model or external work happens while these locks are held.
+    """
+    cur.execute(
+        """WITH RECURSIVE ancestry AS (
+               SELECT goal_id,parent_goal_id,depth,
+                      ARRAY[goal_id]::uuid[] AS path
+               FROM goal_records
+               WHERE goal_id=%s AND user_id=%s AND instance_id=%s
+               UNION ALL
+               SELECT g.goal_id,g.parent_goal_id,g.depth,
+                      a.path || g.goal_id
+               FROM goal_records g
+               JOIN ancestry a ON g.goal_id=a.parent_goal_id
+               WHERE g.user_id=%s AND g.instance_id=%s
+                 AND NOT g.goal_id=ANY(a.path)
+                 AND cardinality(a.path)<=%s
+           )
+           SELECT goal_id,parent_goal_id,depth FROM ancestry""",
+        (parent_id,actor.user_id,instance_id,actor.user_id,instance_id,
+         _MAX_SUBGOAL_DEPTH + 1),
+    )
+    ancestry=cur.fetchall()
+    if not ancestry:
+        raise PermissionDenied("delegation parent outside user/persona scope")
+    if (len(ancestry)>_MAX_SUBGOAL_DEPTH+1
+        or len({x["goal_id"] for x in ancestry})!=len(ancestry)
+        or ancestry[0]["goal_id"]!=parent_id
+        or ancestry[-1]["parent_goal_id"] is not None):
+        raise VersionConflict("invalid or incomplete goal ancestry")
+
+    # Every observed link must still exist after locks are acquired.
+    locked={}
+    for goal_id in sorted((x["goal_id"] for x in ancestry)):
+        locked[goal_id]=_goal(
+            cur,actor,instance_id,goal_id,
+            lock="UPDATE" if goal_id==parent_id else "SHARE",
+        )
+    for index,observed in enumerate(ancestry):
+        row=locked[observed["goal_id"]]
+        if (row["parent_goal_id"]!=observed["parent_goal_id"]
+            or row["depth"]!=observed["depth"]
+            or row["status"]!="ACTIVE"
+            or row["depth"]!=len(ancestry)-index-1
+            or (index+1<len(ancestry) and
+                row["parent_goal_id"]!=ancestry[index+1]["goal_id"])):
+            raise VersionConflict("goal or ancestor paused, abandoned or changed")
+    return locked[parent_id]
+
+
+def derive_weekly_walking_milestone(
+    connection: Connection,
+    actor: TrustedPlatformActor,
+    command: DeriveWeeklyWalkingMilestoneCommand,
+) -> GoalCommandResult:
+    """Create a bounded quantitative child, not a new primary objective.
+
+    The already approved parent supplies authority. Both its outcome and
+    success criterion must express the SAME weekly walking target; the
+    derived child must be strictly smaller. This intentionally abstains for
+    every other goal form: free-text model claims cannot prove contribution.
+    Only the trusted local Goal evaluation component may call this entry
+    point; Background autonomy has a separate readiness/authorization gate.
+    """
+    require_idle(connection)
+    if type(actor) is not TrustedPlatformActor or actor.source_id != "goal.delegation.v1":
+        raise PermissionDenied("derived subgoal requires trusted Goal evaluator")
+    if command.goal_id == command.parent_goal_id:
+        raise ValueError("a goal cannot be its own subgoal")
+
+    receipt_id = uuid4()
+    command_type = "goal.subgoal.derive_weekly_walk.v1"
+    fingerprint = _fingerprint(command)
+    with connection.transaction():
+        with connection.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                "SELECT 1 FROM persona_instances WHERE user_id=%s AND id=%s",
+                (actor.user_id,command.instance_id),
+            )
+            if cur.fetchone() is None:
+                raise PermissionDenied("delegation instance outside user/persona scope")
+            cur.execute(
+                """INSERT INTO command_receipts(
+                     receipt_id,user_id,instance_id,command_type,
+                     idempotency_key,request_fingerprint
+                   ) VALUES (%s,%s,%s,%s,%s,%s)
+                   ON CONFLICT(user_id,instance_id,command_type,idempotency_key)
+                   DO NOTHING RETURNING receipt_id""",
+                (receipt_id,actor.user_id,command.instance_id,command_type,
+                 command.idempotency_key,fingerprint),
+            )
+            if cur.fetchone() is None:
+                cur.execute(
+                    """SELECT request_fingerprint,result_json FROM command_receipts
+                       WHERE user_id=%s AND instance_id=%s
+                         AND command_type=%s AND idempotency_key=%s""",
+                    (actor.user_id,command.instance_id,command_type,
+                     command.idempotency_key),
+                )
+                old = cur.fetchone()
+                if (old is None or old["request_fingerprint"] != fingerprint
+                    or old["result_json"] is None):
+                    raise IdempotencyConflict("delegation key reused differently")
+                return GoalCommandResult.model_validate(
+                    old["result_json"]
+                ).model_copy(update={"replayed":True})
+
+            _selected(cur,actor,command)
+            parent = _locked_active_goal_ancestry(
+                cur,actor,command.instance_id,command.parent_goal_id,
+            )
+            _version(parent,command.expected_parent_version)
+            if parent["depth"] >= _MAX_SUBGOAL_DEPTH:
+                raise VersionConflict("goal decomposition depth limit")
+
+            # A platform-derived child may extend an earlier validated
+            # delegation; a direct parent must have authentic approval.
+            cur.execute(
+                """SELECT event_type,trust_level,payload FROM events
+                   WHERE event_id=%s AND user_id=%s AND instance_id=%s""",
+                (parent["created_event_id"],actor.user_id,command.instance_id),
+            )
+            origin = cur.fetchone()
+            if origin is None or origin["event_type"] != "goal.created.v1":
+                raise PermissionDenied("parent has no authenticated goal provenance")
+            if parent["creation_authority"] == "USER_APPROVED":
+                valid = (origin["trust_level"] == "AUTHENTICATED_USER"
+                         and origin["payload"].get("user_approved") is True
+                         and origin["payload"].get("approval_turn_id") is not None)
+            else:
+                valid = (
+                    parent["creation_authority"] == "DELEGATED_MILESTONE"
+                    and origin["trust_level"] == "TRUSTED_PLATFORM"
+                    and origin["payload"].get("authority") == "DELEGATED_PARENT"
+                )
+            if not valid:
+                raise PermissionDenied("parent creation did not grant delegation")
+
+            parent_target = weekly_walk_target(
+                parent["desired_outcome"],parent["success_criterion"],
+            )
+            if parent_target is None or command.weekly_walks >= parent_target:
+                raise PermissionDenied("unproven or noncontributing child milestone")
+            title,outcome,criterion = milestone_fields(command.weekly_walks)
+            cur.execute(
+                """SELECT 1 FROM goal_records
+                   WHERE parent_goal_id=%s AND user_id=%s AND instance_id=%s
+                     AND desired_outcome=%s LIMIT 1""",
+                (command.parent_goal_id,actor.user_id,command.instance_id,outcome),
+            )
+            if cur.fetchone() is not None:
+                raise VersionConflict("equivalent child milestone already exists")
+            cur.execute(
+                """SELECT count(*) AS n FROM goal_records
+                   WHERE parent_goal_id=%s AND user_id=%s AND instance_id=%s""",
+                (command.parent_goal_id,actor.user_id,command.instance_id),
+            )
+            if cur.fetchone()["n"] >= _MAX_CHILDREN:
+                raise VersionConflict("goal has reached its subgoal budget")
+            cur.execute("SELECT 1 FROM goal_records WHERE goal_id=%s",
+                        (command.goal_id,))
+            if cur.fetchone() is not None:
+                raise VersionConflict("goal identifier already used")
+
+            event_id = _publish(
+                cur,actor,command.instance_id,"goal.created.v1",{
+                    "goal_id":str(command.goal_id),
+                    "parent_goal_id":str(command.parent_goal_id),
+                    "parent_created_event_id":str(parent["created_event_id"]),
+                    "parent_version":parent["version"],
+                    "source_turn_id":str(parent["source_turn_id"]),
+                    "source_goal_id":str(command.parent_goal_id),
+                    "authority":"DELEGATED_PARENT",
+                    "user_approved":False,
+                    "contribution_kind":"QUANTITATIVE_WEEKLY_MILESTONE",
+                    "method_revision":"mvp03a1.weekly_walking.1",
+                    "parent_weekly_walks":parent_target,
+                    "child_weekly_walks":command.weekly_walks,
+                    "depth":parent["depth"]+1,
+                },receipt_id,
+            )
+            cur.execute(
+                """INSERT INTO goal_records(
+                     goal_id,user_id,instance_id,parent_goal_id,depth,
+                     title,desired_outcome,success_criterion,horizon,
+                     source_conversation_id,source_turn_id,source_quote,
+                     created_event_id,creation_authority
+                   ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'SHORT',%s,%s,%s,%s,
+                             'DELEGATED_MILESTONE')""",
+                (command.goal_id,actor.user_id,command.instance_id,
+                 command.parent_goal_id,parent["depth"]+1,title,outcome,
+                 criterion,parent["source_conversation_id"],
+                 parent["source_turn_id"],parent["source_quote"],event_id),
+            )
+            cur.execute(
+                """UPDATE goal_records SET version=version+1,
+                     updated_at=clock_timestamp() WHERE goal_id=%s
+                     AND user_id=%s AND instance_id=%s""",
+                (command.parent_goal_id,actor.user_id,command.instance_id),
+            )
+            result = GoalCommandResult(
+                goal_id=command.goal_id,goal_version=1,event_id=event_id,
+                action="GOAL_CREATED",entity_id=command.goal_id,
+            )
+            cur.execute(
+                """UPDATE command_receipts SET event_id=%s,result_json=%s::jsonb
+                   WHERE receipt_id=%s""",
+                (event_id,result.model_dump_json(),receipt_id),
+            )
+            return result
+
+
 def set_goal_status(
     connection:Connection,actor:TrustedActor,command:SetGoalStatusCommand,
 )->GoalCommandResult:
@@ -482,7 +713,7 @@ def list_goals(
             cur.execute(
                 """SELECT g.goal_id,g.parent_goal_id,g.depth,g.title,
                           g.desired_outcome,g.success_criterion,g.horizon,
-                          g.status,g.version,
+                          g.status,g.version,g.creation_authority,
                           (SELECT s.strategy_id FROM goal_strategy_selections s
                            WHERE s.goal_id=g.goal_id
                            ORDER BY s.goal_version DESC LIMIT 1)
