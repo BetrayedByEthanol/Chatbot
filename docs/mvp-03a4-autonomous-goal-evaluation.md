@@ -11,8 +11,12 @@ A separate SQL-only scheduler pass (`run_goal_evaluation_scan`) finds
 `background_ready_epochs` whose selection is still BACKGROUND, generation
 matches, and preparation status is READY. It stages **at most one eligible
 Goal revision per epoch**, using `goal_autonomy_jobs` and a deterministic
-operation ID. It skips branches with children or pending proposals and does
-not reevaluate the same goal/version on each polling tick.
+operation ID. A persisted per-epoch polling timestamp ensures bounded
+scans do not indefinitely starve later READY personas. It skips branches
+with children or pending proposals and does not reevaluate the same
+goal/version on each polling tick. A completed or terminally FAILED
+evaluation is not silently repeated; staged work stranded in a superseded
+Background epoch can be restaged in a later epoch under a new fence.
 
 The staged job is then enqueued through the **existing P0 operation
 scheduler**, as `goal.evaluate_decomposition.v1`, with:
@@ -57,7 +61,8 @@ authorization. The parent's approved outcome never changes.
 
 A null result marks the job `NO_PROPOSAL`. One accepted/staged proposal marks
 `PROPOSED`; both finalize their P0 operation. Job results are durable and
-stable per goal revision. Proposal IDs and Goal command idempotency keys
+stable per goal revision, while never-executed work can be rescheduled under
+the next valid Background epoch without reusing a stale P0 lease. Proposal IDs and Goal command idempotency keys
 are derived from the scheduled operation ID, enabling crash-safe replay if
 proposal creation committed before job completion.
 
