@@ -1369,3 +1369,65 @@ def test_review_ignores_model_approval_of_new_external_commitment(dsn):
                 semantic_command(instance,proposal.proposal_id),model)
     assert result.decision=="DEFERRED"
     assert len(call(dsn,list_goals,actor(user),instance))==1
+
+
+def test_semantic_owner_rejects_raised_target_even_if_model_is_aligned(dsn):
+    user,instance,_,proposal=pending_reading_habit(
+        dsn,outcome="Read 8 books per month",
+        criterion="Read 8 books per month",
+        title="Read more books",
+    )
+    gateway=FakeSemanticGateway(semantic_finding(
+        parent_quote="Read 3 books per month",
+        child_quote="Read 8 books per month",
+    ))
+    result=call(dsn,review_pending_subgoal,semantic_reviewer(user),
+                semantic_command(instance,proposal.proposal_id),gateway)
+    assert result.decision=="DEFERRED"
+    assert len(call(dsn,list_goals,actor(user),instance))==1
+
+
+def test_semantic_owner_defers_numeric_property_modifier(dsn):
+    user,instance,_=seed(dsn)
+    conversation=uuid4()
+    source=turn(dsn,user,instance,conversation,"I want to finish marathons.")
+    root=CreateGoalCommand(
+        instance_id=instance,expected_generation=1,
+        idempotency_key=str(uuid4()),conversation_id=conversation,
+        evidence_turn_id=source.turn_id,
+        evidence_quote="I want to finish marathons",
+        goal_id=uuid4(),title="Marathon goal",
+        desired_outcome="Complete 4 hour marathons per month",
+        success_criterion="Complete 4 hour marathons per month",
+        horizon="MEDIUM",
+    )
+    call(dsn,create_goal,actor(user),authorize(dsn,user,instance,root))
+    proposal=generalized_command(
+        dsn,instance,root.goal_id,
+        title="Fast marathon",outcome="Complete 1 hour marathons per month",
+        criterion="Complete 1 hour marathons per month",
+    )
+    assert call(dsn,propose_derived_subgoal,goal_evaluator(user),
+                proposal).status=="PENDING_REVIEW"
+    model=FakeSemanticGateway(semantic_finding(
+        parent_quote="Complete 4 hour marathons per month",
+        child_quote="Complete 1 hour marathons per month",
+    ))
+    review=call(dsn,review_pending_subgoal,semantic_reviewer(user),
+                semantic_command(instance,proposal.proposal_id),model)
+    assert review.decision=="DEFERRED"
+    assert len(call(dsn,list_goals,actor(user),instance))==1
+
+
+def test_semantic_inference_not_inside_database_transaction(dsn):
+    user,instance,_,proposal=pending_reading_habit(dsn)
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        def assert_idle():
+            assert conn.info.transaction_status==psycopg.pq.TransactionStatus.IDLE
+        gateway=FakeSemanticGateway(semantic_finding(),callback=assert_idle)
+        result=review_pending_subgoal(
+            conn,semantic_reviewer(user),semantic_command(
+                instance,proposal.proposal_id,
+            ),gateway,
+        )
+    assert result.decision=="ACCEPTED"
