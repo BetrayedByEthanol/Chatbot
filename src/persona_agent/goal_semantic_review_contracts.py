@@ -45,7 +45,8 @@ class SemanticSubgoalReviewResult(BaseModel):
     model_config=ConfigDict(frozen=True,extra="forbid")
     proposal_id: UUID
     review_id: UUID
-    alignment: Alignment
+    # None means the owner retired a stale candidate before any model ran.
+    alignment: Alignment | None
     decision: Decision
     event_id: UUID
     accepted_goal_event_id: UUID | None = None
