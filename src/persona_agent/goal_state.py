@@ -440,7 +440,7 @@ def derive_weekly_walking_milestone(
                          and origin["payload"].get("approval_turn_id") is not None)
             else:
                 valid = (
-                    parent["creation_authority"] == "DELEGATED_MILESTONE"
+                    parent["creation_authority"] in ("DELEGATED_MILESTONE", "DELEGATED_VERIFIED")
                     and origin["trust_level"] == "TRUSTED_PLATFORM"
                     and origin["payload"].get("authority") == "DELEGATED_PARENT"
                 )
