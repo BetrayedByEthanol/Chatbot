@@ -75,7 +75,9 @@ full-ancestry locking contracts.
   Procedures, Notifications or Tools.
 - Semantic assessment is uncertain by nature: ambiguous, consequential or
   newly obligating proposals stay deferred for further evidence/approval.
-  A single model claim cannot extend the user's delegation.
+  A single model claim cannot extend the user's delegation. The DEFERRED
+  state is currently terminal for that candidate; reopening on new evidence
+  is a future explicit Goal-owner revision contract, not an implicit retry.
 - The policy is intentionally conservative for privacy-sensitive,
   third-party, financial and other consequential proposed outcomes.
 
