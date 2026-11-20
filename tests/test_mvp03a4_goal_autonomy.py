@@ -243,6 +243,16 @@ def test_capacity_pressure_does_not_abort_other_ready_epochs(dsn,monkeypatch):
     scheduled=call(dsn,autonomy.run_goal_evaluation_scan,limit=24)
     assert first_user in visited and second_user in visited
     assert len(scheduled)==1 and scheduled[0].goal_id is not None
+    # The suite shares one PostgreSQL database. Retire both READY jobs so
+    # a later run_one_goal_evaluation cannot claim another test's operation.
+    monkeypatch.setattr(autonomy,"schedule_goal_evaluation",original)
+    first=call(dsn,autonomy.schedule_goal_evaluation,
+               stage_actor(first_user),first_instance,1)
+    assert first is not None
+    assert call(dsn,run_one_goal_evaluation,OpportunityModel(None),
+                worker_id="capacity-cleanup-1")=="NO_PROPOSAL"
+    assert call(dsn,run_one_goal_evaluation,OpportunityModel(None),
+                worker_id="capacity-cleanup-2")=="NO_PROPOSAL"
 
 
 def test_model_transport_failure_retries_and_releases_resources(dsn,monkeypatch):
@@ -332,6 +342,12 @@ def test_no_proposal_result_is_atomic_with_p0_completion(dsn,monkeypatch):
             "SELECT status FROM operations WHERE operation_id=%s",
             (staged.operation_id,),
         ).fetchone()[0]=="RETRY_WAIT"
+        conn.execute(
+            "UPDATE operations SET eligible_at=clock_timestamp()-interval '1 second' WHERE operation_id=%s",
+            (staged.operation_id,),
+        )
+    assert call(dsn,run_one_goal_evaluation,OpportunityModel(None),
+                worker_id="none-cleanup")=="NO_PROPOSAL"
 
 
 def test_expired_lease_after_ancestry_lock_cannot_commit(dsn,monkeypatch):
@@ -361,3 +377,16 @@ def test_expired_lease_after_ancestry_lock_cannot_commit(dsn,monkeypatch):
             "SELECT status FROM goal_autonomy_jobs WHERE operation_id=%s",
             (staged.operation_id,),
         ).fetchone()[0]=="STAGED"
+    # Do not strand the retry in the shared integration database.
+    monkeypatch.setattr(decomposition,"_locked_active_goal_ancestry",original)
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT status FROM operations WHERE operation_id=%s",
+            (staged.operation_id,),
+        ).fetchone()[0]=="RETRY_WAIT"
+        conn.execute(
+            "UPDATE operations SET eligible_at=clock_timestamp()-interval '1 second' WHERE operation_id=%s",
+            (staged.operation_id,),
+        )
+    assert call(dsn,run_one_goal_evaluation,OpportunityModel(None),
+                worker_id="expiry-cleanup")=="NO_PROPOSAL"
