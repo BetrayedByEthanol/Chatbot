@@ -1431,3 +1431,18 @@ def test_semantic_inference_not_inside_database_transaction(dsn):
             ),gateway,
         )
     assert result.decision=="ACCEPTED"
+
+
+def test_reviewed_child_with_embedded_purchase_is_not_auto_adopted(dsn):
+    user,instance,_,proposal=pending_reading_habit(
+        dsn,outcome="Read 15 pages per day and buy premium books",
+        criterion="Read 15 pages per day",
+        title="Daily reading habit",
+    )
+    reply=FakeSemanticGateway(semantic_finding(
+        child_quote="Read 15 pages per day",
+    ))
+    result=call(dsn,review_pending_subgoal,semantic_reviewer(user),
+                semantic_command(instance,proposal.proposal_id),reply)
+    assert result.decision=="DEFERRED"
+    assert len(call(dsn,list_goals,actor(user),instance))==1
