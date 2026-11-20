@@ -36,7 +36,7 @@ _METHOD="mvp03a3.semantic.v1"
 # new purchase, account, disclosure, external message, tool action, etc.
 # These are intentionally restrictive *initial* auto-adoption conditions.
 _EFFECT_VERBS=re.compile(
-    r"^(?:buy|purchase|pay|subscribe|spend|contact|message|notify|send|share|"
+    r"\b(?:buy|purchase|pay|subscribe|spend|contact|message|notify|send|share|"
     r"post|publish|upload|install|register|enroll|join|hire|transfer|donate|"
     r"collect|scrape|monitor|track|schedule|remind)\b",re.I,
 )
