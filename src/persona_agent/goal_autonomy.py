@@ -22,10 +22,11 @@ from .goal_decomposition_contracts import ProposeDerivedSubgoalCommand
 from .lifecycle import TrustedPlatformActor
 from .operation_contracts import (
     EffectClass,EnqueueOperation,OperationLease,Origin,Policy,Priority,
+    ResourceUnavailable,StaleOperation,event_for,release_resources,
     require_claim,require_current_authority,require_idle,
 )
 from .operation_scheduler import enqueue_operation,claim_operation
-from .operation_control import complete_operation,fail_operation
+from .operation_control import fail_operation
 from .runtime import PermissionDenied,StaleSelection,VersionConflict
 
 _SCHEDULER="goal.autonomy.scheduler"
@@ -220,7 +221,10 @@ def run_goal_evaluation_scan(connection:Connection,*,limit:int=24)->tuple[GoalEv
                     user_id=epoch["user_id"],source_id=_SCHEDULER,
                 ),epoch["instance_id"],epoch["background_epoch"],
             )
-        except (PermissionDenied,StaleSelection,VersionConflict):
+        except (PermissionDenied,StaleSelection,VersionConflict,ResourceUnavailable):
+            # P2 capacity pressure is not a fatal scheduling error. The
+            # staged job remains durable and is retried on a later scan;
+            # other READY personas must still be considered.
             continue
         if staged is not None:
             results.append(staged)
@@ -303,70 +307,131 @@ def _prompt(work:dict)->tuple[ModelMessage,...]:
     )
 
 
+def _finalize_goal_evaluation_locked(
+    cur,lease:OperationLease,*,status:str,model_id:str,
+    proposal_id:UUID|None=None,proposed_goal_id:UUID|None=None,
+)->None:
+    """Atomically close the Goal job and its exact P0 lease.
+
+    Called only with an already-open, short owner transaction after inference
+    has completed. Either Goal proposals, job status, operation completion,
+    resources and events all commit, or none of them do.
+    """
+    if (status not in ("PROPOSED","NO_PROPOSAL")
+        or not isinstance(model_id,str) or not 1<=len(model_id)<=128
+        or ((proposal_id is None)!=(proposed_goal_id is None))
+        or (status=="PROPOSED" and proposal_id is None)
+        or (status=="NO_PROPOSAL" and proposal_id is not None)):
+        raise ValueError("invalid Goal evaluation finalization")
+    op=require_claim(cur,lease)
+    if (op["operation_type"]!=GOAL_EVALUATION_OPERATION
+        or op["origin"]!="GOAL" or op["priority_class"]!="P2"
+        or op["effect_class"]!="NONE"
+        or op["execution_policy"]!="BACKGROUND_RESUMABLE"):
+        raise PermissionDenied("incorrect P0 Goal evaluation operation")
+    require_current_authority(cur,op)
+    cur.execute(
+        """UPDATE goal_autonomy_jobs
+           SET status=%s,model_id=%s,proposal_id=%s,
+               proposed_goal_id=%s,evaluated_at=clock_timestamp()
+           WHERE operation_id=%s AND user_id=%s AND instance_id=%s
+             AND expected_generation=%s AND background_epoch=%s
+             AND status='STAGED'
+           RETURNING operation_id""",
+        (status,model_id,proposal_id,proposed_goal_id,
+         lease.operation_id,lease.user_id,lease.instance_id,
+         lease.selection_generation,lease.background_epoch),
+    )
+    if cur.fetchone() is None:
+        raise VersionConflict("Goal evaluation result already finalized")
+    release_resources(cur,op)
+    # A blocking Goal/selection/pool lock may have consumed the lease.
+    # The P0 completion UPDATE repeats the live-clock fence after all locks.
+    require_claim(cur,lease)
+    result_ref=f"goal-eval:{lease.operation_id}"
+    cur.execute(
+        """UPDATE operations SET status='COMPLETED',
+               worker_id=NULL,lease_until=NULL,claimed_at=NULL,
+               effect_status='CONFIRMED',result_ref=%s,
+               version=version+1,updated_at=clock_timestamp()
+           WHERE operation_id=%s AND user_id=%s AND instance_id=%s
+             AND status='RUNNING' AND worker_id=%s
+             AND claim_generation=%s AND selection_generation=%s
+             AND lease_until>clock_timestamp()
+             AND claimed_at+(timeout_seconds*interval '1 second')
+                 >clock_timestamp()
+             AND (deadline IS NULL OR deadline>clock_timestamp())
+           RETURNING *""",
+        (result_ref,lease.operation_id,lease.user_id,lease.instance_id,
+         lease.worker_id,lease.claim_generation,lease.selection_generation),
+    )
+    updated=cur.fetchone()
+    if updated is None:
+        raise StaleOperation("Goal completion lease expired before commit")
+    event_for(cur,updated,"operation.completed.v1",{"result_ref":result_ref})
+
+
 def _commit_job(connection:Connection,lease:OperationLease,*,status:str,
                 model_id:str,proposal_id:UUID|None=None,
                 proposed_goal_id:UUID|None=None)->None:
+    """Atomic no-proposal path; candidate path finalizes in Goal owner."""
     with connection.transaction():
         with connection.cursor(row_factory=dict_row) as cur:
-            op=require_claim(cur,lease)
-            require_current_authority(cur,op)
-            cur.execute(
-                """UPDATE goal_autonomy_jobs
-                   SET status=%s,model_id=%s,proposal_id=%s,
-                       proposed_goal_id=%s,evaluated_at=clock_timestamp()
-                   WHERE operation_id=%s AND user_id=%s AND instance_id=%s
-                     AND expected_generation=%s AND background_epoch=%s
-                     AND status='STAGED'
-                   RETURNING operation_id""",
-                (status,model_id,proposal_id,proposed_goal_id,
-                 lease.operation_id,lease.user_id,lease.instance_id,
-                 lease.selection_generation,lease.background_epoch),
+            _finalize_goal_evaluation_locked(
+                cur,lease,status=status,model_id=model_id,
+                proposal_id=proposal_id,proposed_goal_id=proposed_goal_id,
             )
-            if cur.fetchone() is None:
-                raise VersionConflict("Goal evaluation result already finalized")
 
 
 def run_goal_evaluation(
     connection:Connection,lease:OperationLease,gateway:TextModelGateway,
 )->str:
-    """Execute a claimed P2 read-only inference, then Goal-owned candidate."""
+    """Run inference without a DB lock; then commit a fenced atomic result."""
     require_idle(connection)
-    work=_work(connection,lease)
     try:
+        work=_work(connection,lease)
         reply=gateway.generate(_prompt(work))
         if not 1<=len(reply.model_id)<=128 or len(reply.text)>5000:
             raise ValueError("invalid Goal evaluator response bounds")
-        draft=GoalOpportunityDraft.model_validate(json.loads(reply.text))
-    except (ValueError,ValidationError) as exc:
-        fail_operation(connection,lease,reason="invalid goal opportunity model output",delay_seconds=5)
-        raise ValueError("invalid goal opportunity model output") from exc
+        try:
+            draft=GoalOpportunityDraft.model_validate(json.loads(reply.text))
+        except (ValueError,ValidationError) as exc:
+            raise ValueError("invalid Goal opportunity model output") from exc
 
-    if draft.candidate is None:
-        _commit_job(connection,lease,status="NO_PROPOSAL",model_id=reply.model_id)
-        complete_operation(connection,lease,result_ref=f"goal-eval:{lease.operation_id}")
-        return "NO_PROPOSAL"
+        if draft.candidate is None:
+            _commit_job(connection,lease,status="NO_PROPOSAL",model_id=reply.model_id)
+            return "NO_PROPOSAL"
 
-    proposed_goal_id=uuid5(NAMESPACE_URL,f"goal-autonomy/child/{lease.operation_id}")
-    proposal_id=uuid5(NAMESPACE_URL,f"goal-autonomy/proposal/{lease.operation_id}")
-    command=ProposeDerivedSubgoalCommand(
-        instance_id=lease.instance_id,
-        expected_generation=lease.selection_generation,
-        idempotency_key=f"goal-eval-proposal:{lease.operation_id}",
-        proposal_id=proposal_id,proposed_goal_id=proposed_goal_id,
-        parent_goal_id=work["goal_id"],
-        expected_parent_version=work["parent_version"],
-        source_parent_event_id=work["parent_created_event_id"],
-        **draft.candidate.model_dump(),
-    )
-    propose_derived_subgoal(
-        connection,TrustedPlatformActor(
-            user_id=lease.user_id,source_id=GOAL_EVALUATION_SOURCE,
-        ),command,lease=lease,
-    )
-    _commit_job(connection,lease,status="PROPOSED",model_id=reply.model_id,
-                proposal_id=proposal_id,proposed_goal_id=proposed_goal_id)
-    complete_operation(connection,lease,result_ref=f"goal-eval:{lease.operation_id}")
-    return "PROPOSED"
+        proposed_goal_id=uuid5(NAMESPACE_URL,f"goal-autonomy/child/{lease.operation_id}")
+        proposal_id=uuid5(NAMESPACE_URL,f"goal-autonomy/proposal/{lease.operation_id}")
+        command=ProposeDerivedSubgoalCommand(
+            instance_id=lease.instance_id,
+            expected_generation=lease.selection_generation,
+            idempotency_key=f"goal-eval-proposal:{lease.operation_id}",
+            proposal_id=proposal_id,proposed_goal_id=proposed_goal_id,
+            parent_goal_id=work["goal_id"],
+            expected_parent_version=work["parent_version"],
+            source_parent_event_id=work["parent_created_event_id"],
+            **draft.candidate.model_dump(),
+        )
+        # This Goal-owned transaction also finalizes the staged job and P0
+        # operation; there is no durable gap after child/proposal creation.
+        propose_derived_subgoal(
+            connection,TrustedPlatformActor(
+                user_id=lease.user_id,source_id=GOAL_EVALUATION_SOURCE,
+            ),command,lease=lease,model_id=reply.model_id,
+        )
+        return "PROPOSED"
+    except Exception as exc:
+        # P0 owns bounded retries and resource release for a live attempt.
+        # Never overwrite a revoked/expired lease; the P0 reaper handles it.
+        try:
+            fail_operation(connection,lease,
+                           reason=f"Goal evaluation {type(exc).__name__}",
+                           delay_seconds=5)
+        except (StaleOperation,StaleSelection,PermissionDenied):
+            pass
+        raise
 
 
 def run_one_goal_evaluation(

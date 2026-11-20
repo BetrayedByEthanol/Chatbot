@@ -87,3 +87,22 @@ proposal creation committed before job completion.
 readiness, one-per-epoch idempotent enqueue, P0 claim and completion,
 mechanically accepted and review-only outcomes, null model output, and
 unstaged/forged P2 admission.
+
+
+## PR #86 P1 review hardening
+
+- P2 admission capacity exhaustion is deferred per READY epoch, rather than
+  terminating the global Goal scan.
+- The standalone evaluator invokes P0 stale-claim recovery, converts expected
+  model/validation failures into bounded P0 retries, releases reservations and
+  survives an individual failed tick.
+- Goal candidate creation, Goal job finalization, operation completion, outbox
+  events and resource release commit **in the same short PostgreSQL transaction**
+  after inference. Null candidates use the same atomic finalization primitive.
+  No operation can be recovered against a partially changed parent revision.
+- The Goal owner rechecks the live lease after acquiring ancestry locks, and
+  final completion performs a PostgreSQL live-clock compare-and-set after any
+  potentially blocking resource locks. Expired workers cannot commit proposals.
+- Real PostgreSQL regressions cover cross-persona capacity pressure, provider
+  timeout and retry, forced post-proposal crash, no-proposal crash, and a lease
+  expired after the ancestry lock.

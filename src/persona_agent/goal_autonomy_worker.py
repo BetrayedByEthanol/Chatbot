@@ -1,16 +1,34 @@
-"""MVP-03A.4 bounded Goal evaluation loop: stage via READY, claim via P0."""
+"""Recovering standalone P2 Goal evaluator; uses the existing P0 owner."""
 import argparse
+import logging
 import os
 import threading
 import psycopg
 
+from .conversation_contracts import ModelUnavailable
 from .goal_autonomy import run_goal_evaluation_scan,run_one_goal_evaluation
 from .model_gateway import OllamaChatGateway
+from .operation_contracts import StaleOperation
+from .operation_control import reap_stale_operations,reap_invalid_background_queue
+from .runtime import PermissionDenied,StaleSelection,VersionConflict
+
+_LOG=logging.getLogger(__name__)
 
 
 def run_goal_evaluation_tick(connection,gateway,*,worker_id="goal-autonomy"):
+    # A standalone worker cannot assume another scheduler will recover
+    # orphaned claims. Reap expired leases before the next bounded scan.
+    reap_stale_operations(connection,limit=24)
+    reap_invalid_background_queue(connection,limit=24)
     staged=run_goal_evaluation_scan(connection,limit=24)
-    executed=run_one_goal_evaluation(connection,gateway,worker_id=worker_id)
+    try:
+        executed=run_one_goal_evaluation(connection,gateway,worker_id=worker_id)
+    except (ModelUnavailable,ValueError,StaleOperation,
+            StaleSelection,PermissionDenied,VersionConflict) as exc:
+        # run_goal_evaluation already failed a live attempt through P0;
+        # invalidated attempts are reconciled by the reaper on next tick.
+        _LOG.warning("Goal evaluation attempt deferred: %s",type(exc).__name__)
+        executed=None
     return staged,executed
 
 
@@ -22,10 +40,17 @@ def run_goal_evaluation_worker(
         raise ValueError("poll_seconds must be in 0.1..30")
     stopping=stop or threading.Event()
     while not stopping.is_set():
-        with psycopg.connect(dsn,autocommit=True) as connection:
-            staged,executed=run_goal_evaluation_tick(
-                connection,gateway,worker_id=worker_id,
-            )
+        try:
+            with psycopg.connect(dsn,autocommit=True) as connection:
+                staged,executed=run_goal_evaluation_tick(
+                    connection,gateway,worker_id=worker_id,
+                )
+        except Exception:
+            # A transient DB or unexpected model/provider failure must not
+            # permanently terminate this bounded Background worker.
+            _LOG.exception("Goal evaluation tick failed")
+            stopping.wait(poll_seconds)
+            continue
         if executed is None:
             stopping.wait(poll_seconds)
 
@@ -38,6 +63,7 @@ def main(argv=None)->int:
     opts=parser.parse_args(argv)
     if not opts.dsn:
         parser.error("--dsn or DATABASE_URL required")
+    logging.basicConfig(level=logging.INFO)
     run_goal_evaluation_worker(
         opts.dsn,OllamaChatGateway(model=opts.model),
         poll_seconds=opts.poll_seconds,

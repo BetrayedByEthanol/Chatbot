@@ -89,6 +89,7 @@ def _authorized_lineage(cur,actor,instance_id,parent):
 def propose_derived_subgoal(
     connection:Connection,actor:TrustedPlatformActor,
     command:ProposeDerivedSubgoalCommand,*,lease:OperationLease|None=None,
+    model_id:str|None=None,
 )->DerivedSubgoalProposalResult:
     """Stage, or auto-accept a *proved* quantitative child, in one transaction.
 
@@ -101,8 +102,9 @@ def propose_derived_subgoal(
     if (type(actor) is not TrustedPlatformActor
         or actor.source_id not in ("goal.decomposition.v1",
                                   GOAL_EVALUATION_SOURCE)
-        or (background and lease is None)
-        or (not background and lease is not None)):
+        or (background and (lease is None or not isinstance(model_id,str)
+                            or not 1<=len(model_id)<=128))
+        or (not background and (lease is not None or model_id is not None))):
         raise PermissionDenied("subgoal proposal requires trusted Goal evaluator")
     receipt_id=uuid4()
     command_type="goal.subgoal.propose.v1"
@@ -268,6 +270,13 @@ def propose_derived_subgoal(
             if cur.fetchone() is not None:
                 raise VersionConflict("duplicate subgoal proposal")
 
+            if background:
+                # Revalidate after acquiring all potentially blocking Goal
+                # ancestry/sibling locks, before writing any proposal event.
+                # The final operation UPDATE repeats this live-clock fence.
+                require_claim(cur,lease)
+                require_current_authority(cur,op)
+
             method=("DETERMINISTIC_COUNT_MILESTONE" if checked
                     else "REVIEW_REQUIRED")
             status="ACCEPTED" if checked else "PENDING_REVIEW"
@@ -350,6 +359,16 @@ def propose_derived_subgoal(
                    SET event_id=%s,result_json=%s::jsonb WHERE receipt_id=%s""",
                 (proposal_event,result.model_dump_json(),receipt_id),
             )
+            if background:
+                # No independent commit between Goal mutation, job completion
+                # and P0 completion: a crash cannot strand a changed parent
+                # version behind an unfinalized Goal evaluation operation.
+                from .goal_autonomy import _finalize_goal_evaluation_locked
+                _finalize_goal_evaluation_locked(
+                    cur,lease,status="PROPOSED",model_id=model_id,
+                    proposal_id=command.proposal_id,
+                    proposed_goal_id=command.proposed_goal_id,
+                )
             return result
 
 
