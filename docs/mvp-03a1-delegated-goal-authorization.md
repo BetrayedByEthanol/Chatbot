@@ -27,10 +27,18 @@ capability, task, or external execution rights.
   `source_id='goal.delegation.v1'` and a selected Foreground generation.
   A public user command, an LLM output, or an arbitrary event cannot use
   this pathway as authorization.
-- **Bounded hierarchy:** active parent, expected parent version (CAS),
-  existing depth/child-count limits, no duplicate equivalent milestone,
-  unmodified parent target, validated ancestor event provenance. Both
-  parent goal fields must express the same numeric weekly-walk target.
+- **Bounded hierarchy:** the **entire ancestor chain**, including the
+  directly approved root, must be ACTIVE at the time of child creation.
+  Parent status alone is insufficient because pausing/abandoning an ancestor
+  does not cascade to existing descendants. Ancestry is fetched read-only,
+  then all chain rows are locked in stable `goal_id` order; the immediate
+  parent is locked `FOR UPDATE` for its version bump and all higher ancestors
+  `FOR SHARE` to fence concurrent status changes. The Goal owner validates
+  the full locked chain before any event/insert. This matches the ordering
+  principle in `task_state._active_goal_chain` and avoids parent-first
+  lock inversion. Existing depth/child-count limits, parent CAS, duplicate
+  prevention, unchanged parent target, and authenticated ancestor provenance
+  remain mandatory. Both parent goal fields must agree on the numeric target.
 - **Durability:** ordinary P0 command receipt and idempotency, Goal-owned
   event stream/outbox, atomic insert and parent version bump. The created
   `goal.created.v1` event has `TRUSTED_PLATFORM` trust and an explicit
@@ -75,7 +83,10 @@ capability, task, or external execution rights.
 `tests/test_phase3_goals.py` covers a direct approved parent, delegated
 milestone creation, exact provenance, parent invariance, event/outbox,
 idempotent replay, equivalent-child prevention, CAS version fencing,
-noncontributing/ambiguous inputs, forged actor/source and cross-user scope.
+noncontributing/ambiguous inputs, forged actor/source, cross-user scope,
+paused or abandoned **root** with an otherwise active derived parent, and a
+concurrent root-status writer denied a `FOR UPDATE NOWAIT` lock while a
+grandchild is being committed.
 The existing P3-01, Phase 3 integrated, Phase 4 and full PostgreSQL
 contract suites must continue passing.
 
