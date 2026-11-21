@@ -24,7 +24,9 @@ _STOP=frozenset({
 def _terms(value: str) -> frozenset[str]:
     tokens=[]
     for token in _WORD.findall(value.casefold()):
-        if token.endswith("ing") and len(token)>6:
+        # Keep "eating" as a distinct word: stripping "ing" to a
+        # three-character stem would silently discard a legitimate topic.
+        if token.endswith("ing") and len(token)>6 and len(token[:-3])>=4:
             token=token[:-3]
         elif token.endswith("s") and not token.endswith("ss") and len(token)>5:
             token=token[:-1]
@@ -102,8 +104,12 @@ def goal_reflection_context_block(
     """
     if not 420<=max_chars<=2400:
         return ""
+    # One salient word suffices only when the user explicitly refers to a
+    # goal; casual unrelated conversation requires multiple topical terms.
+    terms=_terms(latest_text)
     if (not _PERSONAL.search(latest_text)
-        and len(_terms(latest_text))<2
+        and not (_GOAL.search(latest_text) and terms)
+        and len(terms)<2
         and not (focus_title and _ANAPHORA.fullmatch(latest_text.strip()))):
         return ""
     selected=_relevant(
