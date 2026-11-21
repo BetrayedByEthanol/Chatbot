@@ -14,6 +14,7 @@ import pytest
 from persona_agent.target_model_benchmark import (
     REPORT_FORMAT,summarize_target_benchmark,
 )
+from persona_agent.intent_interpretation import should_interpret_with_model
 from test_mvp03c_natural_review import synthetic_report,scenario
 
 MODEL="qwen2.5:7b"
@@ -44,12 +45,14 @@ def bundle(tmp_path,*,name="trace.zip",model=MODEL,modify=None):
             {"role":"system","content":"Test instruction"},
             {"role":"user","content":event["input"]},
         ]
+        interpreted=should_interpret_with_model(event["input"])
         requests.append({
             "capture_boundary":"ollama.outbound",
-            "route":"generate_interpreted",
+            "route":"generate_interpreted" if interpreted else "generate",
             "payload":{
-                "model":model,"format":"json","stream":False,
+                "model":model,"stream":False,
                 "messages":request_messages,
+                **({"format":"json"} if interpreted else {}),
             },
             "messages":request_messages,
         })
@@ -152,6 +155,44 @@ def test_valid_synthetic_bundle_is_source_free_and_pending_real_humans(tmp_path)
     assert "reviewer_a" not in output
     assert "model_requests" not in output
     assert "dialogue_history" not in output
+
+
+def test_benchmark_matches_real_primary_gateway_route_per_turn(tmp_path):
+    """Distinguish plain generation from structured cue inference.
+
+    The scenario uses the real deterministic selector. A fabricated
+    structured envelope for an ordinary user message must be rejected.
+    """
+    sample=scenario()
+    assert all(
+        step.get("mode")=="model" for step in sample["steps"]
+        if step["action"]=="message"
+    )
+    assert should_interpret_with_model(
+        "Hello, I might start exercising."
+    ) in (True,False)
+    report=summarize_target_benchmark(
+        bundle(tmp_path),sample,model=MODEL,
+    )
+    assert report["message_count"]==18
+
+
+def test_wrong_gateway_route_or_json_format_is_rejected(tmp_path):
+    sample=bundle(tmp_path,modify=lambda d:(
+        d["model_requests.json"][0].update(route="generate_interpreted")
+        if d["model_requests.json"][0]["route"]=="generate"
+        else d["model_requests.json"][0].update(route="generate")
+    ))
+    with pytest.raises(ValueError,match="unverified target gateway request"):
+        summarize_target_benchmark(sample,scenario(),model=MODEL)
+    second=bundle(
+        tmp_path,name="format.zip",modify=lambda d:
+            d["model_requests.json"][0]["payload"].update(format="json")
+            if d["model_requests.json"][0]["route"]=="generate"
+            else d["model_requests.json"][0]["payload"].pop("format"),
+    )
+    with pytest.raises(ValueError,match="outbound target-model request mismatch"):
+        summarize_target_benchmark(second,scenario(),model=MODEL)
 
 
 def test_wrong_model_and_scenario_refuse_to_measure(tmp_path):

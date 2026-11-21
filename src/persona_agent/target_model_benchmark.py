@@ -15,6 +15,7 @@ from statistics import median
 from zipfile import ZipFile
 
 from .natural_dialogue_review import packet_from_bundle
+from .intent_interpretation import should_interpret_with_model
 from .scenario_validation import validate_scenario
 
 REPORT_FORMAT = "mvp03c1.target-model-benchmark.v1"
@@ -89,13 +90,24 @@ def _reconcile_host_evidence(records: dict, observed: list, scenario: dict,
         raise ValueError("duplicate or absent delivery snapshots")
     for event,request,receipt in zip(observed,requests,deliveries):
         index=event["index"]
+        # The real Conversation Manager selects one of two *primary*
+        # inference routes per latest user message. Ordinary messages
+        # use generate() with no JSON format; eligible implicit cues
+        # use generate_interpreted() with a JSON envelope. Both must be
+        # captured at the actual outbound HTTP boundary.
+        mode=scenario["steps"][index].get("mode","auto")
+        if mode!="model":
+            raise ValueError("target scenario must use direct model turns")
+        interpreted=should_interpret_with_model(event["input"])
+        expected_route=("generate_interpreted" if interpreted else "generate")
         if (request.get("capture_boundary")!="ollama.outbound"
-            or request.get("route")!="generate_interpreted"):
+            or request.get("route")!=expected_route):
             raise ValueError("unverified target gateway request")
         payload=request.get("payload")
         if (not isinstance(payload,dict)
             or payload.get("model")!=model
-            or payload.get("format")!="json"
+            or (payload.get("format")=="json") is not interpreted
+            or ("format" in payload and not interpreted)
             or payload.get("stream") is not False
             or payload.get("messages")!=request.get("messages")
             or not isinstance(request.get("messages"),list)
