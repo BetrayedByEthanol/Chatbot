@@ -59,7 +59,7 @@ def deliver(dsn,user,turn_id):
 def observe(dsn,user,instance,conversation,text,*,budget=12000,finish=True):
     source=turn(dsn,user,instance,conversation,text)
     started=perf_counter()
-    ctx=call(
+    ctx=goals.call(
         dsn,prepare_text_context,actor(user),source.turn_id,
         max_context_chars=budget,
     )
