@@ -750,11 +750,36 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
             if scoped["instance_id"]!=context.instance_id:
                 raise PermissionDenied("response instance mismatch")
             _selection(cursor,actor,context.instance_id,context.selection_generation)
-            cursor.execute(
-                "SELECT * FROM conversations WHERE conversation_id=%s FOR UPDATE",
-                (context.conversation_id,),
+            # MVP-03B.2: Lock all implicated conversations in stable UUID
+            # order. Two linked sessions can each be the other's prior
+            # dialogue. Locking the current row first in both would create
+            # an AB/BA deadlock if they generate replies concurrently.
+            prior_id=(
+                context.procedure_fence.prior_conversation_id
+                if context.procedure_fence is not None else None
             )
-            conversation=cursor.fetchone()
+            lock_ids={context.conversation_id}
+            if prior_id is not None:
+                lock_ids.add(prior_id)
+            conversation=prior_conversation=None
+            for lock_id in sorted(lock_ids,key=lambda value:value.int):
+                lock_mode=(
+                    "FOR UPDATE" if lock_id==context.conversation_id
+                    else "FOR SHARE"
+                )
+                cursor.execute(
+                    """SELECT * FROM conversations
+                       WHERE conversation_id=%s AND user_id=%s
+                         AND instance_id=%s """+lock_mode,
+                    (lock_id,actor.user_id,context.instance_id),
+                )
+                row=cursor.fetchone()
+                if lock_id==context.conversation_id:
+                    conversation=row
+                else:
+                    prior_conversation=row
+            if conversation is None:
+                raise StaleConversation("response conversation no longer exists")
             cursor.execute(
                 "SELECT status FROM conversation_turns WHERE turn_id=%s FOR UPDATE",
                 (context.turn_id,),
@@ -810,14 +835,10 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
                         "procedure context changed during response inference"
                     )
                 if fence.prior_conversation_id is not None:
-                    cursor.execute(
-                        """SELECT revision FROM conversations
-                           WHERE conversation_id=%s AND user_id=%s
-                             AND instance_id=%s FOR SHARE""",
-                        (fence.prior_conversation_id,actor.user_id,
-                         context.instance_id),
+                    prior=(
+                        conversation if fence.prior_conversation_id
+                        ==context.conversation_id else prior_conversation
                     )
-                    prior=cursor.fetchone()
                     if (prior is None or prior["revision"]
                         !=fence.prior_conversation_revision):
                         raise StaleConversation(

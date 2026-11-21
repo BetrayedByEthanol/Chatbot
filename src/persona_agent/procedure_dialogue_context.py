@@ -106,7 +106,10 @@ def _choose(rows,latest_text: str,*,overflow: bool=False):
             choice["title"] or "",choice["purpose"] or "",
             choice["applicability"] or "",choice["linked_title"] or "",
         )))
-        return choice if content_terms & descriptive else None
+        overlap=len(content_terms & descriptive)
+        return choice if (
+            overlap>=2 or (overlap==1 and len(content_terms)==1)
+        ) else None
     matches=[]
     for run in rows:
         descriptive=_terms(" ".join((
