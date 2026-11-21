@@ -115,10 +115,12 @@ def test_blind_packet_has_no_model_id_prompt_or_future_turns():
                for row in first["dialogue_history"])
     assert all("model_id" not in case and "model_requests" not in case
                and "system_prompt" not in case for case in packet["cases"])
-    assert all(item["index"]<first["step_index"]
-               for item in report["transcript"]
-               if item["action"]=="message"
-               and item["index"]<first["step_index"])
+    expected_history=[{
+        "session":"tentative_walking_and_support",
+        "user":event["input"],"assistant":event["assistant"],
+    } for event in report["transcript"][:first["step_index"]]
+       if event["action"]=="message"]
+    assert first["dialogue_history"]==expected_history
     tampered=deepcopy(packet)
     tampered["cases"][0]["assistant"]="Another reply"
     with pytest.raises(ValueError,match="integrity"):
@@ -181,6 +183,38 @@ def test_packet_rejects_non_successful_or_mismatched_trace():
     observed["review_items"][0]["review_case"]["dimensions"]=["grounding"]
     with pytest.raises(ValueError,match="rubric"):
         build_review_packet(observed,scenario())
+
+
+def test_unreviewed_history_cannot_be_deleted_relabelled_or_reordered():
+    source=synthetic_report()
+    first_review=next(item for item in source["review_items"])
+    assert first_review["step_index"]>1
+
+    deleted=deepcopy(source)
+    del deleted["transcript"][1]   # original unreviewed walking statement
+    with pytest.raises(ValueError,match="incomplete"):
+        build_review_packet(deleted,scenario())
+
+    wrongly_scoped=deepcopy(source)
+    final_session=next(
+        x["conversation_id"] for x in reversed(source["transcript"])
+        if x["action"]=="session"
+    )
+    wrongly_scoped["transcript"][1]["conversation_id"]=final_session
+    with pytest.raises(ValueError,match="trace mismatch"):
+        build_review_packet(wrongly_scoped,scenario())
+
+    reordered=deepcopy(source)
+    reordered["transcript"][1],reordered["transcript"][2]=(
+        reordered["transcript"][2],reordered["transcript"][1]
+    )
+    with pytest.raises(ValueError,match="order mismatch"):
+        build_review_packet(reordered,scenario())
+
+    corrupted=deepcopy(source)
+    corrupted["transcript"][1]["input"]="An unrelated fabricated user fact."
+    with pytest.raises(ValueError,match="trace mismatch"):
+        build_review_packet(corrupted,scenario())
 
 
 def test_bundle_requires_synthetic_completed_host_trace(tmp_path):

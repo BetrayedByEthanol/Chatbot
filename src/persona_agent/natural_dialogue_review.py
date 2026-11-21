@@ -63,6 +63,54 @@ def validate_packet(packet: dict) -> dict:
     return packet
 
 
+def _reconcile_transcript(scenario: dict, transcript: list) -> tuple[dict,dict]:
+    """Verify all historical evidence and session membership, not just rated turns.
+
+    Each scripted action must have one corresponding, ordered host event.
+    Future session declarations cannot authorize earlier conversation rows.
+    """
+    steps=scenario["steps"]
+    if len(transcript)!=len(steps):
+        raise ValueError("incomplete or extra host transcript evidence")
+    messages={}
+    sessions={}
+    active=None
+    for index,(step,event) in enumerate(zip(steps,transcript)):
+        if (not isinstance(event,dict)
+            or type(event.get("index")) is not int
+            or event["index"]!=index
+            or event.get("action")!=step["action"]):
+            raise ValueError("host transcript action order mismatch")
+        action=step["action"]
+        if action=="session":
+            conversation_id=event.get("conversation_id")
+            if (not isinstance(conversation_id,str)
+                or not conversation_id
+                or conversation_id in sessions
+                or event.get("name")!=step["name"]):
+                raise ValueError("session provenance or uniqueness mismatch")
+            sessions[conversation_id]=step["name"]
+            active=conversation_id
+        elif action=="restart":
+            if active is None or event.get("conversation_id")!=active:
+                raise ValueError("restart outside active conversation")
+        elif action=="message":
+            if (active is None or event.get("conversation_id")!=active
+                or event.get("input")!=step["text"]
+                or not isinstance(event.get("assistant"),str)
+                or not event["assistant"].strip()
+                or not isinstance(event.get("turn_id"),str)
+                or not event["turn_id"]):
+                raise ValueError("unreviewed or reviewed message trace mismatch")
+            messages[index]=event
+        elif action=="approve_model_memory":
+            if event.get("predicate_key")!=step.get("predicate_key"):
+                raise ValueError("memory approval trace mismatch")
+        else:
+            raise ValueError("unsupported natural review timeline action")
+    return messages,sessions
+
+
 def build_review_packet(report: dict, scenario: dict) -> dict:
     """Create a model-blind, time-causal human rating packet.
 
@@ -81,10 +129,7 @@ def build_review_packet(report: dict, scenario: dict) -> dict:
     reviews=report.get("review_items")
     if not isinstance(transcript,list) or not isinstance(reviews,list):
         raise ValueError("missing authentic trace/review items")
-    messages={
-        event["index"]:event for event in transcript
-        if isinstance(event,dict) and event.get("action")=="message"
-    }
+    messages,sessions=_reconcile_transcript(scenario,transcript)
     emitted={entry["step_index"]:entry for entry in reviews}
     scenario_reviews={
         idx:step for idx,step in enumerate(scenario["steps"])
@@ -93,10 +138,6 @@ def build_review_packet(report: dict, scenario: dict) -> dict:
     if (not scenario_reviews or len(reviews)!=len(scenario_reviews)
         or set(emitted)!=set(scenario_reviews)):
         raise ValueError("trace/review annotations mismatch")
-    sessions={}
-    for event in transcript:
-        if event.get("action")=="session":
-            sessions[event["conversation_id"]]=event["name"]
     cases=[]
     for idx,step in scenario_reviews.items():
         observed=messages.get(idx)
@@ -109,19 +150,11 @@ def build_review_packet(report: dict, scenario: dict) -> dict:
             or not observed["assistant"].strip()
             or observed["conversation_id"] not in sessions):
             raise ValueError("review answer cannot be reconciled with delivered trace")
-        history=[]
-        for event in transcript:
-            if (event["index"] >= idx):
-                continue
-            if event.get("action")=="message":
-                session=sessions.get(event["conversation_id"])
-                if session is None:
-                    raise ValueError("message without prior session")
-                history.append({
-                    "session":session,
-                    "user":event["input"],
-                    "assistant":event["assistant"],
-                })
+        history=[{
+            "session":sessions[event["conversation_id"]],
+            "user":event["input"],
+            "assistant":event["assistant"],
+        } for event in transcript[:idx] if event["action"]=="message"]
         spec=step["review_case"]
         if item.get("review_case")!=spec:
             raise ValueError("review rubric and captured scenario do not match")
