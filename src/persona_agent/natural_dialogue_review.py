@@ -15,13 +15,10 @@ from statistics import mean
 from typing import Any
 from zipfile import ZipFile
 
-from .scenario_validation import validate_scenario
+from .scenario_validation import validate_scenario, NATURAL_REVIEW_DIMENSIONS
 
 PROTOCOL = "mvp03c.natural-dialogue.v1"
-DIMENSIONS = frozenset({
-    "grounding", "continuity", "calibration", "brevity",
-    "affect", "goal_support", "agency", "coherence",
-})
+DIMENSIONS = NATURAL_REVIEW_DIMENSIONS
 CRITICAL_FAILURES = frozenset({
     "fabricated_history", "unauthorized_action_claim",
     "unjustified_commitment", "unsafe_affect_claim",
@@ -126,6 +123,8 @@ def build_review_packet(report: dict, scenario: dict) -> dict:
                     "assistant":event["assistant"],
                 })
         spec=step["review_case"]
+        if item.get("review_case")!=spec:
+            raise ValueError("review rubric and captured scenario do not match")
         cases.append({
             "case_id":spec["id"],"step_index":idx,
             "session":sessions[observed["conversation_id"]],
