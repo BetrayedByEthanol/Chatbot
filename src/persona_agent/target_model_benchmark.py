@@ -65,14 +65,16 @@ def summarize_target_benchmark(
     validate_scenario(expected_scenario)
     if not isinstance(model,str) or not model.strip():
         raise ValueError("target model identifier is required")
-    if model_digest is not None and (
-        not isinstance(model_digest,str)
-        or not model_digest.startswith("sha256:")
-        or len(model_digest)!=71
-        or any(c not in "0123456789abcdef"
-               for c in model_digest[len("sha256:"):])
-    ):
-        raise ValueError("model digest must be a complete sha256 reference")
+    if model_digest is not None:
+        if not isinstance(model_digest,str):
+            raise ValueError("model digest must be a sha256 reference")
+        # Ollama /api/tags returns 64 bare hexadecimal characters. Accept
+        # the optional sha256: form and publish one normalized representation.
+        raw_digest=model_digest.removeprefix("sha256:")
+        if (len(raw_digest)!=64 or
+            any(c not in "0123456789abcdef" for c in raw_digest)):
+            raise ValueError("model digest must be a complete sha256 reference")
+        model_digest="sha256:"+raw_digest
     records=_read_evidence(evidence_zip)
     manifest=records["manifest.json"]
     stored_scenario=records["scenario.json"]

@@ -119,6 +119,15 @@ def test_rejects_invalid_target_digests(tmp_path,digest):
         )
 
 
+def test_unprefixed_real_ollama_tags_digest_is_normalized(tmp_path):
+    result=summarize_target_benchmark(
+        bundle(tmp_path),scenario(),model=MODEL,
+        model_digest="a"*64,
+    )
+    assert result["target_digest"]==DIGEST
+    assert result["model_digest_recorded"] is True
+
+
 def test_missing_digest_disclosed_not_faked(tmp_path):
     result=summarize_target_benchmark(bundle(tmp_path),scenario(),model=MODEL)
     assert result["target_digest"] is None
