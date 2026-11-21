@@ -114,7 +114,9 @@ def _choose(rows,latest_text: str,*,overflow: bool=False):
             run["applicability"] or "",run["linked_title"] or "",
         )))
         score=len(content_terms & descriptive)
-        if score:
+        # One generic overlapping word must not turn a named unrelated
+        # topic into this run (e.g. Nginx release notes vs Nginx TLS).
+        if score >= 2 or (score==1 and len(content_terms)==1):
             matches.append((score,run))
     focused=[(score,run) for score,run in matches if run["focus_link"]]
     if len(focused)==1:

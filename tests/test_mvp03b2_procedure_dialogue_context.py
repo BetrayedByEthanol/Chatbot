@@ -5,7 +5,9 @@ psycopg=pytest.importorskip("psycopg")
 
 from persona_agent.conversation import (
     acknowledge_text_delivery,prepare_text_context,respond_to_text,
+    commit_text_response,
 )
+from persona_agent.conversation_contracts import StaleConversation
 from persona_agent.conversation_contracts import ModelReply
 from persona_agent.dialogue_contracts import OpenThreadCommand,OfferDialogueActCommand
 from persona_agent.dialogue_state import open_thread,offer_dialogue_act
@@ -77,6 +79,7 @@ def test_unrelated_question_does_not_pull_focused_run(dsn):
         "Tell me about weekend plans.",
         "What is the next Nginx version?",
         "Continue with weekend travel plans.",
+        "Continue with the Nginx release notes.",
     ):
         prompt,_=context_for(dsn,user,instance,conv,question)
         assert "Tracked procedure (pinned)" not in prompt
@@ -149,7 +152,7 @@ def test_other_user_and_cancelled_run_are_excluded(dsn):
     assert "Tracked procedure (pinned)" not in prompt
 
 
-def test_prior_linked_delivered_question_survives_session_gap(dsn):
+def _prior_pending(dsn):
     user,instance,conv,run_id,_=setup_run(dsn)
     thread,source=link_focus(dsn,user,instance,conv,run_id)
     class Fixed:
@@ -172,11 +175,98 @@ def test_prior_linked_delivered_question_survives_session_gap(dsn):
         thread_id=thread,act_id=uuid4(),source_response_id=reply.response_id,
         kind="QUESTION",label="Which certificate hostname should we use?",
     ))
+    return user,instance,conv,run_id,thread
+
+
+def test_prior_linked_delivered_question_survives_session_gap(dsn):
+    user,instance,conv,run_id,_=_prior_pending(dsn)
     prompt,_=context_for(
         dsn,user,instance,uuid4(),"Can we resume the Nginx TLS setup?",
     )
     assert "Pending prior dialogue act (not approval)" in prompt
     assert "Which certificate hostname should we use?" in prompt
+
+
+def test_generic_continuation_phrases_recover_focused_run(dsn):
+    user,instance,conv,run_id,_=setup_run(dsn)
+    link_focus(dsn,user,instance,conv,run_id)
+    for question in (
+        "Where did we leave off?",
+        "Where did we stop?",
+        "Remind me of the current step.",
+    ):
+        prompt,_=context_for(dsn,user,instance,conv,question)
+        assert "Tracked procedure (pinned)" in prompt
+        assert str(run_id) in prompt
+
+
+def test_latest_link_does_not_hide_previous_pending_question(dsn):
+    user,instance,old_conv,run_id,old_thread=_prior_pending(dsn)
+    new_conv=uuid4()
+    link_focus(dsn,user,instance,new_conv,run_id,version=2)
+    prompt,_=context_for(dsn,user,instance,new_conv,"What should I do next?")
+    assert "Pending prior dialogue act (not approval)" in prompt
+    assert "Which certificate hostname should we use?" in prompt
+
+
+def test_run_change_in_other_conversation_fences_response_commit(dsn):
+    user,instance,conv,run_id,_=setup_run(dsn)
+    link_focus(dsn,user,instance,conv,run_id)
+    source=turn(dsn,user,instance,conv,"What should I do next?")
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        ctx=prepare_text_context(conn,actor(user),source.turn_id)
+        revision=conn.execute(
+            "SELECT revision FROM conversations WHERE conversation_id=%s",
+            (conv,),
+        ).fetchone()[0]
+    assert ctx.procedure_fence is not None
+    assert ctx.procedure_fence.run_id==run_id
+    run_status(dsn,user,instance,uuid4(),run_id,2,"PAUSE")
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT revision FROM conversations WHERE conversation_id=%s",
+            (conv,),
+        ).fetchone()[0]==revision
+        with pytest.raises(StaleConversation,match="procedure context changed"):
+            commit_text_response(
+                conn,actor(user),ctx,ModelReply(
+                    model_id="test-gateway",text="Continue generating the cert.",
+                ),
+            )
+        assert conn.execute(
+            "SELECT count(*) FROM conversation_responses WHERE turn_id=%s",
+            (source.turn_id,),
+        ).fetchone()[0]==0
+
+
+def test_prior_question_change_fences_other_conversation_response(dsn):
+    user,instance,old_conv,run_id,_=_prior_pending(dsn)
+    fresh=uuid4()
+    source=turn(dsn,user,instance,fresh,"Can we resume the Nginx TLS setup?")
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        ctx=prepare_text_context(conn,actor(user),source.turn_id)
+    assert ctx.procedure_fence is not None
+    assert ctx.procedure_fence.prior_conversation_id==old_conv
+    # Only prior dialogue changes. Current response revision stays valid.
+    turn(dsn,user,instance,old_conv,"I have a new answer about hostname.")
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        with pytest.raises(StaleConversation,match="linked dialogue context changed"):
+            commit_text_response(
+                conn,actor(user),ctx,ModelReply(
+                    model_id="test-gateway",text="Which hostname was that?",
+                ),
+            )
+
+
+def test_overflow_does_not_hide_explicitly_focused_run(dsn):
+    user,instance,conv,run_id,template=setup_run(dsn)
+    link_focus(dsn,user,instance,conv,run_id)
+    for _ in range(25):
+        new=start_command(dsn,user,instance,conv,template)
+        call(dsn,start_procedure_run,actor(user),new)
+    prompt,_=context_for(dsn,user,instance,conv,"Where did we leave off?")
+    assert str(run_id) in prompt
+    assert "Tracked procedure (pinned)" in prompt
 
 
 def test_prompt_budget_preserves_user_turn(dsn):
