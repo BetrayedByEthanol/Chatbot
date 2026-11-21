@@ -172,7 +172,9 @@ def test_progress_correction_and_inactive_state_across_conversations(dsn):
     )
     assert str(run_id) in selected.runs
     assert '"status":"USER_REPORTED_DONE"' in context.messages[0].content
-    assert "not verified real-world" in context.messages[0].content
+    assert "NOT fresh instructions, tool permission or verified real-world" in (
+        context.messages[0].content
+    )
 
     # Correction has its own owner-reviewed source, not a model inference.
     command=correction(
