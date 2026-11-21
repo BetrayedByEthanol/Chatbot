@@ -200,6 +200,28 @@ def test_unprefixed_real_ollama_tags_digest_is_normalized(tmp_path):
     assert result["model_digest_recorded"] is True
 
 
+def test_cli_reads_documented_ollama_tags_digest(tmp_path):
+    import runpy
+    from pathlib import Path
+    tags=tmp_path/"ollama-tags.json"
+    tags.write_text(json.dumps({"models":[{
+        "name":MODEL,"model":MODEL,
+        "digest":"a"*64,"size":4683075271,
+        "details":{"parameter_size":"7.6B","quantization_level":"Q4_K_M"},
+    }]}),encoding="utf-8")
+    script=runpy.run_path(str(
+        Path(__file__).resolve().parents[1]
+        /"scripts"/"benchmark_target_model.py"
+    ))
+    observed_digest=script["_ollama_digest"](tags,MODEL)
+    assert observed_digest=="a"*64
+    summary=summarize_target_benchmark(
+        bundle(tmp_path),scenario(),
+        model=MODEL,model_digest=observed_digest,
+    )
+    assert summary["target_digest"]==DIGEST
+
+
 def test_missing_digest_disclosed_not_faked(tmp_path):
     result=summarize_target_benchmark(bundle(tmp_path),scenario(),model=MODEL)
     assert result["target_digest"] is None
