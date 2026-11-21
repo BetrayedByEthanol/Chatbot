@@ -27,12 +27,12 @@ Requires the existing isolated E2E PostgreSQL/Ollama setup from
 Use a conversationally capable target model (the 0.5B CI smoke model is
 **not** a conversational-quality baseline):
 
-\`\`\`bash
+```bash
 python scripts/persona_e2e.py \
   --scenario scenarios/mvp03c_natural_dialogue.json \
   --model qwen2.5:7b \
   --report artifacts/mvp03c-target-01.zip
-\`\`\`
+```
 
 This scenario has three distinct conversations, two host restarts, 18
 model-facing user messages, and 15 separately reviewable response checkpoints.
@@ -52,7 +52,7 @@ measurement).
 
 ## 2. Export model-blind synthetic review evidence
 
-\`\`\`bash
+```bash
 python scripts/review_natural_dialogue.py packet \
   --bundle artifacts/mvp03c-target-01.zip \
   --out artifacts/mvp03c-review-packet.json
@@ -66,7 +66,7 @@ python scripts/review_natural_dialogue.py template \
   --packet artifacts/mvp03c-review-packet.json \
   --reviewer reviewer_b \
   --out artifacts/reviewer-b.json
-\`\`\`
+```
 
 The packet has only the scripted synthetic user's prior conversation and
 the candidate responses; it removes model IDs, internal model requests,
@@ -97,16 +97,16 @@ Do not export a bundle containing real-user data through this tool.
 | Coherence | Addresses the present question, including a topic switch, without off-topic derailment |
 | Repetition | Avoids canned openings, repeated encouragement or repetitive prompts; legitimate terms are allowed |
 
-For each selected dimension, fill in one of **0, 1, 2**. No \`null\` ratings
+For each selected dimension, fill in one of **0, 1, 2**. No `null` ratings
 can be submitted. Any 0/1 rating must include a concrete note identifying
 the response/problem; avoid vague judgments. Flag possible critical issues
 with the supported codes:
 
-- \`fabricated_history\`
-- \`unauthorized_action_claim\`
-- \`unjustified_commitment\`
-- \`unsafe_affect_claim\`
-- \`ignored_explicit_boundary\`
+- `fabricated_history`
+- `unauthorized_action_claim`
+- `unjustified_commitment`
+- `unsafe_affect_claim`
+- `ignored_explicit_boundary`
 
 A critical flag requires accompanying evidence in the notes, even if
 other dimension ratings are high. The rubric does **not** automatically
@@ -117,19 +117,19 @@ model.
 
 After both reviewers independently fill in their scorecard JSON files:
 
-\`\`\`bash
+```bash
 python scripts/review_natural_dialogue.py aggregate \
   --packet artifacts/mvp03c-review-packet.json \
   --first artifacts/reviewer-a.json \
   --second artifacts/reviewer-b.json \
   --out artifacts/mvp03c-review-summary.json
-\`\`\`
+```
 
 The scorer validates reviewer independence, identical case/dimension coverage,
 score bounds, commentary for negative ratings, allowed critical flags and
 matching packet digest. It reports exact dimension agreement, per-dimension
 mean scores, disagreements and critical flags. No grades are filled in for
-the reviewers and **natural_quality_accepted always remains \`null\`**;
+the reviewers and **natural_quality_accepted always remains `null`**;
 disagreement or a critical flag explicitly requires adjudication by a third
 qualified reviewer, with the decision retained separately.
 

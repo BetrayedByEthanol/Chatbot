@@ -115,7 +115,7 @@ def test_blind_packet_has_no_model_id_prompt_or_future_turns():
                for row in first["dialogue_history"])
     assert all("model_id" not in case and "model_requests" not in case
                and "system_prompt" not in case for case in packet["cases"])
-    assert all(item["step_index"]<first["step_index"]
+    assert all(item["index"]<first["step_index"]
                for item in report["transcript"]
                if item["action"]=="message"
                and item["index"]<first["step_index"])
