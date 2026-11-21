@@ -169,8 +169,14 @@ def test_benchmark_matches_real_primary_gateway_route_per_turn(tmp_path):
         if step["action"]=="message"
     )
     assert should_interpret_with_model(
-        "Hello, I might start exercising."
-    ) in (True,False)
+        "I've been considering taking more walks, but I don't know what schedule would work."
+    ) is True
+    assert should_interpret_with_model(
+        "Work was difficult today, and I feel frustrated."
+    ) is False
+    assert should_interpret_with_model(
+        "I've been considering learning another language."
+    ) is True
     report=summarize_target_benchmark(
         bundle(tmp_path),sample,model=MODEL,
     )
@@ -215,7 +221,13 @@ def test_wrong_model_and_scenario_refuse_to_measure(tmp_path):
     (lambda d:d["transcript.json"][2].update(replayed=True),"replayed"),
     (lambda d:d["transcript.json"][2].update(response_elapsed_ms=-2),"invalid host"),
     (lambda d:d["transcript.json"][2].update(response_elapsed_ms=float("nan")),"invalid host"),
-    (lambda d:d["transcript.json"][1].update(input="fabricated source"),"outbound target-model request mismatch"),
+    # Changing the text can also change the real primary inference route.
+    (lambda d:d["transcript.json"][1].update(input="fabricated source"),"unverified target gateway request"),
+    # Preserve the implicit-intent cue to test the independent HTTP
+    # latest-user-content mismatch without changing model-route eligibility.
+    (lambda d:d["transcript.json"][1].update(
+        input="I've been considering learning another language."),
+     "outbound target-model request mismatch"),
 ])
 def test_incomplete_or_fabricated_evidence_is_not_scored(tmp_path,mutator,reason):
     path=bundle(tmp_path,modify=mutator)
