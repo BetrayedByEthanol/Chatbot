@@ -18,8 +18,11 @@ from .natural_dialogue_review import packet_from_bundle
 from .scenario_validation import validate_scenario
 
 REPORT_FORMAT = "mvp03c1.target-model-benchmark.v1"
-PRIVATE_MEMBERS = ("manifest.json", "scenario.json", "transcript.json",
-                   "evaluation.json", "errors.json")
+PRIVATE_MEMBERS = (
+    "manifest.json", "scenario.json", "transcript.json",
+    "evaluation.json", "errors.json", "model_requests.json",
+    "delivery_events.json", "state_snapshots.json", "review_items.json",
+)
 MAX_MEMBER_BYTES = 20_000_000
 
 
@@ -55,6 +58,115 @@ def _quantiles(values: list[float]) -> dict:
         "p95_nearest_rank":round(ordered[max(ceil(.95*len(ordered))-1,0)],2),
         "max":round(ordered[-1],2),
     }
+
+
+def _reconcile_host_evidence(records: dict, observed: list, scenario: dict,
+                             model: str) -> None:
+    """Require actual outbound, delivery, persisted and contract observations.
+
+    A model label on a transcript by itself is never evidence of execution.
+    This validates consistency across the runner's independent observation
+    boundaries; it is not a cryptographic attestation of runner origin.
+    """
+    requests=records["model_requests.json"]
+    deliveries=records["delivery_events.json"]
+    snapshots=records["state_snapshots.json"]
+    checks=records["evaluation.json"].get("checks")
+    if (not all(isinstance(x,list) for x in (
+        requests,deliveries,snapshots,checks,
+    ))
+        or len(requests)!=len(observed)
+        or len(deliveries)!=len(observed)
+        or any(not isinstance(item,dict) for item in (
+            *requests,*deliveries,*snapshots,*checks
+        ))):
+        raise ValueError("host evidence missing or incomplete")
+    delivered=[s for s in snapshots if s.get("checkpoint")=="after_delivery"]
+    if len(delivered)!=len(observed):
+        raise ValueError("missing authoritative delivery snapshots")
+    by_step={s.get("step_index"):s for s in delivered}
+    if len(by_step)!=len(observed):
+        raise ValueError("duplicate or absent delivery snapshots")
+    for event,request,receipt in zip(observed,requests,deliveries):
+        index=event["index"]
+        if (request.get("capture_boundary")!="ollama.outbound"
+            or request.get("route")!="generate_interpreted"):
+            raise ValueError("unverified target gateway request")
+        payload=request.get("payload")
+        if (not isinstance(payload,dict)
+            or payload.get("model")!=model
+            or payload.get("format")!="json"
+            or payload.get("stream") is not False
+            or payload.get("messages")!=request.get("messages")
+            or not isinstance(request.get("messages"),list)
+            or not request["messages"]
+            or request["messages"][-1]!={
+                "role":"user","content":event["input"],
+            }):
+            raise ValueError("outbound target-model request mismatch")
+        if any(receipt.get(key)!=value for key,value in (
+            ("type","reply"),("turn_id",event.get("turn_id")),
+            ("response_id",event.get("response_id")),
+            ("model_id",model),("text",event["assistant"]),
+            ("replayed",False),
+        )):
+            raise ValueError("observed reply delivery does not match response")
+        snapshot=by_step.get(index)
+        if (snapshot is None
+            or snapshot.get("source_turn_id")!=event.get("turn_id")):
+            raise ValueError("missing matching authoritative snapshot")
+        application=snapshot.get("application")
+        database=snapshot.get("database")
+        if not isinstance(application,dict) or not isinstance(database,dict):
+            raise ValueError("snapshot lacks authoritative state evidence")
+        trace=application.get("turn_trace")
+        if not isinstance(trace,dict) or any(trace.get(key)!=value for key,value in (
+            ("turn_id",event.get("turn_id")),
+            ("conversation_id",event.get("conversation_id")),
+            ("response_id",event.get("response_id")),
+            ("model_id",model),
+            ("response_status","DELIVERED"),
+        )):
+            raise ValueError("durable turn trace does not match delivered output")
+        turns=database.get("conversation_turns")
+        responses=database.get("conversation_responses")
+        if (not isinstance(turns,dict) or not isinstance(responses,dict)
+            or turns.get("truncated") is not False
+            or responses.get("truncated") is not False
+            or not isinstance(turns.get("rows"),list)
+            or not isinstance(responses.get("rows"),list)):
+            raise ValueError("incomplete database provenance snapshot")
+        source_rows=[
+            row for row in turns["rows"]
+            if row.get("turn_id")==event.get("turn_id")
+        ]
+        response_rows=[
+            row for row in responses["rows"]
+            if row.get("response_id")==event.get("response_id")
+        ]
+        if (len(source_rows)!=1 or
+            source_rows[0].get("input_text")!=event["input"]
+            or source_rows[0].get("conversation_id")!=event["conversation_id"]
+            or len(response_rows)!=1
+            or response_rows[0].get("turn_id")!=event.get("turn_id")
+            or response_rows[0].get("response_text")!=event["assistant"]
+            or response_rows[0].get("model_id")!=model
+            or response_rows[0].get("delivery_status")!="DELIVERED"):
+            raise ValueError("database turns or responses fail source reconciliation")
+        required={"response_delivered","no_unapproved_goal"}
+        if scenario["steps"][index].get("expect_no_new_operations"):
+            required.add("no_new_operations")
+        for check_name in required:
+            matches=[
+                item for item in checks
+                if item.get("step_index")==index
+                and item.get("check")==check_name
+                and item.get("pass") is True
+            ]
+            if len(matches)!=1:
+                raise ValueError("missing required per-turn contract evidence")
+    if any(item.get("pass") is not True for item in checks):
+        raise ValueError("failed or invalid deterministic contract check")
 
 
 def summarize_target_benchmark(
@@ -93,17 +205,12 @@ def summarize_target_benchmark(
     if (manifest.get("behavioral_accepted") is not None
         or evaluation.get("behavioral_accepted") is not None):
         raise ValueError("human review must not be pre-approved by the runner")
-    # Validates complete causal ordering and all 15 human review rubrics.
-    # The review packet is built in memory and NEVER included in this report.
-    packet=packet_from_bundle(evidence_zip)
     transcript=records["transcript.json"]
     observed=[event for event in transcript if event["action"]=="message"]
     expected_count=sum(step["action"]=="message"
                        for step in expected_scenario["steps"])
-    if len(observed)!=expected_count or len(packet["cases"])!=sum(
-        "review_case" in step for step in expected_scenario["steps"]
-    ):
-        raise ValueError("target message or review-case count mismatch")
+    if len(observed)!=expected_count:
+        raise ValueError("target message count mismatch")
     response_ms=[]
     response_words=[]
     for event in observed:
@@ -118,6 +225,14 @@ def summarize_target_benchmark(
             raise ValueError("invalid host response timing")
         response_ms.append(float(value))
         response_words.append(len(event["assistant"].split()))
+    _reconcile_host_evidence(records,observed,expected_scenario,model)
+    # Validate the complete causal timeline and all 15 review rubrics after
+    # rejecting invalid timing (including non-finite numbers).
+    # Never include the generated reviewer packet in the public summary.
+    packet=packet_from_bundle(evidence_zip)
+    expected_reviews=sum("review_case" in step for step in expected_scenario["steps"])
+    if len(packet["cases"])!=expected_reviews:
+        raise ValueError("review case count mismatch")
     dimensions=Counter(dim for case in packet["cases"]
                        for dim in case["dimensions"])
     seconds=[v/1000 for v in response_ms]
