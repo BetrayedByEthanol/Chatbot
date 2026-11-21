@@ -100,7 +100,6 @@ def bundle(tmp_path,*,name="trace.zip",model=MODEL,modify=None):
         "model_requests.json":requests,
         "delivery_events.json":deliveries,
         "state_snapshots.json":snapshots,
-        "review_items.json":report["review_items"],
         "manifest.json":{
             "synthetic_data":True,"model":model,
             "git_sha":"example-commit","started_at":"2026-11-21T10:00:00Z",
@@ -175,7 +174,7 @@ def test_wrong_model_and_scenario_refuse_to_measure(tmp_path):
     (lambda d:d["transcript.json"][2].update(replayed=True),"replayed"),
     (lambda d:d["transcript.json"][2].update(response_elapsed_ms=-2),"invalid host"),
     (lambda d:d["transcript.json"][2].update(response_elapsed_ms=float("nan")),"invalid host"),
-    (lambda d:d["transcript.json"][1].update(input="fabricated source"),"trace mismatch"),
+    (lambda d:d["transcript.json"][1].update(input="fabricated source"),"outbound target-model request mismatch"),
 ])
 def test_incomplete_or_fabricated_evidence_is_not_scored(tmp_path,mutator,reason):
     path=bundle(tmp_path,modify=mutator)
