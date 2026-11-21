@@ -13,6 +13,12 @@ from .semantic_contracts import (
     StatementType, TemporalScope, Modality, PragmaticFunction,
 )
 
+NATURAL_REVIEW_DIMENSIONS = frozenset({
+    "grounding", "continuity", "calibration", "brevity",
+    "affect", "goal_support", "agency", "coherence", "repetition",
+})
+
+
 _SEMANTIC_LABELS = {
     "statement_type": set(get_args(StatementType)),
     "temporal_scope": set(get_args(TemporalScope)),
@@ -56,6 +62,8 @@ def validate_scenario(value: Any) -> dict:
     seen_sessions = set()
     active = False
     message_count = 0
+    source_user_texts = []
+    review_case_ids = set()
     for step in steps:
         if not isinstance(step, dict):
             raise ValueError("every scenario step must be an object")
@@ -116,6 +124,38 @@ def validate_scenario(value: Any) -> dict:
                 or not 1 <= len(step["review_response"]) <= 300
             ):
                 raise ValueError("review_response must be a short instruction")
+            case = step.get("review_case")
+            if case is not None:
+                if ("review_response" not in step
+                    or step.get("mode","auto")!="model"
+                    or not isinstance(case,dict)
+                    or set(case)!={"id","dimensions","source_quotes","failure_criteria"}):
+                    raise ValueError("natural review case needs a model response and exact rubric")
+                cid=case["id"]
+                if (not isinstance(cid,str)
+                    or not re.fullmatch(r"[a-z][a-z0-9_]{2,63}",cid)
+                    or cid in review_case_ids):
+                    raise ValueError("invalid or duplicate natural review case ID")
+                review_case_ids.add(cid)
+                dims=case["dimensions"]
+                if (not isinstance(dims,list) or not 1<=len(dims)<=6
+                    or any(not isinstance(d,str) for d in dims)
+                    or len(set(dims))!=len(dims)
+                    or not set(dims)<=NATURAL_REVIEW_DIMENSIONS):
+                    raise ValueError("invalid natural review dimensions")
+                quotes=case["source_quotes"]
+                if (not isinstance(quotes,list) or len(quotes)>6
+                    or any(not isinstance(q,str) or not 4<=len(q)<=200
+                           or not any(q in source for source in (
+                               *source_user_texts,text
+                           )) for q in quotes)):
+                    raise ValueError("natural review source quote not supported by earlier user evidence")
+                failures=case["failure_criteria"]
+                if (not isinstance(failures,list) or not 1<=len(failures)<=6
+                    or any(not isinstance(x,str) or not 8<=len(x)<=300
+                           for x in failures)):
+                    raise ValueError("natural review requires bounded failure criteria")
+            source_user_texts.append(text)
             message_count += 1
         else:
             raise ValueError("unsupported scenario action")

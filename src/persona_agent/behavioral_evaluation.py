@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import datetime, timezone
 from hashlib import sha256
+from time import perf_counter
 import json
 import platform
 from pathlib import Path
@@ -420,9 +421,13 @@ def run_scenario(
                 report["snapshots"][-1]["database"]["operations"]["count"]
                 if report["snapshots"] else 0
             )
+            response_started=perf_counter()
             turn = harness.send(
                 step["text"],idempotency_key=f"mvp01e-{index:04d}",
                 mode=step.get("mode","auto"),
+            )
+            response_elapsed_ms=round(
+                (perf_counter()-response_started)*1000,2
             )
             recorded = {
                 "index":index,"action":"message",
@@ -430,6 +435,7 @@ def run_scenario(
                 "input":step["text"],"assistant":turn.text,
                 "turn_id":turn.turn_id,"response_id":turn.response_id,
                 "model_id":turn.model_id,"replayed":turn.replayed,
+                "response_elapsed_ms":response_elapsed_ms,
             }
             report["transcript"].append(recorded)
             recorded_message = True
@@ -495,6 +501,8 @@ def run_scenario(
                     "review_question":step["review_response"],
                     "user":step["text"],"assistant":turn.text,
                     "status":"PENDING_HUMAN_REVIEW",
+                    **({"review_case":step["review_case"]}
+                       if "review_case" in step else {}),
                 })
             if run_tool_worker and turn.model_id == "tool.initial.deferred.v1":
                 # Use the real registered worker/claim/lease lifecycle,
