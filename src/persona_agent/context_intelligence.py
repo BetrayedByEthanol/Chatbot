@@ -10,6 +10,7 @@ _ANAPHORA=re.compile(
     r"(?:can we |let's )?continue(?: with (?:that|it|this))?|"
     r"tell me more(?: about (?:that|it|this))?)\??[.! ]*$",re.I,
 )
+_GENERIC_GOAL_QUALIFIERS=frozenset({"active","approved","existing","main","primary"})
 _STOP=frozenset({
     "about","again","already","also","another","been","before","could",
     "current","daily","does","doing","from","goal","goals","have","help",
@@ -70,6 +71,11 @@ def _relevant(rows: list[dict],text: str,focus: str | None) -> list[dict]:
     personal=bool(_PERSONAL.search(text))
     followup=bool(focus and _ANAPHORA.fullmatch(text.strip()))
     terms=_terms(focus if followup else text)
+    if personal:
+        # "my active goal" and "my approved goals" are generic questions,
+        # not matches for a Goal whose topic happens to contain "active".
+        # Keep these terms meaningful for non-personal, topical queries.
+        terms=terms-_GENERIC_GOAL_QUALIFIERS
     if not terms and not personal:
         return []
     candidates=[]

@@ -85,6 +85,24 @@ def test_approved_goal_reaches_relevant_response_context(dsn):
     assert sum(len(m.content) for m in context.messages)<=12000
 
 
+def test_explicit_goal_reference_with_one_topic_word(dsn):
+    user,instance,conv,gid=setup_goal(dsn)
+    prompt,_=get_context(
+        dsn,user,instance,conv,
+        "How is the eating goal progressing?",
+    )
+    assert "Approved/delegated Goal state" in prompt
+    assert str(gid) in prompt
+
+
+def test_generic_goal_qualifiers_are_not_topics(dsn):
+    user,instance,conv,gid=setup_goal(dsn)
+    for text in ("What is my active goal?","What are my approved goals?"):
+        prompt,_=get_context(dsn,user,instance,conv,text)
+        assert "Approved/delegated Goal state" in prompt
+        assert str(gid) in prompt
+
+
 def test_unrelated_topic_does_not_pull_in_goals(dsn):
     user,instance,conv,gid=setup_goal(dsn)
     prompt,_=get_context(
