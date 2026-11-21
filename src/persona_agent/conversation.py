@@ -531,6 +531,26 @@ def prepare_text_context(
                     ),
                     max_chars=goal_room,
                 )
+            # MVP-03B.2: select data with dependency versions so a
+            # concurrent ProcedureRun/dialogue change cannot justify a
+            # stale response after model inference.
+            from .procedure_dialogue_context import prepare_procedure_dialogue_context
+            procedure_fence=None
+            procedure_room=min(
+                1200,max_context_chars//3,
+                max_context_chars-len(prompt)-len(history[-1].content)-160,
+            )
+            if procedure_room>=450:
+                procedure_view=prepare_procedure_dialogue_context(
+                    cursor,user_id=actor.user_id,
+                    instance_id=item["instance_id"],
+                    conversation_id=item["conversation_id"],
+                    focus_thread_id=item["focus_thread_id"],
+                    latest_text=history[-1].content,
+                    max_chars=procedure_room,
+                )
+                prompt+=procedure_view.text
+                procedure_fence=procedure_view.fence
             # P2-02: Summary eligibility must refer to the oldest message
             # *actually retained* after character budgeting, not the initial
             # SQL LIMIT window. Otherwise older summarized ranges can vanish
@@ -699,6 +719,7 @@ def prepare_text_context(
                 selection_generation=item["selection_generation"],
                 conversation_revision=item["revision"],
                 messages=(system,*kept),
+                procedure_fence=procedure_fence,
             )
 
 
@@ -729,11 +750,36 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
             if scoped["instance_id"]!=context.instance_id:
                 raise PermissionDenied("response instance mismatch")
             _selection(cursor,actor,context.instance_id,context.selection_generation)
-            cursor.execute(
-                "SELECT * FROM conversations WHERE conversation_id=%s FOR UPDATE",
-                (context.conversation_id,),
+            # MVP-03B.2: Lock all implicated conversations in stable UUID
+            # order. Two linked sessions can each be the other's prior
+            # dialogue. Locking the current row first in both would create
+            # an AB/BA deadlock if they generate replies concurrently.
+            prior_id=(
+                context.procedure_fence.prior_conversation_id
+                if context.procedure_fence is not None else None
             )
-            conversation=cursor.fetchone()
+            lock_ids={context.conversation_id}
+            if prior_id is not None:
+                lock_ids.add(prior_id)
+            conversation=prior_conversation=None
+            for lock_id in sorted(lock_ids,key=lambda value:value.int):
+                lock_mode=(
+                    "FOR UPDATE" if lock_id==context.conversation_id
+                    else "FOR SHARE"
+                )
+                cursor.execute(
+                    """SELECT * FROM conversations
+                       WHERE conversation_id=%s AND user_id=%s
+                         AND instance_id=%s """+lock_mode,
+                    (lock_id,actor.user_id,context.instance_id),
+                )
+                row=cursor.fetchone()
+                if lock_id==context.conversation_id:
+                    conversation=row
+                else:
+                    prior_conversation=row
+            if conversation is None:
+                raise StaleConversation("response conversation no longer exists")
             cursor.execute(
                 "SELECT status FROM conversation_turns WHERE turn_id=%s FOR UPDATE",
                 (context.turn_id,),
@@ -774,6 +820,30 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
                 or conversation["last_input_turn_id"]!=context.turn_id
             ):
                 raise StaleConversation("model response was superseded by newer dialogue")
+            if context.procedure_fence is not None:
+                fence=context.procedure_fence
+                cursor.execute(
+                    """SELECT version FROM procedure_runs
+                       WHERE run_id=%s AND user_id=%s AND instance_id=%s
+                       FOR SHARE""",
+                    (fence.run_id,actor.user_id,context.instance_id),
+                )
+                current_run=cursor.fetchone()
+                if (current_run is None
+                    or current_run["version"]!=fence.run_version):
+                    raise StaleConversation(
+                        "procedure context changed during response inference"
+                    )
+                if fence.prior_conversation_id is not None:
+                    prior=(
+                        conversation if fence.prior_conversation_id
+                        ==context.conversation_id else prior_conversation
+                    )
+                    if (prior is None or prior["revision"]
+                        !=fence.prior_conversation_revision):
+                        raise StaleConversation(
+                            "linked dialogue context changed during inference"
+                        )
             # MVP-01F.4: use only the persisted authenticated user input and
             # bounded prior user messages to enforce unavailable-capability
             # claims. Model output is untrusted, including conditional offers.

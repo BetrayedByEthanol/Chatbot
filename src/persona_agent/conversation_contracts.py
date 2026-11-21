@@ -61,6 +61,15 @@ class ModelReply:
 
 
 @dataclass(frozen=True)
+class ProcedureContextFence:
+    """Source versions used to construct the displayed procedure context."""
+    run_id: UUID
+    run_version: int
+    prior_conversation_id: UUID | None = None
+    prior_conversation_revision: int | None = None
+
+
+@dataclass(frozen=True)
 class ResponseContext:
     conversation_id: UUID
     turn_id: UUID
@@ -68,6 +77,7 @@ class ResponseContext:
     selection_generation: int
     conversation_revision: int
     messages: tuple[ModelMessage, ...]
+    procedure_fence: ProcedureContextFence | None = None
 
 
 class TextModelGateway(Protocol):
