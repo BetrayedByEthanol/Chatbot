@@ -28,7 +28,79 @@ def bundle(tmp_path,*,name="trace.zip",model=MODEL,modify=None):
                 "model_id":model,"replayed":False,
                 "response_elapsed_ms":12.5,
             })
+    # Simulated, fully correlated host evidence. The test fixture is not
+    # proof that a real Ollama model ran; production ZIPs come from the
+    # existing authenticated E2E host and its independent observers.
+    requests=[]
+    deliveries=[]
+    snapshots=[]
+    checks=[]
+    definition=scenario()
+    for event in report["transcript"]:
+        if event["action"]!="message":
+            continue
+        event["response_id"]=f"synthetic-response-{event['index']}"
+        request_messages=[
+            {"role":"system","content":"Test instruction"},
+            {"role":"user","content":event["input"]},
+        ]
+        requests.append({
+            "capture_boundary":"ollama.outbound",
+            "route":"generate_interpreted",
+            "payload":{
+                "model":model,"format":"json","stream":False,
+                "messages":request_messages,
+            },
+            "messages":request_messages,
+        })
+        deliveries.append({
+            "type":"reply","turn_id":event["turn_id"],
+            "response_id":event["response_id"],
+            "model_id":model,"text":event["assistant"],"replayed":False,
+        })
+        snapshots.append({
+            "step_index":event["index"],"checkpoint":"after_delivery",
+            "source_turn_id":event["turn_id"],
+            "application":{"turn_trace":{
+                "turn_id":event["turn_id"],
+                "conversation_id":event["conversation_id"],
+                "response_id":event["response_id"],
+                "model_id":model,"response_status":"DELIVERED",
+            }},
+            "database":{
+                "conversation_turns":{
+                    "truncated":False,
+                    "rows":[{
+                        "turn_id":event["turn_id"],
+                        "conversation_id":event["conversation_id"],
+                        "input_text":event["input"],
+                    }],
+                },
+                "conversation_responses":{
+                    "truncated":False,
+                    "rows":[{
+                        "response_id":event["response_id"],
+                        "turn_id":event["turn_id"],
+                        "response_text":event["assistant"],
+                        "model_id":model,"delivery_status":"DELIVERED",
+                    }],
+                },
+            },
+        })
+        for kind in ("response_delivered","no_unapproved_goal"):
+            checks.append({
+                "step_index":event["index"],"check":kind,"pass":True,
+            })
+        if definition["steps"][event["index"]].get("expect_no_new_operations"):
+            checks.append({
+                "step_index":event["index"],
+                "check":"no_new_operations","pass":True,
+            })
     docs={
+        "model_requests.json":requests,
+        "delivery_events.json":deliveries,
+        "state_snapshots.json":snapshots,
+        "review_items.json":report["review_items"],
         "manifest.json":{
             "synthetic_data":True,"model":model,
             "git_sha":"example-commit","started_at":"2026-11-21T10:00:00Z",
@@ -42,7 +114,7 @@ def bundle(tmp_path,*,name="trace.zip",model=MODEL,modify=None):
         "review_items.json":report["review_items"],
         "evaluation.json":{
             "contract_passed":True,"behavioral_checks_passed":True,
-            "behavioral_accepted":None,
+            "behavioral_accepted":None,"checks":checks,
         },
         "errors.json":[],
     }
@@ -132,6 +204,29 @@ def test_missing_digest_disclosed_not_faked(tmp_path):
     result=summarize_target_benchmark(bundle(tmp_path),scenario(),model=MODEL)
     assert result["target_digest"] is None
     assert result["model_digest_recorded"] is False
+
+
+@pytest.mark.parametrize("mutator,reason",[
+    (lambda d:d.pop("model_requests.json"),"unsafe or incomplete"),
+    (lambda d:d["model_requests.json"][0].update(
+        capture_boundary="pre_gateway_unverified"),"unverified target"),
+    (lambda d:d["model_requests.json"][0]["payload"].update(
+        model="mvp03c-fake"),"outbound target"),
+    (lambda d:d["delivery_events.json"][0].update(
+        text="A forged delivery"),"observed reply delivery"),
+    (lambda d:d["state_snapshots.json"][0]["application"]["turn_trace"].update(
+        response_status="GENERATED"),"durable turn trace"),
+    (lambda d:d["state_snapshots.json"][0]["database"]
+            ["conversation_responses"]["rows"][0].update(
+                response_text="Forged SQL output"),"database turns"),
+    (lambda d:d["evaluation.json"].update(checks=[]),"missing required"),
+])
+def test_missing_outbound_delivery_and_sql_evidence_rejected(
+    tmp_path,mutator,reason
+):
+    path=bundle(tmp_path,modify=mutator)
+    with pytest.raises(ValueError,match=reason):
+        summarize_target_benchmark(path,scenario(),model=MODEL)
 
 
 def test_duplicate_zip_members_rejected(tmp_path):
