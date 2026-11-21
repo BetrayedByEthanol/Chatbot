@@ -1,5 +1,8 @@
 """MVP-03B.2 real PostgreSQL contextual ProcedureRun continuity tests."""
 from uuid import uuid4
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
+from dataclasses import replace
 import pytest
 psycopg=pytest.importorskip("psycopg")
 
@@ -7,7 +10,9 @@ from persona_agent.conversation import (
     acknowledge_text_delivery,prepare_text_context,respond_to_text,
     commit_text_response,
 )
-from persona_agent.conversation_contracts import StaleConversation
+from persona_agent.conversation_contracts import (
+    StaleConversation,ProcedureContextFence,
+)
 from persona_agent.conversation_contracts import ModelReply
 from persona_agent.dialogue_contracts import OpenThreadCommand,OfferDialogueActCommand
 from persona_agent.dialogue_state import open_thread,offer_dialogue_act
@@ -267,6 +272,49 @@ def test_overflow_does_not_hide_explicitly_focused_run(dsn):
     prompt,_=context_for(dsn,user,instance,conv,"Where did we leave off?")
     assert str(run_id) in prompt
     assert "Tracked procedure (pinned)" in prompt
+    unrelated,_=context_for(
+        dsn,user,instance,conv,"Continue with the Nginx release notes.",
+    )
+    assert "Tracked procedure (pinned)" not in unrelated
+
+
+def test_two_linked_conversations_commit_without_lock_inversion(dsn):
+    # Explicitly stage reciprocal prior-dialogue dependencies. These are
+    # normally produced when each linked session has a delivered pending
+    # act from the other, but this test isolates commit lock ordering.
+    user,instance,first,run_id,_=setup_run(dsn)
+    second=uuid4()
+    source_a=turn(dsn,user,instance,first,"Please confirm our next step.")
+    source_b=turn(dsn,user,instance,second,"Please confirm our next step.")
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        a=prepare_text_context(conn,actor(user),source_a.turn_id)
+        b=prepare_text_context(conn,actor(user),source_b.turn_id)
+    a=replace(a,procedure_fence=ProcedureContextFence(
+        run_id=run_id,run_version=1,prior_conversation_id=second,
+        prior_conversation_revision=b.conversation_revision,
+    ))
+    b=replace(b,procedure_fence=ProcedureContextFence(
+        run_id=run_id,run_version=1,prior_conversation_id=first,
+        prior_conversation_revision=a.conversation_revision,
+    ))
+    barrier=Barrier(2)
+    def commit(context):
+        with psycopg.connect(dsn,autocommit=True) as conn:
+            barrier.wait(timeout=15)
+            try:
+                return commit_text_response(
+                    conn,actor(user),context,
+                    ModelReply(model_id="test-gateway",text="Next step noted."),
+                )
+            except StaleConversation:
+                return None
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first_result=pool.submit(commit,a)
+        second_result=pool.submit(commit,b)
+        outcome=(first_result.result(timeout=25),second_result.result(timeout=25))
+    # One commit increments the other session's prior revision; the second
+    # must reject as stale, not deadlock or silently commit stale context.
+    assert sum(value is not None for value in outcome)==1
 
 
 def test_prompt_budget_preserves_user_turn(dsn):

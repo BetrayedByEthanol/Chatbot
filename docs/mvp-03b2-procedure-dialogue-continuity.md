@@ -33,3 +33,5 @@ and prompt budgets.
 
 Follow-up: longitudinal conversation tests and improved selective
 relevance, without adding a second Context Builder.
+
+Concurrency: selected run/version and included prior dialogue revision are captured in the response context. The response commit locks both implicated conversations in deterministic UUID order, then the run, and rejects stale changes without publishing a response. Overflow beyond 24 unfinished candidates prioritizes an explicitly linked focused run, otherwise abstains rather than inferring uniqueness from a partial scan. The PostgreSQL suite exercises reciprocal conversation freshness fences and a 26-run overflow case.
