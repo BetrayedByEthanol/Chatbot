@@ -4,7 +4,10 @@ import re
 
 _WORD=re.compile(r"[^\W_]{4,}",re.UNICODE)
 _GOAL=re.compile(r"\b(?:goals?|objectives?|milestones?)\b",re.I)
-_PERSONAL=re.compile(r"\b(?:my|our|current|active|approved)\s+goals?\b",re.I)
+_PERSONAL=re.compile(
+    r"\b(?:my|our)\s+(?:(?:current|active|approved|existing|main|primary)\s+)?goals?\b",
+    re.I,
+)
 _ANAPHORA=re.compile(
     r"^(?:what about (?:that|it|this)|and (?:that|it)|"
     r"(?:can we |let's )?continue(?: with (?:that|it|this))?|"

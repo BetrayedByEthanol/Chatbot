@@ -237,6 +237,14 @@ def test_goal_intent_adjective_is_not_a_generic_reference(dsn):
     assert str(gid) not in prompt
 
 
+def test_unowned_goal_qualifier_does_not_pull_personal_state(dsn):
+    user,instance,conv,gid=setup_goal(dsn)
+    for question in ("What are active goals?","What is an approved goal?"):
+        prompt,_=get_context(dsn,user,instance,conv,question)
+        assert "Approved/delegated Goal state" not in prompt
+        assert str(gid) not in prompt
+
+
 def test_direct_context_builder_is_read_only_and_bounded(dsn):
     user,instance,conv,gid=setup_goal(dsn)
     with psycopg.connect(dsn,autocommit=True) as connection:
