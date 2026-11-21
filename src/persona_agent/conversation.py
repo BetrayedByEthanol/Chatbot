@@ -511,6 +511,26 @@ def prepare_text_context(
                     cursor,actor.user_id,item["instance_id"],
                     min(650,affect_room),
                 )
+            # MVP-03B.1: selectively add relevant approved Goal state and
+            # lower-trust source-linked hypotheses to the existing context.
+            # No LLM inference, domain mutation or action grant occurs here.
+            from .context_intelligence import goal_reflection_context_block
+            goal_room=min(
+                1300,max_context_chars//3,
+                max_context_chars-len(prompt)-len(history[-1].content)-160,
+            )
+            if goal_room>=420:
+                prompt+=goal_reflection_context_block(
+                    cursor,user_id=actor.user_id,
+                    instance_id=item["instance_id"],
+                    conversation_id=item["conversation_id"],
+                    latest_text=history[-1].content,
+                    focus_title=(
+                        active["title"] if item["focus_thread_id"] is not None
+                        and active is not None else None
+                    ),
+                    max_chars=goal_room,
+                )
             # P2-02: Summary eligibility must refer to the oldest message
             # *actually retained* after character budgeting, not the initial
             # SQL LIMIT window. Otherwise older summarized ranges can vanish
