@@ -227,6 +227,16 @@ def test_unique_goal_does_not_mask_specific_unrelated_goal(dsn):
     assert str(gid) not in prompt
 
 
+def test_goal_intent_adjective_is_not_a_generic_reference(dsn):
+    user,instance,conv,gid=setup_goal(dsn)
+    prompt,_=get_context(
+        dsn,user,instance,conv,
+        "My goal is to be more active.",
+    )
+    assert "Approved/delegated Goal state" not in prompt
+    assert str(gid) not in prompt
+
+
 def test_direct_context_builder_is_read_only_and_bounded(dsn):
     user,instance,conv,gid=setup_goal(dsn)
     with psycopg.connect(dsn,autocommit=True) as connection:

@@ -10,7 +10,11 @@ _ANAPHORA=re.compile(
     r"(?:can we |let's )?continue(?: with (?:that|it|this))?|"
     r"tell me more(?: about (?:that|it|this))?)\??[.! ]*$",re.I,
 )
-_GENERIC_GOAL_QUALIFIERS=frozenset({"active","approved","existing","main","primary"})
+# Strip only modifiers directly preceding "goal(s)", not the same words
+# when they describe a proposed objective ("my goal is to be more active").
+_GOAL_MODIFIER=re.compile(
+    r"\b(?:active|approved|existing|main|primary)\s+(?=goals?\b)",re.I,
+)
 _STOP=frozenset({
     "about","again","already","also","another","been","before","could",
     "current","daily","does","doing","from","goal","goals","have","help",
@@ -70,12 +74,13 @@ def _relevant(rows: list[dict],text: str,focus: str | None) -> list[dict]:
     explicit=bool(_GOAL.search(text))
     personal=bool(_PERSONAL.search(text))
     followup=bool(focus and _ANAPHORA.fullmatch(text.strip()))
-    terms=_terms(focus if followup else text)
+    query=focus if followup else text
     if personal:
-        # "my active goal" and "my approved goals" are generic questions,
-        # not matches for a Goal whose topic happens to contain "active".
-        # Keep these terms meaningful for non-personal, topical queries.
-        terms=terms-_GENERIC_GOAL_QUALIFIERS
+        # Remove qualifiers only inside an actual Goal reference.
+        # "my goal is to be more active" retains the word "active"
+        # and cannot select an unrelated root by the generic fallback.
+        query=_GOAL_MODIFIER.sub("",query)
+    terms=_terms(query)
     if not terms and not personal:
         return []
     candidates=[]
