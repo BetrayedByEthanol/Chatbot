@@ -1,0 +1,100 @@
+name: MVP-03C.1 target-model observational benchmark
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/mvp03c1-target-model.yml"
+      - "src/persona_agent/target_model_benchmark.py"
+      - "scripts/benchmark_target_model.py"
+      - "scripts/persona_e2e.py"
+      - "scenarios/mvp03c_natural_dialogue.json"
+  workflow_dispatch:
+
+concurrency:
+  group: mvp03c1-target-cpu-benchmark
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 95
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports: [ "5432:5432" ]
+        options: >-
+          --health-cmd "pg_isready -U postgres -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TARGET_MODEL: qwen2.5:7b
+      PERSONA_E2E_ADMIN_DSN: postgresql://postgres:postgres@127.0.0.1:5432/postgres
+      ACCEPTANCE_OLLAMA_URL: http://127.0.0.1:11434
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install runtime
+        run: python -m pip install -e ".[test]"
+      - name: Run isolated Ollama (CPU; synthetic data only)
+        run: |
+          docker run -d --name mvp03c1-ollama \
+            -p 127.0.0.1:11434:11434 \
+            -e OLLAMA_NUM_PARALLEL=1 \
+            -e OLLAMA_MAX_LOADED_MODELS=1 \
+            ollama/ollama:latest
+          for attempt in $(seq 1 90); do
+            if curl --fail --silent http://127.0.0.1:11434/api/tags >/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs --tail 50 mvp03c1-ollama
+          exit 1
+      - name: Pull target model and record exact digest
+        run: |
+          docker exec mvp03c1-ollama ollama pull "$TARGET_MODEL"
+          mkdir -p artifacts/mvp03c1-private
+          curl --fail --silent --show-error \
+            http://127.0.0.1:11434/api/tags \
+            > artifacts/mvp03c1-private/ollama-tags.json
+      - name: Run real 3-session target-model scenario in disposable PostgreSQL
+        run: |
+          python scripts/persona_e2e.py \
+            --admin-dsn "$PERSONA_E2E_ADMIN_DSN" \
+            --model "$TARGET_MODEL" \
+            --ollama-url "$ACCEPTANCE_OLLAMA_URL" \
+            --scenario scenarios/mvp03c_natural_dialogue.json \
+            --report artifacts/mvp03c1-private/target-trace.zip
+      - name: Summarize source-free timings, model and pending review
+        run: |
+          python scripts/benchmark_target_model.py \
+            --bundle artifacts/mvp03c1-private/target-trace.zip \
+            --scenario scenarios/mvp03c_natural_dialogue.json \
+            --model "$TARGET_MODEL" \
+            --ollama-tags artifacts/mvp03c1-private/ollama-tags.json \
+            --out artifacts/mvp03c1-summary.json
+      - name: Publish safe numerical summary ONLY
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mvp03c1-target-summary
+          path: artifacts/mvp03c1-summary.json
+          retention-days: 7
+          if-no-files-found: error
+      - name: Ollama infrastructure diagnostics (no model text)
+        if: failure()
+        run: docker inspect mvp03c1-ollama --format '{{.State.Status}} {{.State.ExitCode}}' || true
+
+# The raw ZIP, complete prompt text, reviewer packets and human scorecards are
+# NEVER uploaded: this is a public repository. Run the same CLI locally with
+# a private Ollama/PostgreSQL environment for independent human review.
