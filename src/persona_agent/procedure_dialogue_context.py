@@ -11,7 +11,8 @@ from uuid import UUID
 _WORD=re.compile(r"[^\W_]{4,}",re.UNICODE)
 _CONTINUE=re.compile(
     r"\b(?:resume|continu(?:e|ing)|pick up|carry on|where (?:were we|did we "
-    r"(?:leave off|stop))|next|previous step|current step|procedure|"
+    r"(?:leave off|stop))|next (?:step|instruction)|"
+    r"what (?:should|do) (?:i|we) do next|previous step|current step|procedure|"
     r"workflow|guided run|setup progress|setup step)\b",re.I,
 )
 _PERSONAL_PROCEDURE=re.compile(
@@ -23,6 +24,7 @@ _STOP=frozenset({
     "can","could","current","did","does","doing","from","have","help",
     "here","into","last","left","more","next","our","please","previous",
     "procedure","procedures","progress","resume","resumed","resuming",
+    "continue","continuing","carry","pick",
     "run","runs","setup","should","step","steps","that","the","their",
     "then","there","these","this","those","through","today","want",
     "were","what","when","where","which","with","work","workflow",

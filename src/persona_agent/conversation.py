@@ -531,6 +531,22 @@ def prepare_text_context(
                     ),
                     max_chars=goal_room,
                 )
+            # MVP-03B.2: selectively recover unfinished ProcedureRun and
+            # linked discussion progress. No authority or status mutation.
+            from .procedure_dialogue_context import procedure_dialogue_context_block
+            procedure_room=min(
+                1200,max_context_chars//3,
+                max_context_chars-len(prompt)-len(history[-1].content)-160,
+            )
+            if procedure_room>=450:
+                prompt+=procedure_dialogue_context_block(
+                    cursor,user_id=actor.user_id,
+                    instance_id=item["instance_id"],
+                    conversation_id=item["conversation_id"],
+                    focus_thread_id=item["focus_thread_id"],
+                    latest_text=history[-1].content,
+                    max_chars=procedure_room,
+                )
             # P2-02: Summary eligibility must refer to the oldest message
             # *actually retained* after character budgeting, not the initial
             # SQL LIMIT window. Otherwise older summarized ranges can vanish
