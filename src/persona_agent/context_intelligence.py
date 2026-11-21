@@ -88,7 +88,7 @@ def _relevant(rows: list[dict],text: str,focus: str | None) -> list[dict]:
     roots=[row for row in rows if row["parent_goal_id"] is None]
     if personal and not terms and re.search(r"\bgoals\b",text,re.I):
         return roots[:2]
-    if personal and len(roots)==1:
+    if personal and not terms and len(roots)==1:
         return roots
     return []
 
@@ -135,8 +135,13 @@ def goal_reflection_context_block(
             "parent":str(goal["parent_goal_id"]) if goal["parent_goal_id"] else None,
             "authority":goal["creation_authority"],"status":"ACTIVE",
             "title":goal["title"][:100],
-            "desired":goal["desired_outcome"][:180],
-            "criterion":goal["success_criterion"][:150],
+            "desired_excerpt":goal["desired_outcome"][:180],
+            "criterion_excerpt":goal["success_criterion"][:150],
+            "abridged":(
+                len(goal["title"])>100
+                or len(goal["desired_outcome"])>180
+                or len(goal["success_criterion"])>150
+            ),
         }
         if add(_line("Approved/delegated Goal state: ",data)):
             included.append(goal)

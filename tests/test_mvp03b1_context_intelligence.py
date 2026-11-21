@@ -199,6 +199,16 @@ def test_paused_goal_not_reintroduced_as_active(dsn):
     assert "Approved/delegated Goal state" not in prompt
 
 
+def test_unique_goal_does_not_mask_specific_unrelated_goal(dsn):
+    user,instance,conv,gid=setup_goal(dsn)
+    prompt,_=get_context(
+        dsn,user,instance,conv,
+        "Please check my goal to learn guitar.",
+    )
+    assert "Approved/delegated Goal state" not in prompt
+    assert str(gid) not in prompt
+
+
 def test_direct_context_builder_is_read_only_and_bounded(dsn):
     user,instance,conv,gid=setup_goal(dsn)
     with psycopg.connect(dsn,autocommit=True) as connection:
