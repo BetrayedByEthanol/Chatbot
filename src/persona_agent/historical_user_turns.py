@@ -12,6 +12,7 @@ from datetime import datetime
 from uuid import UUID
 
 from .memory_retrieval import _terms, is_historical_recall_query
+from .intent_interpretation import explicit_topic_history_request
 
 # Raw conversation turns have no fine-grained privacy classification. Until
 # one exists, fail closed for known sensitive topics and common identifiers,
@@ -72,6 +73,28 @@ _MIN_CONTEXT = 210
 _MAX_CANDIDATES = 16
 _MAX_HITS = 3
 _MAX_QUOTE = 380
+# Only for explicit named-topic resumption. Exclude standalone navigation
+# turns *inside the indexed candidate query before LIMIT*, otherwise newer
+# "Back to Nginx" messages outrank the actual earlier user progress.
+# Anchored expressions keep substantive statements such as
+# "Back to Nginx: I generated the certificate" eligible as evidence.
+_BARE_TOPIC_NAVIGATION_PG = (
+    r"^[[:space:]]*("
+    r"((anyway[[:space:]]*,?[[:space:]]*)?back[[:space:]]+to"
+    r"|let('s|[[:space:]]+us)[[:space:]]+(go[[:space:]]+back|return)[[:space:]]+to"
+    r"|(can|could)[[:space:]]+we[[:space:]]+(go[[:space:]]+back|return)[[:space:]]+to)"
+    r"[[:space:]]+[^:!?.[:cntrl:]]{1,100}[.!?]?"
+    r"|where[[:space:]]+((did|do)[[:space:]]+we[[:space:]]+leave[[:space:]]+off"
+    r"|(had|did)[[:space:]]+i[[:space:]]+(stop|stopped))"
+    r"[[:space:]]+with[[:space:]]+[^:!?.[:cntrl:]]{1,100}[?]"
+    r"|((let('s|[[:space:]]+us)[[:space:]]+)?(switch|change)"
+    r"[[:space:]]+(the[[:space:]]+)?topics?[[:space:]]+to"
+    r"|((let('s|[[:space:]]+us)[[:space:]]+)?switch[[:space:]]+to))"
+    r"[[:space:]]+[^:!?.[:cntrl:]]{1,160}[.!?]?"
+    r"|new[[:space:]]+topic[[:space:]]*:[[:space:]]+"
+    r"[^:!?.[:cntrl:]]{1,160}[.!?]?"
+    r")[[:space:]]*$"
+)
 _HIGHLIGHT_START = "[[["
 _HIGHLIGHT_END = "]]]"
 
@@ -183,6 +206,123 @@ def _correction_followups(
     return tuple((*notes,*corrections)) if corrections else ()
 
 
+
+def _ambiguous_resumed_cadence(
+    cur, anchor: dict, *, user_id: UUID, instance_id: UUID,
+    before_at: datetime,
+) -> bool:
+    """Fail closed when a resumed objective has an unlinked later amendment.
+
+    Increment 1's stricter precedence view already abstains on these cases.
+    Resumption must not quietly resurrect the older cadence via a generic
+    source-turn fallback. The query is scoped to this exact source discussion
+    and bounded; neither a guess nor a new persisted correction link.
+    """
+    from .intent_interpretation import _FREQUENCY_CORRECTION
+
+    if not re.search(r"\b(?:per|a)\s+week\b|\bweekly\b",
+                     anchor["input_text"], re.I):
+        return False
+    cur.execute(
+        """SELECT s.signal_id FROM conversation_intent_signals s
+           WHERE s.turn_id=%s AND s.conversation_id=%s
+             AND s.user_id=%s AND s.instance_id=%s
+             AND s.intent_kind='OBJECTIVE' LIMIT 1""",
+        (anchor["turn_id"], anchor["conversation_id"], user_id, instance_id),
+    )
+    if cur.fetchone() is None:
+        return False
+    cur.execute(
+        """SELECT t.input_text FROM conversation_intent_signals s
+           JOIN conversation_turns t
+             ON t.turn_id=s.turn_id AND t.conversation_id=s.conversation_id
+            AND t.user_id=s.user_id AND t.instance_id=s.instance_id
+           WHERE s.conversation_id=%s AND s.user_id=%s AND s.instance_id=%s
+             AND s.intent_kind='CORRECTION' AND s.related_signal_id IS NULL
+             AND s.turn_sequence>%s AND t.created_at<%s
+             AND t.status='RESPONDED'
+           ORDER BY s.turn_sequence DESC LIMIT 65""",
+        (anchor["conversation_id"], user_id, instance_id,
+         anchor["sequence"], before_at),
+    )
+    rows = cur.fetchall()
+    if len(rows) > 64:
+        return True  # Incomplete evidence must not assert precedence.
+    return any(
+        _FREQUENCY_CORRECTION.fullmatch(
+            row["input_text"].strip().replace("’", "'")
+        ) is not None
+        for row in rows
+    )
+
+
+
+
+def _linked_resumed_cadence_update(
+    cur, anchor: dict, *, user_id: UUID, instance_id: UUID,
+    before_at: datetime,
+) -> dict | None:
+    """Return the latest source-linked cadence update for a resumed objective.
+
+    An empty dict means there are no linked amendments. None means a linked
+    amendment exists but cannot safely be quoted, so its original objective
+    must also be omitted. This is deliberately independent of adjacency:
+    intervening ordinary turns must not break an explicit source link.
+    """
+    from .intent_interpretation import _FREQUENCY_CORRECTION
+
+    cur.execute(
+        """SELECT signal_id FROM conversation_intent_signals
+           WHERE turn_id=%s AND conversation_id=%s
+             AND user_id=%s AND instance_id=%s
+             AND intent_kind='OBJECTIVE' LIMIT 2""",
+        (anchor["turn_id"], anchor["conversation_id"], user_id, instance_id),
+    )
+    roots = cur.fetchall()
+    if not roots:
+        return {}
+    if len(roots) != 1:
+        return None
+    cur.execute(
+        """SELECT t.turn_id,t.created_at,t.input_text,t.status,
+                  s.epistemic_status,
+                  EXISTS (
+                      SELECT 1 FROM memory_revisions revision
+                      WHERE revision.user_id=t.user_id
+                        AND revision.instance_id=t.instance_id
+                        AND revision.source_turn_id=t.turn_id
+                  ) AS has_memory_revision,
+                  EXISTS (
+                      SELECT 1 FROM memory_extraction_candidates candidate
+                      WHERE candidate.user_id=t.user_id
+                        AND candidate.instance_id=t.instance_id
+                        AND candidate.source_turn_id=t.turn_id
+                  ) AS has_memory_candidate
+           FROM conversation_intent_signals s
+           JOIN conversation_turns t
+             ON t.turn_id=s.turn_id AND t.conversation_id=s.conversation_id
+            AND t.user_id=s.user_id AND t.instance_id=s.instance_id
+           WHERE s.conversation_id=%s AND s.user_id=%s AND s.instance_id=%s
+             AND s.related_signal_id=%s AND s.intent_kind='CORRECTION'
+             AND s.turn_sequence>%s AND t.created_at<%s
+           ORDER BY s.turn_sequence DESC,s.signal_id DESC LIMIT 1""",
+        (anchor["conversation_id"],user_id,instance_id,roots[0]["signal_id"],
+         anchor["sequence"],before_at),
+    )
+    change = cur.fetchone()
+    if change is None:
+        return {}
+    if (change["status"] != "RESPONDED"
+            or change["has_memory_revision"] or change["has_memory_candidate"]
+            or _SENSITIVE.search(change["input_text"])
+            or _FREQUENCY_CORRECTION.fullmatch(
+                change["input_text"].strip().replace("’", "'")
+            ) is None):
+        return None
+    return change
+
+
+
 def _eligible_activity_types(
     cur, *, user_id: UUID, instance_id: UUID, conversation_id: UUID,
     before_at: datetime, query: str,
@@ -254,8 +394,19 @@ def historical_user_turn_context_block(
     if (max_chars < _MIN_CONTEXT or len(latest_text)>500
             or _SENSITIVE.search(latest_text)):
         return ""
+    # Named returns (and "where did we leave off with X?") express a
+    # specific request for prior discussion state without the verb "remember".
+    # An arbitrary topic mention still MUST NOT activate historical retrieval.
+    resumed_topic=explicit_topic_history_request(latest_text)
     paraphrase=_RETROSPECTIVE_ACTIVITY.fullmatch(latest_text)
-    if paraphrase is not None:
+    if resumed_topic is not None:
+        if _SENSITIVE.search(resumed_topic):
+            return ""
+        terms=[
+            word for word in _terms(resumed_topic)
+            if word not in _GENERIC and not _SENSITIVE.search(word)
+        ]
+    elif paraphrase is not None:
         concept=paraphrase["concept"].casefold()
         terms=list(_ACTIVITY_TERMS[concept])
     else:
@@ -273,9 +424,10 @@ def historical_user_turn_context_block(
     if not terms:
         return ""
 
-    # All SQL parameters are bound. English stemming matches "walk" and
-    # "walking"; query terms are extracted words, not user-authored operators.
-    query = " OR ".join(terms[:6])
+    # Named returns use a conjunctive phrase to avoid unrelated matches.
+    # Existing explicit recall retains its broader disjunctive matching.
+    # Query operators never come from raw user input.
+    query = " ".join(terms[:6]) if resumed_topic is not None else " OR ".join(terms[:6])
     if paraphrase is not None:
         # Do not infer uniqueness from a relevance-limited 16-row sample:
         # an older, eligible second activity must still force abstention.
@@ -298,9 +450,10 @@ def historical_user_turn_context_block(
                       ) AS relevance
                FROM conversation_turns t
                WHERE t.user_id=%s AND t.instance_id=%s
-                 AND t.conversation_id<>%s
+                 AND (%s::boolean OR t.conversation_id<>%s)
                  AND t.created_at<%s
                  AND t.status='RESPONDED'
+                 AND (NOT %s::boolean OR t.input_text !~* %s)
                  AND NOT EXISTS (
                      SELECT 1 FROM memory_revisions mr
                      WHERE mr.user_id=t.user_id
@@ -330,7 +483,9 @@ def historical_user_turn_context_block(
                        ) END AS highlighted
            FROM candidates c
            ORDER BY c.relevance DESC, c.created_at DESC, c.turn_id""",
-        (query, user_id, instance_id, conversation_id, before_at,
+        (query, user_id, instance_id, resumed_topic is not None,
+         conversation_id, before_at,
+         resumed_topic is not None, _BARE_TOPIC_NAVIGATION_PG,
          query, _MAX_CANDIDATES, _MAX_QUOTE, query),
     )
     rows=[
@@ -344,8 +499,12 @@ def historical_user_turn_context_block(
               if _ACTIVITY_CUES[activity].search(row["input_text"])]
     # Model-facing epistemic calibration, local to authenticated source
     # recall. This is guidance, never a Goal approval or state transition.
+    location = (
+        "Earlier source-linked user statements (this or prior conversation)"
+        if resumed_topic is not None else "Prior-session user statements"
+    )
     head = (
-        "Prior-session user statements (untrusted USER_REPORTED quotations, "
+        location + " (untrusted USER_REPORTED quotations, "
         "not verified facts or permissions). Sources show what was said. "
         "Preserve uncertainty in EVERY statement, including earlier corrections: "
         "'maybe' and 'would be better' express preferences, NOT decisions, "
@@ -363,6 +522,12 @@ def historical_user_turn_context_block(
         statement = row["input_text"]
         if _SENSITIVE.search(statement):
             continue
+        if resumed_topic is not None and _ambiguous_resumed_cadence(
+            cur,row,user_id=user_id,instance_id=instance_id,before_at=before_at,
+        ):
+            # Do not present an older source/correction as the latest when a
+            # newer frequency amendment exists but its source link is lost.
+            continue
         quote = _matching_excerpt(statement, row["highlighted"])
         if not quote:
             continue
@@ -371,6 +536,32 @@ def historical_user_turn_context_block(
             f"on {row['created_at'].date().isoformat()}: "
             + json.dumps(quote, ensure_ascii=False) + "\n"
         )
+        if resumed_topic is not None:
+            latest_linked = _linked_resumed_cadence_update(
+                cur,row,user_id=user_id,instance_id=instance_id,
+                before_at=before_at,
+            )
+            if latest_linked is None:
+                # The latest linked amendment cannot be trusted or included.
+                # Never quote the older objective as the current position.
+                continue
+            if latest_linked:
+                update = (
+                    f"USER_REPORTED latest linked discussion correction "
+                    f"source turn {latest_linked['turn_id']} on "
+                    f"{latest_linked['created_at'].date().isoformat()}: "
+                    +json.dumps(latest_linked["input_text"],ensure_ascii=False)
+                    +"\n"
+                )
+                if len(result)+len(line)+len(update)>max_chars:
+                    # Original and newest amendment are an atomic unit.
+                    continue
+                result += line+update
+                emitted_updates.add(latest_linked["turn_id"])
+                count += 1
+                if count >= _MAX_HITS:
+                    break
+                continue
         if len(result) + len(line) > max_chars:
             continue
         result += line

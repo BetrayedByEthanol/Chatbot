@@ -47,20 +47,84 @@ _NAMED_GOAL_REFERENCE = re.compile(
 # MVP-01C: a bounded, explicit conversational topic switch is a REQUEST,
 # not an instruction to execute tools or a user-authorized goal.
 _EXPLICIT_TOPIC_SWITCH = re.compile(
-    r"^(?:(?:switch|change)\s+(?:the\s+)?topic\s+to\s+"
+    r"^(?:(?:let(?:'s| us)\s+)?(?:switch|change)\s+(?:the\s+)?topics?\s+to\s+"
+    r"|(?:let(?:'s| us)\s+)?switch\s+to\s+"
     r"|new\s+topic\s*:\s*)"
     r"(?P<topic>[^\r\n.!?]{1,160})\s*[.!]?$",
+    re.I,
+)
+# Only named, explicit return requests qualify. A colon-delimited question
+# is conversational context, not part of the topic title.
+_EXPLICIT_TOPIC_RETURN = re.compile(
+    r"^(?:(?:anyway\s*,?\s*)?back\s+to\s+"
+    r"|let(?:'s| us)\s+(?:go\s+back|return)\s+to\s+"
+    r"|(?:can|could)\s+we\s+(?:go\s+back|return)\s+to\s+)"
+    r"(?P<topic>[^\r\n:!?.]{1,100}?)"
+    r"(?:\s*:\s*[^\r\n]{1,120})?\s*[.?!]?$",
+    re.I,
+)
+# Pronouns/deictic phrases refer to the focused topic, not a new named
+# discussion. Leave them to existing anaphoric conversation/memory handling.
+_ANAPHORIC_TOPIC_NAME = re.compile(
+    r"^(?:it|this|that|them|those|these|there|"
+    r"(?:(?:the|that|this|our|my|your|previous|earlier|last|same)\s+)"
+    r"(?:topic|discussion|subject|conversation|one|plan|goal|thing)|"
+    r"(?:the|our)\s+(?:previous|last|same)\s+"
+    r"(?:topic|discussion|subject|conversation)|"
+    r"what\s+we\s+were\s+(?:discussing|talking\s+about)|"
+    r"where\s+we\s+left\s+off)$",
+    re.I,
+)
+
+
+def _named_topic_or_none(topic: str) -> str | None:
+    value = topic.strip()
+    if not value or _ANAPHORIC_TOPIC_NAME.fullmatch(value):
+        return None
+    return value
+
+
+def is_anaphoric_topic_return(text: str) -> bool:
+    """Return requests resolved by existing focused-dialogue anaphora logic."""
+    match = _EXPLICIT_TOPIC_RETURN.fullmatch(text.strip().replace("’", "'"))
+    return bool(
+        match and _ANAPHORIC_TOPIC_NAME.fullmatch(match.group("topic").strip())
+    )
+
+
+_TOPIC_PROGRESS_RECALL = re.compile(
+    r"^where\s+(?:(?:did|do)\s+we\s+leave\s+off"
+    r"|(?:had|did)\s+i\s+(?:stop|stopped))\s+with\s+"
+    r"(?P<topic>[^\r\n.!?]{1,100})\s*\?\s*$",
     re.I,
 )
 
 
 def parse_explicit_topic_switch(text: str) -> str | None:
-    """Return a stated topic, not an inferred topic or execution command."""
-    match = _EXPLICIT_TOPIC_SWITCH.fullmatch(text.strip())
+    """A clear named topic switch, not a hypothetical or permission to act."""
+    match = _EXPLICIT_TOPIC_SWITCH.fullmatch(text.strip().replace("’", "'"))
     if match is None:
         return None
-    topic = match.group("topic").strip()
-    return topic if topic else None
+    return _named_topic_or_none(match.group("topic"))
+
+
+def parse_explicit_topic_return(text: str) -> str | None:
+    """A named return; no claim that an earlier topic was found or resumed."""
+    match = _EXPLICIT_TOPIC_RETURN.fullmatch(text.strip().replace("’", "'"))
+    if match is None:
+        return None
+    return _named_topic_or_none(match.group("topic"))
+
+
+def explicit_topic_history_request(text: str) -> str | None:
+    """Named retrieval cues only; ordinary topic mentions never search history."""
+    named = parse_explicit_topic_return(text)
+    if named is not None:
+        return named
+    match = _TOPIC_PROGRESS_RECALL.fullmatch(text.strip().replace("’", "'"))
+    if match is None:
+        return None
+    return _named_topic_or_none(match.group("topic"))
 
 
 @dataclass(frozen=True)
@@ -88,7 +152,8 @@ def classify_intent(text: str) -> IntentDraft | None:
             kind, label, confidence = "OBJECTIVE", subject, .88
     elif _FREQUENCY_NOTE.fullmatch(value):
         kind, label, confidence = "OBSERVATION", original, .80
-    elif parse_explicit_topic_switch(value) is not None:
+    elif (parse_explicit_topic_switch(value) is not None
+          or parse_explicit_topic_return(value) is not None):
         # Keep the exact user wording as source evidence. Dialogue routing
         # extracts the named subject only after the REQUEST signal is stored.
         kind, label, confidence = "REQUEST", original, .95
@@ -226,6 +291,12 @@ def _related_objective(cur, user_id, instance_id, conversation_id, sequence, dra
             return named
         if _NAMED_GOAL_REFERENCE.fullmatch(text.strip().replace("’","'")):
             # Named references must not fall back to a different unnamed goal.
+            return None
+        if (parse_explicit_topic_switch(text) is not None
+                or explicit_topic_history_request(text) is not None):
+            # The explicit subject wins over generic words in its follow-up
+            # (e.g. "Back to Nginx: what's the next step?"). Never attach it
+            # to an unrelated recent OBJECTIVE via _REFERENCE.
             return None
     if draft.kind=="CORRECTION" and _FREQUENCY_CORRECTION.fullmatch(text.strip()):
         return _unique_active_objective(
