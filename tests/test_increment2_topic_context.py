@@ -245,3 +245,32 @@ def test_named_return_carries_source_linked_walking_correction(dsn):
             "SELECT count(*) FROM goal_records WHERE user_id=%s AND instance_id=%s",
             (h.identity.user_id, h.identity.instance_id),
         ).fetchone()[0] == 0
+
+
+def test_resumed_topic_abstains_on_late_unlinked_frequency_revision(dsn):
+    h, model = host(dsn)
+    original = "I want to walk three times a week."
+    first_correction = "Actually, twice a week is more realistic."
+    latest_correction = "Actually, once per week would be better."
+    h.send(original, idempotency_key="original")
+    h.send(first_correction, idempotency_key="linked")
+    for index in range(3, 10):
+        h.send(
+            f"An unrelated thought about colors number {index}.",
+            idempotency_key=f"filler-{index}",
+        )
+    latest = h.send(latest_correction, idempotency_key="unlinked")
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        signal = conn.execute(
+            """SELECT related_signal_id,turn_sequence FROM conversation_intent_signals
+               WHERE turn_id=%s""",
+            (latest.turn_id,),
+        ).fetchone()
+        assert signal == (None, 10)
+    h.begin_session("later")
+    h.send("Back to walking.", idempotency_key="return")
+    system = prompt(model)
+    assert "Earlier source-linked user statements" not in system
+    assert original not in system
+    assert first_correction not in system
+    assert latest_correction not in system
