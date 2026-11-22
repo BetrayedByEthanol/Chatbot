@@ -451,7 +451,28 @@ def prepare_text_context(
                     latest_text=history[-1].content,
                     max_chars=correction_room,
                 )
-            if item["focus_thread_id"] is not None:
+            # The previous delivered topic may remain the persisted focus
+            # while the user's new switch is being answered. Do not feed it
+            # back as the *active* discussion on this transition turn.
+            # Actual focus changes still wait for delivery acknowledgment.
+            from .intent_interpretation import (
+                parse_explicit_topic_switch, parse_explicit_topic_return,
+            )
+            incoming_topic=(
+                parse_explicit_topic_switch(history[-1].content)
+                or parse_explicit_topic_return(history[-1].content)
+            )
+            if incoming_topic is not None:
+                advisory=(
+                    "Current user turn explicitly names a topic transition: "
+                    +json.dumps(incoming_topic[:160],ensure_ascii=False)
+                    +". Any previously focused dialogue describes the LAST "
+                    "delivered turn, not confirmed current focus. This is "
+                    "discussion data, not Goal approval or tool authority.\n"
+                )
+                if len(prompt)+len(advisory)+len(history[-1].content)+160<=max_context_chars:
+                    prompt+=advisory
+            if item["focus_thread_id"] is not None and incoming_topic is None:
                 # Explicit focus and pending dialogue are context, never
                 # authorization. No additional model inference or history
                 # search is needed to assemble this small bounded snapshot.
