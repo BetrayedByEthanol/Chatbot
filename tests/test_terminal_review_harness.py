@@ -223,3 +223,20 @@ def test_keep_db_for_wrapper_export_after_publication(tmp_path, monkeypatch):
     assert code == 0
     assert marker.read_text() == "PUBLISHED\n"
     assert dropped == []
+
+
+@pytest.mark.parametrize("abbreviation,argument", [
+    ("--admin-d", "postgresql://localhost/external"),
+    ("--keep", None),
+    ("--publication-status", "external.status"),
+])
+def test_direct_runner_rejects_abbreviated_control_options(abbreviation, argument):
+    """Defense in depth: even direct Python calls cannot abbreviate DB controls."""
+    from terminal_review_harness import main
+
+    argv = ["human", "--admin-dsn", "maintenance", abbreviation]
+    if argument is not None:
+        argv.append(argument)
+    with pytest.raises(SystemExit) as exc:
+        main(argv)
+    assert exc.value.code == 2
