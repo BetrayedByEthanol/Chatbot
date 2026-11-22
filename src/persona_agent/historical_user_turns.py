@@ -379,6 +379,106 @@ def _eligible_activity_types(
     return found
 
 
+
+# Scoped, source-first support for an *informal* step-by-step discussion.
+# These are not ProcedureRun state transitions; tracked runs are projected
+# separately by procedure_dialogue_context.py.
+_FOCUSED_NEXT_STEP = re.compile(
+    r"^(?:what(?:'s| is) (?:my|the) next step|"
+    r"what (?:should|do) i do next|"
+    r"can we continue(?: (?:from|with) (?:the )?(?:next )?step)?|"
+    r"where (?:were we|did we leave off))\s*[?.!]?$",
+    re.I,
+)
+_USER_PROGRESS_PG = (
+    r"^[[:space:]]*(actually[[:space:]]*,?[[:space:]]*)?i[[:space:]]+"
+    r"((have|had|already|just|recently)[[:space:]]+)?"
+    r"(generated|created|installed|configured|tested|completed|finished|"
+    r"updated|added|built|ran|tried|attempted|"
+    r"haven't[[:space:]]+installed|have[[:space:]]+not[[:space:]]+installed)"
+    r"[[:>:]]"
+)
+
+
+def focused_procedure_discussion_context_block(
+    cur, *, user_id: UUID, instance_id: UUID, conversation_id: UUID,
+    before_at: datetime, latest_text: str, focus_title: str,
+    max_chars: int,
+) -> str:
+    """Quote relevant earlier user-reported steps when a focused topic resumes.
+
+    The Dialogue focus is already scoped/owned by Conversation. This view
+    never invents or advances ProcedureRun progress. It never promotes a
+    source quote to verified completion or to a tool authorization.
+    """
+    if (max_chars < 340 or max_chars > 1200
+            or not 1 <= len(focus_title) <= 160
+            or len(latest_text) > 160 or _SENSITIVE.search(latest_text)
+            or _SENSITIVE.search(focus_title)
+            or _FOCUSED_NEXT_STEP.fullmatch(
+                latest_text.strip().replace("’", "'")
+            ) is None):
+        return ""
+    terms = [
+        word for word in _terms(focus_title)
+        if word not in _GENERIC and not _SENSITIVE.search(word)
+    ]
+    if not terms or len(terms) > 6:
+        return ""
+    query = " ".join(terms)
+    cur.execute(
+        """SELECT t.turn_id,t.created_at,t.input_text
+           FROM conversation_turns t
+           WHERE t.user_id=%s AND t.instance_id=%s AND t.created_at<%s
+             AND t.status='RESPONDED'
+             AND t.input_text ~* %s
+             AND t.input_text !~* %s
+             AND NOT EXISTS (
+                 SELECT 1 FROM memory_revisions revision
+                 WHERE revision.user_id=t.user_id
+                   AND revision.instance_id=t.instance_id
+                   AND revision.source_turn_id=t.turn_id
+             )
+             AND NOT EXISTS (
+                 SELECT 1 FROM memory_extraction_candidates candidate
+                 WHERE candidate.user_id=t.user_id
+                   AND candidate.instance_id=t.instance_id
+                   AND candidate.source_turn_id=t.turn_id
+             )
+             AND to_tsvector('english',t.input_text)
+                 @@ plainto_tsquery('english',%s)
+           ORDER BY t.created_at DESC,t.turn_id DESC LIMIT 4""",
+        (user_id,instance_id,before_at,
+         _USER_PROGRESS_PG,_BARE_TOPIC_NAVIGATION_PG,query),
+    )
+    rows = [r for r in cur.fetchall() if not _SENSITIVE.search(r["input_text"])]
+    if not rows:
+        return ""
+    header = (
+        "Earlier user-reported procedure DISCUSSION (source-linked, "
+        "NOT a tracked ProcedureRun, verified completion, or permission "
+        "to execute tools). The quotes describe what the user reported, "
+        "not independently confirmed results. Prefer the newest report, "
+        "acknowledge uncertainties, and clarify progress when necessary:\n"
+    )
+    if len(header) + 110 > max_chars:
+        return ""
+    output = header
+    # Emit recent changes in chronological order; maintain the most recent
+    # evidence even if the budget cannot fit older history.
+    selected = []
+    for row in rows[:3]:
+        line = (
+            f"USER_REPORTED procedure discussion source turn {row['turn_id']} "
+            f"on {row['created_at'].date().isoformat()}: "
+            + json.dumps(row["input_text"][:240],ensure_ascii=False) + "\n"
+        )
+        if len(output) + sum(map(len,selected)) + len(line) <= max_chars:
+            selected.insert(0,line)
+    return output + "".join(selected) if selected else ""
+
+
+
 def historical_user_turn_context_block(
     cur, *, user_id: UUID, instance_id: UUID,
     conversation_id: UUID, before_at: datetime,
