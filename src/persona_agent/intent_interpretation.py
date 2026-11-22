@@ -390,7 +390,19 @@ def correction_precedence_context_block(
     cur.execute(
         """SELECT source.signal_id,source.conversation_id,
                   source.turn_sequence,source.epistemic_status,
-                  original.turn_id,original.input_text,original.created_at
+                  original.turn_id,original.input_text,original.created_at,
+                  EXISTS (
+                      SELECT 1 FROM memory_revisions revision
+                      WHERE revision.user_id=original.user_id
+                        AND revision.instance_id=original.instance_id
+                        AND revision.source_turn_id=original.turn_id
+                  ) AS has_memory_revision,
+                  EXISTS (
+                      SELECT 1 FROM memory_extraction_candidates candidate
+                      WHERE candidate.user_id=original.user_id
+                        AND candidate.instance_id=original.instance_id
+                        AND candidate.source_turn_id=original.turn_id
+                  ) AS has_memory_candidate
            FROM conversation_intent_signals source
            JOIN conversation_turns original
              ON original.turn_id=source.turn_id
@@ -407,7 +419,13 @@ def correction_precedence_context_block(
         (user_id, instance_id, before_at, topic),
     )
     roots = cur.fetchall()
-    if len(roots) != 1 or _SENSITIVE.search(roots[0]["input_text"]):
+    # A turn represented in Memory's revision/candidate workflow must not
+    # be independently resurfaced as current by Conversation retrieval.
+    # Check all possible roots *before* selecting one.
+    if (len(roots) != 1
+            or roots[0]["has_memory_revision"]
+            or roots[0]["has_memory_candidate"]
+            or _SENSITIVE.search(roots[0]["input_text"])):
         return ""
     root = roots[0]
     # Latest related CORRECTION controls this source chain. If that change
@@ -415,7 +433,19 @@ def correction_precedence_context_block(
     # cadence and must not resurrect an older frequency.
     cur.execute(
         """SELECT change.turn_id,change.input_text,change.created_at,
-                  signal.epistemic_status
+                  signal.epistemic_status,
+                  EXISTS (
+                      SELECT 1 FROM memory_revisions revision
+                      WHERE revision.user_id=change.user_id
+                        AND revision.instance_id=change.instance_id
+                        AND revision.source_turn_id=change.turn_id
+                  ) AS has_memory_revision,
+                  EXISTS (
+                      SELECT 1 FROM memory_extraction_candidates candidate
+                      WHERE candidate.user_id=change.user_id
+                        AND candidate.instance_id=change.instance_id
+                        AND candidate.source_turn_id=change.turn_id
+                  ) AS has_memory_candidate
            FROM conversation_intent_signals signal
            JOIN conversation_turns change
              ON change.turn_id=signal.turn_id
@@ -434,7 +464,10 @@ def correction_precedence_context_block(
          root["turn_sequence"], before_at),
     )
     correction = cur.fetchone()
-    if (correction is None or _SENSITIVE.search(correction["input_text"])
+    if (correction is None
+            or correction["has_memory_revision"]
+            or correction["has_memory_candidate"]
+            or _SENSITIVE.search(correction["input_text"])
             or _FREQUENCY_CORRECTION.fullmatch(
                 correction["input_text"].strip().replace("’", "'")
             ) is None):
