@@ -398,6 +398,19 @@ _USER_PROGRESS_PG = (
     r"haven't[[:space:]]+installed|have[[:space:]]+not[[:space:]]+installed)"
     r"[[:>:]]"
 )
+# A newer removal, failure, or explicit correction can supersede earlier
+# success even when it is NOT phrased as "I installed/configured ...".
+# Do not narrow history to success/attempt verbs before ordering evidence.
+# The topic FTS match still applies to every candidate. This is source
+# evidence, never a verified state transition or permission to execute.
+_TOPIC_PROGRESS_REVISION_PG = (
+    r"(^[[:space:]]*(actually[[:space:]]*,?|correction[[:space:]]*[:,-]|"
+    r"update[[:space:]]*:|wait[[:space:]]*[,,:]))"
+    r"|[[:<:]](removed|reverted|undid|undone|rolled[[:space:]]+back|"
+    r"uninstalled|deleted|disabled|failed|failing|broken|"
+    r"retracted|cancelled|canceled)[[:>:]]"
+    r"|[[:<:]]not[[:space:]]+(installed|working|ready|configured|successful)[[:>:]]"
+)
 
 
 def focused_procedure_discussion_context_block(
@@ -431,7 +444,7 @@ def focused_procedure_discussion_context_block(
            FROM conversation_turns t
            WHERE t.user_id=%s AND t.instance_id=%s AND t.created_at<%s
              AND t.status='RESPONDED'
-             AND t.input_text ~* %s
+             AND (t.input_text ~* %s OR t.input_text ~* %s)
              AND t.input_text !~* %s
              AND NOT EXISTS (
                  SELECT 1 FROM memory_revisions revision
@@ -449,11 +462,17 @@ def focused_procedure_discussion_context_block(
                  @@ plainto_tsquery('english',%s)
            ORDER BY t.created_at DESC,t.turn_id DESC LIMIT 4""",
         (user_id,instance_id,before_at,
-         _USER_PROGRESS_PG,_BARE_TOPIC_NAVIGATION_PG,query),
+         _USER_PROGRESS_PG,_TOPIC_PROGRESS_REVISION_PG,
+         _BARE_TOPIC_NAVIGATION_PG,query),
     )
-    rows = [r for r in cur.fetchall() if not _SENSITIVE.search(r["input_text"])]
+    rows = cur.fetchall()
     if not rows:
         return ""
+    # If the newest matching amendment is sensitive, do not disclose it or
+    # resurrect an older report while pretending the latest was never said.
+    if _SENSITIVE.search(rows[0]["input_text"]):
+        return ""
+    rows = [r for r in rows if not _SENSITIVE.search(r["input_text"])]
     header = (
         "Earlier user-reported procedure DISCUSSION (source-linked, "
         "NOT a tracked ProcedureRun, verified completion, or permission "
