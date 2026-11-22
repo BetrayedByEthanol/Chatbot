@@ -526,3 +526,54 @@ def test_uniquely_resolved_named_plan_still_returns_to_objective(dsn):
                WHERE turn_id=%s AND user_id=%s AND instance_id=%s""",
             (turn.turn_id, identity.user_id, identity.instance_id),
         ).fetchone() == (True,)
+
+
+@pytest.mark.parametrize("bare_returns", [3, 18])
+def test_bare_topic_returns_cannot_crowd_out_substantive_progress(
+    dsn, bare_returns,
+):
+    """Filter navigation BEFORE the 16-candidate/3-result FTS limits.
+
+    The 3-return case reproduces the review report; the 18-return case
+    verifies that post-LIMIT filtering would still be insufficient.
+    """
+    h, model = host(dsn)
+    switch = h.send(
+        "Let's switch topics to Nginx certificates.",
+        idempotency_key="initial-topic",
+    )
+    progress = h.send(SOURCE, idempotency_key="certificate-progress")
+    for index in range(bare_returns):
+        h.send("Back to Nginx.", idempotency_key=f"bare-return-{index}")
+    # Push the actual progress out of the ordinary 12-turn model history;
+    # historical retrieval must supply the authentic source turn instead.
+    for index in range(13):
+        h.send(
+            f"A separate thought about tea number {index}.",
+            idempotency_key=f"other-subject-{index}",
+        )
+    h.send("Back to Nginx.", idempotency_key="retrieve-progress")
+    context = prompt(model)
+    assert "Earlier source-linked user statements" in context
+    assert progress.turn_id in context and SOURCE in context
+    # Navigation events are not substantive USER_REPORTED progress sources.
+    assert switch.turn_id not in context
+    assert 'USER_REPORTED source turn' in context
+    assert '"Back to Nginx."' not in context
+    assert sum(len(m.content) for m in model.calls[-1]) <= 12000
+
+
+def test_return_with_substantive_update_is_still_retrieved(dsn):
+    h, model = host(dsn)
+    h.send("Let's switch topics to Nginx certificates.",
+           idempotency_key="initial-topic")
+    substantive = "Back to Nginx: I generated the certificate but have not installed it."
+    progress = h.send(substantive, idempotency_key="substantive-update")
+    for index in range(13):
+        h.send(f"A separate thought about tea number {index}.",
+               idempotency_key=f"tea-{index}")
+    h.send("Back to Nginx.", idempotency_key="resume")
+    context = prompt(model)
+    assert "Earlier source-linked user statements" in context
+    assert progress.turn_id in context
+    assert substantive in context
