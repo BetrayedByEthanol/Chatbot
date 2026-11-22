@@ -393,3 +393,45 @@ def test_resumed_linked_correction_is_atomic_under_small_budget(dsn):
     assert original not in constrained
     assert correction not in constrained
     assert not constrained or len(constrained) <= len(full)-1
+
+
+@pytest.mark.parametrize("utterance", [
+    "Let's switch to it.",
+    "Switch the topic to that topic.",
+])
+def test_deictic_switches_also_do_not_open_literal_topics(utterance):
+    assert parse_explicit_topic_switch(utterance) is None
+
+
+def test_anaphoric_return_does_not_answer_pending_question(dsn):
+    class QuestionModel(CaptureModel):
+        def generate(self, messages):
+            self.calls.append(tuple(messages))
+            return ModelReply(
+                model_id="increment2.question-model",
+                text=("What would you like to do next?" if len(self.calls) == 1
+                      else "We can continue."),
+            )
+
+    model = QuestionModel()
+    h = BehavioralAcceptanceHarness(dsn, seed_local_demo(dsn), model)
+    h.begin_session("topic")
+    identity = h.active_identity
+    h.send("Let's switch topics to Nginx certificates.",
+           idempotency_key="topic")
+    before = dialogue(dsn, identity)
+    assert before.focus_thread_id is not None
+    assert len(before.pending_acts) == 1
+    old_act = before.pending_acts[0].act_id
+
+    h.send("Let's go back to that topic", idempotency_key="anaphora")
+    after = dialogue(dsn, identity)
+    assert after.focus_thread_id == before.focus_thread_id
+    assert len(after.threads) == 1
+    assert len(after.pending_acts) == 1
+    assert after.pending_acts[0].act_id == old_act
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT status FROM dialogue_pending_acts WHERE act_id=%s",
+            (old_act,),
+        ).fetchone()[0] == "PENDING"
