@@ -198,7 +198,7 @@ def _ambiguous_resumed_cadence(
     """
     from .intent_interpretation import _FREQUENCY_CORRECTION
 
-    if not re.search(r"\\b(?:per|a)\\s+week\\b|\\bweekly\\b",
+    if not re.search(r"\b(?:per|a)\s+week\b|\bweekly\b",
                      anchor["input_text"], re.I):
         return False
     cur.execute(
