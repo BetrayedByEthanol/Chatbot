@@ -63,6 +63,27 @@ _EXPLICIT_TOPIC_RETURN = re.compile(
     r"(?:\s*:\s*[^\r\n]{1,120})?\s*[.?!]?$",
     re.I,
 )
+# Pronouns/deictic phrases refer to the focused topic, not a new named
+# discussion. Leave them to existing anaphoric conversation/memory handling.
+_ANAPHORIC_TOPIC_NAME = re.compile(
+    r"^(?:it|this|that|them|those|these|there|"
+    r"(?:(?:the|that|this|our|my|your|previous|earlier|last|same)\s+)"
+    r"(?:topic|discussion|subject|conversation|one|plan|goal|thing)|"
+    r"(?:the|our)\s+(?:previous|last|same)\s+"
+    r"(?:topic|discussion|subject|conversation)|"
+    r"what\s+we\s+were\s+(?:discussing|talking\s+about)|"
+    r"where\s+we\s+left\s+off)$",
+    re.I,
+)
+
+
+def _named_topic_or_none(topic: str) -> str | None:
+    value = topic.strip()
+    if not value or _ANAPHORIC_TOPIC_NAME.fullmatch(value):
+        return None
+    return value
+
+
 _TOPIC_PROGRESS_RECALL = re.compile(
     r"^where\s+(?:(?:did|do)\s+we\s+leave\s+off"
     r"|(?:had|did)\s+i\s+(?:stop|stopped))\s+with\s+"
@@ -85,8 +106,7 @@ def parse_explicit_topic_return(text: str) -> str | None:
     match = _EXPLICIT_TOPIC_RETURN.fullmatch(text.strip().replace("’", "'"))
     if match is None:
         return None
-    topic = match.group("topic").strip()
-    return topic if topic else None
+    return _named_topic_or_none(match.group("topic"))
 
 
 def explicit_topic_history_request(text: str) -> str | None:
@@ -97,7 +117,7 @@ def explicit_topic_history_request(text: str) -> str | None:
     match = _TOPIC_PROGRESS_RECALL.fullmatch(text.strip().replace("’", "'"))
     if match is None:
         return None
-    return match.group("topic").strip() or None
+    return _named_topic_or_none(match.group("topic"))
 
 
 @dataclass(frozen=True)
