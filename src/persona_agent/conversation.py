@@ -472,6 +472,10 @@ def prepare_text_context(
                 )
                 if len(prompt)+len(advisory)+len(history[-1].content)+160<=max_context_chars:
                     prompt+=advisory
+            # The goal/reflection selector below also consults this local
+            # value. A topic transition skips the prior focus's read, so its
+            # absence must be explicit rather than an unbound local.
+            active=None
             if item["focus_thread_id"] is not None and incoming_topic is None:
                 # Explicit focus and pending dialogue are context, never
                 # authorization. No additional model inference or history
