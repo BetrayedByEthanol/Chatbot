@@ -6,7 +6,7 @@ services:
     environment:
       POSTGRES_DB: postgres
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: \${E2E_POSTGRES_PASSWORD:?Ephemeral local PostgreSQL password required}
+      POSTGRES_PASSWORD: ${E2E_POSTGRES_PASSWORD:?Ephemeral local PostgreSQL password required}
     ports:
       - "127.0.0.1::5432" # Docker assigns a free local port per invocation.
     healthcheck:
