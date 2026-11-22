@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Reproducible model comparison using the existing disposable E2E Compose path.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+umask 077
+exec python scripts/compare_persona_models.py "$@"
