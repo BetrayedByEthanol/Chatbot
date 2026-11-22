@@ -190,3 +190,81 @@ def test_other_users_never_receive_linked_correction(dsn):
     assert ORIGINAL not in system(other_model)
     assert CORRECTION not in system(other_model)
     assert "Source-linked conversation correction" not in system(other_model)
+
+
+def test_newer_unlinked_cadence_after_eight_turn_window_forces_abstention(dsn):
+    """Regression: seq 1 objective, seq 2 linked correction, seq 10 unlinked.
+
+    Previously "latest linked" incorrectly presented the obsolete twice-weekly
+    amendment even though Conversation persisted a newer correction.
+    """
+    host, model = fixture(dsn)
+    root = host.send(ORIGINAL, idempotency_key="objective-1")
+    earlier = host.send(CORRECTION, idempotency_key="correction-2")
+    for index in range(3, 10):
+        host.send(
+            f"We are still talking about walking, note number {index}.",
+            idempotency_key=f"note-{index}",
+        )
+    latest_text = "Actually, once per week would be better."
+    latest = host.send(latest_text, idempotency_key="correction-10")
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        rows = conn.execute(
+            """SELECT turn_id,turn_sequence,intent_kind,related_signal_id
+               FROM conversation_intent_signals
+               WHERE user_id=%s AND instance_id=%s AND conversation_id=%s
+                 AND intent_kind IN ('OBJECTIVE','CORRECTION')
+               ORDER BY turn_sequence""",
+            (host.identity.user_id, host.identity.instance_id,
+             host.identity.conversation_id),
+        ).fetchall()
+    # Assert the precise evidence condition instead of only the resulting
+    # model text: the new amendment really did lose its source link.
+    assert [row[1] for row in rows] == [1, 2, 10]
+    assert str(rows[0][0]) == root.turn_id
+    assert str(rows[1][0]) == earlier.turn_id
+    assert str(rows[2][0]) == latest.turn_id
+    assert rows[1][3] is not None
+    assert rows[2][3] is None
+    host.begin_session("later")
+    host.restart_host()
+    host.send(RECALL, idempotency_key="cross-session-recall")
+    assert "Source-linked conversation correction" not in system(model)
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        count = conn.execute(
+            """SELECT count(*) FROM goal_records
+               WHERE user_id=%s AND instance_id=%s""",
+            (host.identity.user_id, host.identity.instance_id),
+        ).fetchone()[0]
+    assert count == 0
+
+
+def test_non_cadence_unlinked_correction_does_not_mask_valid_link(dsn):
+    host, model = fixture(dsn)
+    host.send(ORIGINAL, idempotency_key="objective")
+    host.send(CORRECTION, idempotency_key="linked")
+    # An unrelated correction without a weekly frequency should not
+    # automatically invalidate a source-linked walking cadence.
+    host.send(
+        "Actually, I meant the other keyboard.",
+        idempotency_key="unrelated-correction",
+    )
+    host.begin_session("later")
+    host.send(RECALL, idempotency_key="recall")
+    assert "Source-linked conversation correction" in system(model)
+
+
+def test_recent_linked_correction_remains_available_after_unrelated_turns(dsn):
+    host, model = fixture(dsn)
+    host.send(ORIGINAL, idempotency_key="objective")
+    host.send(CORRECTION, idempotency_key="linked")
+    for index in range(3, 11):
+        host.send(
+            f"Let's keep walking in mind for later, note {index}.",
+            idempotency_key=f"continuation-{index}",
+        )
+    host.begin_session("later")
+    host.send(RECALL, idempotency_key="recall")
+    prompt = system(model)
+    assert "Source-linked conversation correction" in prompt
+    assert CORRECTION in prompt
