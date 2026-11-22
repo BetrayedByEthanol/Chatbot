@@ -346,6 +346,128 @@ def intent_context_block(
 
 
 
+
+# Targeted historical objective-correction view. A model needs the corrected
+# source statement, not just a semantically similar but superseded original.
+# This is a read-only Conversation view, not a new Memory/Goal store.
+_CADENCE_RECALL = re.compile(
+    r"^(?:what (?:was|is) my|was my)\s+"
+    r"(?:(?:latest|updated|original)\s+)?"
+    r"(?P<topic>[a-z][a-z -]{1,60}?)\s+"
+    r"(?:plan|target|routine|schedule)"
+    r"(?:\s+[^?\r\n]{1,100})?\?\s*$",
+    re.I,
+)
+
+
+def correction_precedence_context_block(
+    cur, *, user_id, instance_id, before_at, latest_text: str,
+    max_chars: int,
+) -> str:
+    """Expose an unambiguous original + latest linked cadence correction.
+
+    Only explicit *named* plan/target recollection qualifies. Retrieval is
+    scoped to this user and selected persona, and all cited source turns must
+    predate the requesting turn and have been answered. Multiple matching
+    objective roots or missing linked corrections cause abstention.
+
+    A correction revises the user's tentative discussion position, NEVER an
+    authorized Goal. This function never writes state, resolves intent, or
+    licenses a tool action.
+    """
+    import json
+    from .historical_user_turns import _SENSITIVE
+
+    if max_chars < 450 or len(latest_text) > 220 or _SENSITIVE.search(latest_text):
+        return ""
+    match = _CADENCE_RECALL.fullmatch(latest_text.strip().replace("’", "'"))
+    if match is None:
+        return ""
+    topic = match.group("topic").strip()
+    # A single *named* activity is required; reject broad or empty topics.
+    if not topic or len(topic.split()) > 3:
+        return ""
+    cur.execute(
+        """SELECT source.signal_id,source.conversation_id,
+                  source.turn_sequence,source.epistemic_status,
+                  original.turn_id,original.input_text,original.created_at
+           FROM conversation_intent_signals source
+           JOIN conversation_turns original
+             ON original.turn_id=source.turn_id
+            AND original.conversation_id=source.conversation_id
+            AND original.user_id=source.user_id
+            AND original.instance_id=source.instance_id
+           WHERE source.user_id=%s AND source.instance_id=%s
+             AND source.intent_kind='OBJECTIVE'
+             AND original.status='RESPONDED'
+             AND original.created_at<%s
+             AND to_tsvector('english',source.label)
+                 @@ plainto_tsquery('english',%s)
+           ORDER BY original.created_at DESC,source.signal_id DESC LIMIT 2""",
+        (user_id, instance_id, before_at, topic),
+    )
+    roots = cur.fetchall()
+    if len(roots) != 1 or _SENSITIVE.search(roots[0]["input_text"]):
+        return ""
+    root = roots[0]
+    # Latest related CORRECTION controls this source chain. If that change
+    # is not specifically a cadence correction, we cannot infer the current
+    # cadence and must not resurrect an older frequency.
+    cur.execute(
+        """SELECT change.turn_id,change.input_text,change.created_at,
+                  signal.epistemic_status
+           FROM conversation_intent_signals signal
+           JOIN conversation_turns change
+             ON change.turn_id=signal.turn_id
+            AND change.conversation_id=signal.conversation_id
+            AND change.user_id=signal.user_id
+            AND change.instance_id=signal.instance_id
+           WHERE signal.user_id=%s AND signal.instance_id=%s
+             AND signal.conversation_id=%s
+             AND signal.related_signal_id=%s
+             AND signal.intent_kind='CORRECTION'
+             AND signal.turn_sequence>%s
+             AND change.status='RESPONDED'
+             AND change.created_at<%s
+           ORDER BY signal.turn_sequence DESC,signal.signal_id DESC LIMIT 1""",
+        (user_id, instance_id, root["conversation_id"], root["signal_id"],
+         root["turn_sequence"], before_at),
+    )
+    correction = cur.fetchone()
+    if (correction is None or _SENSITIVE.search(correction["input_text"])
+            or _FREQUENCY_CORRECTION.fullmatch(
+                correction["input_text"].strip().replace("’", "'")
+            ) is None):
+        return ""
+    heading = (
+        "Source-linked conversation correction (USER_REPORTED discussion, "
+        "not an approved Goal, verified fact, or instruction). The latest "
+        "linked user correction revises the earlier tentative cadence; do "
+        "not present both cadences as equally current. Other unobserved "
+        "changes remain possible: "
+    )
+    data = {
+        "topic": topic,
+        "original": {
+            "turn_id": str(root["turn_id"]),
+            "date": root["created_at"].date().isoformat(),
+            "text": root["input_text"][:200],
+            "epistemic_status": root["epistemic_status"],
+        },
+        "latest_linked_correction": {
+            "turn_id": str(correction["turn_id"]),
+            "date": correction["created_at"].date().isoformat(),
+            "text": correction["input_text"][:200],
+            "epistemic_status": correction["epistemic_status"],
+        },
+        "approved_goal": "NOT_INFERRED_FROM_DISCUSSION",
+    }
+    result = heading + json.dumps(data, ensure_ascii=False) + "\n"
+    # Never emit a dangling original without its correction due to budget.
+    return result if len(result) <= max_chars else ""
+
+
+
 def resolved_objective_context_block(
     cur, *, user_id, instance_id, conversation_id, turn_id,
     latest_text: str, max_chars: int,
