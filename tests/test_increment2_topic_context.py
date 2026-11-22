@@ -435,3 +435,94 @@ def test_anaphoric_return_does_not_answer_pending_question(dsn):
             "SELECT status FROM dialogue_pending_acts WHERE act_id=%s",
             (old_act,),
         ).fetchone()[0] == "PENDING"
+
+
+def test_explicit_nginx_followup_outweighs_recent_walking_objective(dsn):
+    """The generic 'next step' phrase must not override explicit topic intent."""
+    h, model = host(dsn)
+    identity = h.active_identity
+    h.send("I want to walk three times a week.", idempotency_key="walk")
+    walking_thread = dialogue(dsn, identity).focus_thread_id
+    h.send("Let's switch topics to Nginx certificates.", idempotency_key="nginx")
+    nginx_thread = dialogue(dsn, identity).focus_thread_id
+    assert nginx_thread != walking_thread
+
+    followup = "Back to Nginx: what's the next step?"
+    turn = h.send(followup, idempotency_key="nginx-next-step")
+    state = dialogue(dsn, identity)
+    assert state.focus_thread_id == nginx_thread
+    assert len(state.threads) == 2
+    current = prompt(model)
+    assert "Current user turn explicitly names a topic transition" in current
+    assert "Resolved prior conversation reference" not in current
+    assert model.calls[-1][-1].content == followup
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        linked = conn.execute(
+            """SELECT related_signal_id FROM conversation_intent_signals
+               WHERE turn_id=%s AND user_id=%s AND instance_id=%s""",
+            (turn.turn_id, identity.user_id, identity.instance_id),
+        ).fetchone()
+        assert linked == (None,)
+        assert conn.execute(
+            """SELECT count(*) FROM goal_records
+               WHERE user_id=%s AND instance_id=%s""",
+            (identity.user_id, identity.instance_id),
+        ).fetchone()[0] == 0
+
+
+def test_ambiguous_named_plan_return_does_not_create_third_topic(dsn):
+    """An unresolved named-plan reference must retain its abstention contract."""
+    h, model = host(dsn)
+    identity = h.active_identity
+    h.send("I want to walk every morning.", idempotency_key="walk-one")
+    first = dialogue(dsn, identity).focus_thread_id
+    h.send("I want to walk at weekends.", idempotency_key="walk-two")
+    second = dialogue(dsn, identity).focus_thread_id
+    assert first != second
+    h.send("Let's switch topics to Nginx certificates.",
+           idempotency_key="nginx")
+    focused = dialogue(dsn, identity).focus_thread_id
+    assert focused not in (first, second)
+
+    turn = h.send("Can we return to our walking plan?",
+                  idempotency_key="ambiguous-plan-return")
+    state = dialogue(dsn, identity)
+    assert state.focus_thread_id == focused
+    assert len(state.threads) == 3
+    assert all(thread.title != "our walking plan"
+               for thread in state.threads)
+    assert "Resolved prior conversation reference" not in prompt(model)
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        assert conn.execute(
+            """SELECT related_signal_id FROM conversation_intent_signals
+               WHERE turn_id=%s AND user_id=%s AND instance_id=%s""",
+            (turn.turn_id, identity.user_id, identity.instance_id),
+        ).fetchone() == (None,)
+        assert conn.execute(
+            """SELECT count(*) FROM dialogue_turn_links
+               WHERE turn_id=%s AND conversation_id=%s""",
+            (turn.turn_id, identity.conversation_id),
+        ).fetchone()[0] == 0
+
+
+def test_uniquely_resolved_named_plan_still_returns_to_objective(dsn):
+    """An exact, unambiguous named goal reference keeps the old behavior."""
+    h, model = host(dsn)
+    identity = h.active_identity
+    h.send("I want to walk every morning.", idempotency_key="walk")
+    walking_thread = dialogue(dsn, identity).focus_thread_id
+    h.send("Let's switch topics to Nginx certificates.", idempotency_key="nginx")
+    assert dialogue(dsn, identity).focus_thread_id != walking_thread
+
+    turn = h.send("Can we return to our walk plan?",
+                  idempotency_key="unique-walk-plan")
+    state = dialogue(dsn, identity)
+    assert state.focus_thread_id == walking_thread
+    assert len(state.threads) == 2
+    assert "Resolved prior conversation reference" in prompt(model)
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        assert conn.execute(
+            """SELECT related_signal_id IS NOT NULL FROM conversation_intent_signals
+               WHERE turn_id=%s AND user_id=%s AND instance_id=%s""",
+            (turn.turn_id, identity.user_id, identity.instance_id),
+        ).fetchone() == (True,)
