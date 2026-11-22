@@ -326,3 +326,88 @@ def test_short_latest_report_still_fits_small_budget(dsn):
     assert report in result
     assert "USER_REPORTED procedure discussion source turn" in result
     assert len(result) <= 550
+
+
+def test_later_nginx_rollback_overrides_prior_install_success(dsn):
+    """A topic-matching removal is newer evidence despite the verb filter."""
+    h, model = host(dsn)
+    h.send("Let's switch topics to Nginx certificates.", idempotency_key="topic")
+    earlier = "I installed the Nginx certificate."
+    removed = "I removed the Nginx certificate because the reload failed."
+    success = h.send(earlier, idempotency_key="installed")
+    rollback = h.send(removed, idempotency_key="removed")
+    h.begin_session("later")
+    h.restart_host()
+    h.send("Back to Nginx.", idempotency_key="resume")
+    h.send("What's the next step?", idempotency_key="next-step")
+    current = prompt(model)
+    assert "Earlier user-reported procedure DISCUSSION" in current
+    assert removed in current and rollback.turn_id in current
+    assert "not independently confirmed results" in current
+    assert "NOT a tracked ProcedureRun" in current
+    if earlier in current:
+        assert success.turn_id in current
+        assert current.index(earlier) < current.index(removed)
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        assert conn.execute(
+            """SELECT count(*) FROM procedure_runs
+               WHERE user_id=%s AND instance_id=%s""",
+            (h.identity.user_id, h.identity.instance_id),
+        ).fetchone()[0] == 0
+
+
+def test_small_budget_keeps_latest_rollback_not_older_install(dsn):
+    h, _ = host(dsn)
+    older = "I installed the Nginx certificate."
+    later = "I removed the Nginx certificate because the reload failed."
+    h.send(older, idempotency_key="installed")
+    h.send(later, idempotency_key="removed")
+    limited = _direct_progress_view(dsn, h, budget=550)
+    assert later in limited
+    assert older not in limited
+    assert "USER_REPORTED procedure discussion source turn" in limited
+    assert len(limited) <= 550
+
+
+@pytest.mark.parametrize("correction", [
+    "The Nginx certificate was removed after the reload failed.",
+    "Actually, the Nginx certificate is not configured anymore.",
+    "Correction: the Nginx certificate setup was reverted.",
+])
+def test_topic_matching_non_first_person_rollback_is_latest(dsn, correction):
+    h, _ = host(dsn)
+    original = "I installed the Nginx certificate."
+    h.send(original, idempotency_key="original")
+    changed = h.send(correction, idempotency_key="correction")
+    result = _direct_progress_view(dsn, h, budget=900)
+    assert correction in result and changed.turn_id in result
+    if original in result:
+        assert result.index(original) < result.index(correction)
+
+
+def test_oversized_latest_rollback_abstains_rather_than_recalling_success(dsn):
+    h, _ = host(dsn)
+    original = "I installed the Nginx certificate."
+    h.send(original, idempotency_key="original")
+    rollback = (
+        "I removed the Nginx certificate after testing the service reload. "
+        + "The problem kept recurring and I reverted the installation. " * 4
+        + "Nothing is installed now because the reload failed."
+    )
+    assert len(rollback) > 240
+    h.send(rollback, idempotency_key="rolled-back")
+    assert _direct_progress_view(dsn, h, budget=550) == ""
+    enough = _direct_progress_view(dsn, h, budget=1200)
+    assert rollback in enough
+    assert "Nothing is installed now" in enough
+
+
+def test_unrelated_rollback_does_not_replace_nginx_progress(dsn):
+    h, _ = host(dsn)
+    report = "I installed the Nginx certificate."
+    h.send(report, idempotency_key="nginx-install")
+    h.send("I removed the tea kettle after it failed.",
+           idempotency_key="unrelated-tea")
+    result = _direct_progress_view(dsn, h, budget=900)
+    assert report in result
+    assert "tea kettle" not in result
