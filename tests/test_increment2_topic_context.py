@@ -588,9 +588,10 @@ def test_return_with_substantive_update_is_still_retrieved(dsn):
            idempotency_key="initial-topic")
     substantive = "Back to Nginx: I generated the certificate but have not installed it."
     progress = h.send(substantive, idempotency_key="substantive-update")
-    for index in range(13):
-        h.send(f"A separate thought about tea number {index}.",
-               idempotency_key=f"tea-{index}")
+    # Cross-session retrieval excludes verbatim history without generating
+    # another 13 turns and unnecessary durable outbox traffic.
+    h.begin_session("later")
+    h.restart_host()
     h.send("Back to Nginx.", idempotency_key="resume")
     context = prompt(model)
     assert "Earlier source-linked user statements" in context
