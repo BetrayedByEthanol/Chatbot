@@ -434,6 +434,23 @@ def prepare_text_context(
                     turn_id=turn_id,latest_text=history[-1].content,
                     max_chars=reference_room,
                 )
+            # Preserve a linked correction chain for explicit historical
+            # cadence recall before optional summary/memory selection can
+            # crowd out the source that supersedes the old discussion.
+            # The view is source-linked, read-only and never Goal authority.
+            from .intent_interpretation import correction_precedence_context_block
+            correction_room=min(
+                950,max_context_chars//3,
+                max_context_chars-len(prompt)-len(history[-1].content)-160,
+            )
+            if correction_room>=450:
+                prompt+=correction_precedence_context_block(
+                    cursor,user_id=actor.user_id,
+                    instance_id=item["instance_id"],
+                    before_at=item["turn_at"],
+                    latest_text=history[-1].content,
+                    max_chars=correction_room,
+                )
             if item["focus_thread_id"] is not None:
                 # Explicit focus and pending dialogue are context, never
                 # authorization. No additional model inference or history
