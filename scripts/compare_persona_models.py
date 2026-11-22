@@ -19,7 +19,7 @@ import secrets
 from statistics import mean, median
 import subprocess
 import sys
-from zipfile import ZipFile
+from zipfile import BadZipFile, ZipFile
 
 from persona_agent.natural_dialogue_review import packet_from_bundle, rating_template
 from persona_agent.scenario_validation import validate_scenario
@@ -34,7 +34,7 @@ def parse_models(value: str) -> list[str]:
     models = [part.strip() for part in value.split(",")]
     if not 2 <= len(models) <= 5 or len(models) != len(set(models)):
         raise ValueError("choose 2..5 distinct model identifiers")
-    if any(not MODEL_PATTERN.fullmatch(model) for model in models):
+    if any(not MODEL_PATTERN.fullmatch(model) or ".." in model for model in models):
         raise ValueError("invalid model identifier")
     return models
 
@@ -198,11 +198,18 @@ def compare(argv: list[str] | None = None) -> int:
                                  rating_template(packet, "reviewer_b"))
                     entry["review_packet"] = f"{alias}.review.json"
                     entry["review_status"] = "AWAITING_INDEPENDENT_HUMAN_REVIEW"
-            except (ValueError, OSError, KeyError, TypeError, RuntimeError) as exc:
+            except (ValueError, OSError, KeyError, TypeError, RuntimeError, BadZipFile) as exc:
                 entry["evidence_error"] = f"{type(exc).__name__}: {str(exc)[:300]}"
         outcomes.append(entry)
         # This is a private diagnostic, not a ranking or automatic evaluator.
         private_json(destination / f"{alias}.result.json", entry)
+        if code == 2:
+            # The E2E wrapper may have retained Compose because publication
+            # or cleanup is uncertain. Do not launch more potentially unsafe
+            # jobs; keep prior evidence and record a partial comparison.
+            print(f"{alias}: E2E infrastructure/evidence failure; aborting remaining jobs",
+                  file=sys.stderr)
+            break
     summary = {
         "format": "persona-model-comparison.v1",
         "scenario": source["name"],
