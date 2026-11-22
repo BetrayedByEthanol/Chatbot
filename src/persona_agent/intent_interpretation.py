@@ -65,7 +65,7 @@ _EXPLICIT_TOPIC_RETURN = re.compile(
 )
 _TOPIC_PROGRESS_RECALL = re.compile(
     r"^where\s+(?:(?:did|do)\s+we\s+leave\s+off"
-    r"|(?:had|did)\s+i\s+stop)\s+with\s+"
+    r"|(?:had|did)\s+i\s+(?:stop|stopped))\s+with\s+"
     r"(?P<topic>[^\r\n.!?]{1,100})\s*\?\s*$",
     re.I,
 )
