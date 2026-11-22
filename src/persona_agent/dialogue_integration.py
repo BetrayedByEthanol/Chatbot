@@ -12,7 +12,8 @@ from .dialogue_state import _link_turn
 from .intent_interpretation import (
     classify_intent, explicit_unresolved_named_topic,
     is_named_objective_reference, parse_explicit_topic_switch,
-    parse_explicit_topic_return, should_interpret_with_model,
+    parse_explicit_topic_return, explicit_topic_history_request,
+    should_interpret_with_model,
 )
 from .conversation import _event
 
@@ -48,7 +49,7 @@ def _starts_new_topic(kind: str, label: str) -> bool:
     return kind == "OBJECTIVE" or (
         kind == "REQUEST" and (
             parse_explicit_topic_switch(label) is not None
-            or parse_explicit_topic_return(label) is not None
+            or explicit_topic_history_request(label) is not None
             or bool(_TOPIC_REQUEST.match(label))
         )
     )
@@ -287,7 +288,7 @@ def advance_on_delivery(
             # New topics are opened only on delivered replies, not ingress.
             explicit_topic = (
                 parse_explicit_topic_switch(signal["label"])
-                or parse_explicit_topic_return(signal["label"])
+                or explicit_topic_history_request(signal["label"])
                 if signal["intent_kind"] == "REQUEST" else None
             )
             ambiguous_topic = False
@@ -455,7 +456,7 @@ def resolve_auto_question_on_ingress(
     simple=value.casefold().strip(" .!?")
     if (not value or simple in _NOT_ANSWERS or "?" in value
             or _CLEAR_SWITCH.match(value)
-            or parse_explicit_topic_return(value) is not None):
+            or explicit_topic_history_request(value) is not None):
         return
     interpretation=classify_intent(value)
     if should_interpret_with_model(value):
