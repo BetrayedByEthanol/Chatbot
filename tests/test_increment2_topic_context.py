@@ -565,8 +565,8 @@ def test_bare_topic_returns_cannot_crowd_out_substantive_progress(
     assert all(turn.turn_id not in context for turn in bare_turns)
     assert 'USER_REPORTED source turn' in context
     assert not re.search(
-        r'USER_REPORTED (?:source turn|discussion update source turn)[^\\n]*'
-        r'"Back to Nginx\\."',
+        r'USER_REPORTED (?:source turn|discussion update source turn)[^\n]*'
+        r'"Back to Nginx\."',
         context,
     )
     assert sum(len(m.content) for m in model.calls[-1]) <= 12000
