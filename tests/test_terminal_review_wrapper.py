@@ -29,6 +29,10 @@ def fake_review(tmp_path):
 set -euo pipefail
 printf '%s\\n' "$*" >> "$REVIEW_DOCKER_LOG"
 if [[ "$*" == 'compose version' ]]; then exit 0; fi
+if [[ "${REVIEW_ENFORCE_COMPOSE_PASSWORD:-}" == 1 && "$1" == compose && -z "${E2E_POSTGRES_PASSWORD:-}" ]]; then
+  echo "Compose interpolation failed: E2E_POSTGRES_PASSWORD is unset" >&2
+  exit 42
+fi
 case " $* " in
   *' port postgres 5432 '*) echo '127.0.0.1:55444' ;;
   *' exec -T postgres psql '*)
@@ -207,13 +211,7 @@ def test_recovery_commands_run_from_fresh_shell_without_ephemeral_password(fake_
         # The fixture's docker binary must reject a missing interpolated password.
         env["REVIEW_DOCKER_LOG"] = str(log)
         env.pop("E2E_POSTGRES_PASSWORD", None)
-        check = subprocess.run(
-            ["bash", "-c", '[[ -n "${E2E_POSTGRES_PASSWORD:-}" ]] || exit 41; ' + command],
-            cwd=tmp / "repo", env=env, capture_output=True, text=True, timeout=10,
-        )
-        # The initial shell has no password, but per-command assignment is
-        # applied to the child Compose process. Do not test against the parent.
-        assert check.returncode == 41
+        env["REVIEW_ENFORCE_COMPOSE_PASSWORD"] = "1"
         run_command = subprocess.run(
             ["bash", "-c", command], cwd=tmp / "repo", env=env,
             capture_output=True, text=True, timeout=10,
