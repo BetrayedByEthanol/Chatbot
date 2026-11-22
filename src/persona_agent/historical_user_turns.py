@@ -235,6 +235,72 @@ def _ambiguous_resumed_cadence(
 
 
 
+
+def _linked_resumed_cadence_update(
+    cur, anchor: dict, *, user_id: UUID, instance_id: UUID,
+    before_at: datetime,
+) -> dict | None:
+    """Return the latest source-linked cadence update for a resumed objective.
+
+    An empty dict means there are no linked amendments. None means a linked
+    amendment exists but cannot safely be quoted, so its original objective
+    must also be omitted. This is deliberately independent of adjacency:
+    intervening ordinary turns must not break an explicit source link.
+    """
+    from .intent_interpretation import _FREQUENCY_CORRECTION
+
+    cur.execute(
+        """SELECT signal_id FROM conversation_intent_signals
+           WHERE turn_id=%s AND conversation_id=%s
+             AND user_id=%s AND instance_id=%s
+             AND intent_kind='OBJECTIVE' LIMIT 2""",
+        (anchor["turn_id"], anchor["conversation_id"], user_id, instance_id),
+    )
+    roots = cur.fetchall()
+    if not roots:
+        return {}
+    if len(roots) != 1:
+        return None
+    cur.execute(
+        """SELECT t.turn_id,t.created_at,t.input_text,t.status,
+                  s.epistemic_status,
+                  EXISTS (
+                      SELECT 1 FROM memory_revisions revision
+                      WHERE revision.user_id=t.user_id
+                        AND revision.instance_id=t.instance_id
+                        AND revision.source_turn_id=t.turn_id
+                  ) AS has_memory_revision,
+                  EXISTS (
+                      SELECT 1 FROM memory_extraction_candidates candidate
+                      WHERE candidate.user_id=t.user_id
+                        AND candidate.instance_id=t.instance_id
+                        AND candidate.source_turn_id=t.turn_id
+                  ) AS has_memory_candidate
+           FROM conversation_intent_signals s
+           JOIN conversation_turns t
+             ON t.turn_id=s.turn_id AND t.conversation_id=s.conversation_id
+            AND t.user_id=s.user_id AND t.instance_id=s.instance_id
+           WHERE s.conversation_id=%s AND s.user_id=%s AND s.instance_id=%s
+             AND s.related_signal_id=%s AND s.intent_kind='CORRECTION'
+             AND s.turn_sequence>%s AND t.created_at<%s
+           ORDER BY s.turn_sequence DESC,s.signal_id DESC LIMIT 1""",
+        (anchor["conversation_id"],user_id,instance_id,roots[0]["signal_id"],
+         anchor["sequence"],before_at),
+    )
+    change = cur.fetchone()
+    if change is None:
+        return {}
+    if (change["status"] != "RESPONDED"
+            or change["has_memory_revision"] or change["has_memory_candidate"]
+            or _SENSITIVE.search(change["input_text"])
+            or _FREQUENCY_CORRECTION.fullmatch(
+                change["input_text"].strip().replace("’", "'")
+            ) is None):
+        return None
+    return change
+
+
+
 def _eligible_activity_types(
     cur, *, user_id: UUID, instance_id: UUID, conversation_id: UUID,
     before_at: datetime, query: str,
@@ -446,6 +512,32 @@ def historical_user_turn_context_block(
             f"on {row['created_at'].date().isoformat()}: "
             + json.dumps(quote, ensure_ascii=False) + "\n"
         )
+        if resumed_topic is not None:
+            latest_linked = _linked_resumed_cadence_update(
+                cur,row,user_id=user_id,instance_id=instance_id,
+                before_at=before_at,
+            )
+            if latest_linked is None:
+                # The latest linked amendment cannot be trusted or included.
+                # Never quote the older objective as the current position.
+                continue
+            if latest_linked:
+                update = (
+                    f"USER_REPORTED latest linked discussion correction "
+                    f"source turn {latest_linked['turn_id']} on "
+                    f"{latest_linked['created_at'].date().isoformat()}: "
+                    +json.dumps(latest_linked["input_text"],ensure_ascii=False)
+                    +"\n"
+                )
+                if len(result)+len(line)+len(update)>max_chars:
+                    # Original and newest amendment are an atomic unit.
+                    continue
+                result += line+update
+                emitted_updates.add(latest_linked["turn_id"])
+                count += 1
+                if count >= _MAX_HITS:
+                    break
+                continue
         if len(result) + len(line) > max_chars:
             continue
         result += line
