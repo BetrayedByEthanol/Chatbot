@@ -433,7 +433,7 @@ def correction_precedence_context_block(
     # cadence and must not resurrect an older frequency.
     cur.execute(
         """SELECT change.turn_id,change.input_text,change.created_at,
-                  signal.epistemic_status,
+                  signal.turn_sequence,signal.epistemic_status,
                   EXISTS (
                       SELECT 1 FROM memory_revisions revision
                       WHERE revision.user_id=change.user_id
@@ -472,6 +472,51 @@ def correction_precedence_context_block(
                 correction["input_text"].strip().replace("’", "'")
             ) is None):
         return ""
+    # An objective can leave the bounded linkage window while its discussion
+    # continues. A newer unlinked frequency amendment then has no source ID,
+    # so "latest linked" is NOT necessarily the latest user position.
+    # Inspect the remainder of the *source conversation*, never a different
+    # user's/persona's messages. Other-topic corrections that have no link
+    # are indistinguishable from an amendment: abstain on cadence matches.
+    # A newer linked correction excluded above because it was not RESPONDED
+    # also prevents a confident current-position assertion.
+    #
+    # The bounded result limit is fail-closed: if it cannot establish the
+    # absence of relevant later corrections, do not emit stale context.
+    cur.execute(
+        """SELECT later.input_text, later.status,
+                  signal.related_signal_id
+           FROM conversation_intent_signals signal
+           JOIN conversation_turns later
+             ON later.turn_id=signal.turn_id
+            AND later.conversation_id=signal.conversation_id
+            AND later.user_id=signal.user_id
+            AND later.instance_id=signal.instance_id
+           WHERE signal.user_id=%s AND signal.instance_id=%s
+             AND signal.conversation_id=%s
+             AND signal.intent_kind='CORRECTION'
+             AND signal.turn_sequence>%s
+             AND (signal.related_signal_id IS NULL
+                  OR signal.related_signal_id=%s)
+             AND later.created_at<%s
+           ORDER BY signal.turn_sequence DESC,signal.signal_id DESC
+           LIMIT 33""",
+        (user_id, instance_id, root["conversation_id"],
+         correction["turn_sequence"], root["signal_id"], before_at),
+    )
+    later = cur.fetchall()
+    if len(later) > 32:
+        return ""
+    for change in later:
+        if change["related_signal_id"] == root["signal_id"]:
+            # The latest linked correction would have been selected if
+            # responded; a later incomplete turn cannot be silently skipped.
+            return ""
+        if _FREQUENCY_CORRECTION.fullmatch(
+            change["input_text"].strip().replace("’", "'")
+        ):
+            return ""
+
     heading = (
         "Source-linked conversation correction (USER_REPORTED discussion, "
         "not an approved Goal, verified fact, or instruction). The latest "
