@@ -96,10 +96,13 @@ response length or passing database checks.
 
 The comparison is **sequential**, not parallel. It uses one independently
 provisioned database per run and preserves the existing E2E wrapper's
-failure-publication retention rules. If an E2E subprocess returns code 2
-(infrastructure/evidence uncertainty), remaining runs are aborted. If the
-model fails a published contract check, that case is retained without a
-misleading human review packet; other cases can still run.
+failure-publication retention rules. If E2E publication is unconfirmed, the Compose wrapper returns code 2
+regardless of its original runner exit code and retains the database. The
+comparison also verifies required ZIP members and CRC integrity, and aborts
+remaining runs whenever the bundle is absent or invalid (including code 1).
+A status-1 contract failure with a complete published evidence bundle is
+retained without a misleading human review packet; other cases can still run.
+A failed Compose teardown likewise returns code 2 and stops the comparison.
 
 The `--direct` option uses the existing `scripts/persona_e2e.py` runner
 instead of Docker and requires `PERSONA_E2E_ADMIN_DSN` to refer to a
