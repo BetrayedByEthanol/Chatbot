@@ -223,3 +223,25 @@ def test_topic_return_does_not_leak_other_users_conversation(dsn):
     assert SOURCE not in prompt(model)
     assert evidence.turn_id not in prompt(model)
     assert "Earlier source-linked user statements" not in prompt(model)
+
+
+def test_named_return_carries_source_linked_walking_correction(dsn):
+    h, model = host(dsn)
+    original = "I want to walk three times a week."
+    corrected = "Actually, twice a week is more realistic."
+    source = h.send(original, idempotency_key="original")
+    newer = h.send(corrected, idempotency_key="corrected")
+    h.begin_session("later")
+    h.restart_host()
+    h.send("Back to walking.", idempotency_key="return")
+    current = prompt(model)
+    assert "Earlier source-linked user statements" in current
+    assert original in current and source.turn_id in current
+    assert corrected in current and newer.turn_id in current
+    assert current.index(original) < current.index(corrected)
+    assert "not verified facts or permissions" in current
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT count(*) FROM goal_records WHERE user_id=%s AND instance_id=%s",
+            (h.identity.user_id, h.identity.instance_id),
+        ).fetchone()[0] == 0
