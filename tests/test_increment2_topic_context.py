@@ -274,3 +274,122 @@ def test_resumed_topic_abstains_on_late_unlinked_frequency_revision(dsn):
     assert original not in system
     assert first_correction not in system
     assert latest_correction not in system
+
+
+@pytest.mark.parametrize("utterance", [
+    "Let's go back to that topic",
+    "Can we go back to it?",
+    "Back to it.",
+    "Let's return to this discussion.",
+    "Let's go back to that plan",
+    "Where did we leave off with that topic?",
+    "Where had I stopped with it?",
+])
+def test_anaphoric_returns_are_not_named_topics(utterance):
+    assert parse_explicit_topic_return(utterance) is None
+    assert explicit_topic_history_request(utterance) is None
+
+
+@pytest.mark.parametrize("utterance", [
+    "Let's go back to that topic",
+    "Can we go back to it?",
+])
+def test_anaphoric_returns_keep_existing_focus_and_prompt(dsn, utterance):
+    h, model = host(dsn)
+    identity = h.active_identity
+    h.send("Let's switch topics to Nginx certificates.",
+           idempotency_key="nginx")
+    before = dialogue(dsn, identity)
+    assert before.focus_thread_id is not None
+    h.send(utterance, idempotency_key="anaphoric")
+    after = dialogue(dsn, identity)
+    assert after.focus_thread_id == before.focus_thread_id
+    assert len(after.threads) == len(before.threads) == 1
+    assert after.threads[0].title == "Nginx certificates"
+    current_prompt = prompt(model)
+    assert "Current user turn explicitly names a topic transition" not in current_prompt
+    assert "Stored dialogue metadata" in current_prompt
+    assert "Earlier source-linked user statements" not in current_prompt
+
+
+def test_intervening_unrelated_turn_does_not_drop_linked_correction(dsn):
+    h, model = host(dsn)
+    original = "I want to walk three times a week."
+    corrected = "Actually, twice a week is more realistic."
+    source = h.send(original, idempotency_key="original")
+    h.send("I made tea this evening.", idempotency_key="tea")
+    amended = h.send(corrected, idempotency_key="correction")
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        root = conn.execute(
+            "SELECT signal_id FROM conversation_intent_signals WHERE turn_id=%s",
+            (source.turn_id,),
+        ).fetchone()[0]
+        related = conn.execute(
+            "SELECT related_signal_id FROM conversation_intent_signals WHERE turn_id=%s",
+            (amended.turn_id,),
+        ).fetchone()[0]
+    assert related == root  # Amendment is linked, despite the tea interruption.
+    h.begin_session("later")
+    h.restart_host()
+    h.send("Back to walking.", idempotency_key="return-walking")
+    current = prompt(model)
+    assert "Earlier source-linked user statements" in current
+    assert original in current and source.turn_id in current
+    assert corrected in current and amended.turn_id in current
+    assert current.index(original) < current.index(corrected)
+    assert "latest linked discussion correction" in current
+    assert "not a finalized plan or approved goal" in current
+
+
+def test_latest_linked_correction_wins_across_intervening_turns(dsn):
+    h, model = host(dsn)
+    original = "I want to walk three times a week."
+    earlier = "Actually, twice a week is more realistic."
+    latest = "Actually, once per week would be better."
+    h.send(original, idempotency_key="original")
+    h.send(earlier, idempotency_key="first")
+    h.send("I made tea this evening.", idempotency_key="tea")
+    newest = h.send(latest, idempotency_key="latest")
+    h.begin_session("later")
+    h.send("Back to walking.", idempotency_key="resume")
+    current = prompt(model)
+    assert original in current
+    assert latest in current and newest.turn_id in current
+    assert earlier not in current
+
+
+def test_resumed_linked_correction_is_atomic_under_small_budget(dsn):
+    from psycopg.rows import dict_row
+    from persona_agent.historical_user_turns import historical_user_turn_context_block
+
+    h, model = host(dsn)
+    original = "I want to walk three times a week."
+    correction = "Actually, twice a week is more realistic."
+    h.send(original, idempotency_key="original")
+    h.send("I made tea this evening.", idempotency_key="tea")
+    h.send(correction, idempotency_key="correction")
+    h.begin_session("later")
+    recall = h.send("Back to walking.", idempotency_key="return")
+    with psycopg.connect(dsn, autocommit=True, row_factory=dict_row) as conn:
+        at = conn.execute(
+            "SELECT created_at FROM conversation_turns WHERE turn_id=%s",
+            (recall.turn_id,),
+        ).fetchone()["created_at"]
+        with conn.transaction():
+            with conn.cursor(row_factory=dict_row) as cur:
+                def read(limit):
+                    return historical_user_turn_context_block(
+                        cur,user_id=h.identity.user_id,
+                        instance_id=h.identity.instance_id,
+                        conversation_id=h.active_identity.conversation_id,
+                        before_at=at,latest_text="Back to walking.",
+                        max_chars=limit,
+                    )
+                full = read(1400)
+                assert original in full and correction in full
+                constrained = read(len(full)-1)
+    # Never show a stale first cadence in isolation when the newer linked
+    # correction cannot fit. The whole source+latest amendment is atomic.
+    assert original not in constrained
+    assert correction not in constrained
+    assert not constrained or len(constrained) <= len(full)-1
