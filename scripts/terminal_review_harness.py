@@ -18,7 +18,9 @@ from uuid import UUID, uuid4
 
 import psycopg
 
-from persona_e2e import create_isolated_database, drop_isolated_database
+from persona_e2e import (
+    create_isolated_database, drop_isolated_database, publish_status_file,
+)
 from persona_agent.acceptance_host import seed_local_demo
 from persona_agent.behavioral_acceptance import BehavioralAcceptanceHarness
 from persona_agent.contracts import TrustedActor
@@ -246,6 +248,8 @@ def main(argv: list[str] | None = None) -> int:
         command.add_argument("--ollama-url", default=os.environ.get("ACCEPTANCE_OLLAMA_URL", "http://127.0.0.1:11434"))
         command.add_argument("--output", type=Path)
         command.add_argument("--keep-db", action="store_true", help="Retain the isolated database for debugging")
+        command.add_argument("--publication-status-file", type=Path,
+                             help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     if not args.admin_dsn:
         parser.error("PERSONA_E2E_ADMIN_DSN or --admin-dsn is required; use an isolated PostgreSQL server")
@@ -272,6 +276,8 @@ def main(argv: list[str] | None = None) -> int:
             # A partial file can exist after an append/fsync failure.
             journal.close()
             journal = None
+            if args.publication_status_file is not None:
+                publish_status_file(args.publication_status_file)
             saved = True
         else:
             report = {"kind": "terminal-goal-injection-v1", "passed": False,
@@ -283,6 +289,8 @@ def main(argv: list[str] | None = None) -> int:
                                          "message": str(exc)[:500]})
                 exit_code = 1
             _save_private(output, report)
+            if args.publication_status_file is not None:
+                publish_status_file(args.publication_status_file)
             saved = True
             print(f"Goal injection checks: {sum(x['pass'] for x in report.get('checks', []))} passed; quality review pending")
     except Exception as exc:
