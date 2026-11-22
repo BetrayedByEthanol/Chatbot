@@ -12,7 +12,7 @@ from .dialogue_state import _link_turn
 from .intent_interpretation import (
     classify_intent, explicit_unresolved_named_topic,
     is_named_objective_reference, parse_explicit_topic_switch,
-    should_interpret_with_model,
+    parse_explicit_topic_return, should_interpret_with_model,
 )
 from .conversation import _event
 
@@ -46,7 +46,11 @@ def _starts_new_topic(kind: str, label: str) -> bool:
     if kind == "REQUEST" and is_named_objective_reference(label):
         return False
     return kind == "OBJECTIVE" or (
-        kind == "REQUEST" and bool(_TOPIC_REQUEST.match(label))
+        kind == "REQUEST" and (
+            parse_explicit_topic_switch(label) is not None
+            or parse_explicit_topic_return(label) is not None
+            or bool(_TOPIC_REQUEST.match(label))
+        )
     )
 
 
@@ -69,6 +73,46 @@ def _unique_named_discussion(
     )
     matches=cur.fetchall()
     return matches[0]["thread_id"] if len(matches)==1 else None
+
+
+
+def _unique_explicit_topic_match(
+    cur, *, user_id, instance_id, conversation_id, topic: str,
+) -> tuple[UUID | None, bool]:
+    """Read-only candidate match for an explicitly named topic.
+
+    An exact title match wins. Otherwise, PostgreSQL English stemming
+    recognizes "walking" vs "walk" and "Nginx" vs "Nginx certificates".
+    More than one match is ambiguous; never pick a thread by recency or
+    overwrite manual/external topic ownership.
+    """
+    scope = (conversation_id, user_id, instance_id)
+    cur.execute(
+        """SELECT thread_id FROM dialogue_threads
+           WHERE conversation_id=%s AND user_id=%s AND instance_id=%s
+             AND origin_kind='AUTO_SIGNAL' AND resolution_status='OPEN'
+             AND lower(title)=lower(%s)
+           ORDER BY thread_id LIMIT 2""",
+        (*scope, topic),
+    )
+    exact = cur.fetchall()
+    if len(exact) == 1:
+        return exact[0]["thread_id"], False
+    if len(exact) > 1:
+        return None, True
+    cur.execute(
+        """SELECT thread_id FROM dialogue_threads
+           WHERE conversation_id=%s AND user_id=%s AND instance_id=%s
+             AND origin_kind='AUTO_SIGNAL' AND resolution_status='OPEN'
+             AND to_tsvector('english',title)
+                 @@ plainto_tsquery('english',%s)
+           ORDER BY thread_id LIMIT 2""",
+        (*scope, topic),
+    )
+    matches = cur.fetchall()
+    if len(matches) == 1:
+        return matches[0]["thread_id"], False
+    return None, len(matches) > 1
 
 
 def _fresh_named_discussion(
@@ -238,63 +282,72 @@ def advance_on_delivery(
             if match is not None:
                 target=match["thread_id"]
         else:
-            # The previously-created named discussion may originate from a
-            # REQUEST, not an OBJECTIVE. Reuse an exact OPEN thread before
-            # considering the broader, ambiguous keyword match.
-            named_title=(
-                explicit_unresolved_named_topic(signal["label"])
-                if signal["intent_kind"]=="REQUEST" else None
+            # A named return/switch is a discussion request. Reuse a unique
+            # existing AUTO thread; multiple candidates must cause abstention.
+            # New topics are opened only on delivered replies, not ingress.
+            explicit_topic = (
+                parse_explicit_topic_switch(signal["label"])
+                or parse_explicit_topic_return(signal["label"])
+                if signal["intent_kind"] == "REQUEST" else None
             )
-            if named_title is not None:
-                target=_unique_named_discussion(
+            ambiguous_topic = False
+            if explicit_topic is not None:
+                target, ambiguous_topic = _unique_explicit_topic_match(
                     cur,user_id=user_id,instance_id=instance_id,
-                    conversation_id=conversation_id,title=named_title,
+                    conversation_id=conversation_id,topic=explicit_topic,
                 )
-            if target is None:
-                # Only when there is no exact match may an explicit named
-                # switch open a fresh subject. Matching other topics (or an
-                # incomplete scan) still causes a conservative abstention.
-                named_new=(
-                    _fresh_named_discussion(
+            if target is None and not ambiguous_topic:
+                # Preserve the existing exact named-plan resolution and its
+                # ambiguity controls for non-explicit discussion references.
+                named_title=(
+                    explicit_unresolved_named_topic(signal["label"])
+                    if signal["intent_kind"]=="REQUEST" else None
+                )
+                if named_title is not None:
+                    target=_unique_named_discussion(
                         cur,user_id=user_id,instance_id=instance_id,
-                        conversation_id=conversation_id,label=signal["label"],
-                    ) if named_title is not None else None
-                )
-                if not (_starts_new_topic(signal["intent_kind"],signal["label"])
-                        or named_new is not None):
-                    named_new=None
-                # A fresh objective/topic request is a conversational
-                # subject, never an approved Goal.
-                title=(
-                    parse_explicit_topic_switch(signal["label"])
-                    or named_new
-                    or (signal["label"].strip()
-                        if _starts_new_topic(signal["intent_kind"],signal["label"])
-                        else "")
-                )[:160]
-                if title:
-                    cur.execute(
-                        """SELECT thread_id FROM dialogue_threads
-                           WHERE conversation_id=%s AND user_id=%s
-                             AND instance_id=%s AND origin_kind='AUTO_SIGNAL'
-                             AND lower(title)=lower(%s)
-                           ORDER BY updated_at DESC LIMIT 2""",
-                        (conversation_id,user_id,instance_id,title),
+                        conversation_id=conversation_id,title=named_title,
                     )
-                    matches=cur.fetchall()
-                    if len(matches)==1:
-                        target=matches[0]["thread_id"]
-                    elif len(matches)==0:
-                        target=uuid4()
+                if target is None:
+                    named_new=(
+                        _fresh_named_discussion(
+                            cur,user_id=user_id,instance_id=instance_id,
+                            conversation_id=conversation_id,label=signal["label"],
+                        ) if named_title is not None else None
+                    )
+                    if not (_starts_new_topic(signal["intent_kind"],signal["label"])
+                            or named_new is not None):
+                        named_new=None
+                    title=(
+                        explicit_topic
+                        or named_new
+                        or (signal["label"].strip()
+                            if _starts_new_topic(signal["intent_kind"],signal["label"])
+                            else "")
+                    )[:160]
+                    if title:
                         cur.execute(
-                            """INSERT INTO dialogue_threads (
-                                 thread_id,conversation_id,user_id,instance_id,
-                                 title,origin_turn_id,last_turn_id,origin_kind
-                               ) VALUES (%s,%s,%s,%s,%s,%s,%s,'AUTO_SIGNAL')""",
-                            (target,conversation_id,user_id,instance_id,
-                             title,turn_id,turn_id),
+                            """SELECT thread_id FROM dialogue_threads
+                               WHERE conversation_id=%s AND user_id=%s
+                                 AND instance_id=%s AND origin_kind='AUTO_SIGNAL'
+                                 AND lower(title)=lower(%s)
+                               ORDER BY updated_at DESC LIMIT 2""",
+                            (conversation_id,user_id,instance_id,title),
                         )
-                        new=True
+                        matches=cur.fetchall()
+                        if len(matches)==1:
+                            target=matches[0]["thread_id"]
+                        elif len(matches)==0:
+                            target=uuid4()
+                            cur.execute(
+                                """INSERT INTO dialogue_threads (
+                                     thread_id,conversation_id,user_id,instance_id,
+                                     title,origin_turn_id,last_turn_id,origin_kind
+                                   ) VALUES (%s,%s,%s,%s,%s,%s,%s,'AUTO_SIGNAL')""",
+                                (target,conversation_id,user_id,instance_id,
+                                 title,turn_id,turn_id),
+                            )
+                            new=True
     if target is not None:
         if _focus(
             cur,user_id=user_id,instance_id=instance_id,
@@ -401,7 +454,8 @@ def resolve_auto_question_on_ingress(
     value=text.strip()
     simple=value.casefold().strip(" .!?")
     if (not value or simple in _NOT_ANSWERS or "?" in value
-            or _CLEAR_SWITCH.match(value)):
+            or _CLEAR_SWITCH.match(value)
+            or parse_explicit_topic_return(value) is not None):
         return
     interpretation=classify_intent(value)
     if should_interpret_with_model(value):
