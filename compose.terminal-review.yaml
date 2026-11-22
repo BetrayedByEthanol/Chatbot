@@ -1,0 +1,16 @@
+# Isolated, short-lived PostgreSQL for one terminal review invocation.
+# Do not reuse a Compose project or attach production data/volumes.
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${E2E_POSTGRES_PASSWORD:?Ephemeral local PostgreSQL password required}
+    ports:
+      - "127.0.0.1::5432" # Docker assigns a free local port per invocation.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 2s
+      timeout: 3s
+      retries: 30

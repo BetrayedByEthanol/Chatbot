@@ -142,3 +142,101 @@ def test_human_journal_close_failure_preserves_isolated_database(tmp_path, monke
     assert code == 1
     assert report.exists()
     assert dropped == []
+
+
+def test_runner_publishes_marker_only_after_complete_journal(tmp_path, monkeypatch):
+    import terminal_review_harness as terminal
+
+    dropped = []
+    monkeypatch.setattr(terminal, "_prepare", lambda dsn: ("persona_e2e_test", "db"))
+    monkeypatch.setattr(terminal, "OllamaChatGateway", lambda **kwargs: FakeGateway())
+    monkeypatch.setattr(terminal, "drop_isolated_database", lambda *args: dropped.append(args))
+    monkeypatch.setattr(
+        terminal, "human_session",
+        lambda dsn, gateway, journal: journal.append({"type": "end"}),
+    )
+    marker = tmp_path / "published.marker"
+    report = tmp_path / "complete.jsonl"
+    code = terminal.main([
+        "human", "--admin-dsn", "maintenance", "--output", str(report),
+        "--publication-status-file", str(marker),
+    ])
+    assert code == 0
+    assert marker.read_text() == "PUBLISHED\n"
+    assert '"type": "end"' in report.read_text()
+    assert dropped == [("maintenance", "persona_e2e_test")]
+
+
+@pytest.mark.parametrize("mode", ["human", "goal-creation"])
+def test_marker_failure_retains_db_even_when_report_exists(
+    tmp_path, monkeypatch, mode,
+):
+    import terminal_review_harness as terminal
+
+    dropped = []
+    monkeypatch.setattr(terminal, "_prepare", lambda dsn: ("persona_e2e_test", "db"))
+    monkeypatch.setattr(terminal, "OllamaChatGateway", lambda **kwargs: FakeGateway())
+    monkeypatch.setattr(terminal, "drop_isolated_database", lambda *args: dropped.append(args))
+    monkeypatch.setattr(
+        terminal, "human_session",
+        lambda dsn, gateway, journal: journal.append({"type": "end"}),
+    )
+    monkeypatch.setattr(
+        terminal, "goal_injection",
+        lambda dsn, gateway, report: {"checks": [], "passed": True},
+    )
+
+    def failed_marker(path):
+        raise OSError("simulated publication marker error")
+
+    monkeypatch.setattr(terminal, "publish_status_file", failed_marker)
+    report = tmp_path / ("complete.jsonl" if mode == "human" else "complete.json")
+    marker = tmp_path / "missing.marker"
+    code = terminal.main([
+        mode, "--admin-dsn", "maintenance", "--output", str(report),
+        "--publication-status-file", str(marker),
+    ])
+    assert code == 1
+    assert report.exists()
+    assert not marker.exists()
+    assert dropped == []
+
+
+def test_keep_db_for_wrapper_export_after_publication(tmp_path, monkeypatch):
+    import terminal_review_harness as terminal
+
+    dropped = []
+    monkeypatch.setattr(terminal, "_prepare", lambda dsn: ("persona_e2e_test", "db"))
+    monkeypatch.setattr(terminal, "OllamaChatGateway", lambda **kwargs: FakeGateway())
+    monkeypatch.setattr(terminal, "drop_isolated_database", lambda *args: dropped.append(args))
+    monkeypatch.setattr(
+        terminal, "goal_injection",
+        lambda dsn, gateway, report: {"checks": [], "passed": True},
+    )
+    marker = tmp_path / "published.marker"
+    code = terminal.main([
+        "goal-creation", "--admin-dsn", "maintenance",
+        "--output", str(tmp_path / "goal.json"),
+        "--publication-status-file", str(marker),
+        "--keep-db",
+    ])
+    assert code == 0
+    assert marker.read_text() == "PUBLISHED\n"
+    assert dropped == []
+
+
+@pytest.mark.parametrize("abbreviation,argument", [
+    ("--admin-d", "postgresql://localhost/external"),
+    ("--keep", None),
+    ("--publication-status", "external.status"),
+])
+def test_direct_runner_rejects_abbreviated_control_options(abbreviation, argument):
+    """Defense in depth: even direct Python calls cannot abbreviate DB controls."""
+    from terminal_review_harness import main
+
+    argv = ["human", "--admin-dsn", "maintenance", abbreviation]
+    if argument is not None:
+        argv.append(argument)
+    with pytest.raises(SystemExit) as exc:
+        main(argv)
+    assert exc.value.code == 2
