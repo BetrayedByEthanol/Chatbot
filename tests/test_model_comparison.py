@@ -59,7 +59,7 @@ def test_ollama_namespace_and_tag_are_supported():
 def test_read_summary_uses_observed_routes_not_assumed_model(tmp_path):
     bundle = tmp_path / "test.zip"
     members = {
-        "manifest.json": {"model": "test-model"},
+        "manifest.json": {"model": "test-model", "synthetic_data": True},
         "transcript.json": [
             {"action": "session", "name": "first"},
             {"action": "message", "assistant": "One short reply",

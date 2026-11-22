@@ -70,6 +70,17 @@ def read_summary(bundle: Path) -> dict:
         snapshots = json.loads(archive.read("state_snapshots.json"))
         evaluation = json.loads(archive.read("evaluation.json"))
         errors = json.loads(archive.read("errors.json"))
+    # A present pathname is not evidence of successful publication. Only a
+    # readable canonical synthetic E2E ZIP with the required records counts.
+    if (not isinstance(manifest, dict) or manifest.get("synthetic_data") is not True
+        or not isinstance(manifest.get("model"), str)
+        or not manifest["model"]
+        or not isinstance(events, list)
+        or not isinstance(snapshots, list)
+        or not isinstance(errors, list)
+        or not isinstance(evaluation, dict)
+        or type(evaluation.get("contract_passed")) is not bool):
+        raise ValueError("invalid or incomplete published E2E evidence")
     replies = [item for item in events if item.get("action") == "message"]
     durations = [item["response_elapsed_ms"] for item in replies
                  if isinstance(item.get("response_elapsed_ms"), (int, float))]
@@ -184,9 +195,12 @@ def compare(argv: list[str] | None = None) -> int:
                  "bundle": bundle.name if bundle.exists() else None,
                  "review_packet": None,
                  "review_status": "NO_PACKET"}
+        evidence_verified = False
         if bundle.is_file():
             try:
                 entry.update(read_summary(bundle))
+                evidence_verified = True
+                entry["evidence_status"] = "VERIFIED"
                 # A failed contract trace must never be rated as a successful
                 # natural-dialogue run, even if it contains plausible replies.
                 if code == 0 and entry["contract_passed"] and not entry["error_count"]:
@@ -200,15 +214,22 @@ def compare(argv: list[str] | None = None) -> int:
                     entry["review_status"] = "AWAITING_INDEPENDENT_HUMAN_REVIEW"
             except (ValueError, OSError, KeyError, TypeError, RuntimeError, BadZipFile) as exc:
                 entry["evidence_error"] = f"{type(exc).__name__}: {str(exc)[:300]}"
+        if not evidence_verified:
+            entry["evidence_status"] = "INVALID" if bundle.exists() else "MISSING"
         outcomes.append(entry)
         # This is a private diagnostic, not a ranking or automatic evaluator.
         private_json(destination / f"{alias}.result.json", entry)
-        if code == 2:
-            # The E2E wrapper may have retained Compose because publication
-            # or cleanup is uncertain. Do not launch more potentially unsafe
-            # jobs; keep prior evidence and record a partial comparison.
-            print(f"{alias}: E2E infrastructure/evidence failure; aborting remaining jobs",
-                  file=sys.stderr)
+        if code not in (0, 1) or not evidence_verified:
+            # Status 1 is a valid contract-failure result ONLY with a complete,
+            # readable evidence ZIP. Otherwise the E2E wrapper may have kept
+            # its PostgreSQL service on the fixed port: stop before the next
+            # model and retain whatever partial diagnostic evidence exists.
+            print(
+                f"{alias}: infrastructure or unconfirmed evidence publication "
+                f"(status={code}, evidence={entry['evidence_status']}); "
+                "aborting remaining jobs",
+                file=sys.stderr,
+            )
             break
     summary = {
         "format": "persona-model-comparison.v1",
