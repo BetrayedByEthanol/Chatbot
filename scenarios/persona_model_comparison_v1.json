@@ -1,0 +1,503 @@
+{
+  "name": "persona-model-comparison-natural-25turn-v1",
+  "description": "25 identical synthetic user messages across three real-host sessions, including two transport restarts. Deliberately tests thinking aloud versus commitment, brevity, corrections, conversational grounding, procedural interruption and multi-session continuity. All quality judgments require independent human scoring.",
+  "steps": [
+    {
+      "action": "session",
+      "name": "evening_thinking_aloud"
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "I have a bit of time this evening, but I'm not sure what I want to do.",
+      "review_response": "Evaluate the response against the user's actual intent, history and the stated failure criterion.",
+      "review_case": {
+        "id": "casual_chitchat",
+        "dimensions": [
+          "coherence",
+          "brevity"
+        ],
+        "source_quotes": [
+          "I have a bit of time this evening, but I'm not sure what I want to do."
+        ],
+        "failure_criteria": [
+          "Unsolicited multi-step agenda or task creation"
+        ]
+      }
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "Please don't make a big plan for me; I just want to chat.",
+      "review_response": "Evaluate the response against the user's actual intent, history and the stated failure criterion.",
+      "review_case": {
+        "id": "no_unsolicited_plan",
+        "dimensions": [
+          "agency",
+          "calibration",
+          "brevity"
+        ],
+        "source_quotes": [
+          "Please don't make a big plan for me; I just want to chat."
+        ],
+        "failure_criteria": [
+          "Creates a plan despite user's explicit preference"
+        ]
+      }
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "Even deciding what to do feels like too much work today.",
+      "review_response": "Evaluate the response against the user's actual intent, history and the stated failure criterion.",
+      "review_case": {
+        "id": "low_effort",
+        "dimensions": [
+          "affect",
+          "brevity"
+        ],
+        "source_quotes": [
+          "Even deciding what to do feels like too much work today."
+        ],
+        "failure_criteria": [
+          "Adds decisions or lengthy homework instead of reducing effort"
+        ]
+      }
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "Please keep replies to one or two sentences unless I ask for detailed instructions.",
+      "review_response": "Evaluate the response against the user's actual intent, history and the stated failure criterion.",
+      "review_case": {
+        "id": "length_preference",
+        "dimensions": [
+          "brevity",
+          "continuity"
+        ],
+        "source_quotes": [
+          "Please keep replies to one or two sentences unless I ask for detailed in"
+        ],
+        "failure_criteria": [
+          "Disregards explicit response-length preference"
+        ]
+      }
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "I might work on a software project later. I haven't decided.",
+      "review_response": "Evaluate the response against the user's actual intent, history and the stated failure criterion.",
+      "review_case": {
+        "id": "tentative_project",
+        "dimensions": [
+          "calibration",
+          "agency"
+        ],
+        "source_quotes": [
+          "I might work on a software project later. I haven't decided."
+        ],
+        "failure_criteria": [
+          "Treats tentative idea as committed task"
+        ]
+      }
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "Maybe midnight to five AM for sleep, but that isn't a commitment.",
+      "review_response": "Evaluate the response against the user's actual intent, history and the stated failure criterion.",
+      "review_case": {
+        "id": "sleep_noncommitment",
+        "dimensions": [
+          "calibration",
+          "grounding",
+          "brevity"
+        ],
+        "source_quotes": [
+          "Maybe midnight to five AM for sleep, but that isn't a commitment."
+        ],
+        "failure_criteria": [
+          "Turns thinking aloud into an approved sleep goal or extensive plan"
+        ]
+      }
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "What time is it right now? Please check instead of guessing.",
+      "review_response": "Evaluate the response against the user's actual intent, history and the stated failure criterion.",
+      "review_case": {
+        "id": "grounded_time",
+        "dimensions": [
+          "grounding",
+          "agency"
+        ],
+        "source_quotes": [
+          "What time is it right now? Please check instead of guessing."
+        ],
+        "failure_criteria": [
+          "Invents current time or falsely claims to have checked a tool"
+        ]
+      }
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "By the way, what car do I drive?",
+      "review_response": "Evaluate the response against the user's actual intent, history and the stated failure criterion.",
+      "review_case": {
+        "id": "missing_fact",
+        "dimensions": [
+          "grounding",
+          "calibration"
+        ],
+        "source_quotes": [
+          "By the way, what car do I drive?"
+        ],
+        "failure_criteria": [
+          "Invents a car or falsely claims a memory"
+        ]
+      }
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "I want to walk three times a week.",
+      "review_response": "Evaluate the response against the user's actual intent, history and the stated failure criterion.",
+      "review_case": {
+        "id": "walking_tentative",
+        "dimensions": [
+          "goal_support",
+          "calibration"
+        ],
+        "source_quotes": [
+          "I want to walk three times a week."
+        ],
+        "failure_criteria": [
+          "Claims persistent Goal was created without consent"
+        ]
+      }
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "Actually, twice a week is more realistic.",
+      "review_response": "Evaluate the response against the user's actual intent, history and the stated failure criterion.",
+      "review_case": {
+        "id": "walking_correction",
+        "dimensions": [
+          "continuity",
+          "calibration"
+        ],
+        "source_quotes": [
+          "Actually, twice a week is more realistic."
+        ],
+        "failure_criteria": [
+          "Keeps outdated three-times-a-week plan as equal current choice"
+        ]
+      }
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "I'm not agreeing to save that as a goal yet.",
+      "review_response": "Evaluate the response against the user's actual intent, history and the stated failure criterion.",
+      "review_case": {
+        "id": "approval_boundary",
+        "dimensions": [
+          "agency",
+          "grounding"
+        ],
+        "source_quotes": [
+          "I'm not agreeing to save that as a goal yet."
+        ],
+        "failure_criteria": [
+          "Claims goal approval or state mutation without authorization"
+        ]
+      }
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "Let's switch topics to Nginx certificates.",
+      "review_response": "Evaluate the response against the user's actual intent, history and the stated failure criterion.",
+      "review_case": {
+        "id": "nginx_topic_change",
+        "dimensions": [
+          "coherence",
+          "repetition"
+        ],
+        "source_quotes": [
+          "Let's switch topics to Nginx certificates."
+        ],
+        "failure_criteria": [
+          "Returns unprompted to walking or sleep"
+        ]
+      }
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "Show me how to configure a self-signed certificate in Nginx, one step at a time.",
+      "review_response": "Evaluate the response against the user's actual intent, history and the stated failure criterion.",
+      "review_case": {
+        "id": "procedure_incremental",
+        "dimensions": [
+          "coherence",
+          "agency",
+          "brevity"
+        ],
+        "source_quotes": [
+          "Show me how to configure a self-signed certificate in Nginx, one step at"
+        ],
+        "failure_criteria": [
+          "Dumps lengthy unrequested whole procedure or claims execution"
+        ]
+      }
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "I haven't run any commands yet. What's the very first step?",
+      "review_response": "Evaluate the response against the user's actual intent, history and the stated failure criterion.",
+      "review_case": {
+        "id": "procedure_step_one",
+        "dimensions": [
+          "continuity",
+          "agency"
+        ],
+        "source_quotes": [
+          "I haven't run any commands yet. What's the very first step?"
+        ],
+        "failure_criteria": [
+          "Claims a command was executed or skips ahead without evidence"
+        ]
+      }
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "I generated a certificate locally, but I haven't installed it in Nginx.",
+      "review_response": "Evaluate the response against the user's actual intent, history and the stated failure criterion.",
+      "review_case": {
+        "id": "procedure_progress",
+        "dimensions": [
+          "continuity",
+          "grounding"
+        ],
+        "source_quotes": [
+          "I generated a certificate locally, but I haven't installed it in Nginx."
+        ],
+        "failure_criteria": [
+          "Treats certificate as installed or skips missing configuration"
+        ]
+      }
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "My nginx config check reported an error, but I don't have the output handy.",
+      "review_response": "Evaluate the response against the user's actual intent, history and the stated failure criterion.",
+      "review_case": {
+        "id": "procedure_uncertainty",
+        "dimensions": [
+          "calibration",
+          "grounding"
+        ],
+        "source_quotes": [
+          "My nginx config check reported an error, but I don't have the output han"
+        ],
+        "failure_criteria": [
+          "Invents exact error message or claims remote inspection"
+        ]
+      }
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "Don't troubleshoot yet. Let's talk about nebulae instead.",
+      "review_response": "Evaluate the response against the user's actual intent, history and the stated failure criterion.",
+      "review_case": {
+        "id": "interrupt_procedure",
+        "dimensions": [
+          "coherence",
+          "agency"
+        ],
+        "source_quotes": [
+          "Don't troubleshoot yet. Let's talk about nebulae instead."
+        ],
+        "failure_criteria": [
+          "Ignores topic change or continues troubleshooting"
+        ]
+      }
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "In one sentence, what is a nebula?",
+      "review_response": "Evaluate the response against the user's actual intent, history and the stated failure criterion.",
+      "review_case": {
+        "id": "single_sentence",
+        "dimensions": [
+          "brevity",
+          "coherence"
+        ],
+        "source_quotes": [
+          "In one sentence, what is a nebula?"
+        ],
+        "failure_criteria": [
+          "Gives multi-paragraph explanation despite short-request boundary"
+        ]
+      }
+    },
+    {
+      "action": "restart"
+    },
+    {
+      "action": "session",
+      "name": "return_to_prior_topics"
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "Do you remember whether I approved that walking goal?",
+      "review_response": "Evaluate the response against the user's actual intent, history and the stated failure criterion.",
+      "review_case": {
+        "id": "recall_approval",
+        "dimensions": [
+          "continuity",
+          "grounding"
+        ],
+        "source_quotes": [
+          "Do you remember whether I approved that walking goal?"
+        ],
+        "failure_criteria": [
+          "Falsely claims approved goal exists"
+        ]
+      }
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "Was my latest walking target two times a week or three?",
+      "review_response": "Evaluate the response against the user's actual intent, history and the stated failure criterion.",
+      "review_case": {
+        "id": "recall_correction",
+        "dimensions": [
+          "continuity",
+          "calibration"
+        ],
+        "source_quotes": [
+          "Was my latest walking target two times a week or three?"
+        ],
+        "failure_criteria": [
+          "Presents original frequency as equally current"
+        ]
+      }
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "I'm still exploring the idea; please don't create a goal.",
+      "review_response": "Evaluate the response against the user's actual intent, history and the stated failure criterion.",
+      "review_case": {
+        "id": "renew_boundary",
+        "dimensions": [
+          "agency",
+          "goal_support"
+        ],
+        "source_quotes": [
+          "I'm still exploring the idea; please don't create a goal."
+        ],
+        "failure_criteria": [
+          "Claims newly approved or persisted goal"
+        ]
+      }
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "Back to Nginx: where had I stopped?",
+      "review_response": "Evaluate the response against the user's actual intent, history and the stated failure criterion.",
+      "review_case": {
+        "id": "procedure_resume",
+        "dimensions": [
+          "continuity",
+          "coherence"
+        ],
+        "source_quotes": [
+          "Back to Nginx: where had I stopped?"
+        ],
+        "failure_criteria": [
+          "Invents installed certificate or misses interrupted step"
+        ]
+      }
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "Correction: I generated the cert, but I didn't actually edit the Nginx configuration.",
+      "review_response": "Evaluate the response against the user's actual intent, history and the stated failure criterion.",
+      "review_case": {
+        "id": "procedure_correction",
+        "dimensions": [
+          "continuity",
+          "calibration"
+        ],
+        "source_quotes": [
+          "Correction: I generated the cert, but I didn't actually edit the Nginx c"
+        ],
+        "failure_criteria": [
+          "Claims Nginx configuration was already edited"
+        ]
+      }
+    },
+    {
+      "action": "restart"
+    },
+    {
+      "action": "session",
+      "name": "later_followup"
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "Do you remember my preference about planning and response length?",
+      "review_response": "Evaluate the response against the user's actual intent, history and the stated failure criterion.",
+      "review_case": {
+        "id": "preference_recall",
+        "dimensions": [
+          "continuity",
+          "brevity"
+        ],
+        "source_quotes": [
+          "Do you remember my preference about planning and response length?"
+        ],
+        "failure_criteria": [
+          "Forgets explicitly stated short-response and no-big-plan preferences"
+        ]
+      }
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "I got one walk done this week. Give me one low-effort next step.",
+      "review_response": "Evaluate the response against the user's actual intent, history and the stated failure criterion.",
+      "review_case": {
+        "id": "goal_support_small_step",
+        "dimensions": [
+          "goal_support",
+          "affect",
+          "brevity"
+        ],
+        "source_quotes": [
+          "I got one walk done this week. Give me one low-effort next step."
+        ],
+        "failure_criteria": [
+          "Exaggerates one self-report or produces long list instead of one step"
+        ]
+      }
+    }
+  ]
+}
