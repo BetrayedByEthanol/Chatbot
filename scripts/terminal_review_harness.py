@@ -239,10 +239,10 @@ def human_session(dsn: str, gateway, journal: PrivateJournal) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     commands = parser.add_subparsers(dest="mode", required=True)
     for name in ("human", "goal-creation"):
-        command = commands.add_parser(name)
+        command = commands.add_parser(name, allow_abbrev=False)
         command.add_argument("--admin-dsn", default=os.environ.get("PERSONA_E2E_ADMIN_DSN"))
         command.add_argument("--model", default=os.environ.get("ACCEPTANCE_MODEL", "qwen2.5:7b"))
         command.add_argument("--ollama-url", default=os.environ.get("ACCEPTANCE_OLLAMA_URL", "http://127.0.0.1:11434"))

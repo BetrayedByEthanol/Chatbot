@@ -150,3 +150,72 @@ def test_invalid_isolated_database_name_preserves_compose(fake_review):
     assert result.returncode == 2
     assert "preserving Compose project" in result.stderr
     assert not any(" down -v" in x for x in log.read_text().splitlines())
+
+@pytest.mark.parametrize("supplied", [
+    ("--admin-d", "postgresql://localhost/production"),
+    ("--admin-dsn=postgresql://localhost/production",),
+    ("--keep",),
+    ("--keep-db",),
+    ("--publication-status", "somewhere"),
+    ("--publication-status-file=somewhere",),
+    ("--retain-for-ex",),
+    ("--mod", "qwen2.5:7b"),
+    ("--", "--admin-dsn", "external"),
+])
+def test_disallowed_or_abbreviated_options_rejected_before_docker(fake_review, supplied):
+    run, tmp, log = fake_review
+    result = run("human", *supplied)
+    assert result.returncode == 2
+    assert "Unsupported terminal review argument" in result.stderr
+    assert not log.exists(), "Must not start even a disposable service"
+
+
+@pytest.mark.parametrize("mode,opts", [
+    ("human", ("--model", "qwen2.5:7b")),
+    ("human", ("--model=qwen2.5:7b",)),
+    ("goal-creation", ("--ollama-url", "http://127.0.0.1:11434")),
+    ("goal-creation", ("--ollama-url=http://127.0.0.1:11434",)),
+])
+def test_exact_forwarded_review_flags_still_work(fake_review, mode, opts):
+    run, tmp, log = fake_review
+    report = tmp / ("review.jsonl" if mode == "human" else "review.json")
+    result = run(mode, "--output", report, *opts)
+    assert result.returncode == 0, result.stderr
+    assert report.exists()
+    assert " down -v --remove-orphans" in log.read_text()
+
+
+def test_recovery_commands_run_from_fresh_shell_without_ephemeral_password(fake_review):
+    run, tmp, log = fake_review
+    report = tmp / "partial.jsonl"
+    result = run(
+        "human", "--output", report, REVIEW_NO_MARKER=1,
+        E2E_POSTGRES_PASSWORD="", REVIEW_RUN_STATUS=1,
+    )
+    assert result.returncode == 1
+    assert "preserving Compose project" in result.stderr
+    # Ensure commands do not depend on inheriting the wrapper-generated secret.
+    commands = []
+    for line in result.stderr.splitlines():
+        if line.startswith(("Inspect: ", "Recover with: ", "Clean up manually AFTER recovery: ")):
+            commands.append(line.split(": ", 1)[1])
+    assert len(commands) == 3
+    for command in commands:
+        assert command.startswith("E2E_POSTGRES_PASSWORD=recovery-only docker compose ")
+        env = dict(os.environ)
+        env["PATH"] = str(tmp / "bin") + os.pathsep + os.environ.get("PATH", "")
+        # The fixture's docker binary must reject a missing interpolated password.
+        env["REVIEW_DOCKER_LOG"] = str(log)
+        env.pop("E2E_POSTGRES_PASSWORD", None)
+        check = subprocess.run(
+            ["bash", "-c", '[[ -n "${E2E_POSTGRES_PASSWORD:-}" ]] || exit 41; ' + command],
+            cwd=tmp / "repo", env=env, capture_output=True, text=True, timeout=10,
+        )
+        # The initial shell has no password, but per-command assignment is
+        # applied to the child Compose process. Do not test against the parent.
+        assert check.returncode == 41
+        run_command = subprocess.run(
+            ["bash", "-c", command], cwd=tmp / "repo", env=env,
+            capture_output=True, text=True, timeout=10,
+        )
+        assert run_command.returncode == 0, run_command.stderr

@@ -67,3 +67,19 @@ The wrapper tests simulate Docker lifecycle and export; they do not substitute
 for a real Docker/PostgreSQL/Ollama integration run. The existing
 scripts/persona_e2e.py and scripts/review_natural_dialogue.py remain the
 full scenario and blinded human-review workflows.
+
+## Launcher argument and recovery safety
+
+Only the exact wrapper options `--model`, `--ollama-url`, `--output`,
+`--export-db` and `--export-db-to` are accepted (plus `--help`).
+Database-control arguments and their abbreviations, such as `--admin-d`
+and `--keep`, fail **before Docker starts**. The Python runner also disables
+long-option abbreviation.
+
+On failure, printed commands include `E2E_POSTGRES_PASSWORD=recovery-only`.
+This is an **interpolation placeholder**, not the ephemeral PostgreSQL
+password: Compose requires a nonempty value even for `ps`, `exec`, and
+`down`. It makes recovery possible in a new shell without saving the actual
+password. Use only the printed inspection/recovery/cleanup commands for the
+already-running project; the placeholder cannot restart a fresh database.
+The `exec ... psql` command uses the container's local Unix socket.

@@ -66,11 +66,27 @@ HELP
       report_output="${1#*=}"
       forward+=("$1")
       ;;
-    --keep-db|--admin-dsn|--admin-dsn=*|--publication-status-file|--publication-status-file=*|--retain-for-export)
-      echo "Option $1 is incompatible with wrapper-managed isolated PostgreSQL" >&2
+    --model|--ollama-url)
+      if (( $# < 2 )) || [[ -z "$2" || "$2" == --* ]]; then
+        echo "$1 requires a nonempty value" >&2
+        exit 2
+      fi
+      forward+=("$1" "$2")
+      shift
+      ;;
+    --model=*|--ollama-url=*)
+      if [[ -z "${1#*=}" ]]; then
+        echo "$1 requires a nonempty value" >&2
+        exit 2
+      fi
+      forward+=("$1")
+      ;;
+    *)
+      # Explicit allowlist: do not pass abbreviations such as --admin-d or
+      # --keep through to argparse, which otherwise accepts unique prefixes.
+      echo "Unsupported terminal review argument: $1" >&2
       exit 2
       ;;
-    *) forward+=("$1") ;;
   esac
   shift
 done
@@ -135,9 +151,13 @@ cleanup() {
     fi
   else
     echo "Evidence/export unconfirmed; preserving Compose project: $project" >&2
-    echo "Inspect: docker compose -f compose.terminal-review.yaml -p $project ps" >&2
-    echo "Recover with: docker compose -f compose.terminal-review.yaml -p $project exec -T postgres psql -U postgres -d postgres" >&2
-    echo "Clean up manually AFTER recovery: docker compose -f compose.terminal-review.yaml -p $project down -v" >&2
+    # Compose interpolates the password even for ps/exec/down. The real
+    # ephemeral password is NOT needed to manage an existing container.
+    # This dummy value satisfies interpolation without storing a secret.
+    local recovery_compose="E2E_POSTGRES_PASSWORD=recovery-only docker compose -f compose.terminal-review.yaml -p $project"
+    echo "Inspect: $recovery_compose ps" >&2
+    echo "Recover with: $recovery_compose exec -T postgres psql -U postgres -d postgres" >&2
+    echo "Clean up manually AFTER recovery: $recovery_compose down -v" >&2
     if (( rc == 0 )); then rc=2; fi
   fi
   rm -rf -- "$status_dir"
