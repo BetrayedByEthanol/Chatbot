@@ -13,7 +13,7 @@ from .intent_interpretation import (
     classify_intent, explicit_unresolved_named_topic,
     is_named_objective_reference, parse_explicit_topic_switch,
     parse_explicit_topic_return, explicit_topic_history_request,
-    should_interpret_with_model,
+    is_anaphoric_topic_return, should_interpret_with_model,
 )
 from .conversation import _event
 
@@ -456,7 +456,10 @@ def resolve_auto_question_on_ingress(
     simple=value.casefold().strip(" .!?")
     if (not value or simple in _NOT_ANSWERS or "?" in value
             or _CLEAR_SWITCH.match(value)
-            or explicit_topic_history_request(value) is not None):
+            or explicit_topic_history_request(value) is not None
+            or is_anaphoric_topic_return(value)):
+        # A pronoun-only topic return is not an answer to the earlier
+        # assistant question. Preserve the existing pending act and focus.
         return
     interpretation=classify_intent(value)
     if should_interpret_with_model(value):
