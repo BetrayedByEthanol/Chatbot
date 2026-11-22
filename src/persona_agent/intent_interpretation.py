@@ -292,6 +292,12 @@ def _related_objective(cur, user_id, instance_id, conversation_id, sequence, dra
         if _NAMED_GOAL_REFERENCE.fullmatch(text.strip().replace("’","'")):
             # Named references must not fall back to a different unnamed goal.
             return None
+        if (parse_explicit_topic_switch(text) is not None
+                or explicit_topic_history_request(text) is not None):
+            # The explicit subject wins over generic words in its follow-up
+            # (e.g. "Back to Nginx: what's the next step?"). Never attach it
+            # to an unrelated recent OBJECTIVE via _REFERENCE.
+            return None
     if draft.kind=="CORRECTION" and _FREQUENCY_CORRECTION.fullmatch(text.strip()):
         return _unique_active_objective(
             cur,user_id,instance_id,conversation_id,sequence,window=8,
