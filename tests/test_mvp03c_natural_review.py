@@ -91,7 +91,7 @@ def test_published_protocol_has_three_sessions_real_restart_and_distinct_labels(
     lambda steps: steps[2]["review_case"].update({"dimensions":["unknown"]}),
     lambda steps: steps[2]["review_case"].update({"source_quotes":["not in history"]}),
     lambda steps: steps[2]["review_case"].update({"failure_criteria":[]}),
-    lambda steps: steps[2].update({"mode":"auto"}),
+    lambda steps: steps[2].update({"mode":"time"}),
     lambda steps: steps[2].pop("review_response"),
 ])
 def test_invalid_or_untraceable_review_requirements_rejected(change):
@@ -240,3 +240,9 @@ def test_bundle_requires_synthetic_completed_host_trace(tmp_path):
             archive.writestr(name,json.dumps(value))
     with pytest.raises(ValueError,match="real-user"):
         packet_from_bundle(bundle)
+
+
+def test_review_case_supports_adaptive_auto_route():
+    definition=scenario()
+    definition["steps"][2]["mode"]="auto"
+    assert validate_scenario(definition) is definition

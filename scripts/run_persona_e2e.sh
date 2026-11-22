@@ -69,7 +69,9 @@ cleanup() {
     # A failing scenario still has useful evidence in its published ZIP.
     if ! docker compose -f compose.e2e.yaml -p "$project" down -v --remove-orphans; then
       echo "WARNING: Compose teardown failed for $project" >&2
-      if [[ "$result" -eq 0 ]]; then result=2; fi
+      # Teardown failure can leave a Compose project occupying the test port.
+      # It is not an ordinary scenario/contract failure even when runner=1.
+      result=2
     fi
   else
     # No marker means the report failed or publication cannot be verified.
@@ -78,7 +80,9 @@ cleanup() {
     echo "Inspect: docker compose -f compose.e2e.yaml -p $project ps" >&2
     echo "After recovering evidence, manually clean up with:" >&2
     echo "docker compose -f compose.e2e.yaml -p $project down -v" >&2
-    if [[ "$result" -eq 0 ]]; then result=2; fi
+    # A runner may exit 1 while write_bundle() failed. Distinguish missing
+    # publication from a reported contract failure to protect sequential runs.
+    result=2
   fi
   rm -rf -- "$status_dir"
   exit "$result"

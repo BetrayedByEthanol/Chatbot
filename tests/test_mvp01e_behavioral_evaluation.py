@@ -437,9 +437,11 @@ def test_compose_wrapper_checks_semantic_flags_before_startup(
         text=True,capture_output=True,timeout=20,
     )
     if with_semantic_flag:
-        # The compatible invocation passes the same real preflight and
-        # reaches fake Compose, which intentionally exits nonzero.
-        assert result.returncode==37, result.stderr
+        # Compatible invocation passes preflight and reaches fake Compose.
+        # Docker exits 37 before any evidence marker can be published;
+        # wrapper must normalize this uncertain infrastructure failure to 2.
+        assert result.returncode==2, result.stderr
+        assert "EVIDENCE NOT CONFIRMED" in result.stderr
         assert log.exists()
         assert " up -d --wait" in log.read_text()
     else:
@@ -508,9 +510,9 @@ def test_compose_wrapper_preserves_evidence_on_failed_publication(
          "--report","artifacts/new-report.zip"],
         cwd=tmp_path,env=env,text=True,capture_output=True,timeout=10,
     )
-    assert result.returncode == (runner_exit if runner_exit else (
-        0 if published else 2
-    ))
+    # A published contract failure retains its runner status 1, whereas
+    # missing publication always reports infrastructure failure 2.
+    assert result.returncode == (runner_exit if published else 2)
     commands=log.read_text().splitlines()
     # Preflight is the first Python invocation; only the later runner call
     # simulates publication and returns MOCK_RUNNER_EXIT.

@@ -127,7 +127,7 @@ def validate_scenario(value: Any) -> dict:
             case = step.get("review_case")
             if case is not None:
                 if ("review_response" not in step
-                    or step.get("mode","auto")!="model"
+                    or step.get("mode","auto") not in ("model", "auto")
                     or not isinstance(case,dict)
                     or set(case)!={"id","dimensions","source_quotes","failure_criteria"}):
                     raise ValueError("natural review case needs a model response and exact rubric")
