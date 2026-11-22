@@ -236,3 +236,93 @@ def test_focused_progress_context_is_read_only_and_budgeted(dsn):
     assert PROGRESS in result
     assert len(result) <= 900
     assert "NOT a tracked ProcedureRun" in result
+
+
+def _direct_progress_view(dsn, h, *, budget: int) -> str:
+    """Read actual persisted user reports without editing domain state."""
+    from psycopg.rows import dict_row
+
+    with psycopg.connect(dsn, autocommit=True, row_factory=dict_row) as conn:
+        with conn.transaction():
+            conn.execute("SET TRANSACTION READ ONLY")
+            with conn.cursor(row_factory=dict_row) as cur:
+                cur.execute("SELECT clock_timestamp() AS now")
+                before = cur.fetchone()["now"]
+                return focused_procedure_discussion_context_block(
+                    cur,
+                    user_id=h.identity.user_id,
+                    instance_id=h.identity.instance_id,
+                    conversation_id=h.identity.conversation_id,
+                    before_at=before,
+                    latest_text="What's the next step?",
+                    focus_title="Nginx certificates",
+                    max_chars=budget,
+                )
+
+
+def test_long_progress_report_preserves_trailing_failure_and_retraction(dsn):
+    """Never truncate a full report after the success-looking first 240 chars."""
+    h, model = host(dsn)
+    h.send("Let's switch topics to Nginx certificates.",
+           idempotency_key="nginx")
+    long_report = (
+        "I installed the Nginx certificate and initially it looked ready. "
+        + "I checked the service configuration and reviewed my local notes. " * 4
+        + "But the reload failed and I removed it; the installation is not working."
+    )
+    assert len(long_report) > 240
+    report = h.send(long_report, idempotency_key="failed-install")
+    h.begin_session("later")
+    h.send("Back to Nginx.", idempotency_key="resume")
+    h.send("What's the next step?", idempotency_key="next")
+    current = prompt(model)
+    assert "Earlier user-reported procedure DISCUSSION" in current
+    assert long_report in current
+    assert "But the reload failed and I removed it" in current
+    assert report.turn_id in current
+    assert len(current) <= 12000
+    direct = _direct_progress_view(dsn, h, budget=1200)
+    assert long_report in direct
+    assert "installation is not working" in direct
+
+
+def test_oversized_latest_report_abstains_instead_of_resurrecting_success(dsn):
+    """At a 550-char context cap, do not substitute an obsolete short report."""
+    h, model = host(dsn)
+    earlier = "I installed the Nginx certificate."
+    h.send(earlier, idempotency_key="earlier")
+    newest = (
+        "I installed the Nginx certificate and started checking its behavior. "
+        + "I reviewed the service output and repeated the setup checks. " * 4
+        + "However the service reload failed and I removed the certificate."
+    )
+    assert len(newest) > 240
+    latest = h.send(newest, idempotency_key="newest-failed")
+    # A short earlier report fits within 550 chars by itself, while the full
+    # newer report does not. The reader must abstain instead of going stale.
+    assert _direct_progress_view(dsn, h, budget=550) == ""
+    enough = _direct_progress_view(dsn, h, budget=1200)
+    assert earlier in enough and newest in enough
+    assert latest.turn_id in enough
+    assert enough.index(earlier) < enough.index(newest)
+    assert "I removed the certificate" in enough
+
+    # Full-size next-step inference must also preserve the latest result.
+    h.begin_session("later")
+    h.send("Back to Nginx.", idempotency_key="resume")
+    h.send("What's the next step?", idempotency_key="next")
+    current = prompt(model)
+    assert newest in current
+    assert "service reload failed" in current
+    assert "Earlier user-reported procedure DISCUSSION" in current
+
+
+def test_short_latest_report_still_fits_small_budget(dsn):
+    """The fail-closed gate must not break legitimate small reports."""
+    h, _model = host(dsn)
+    report = "I generated the certificate in Nginx."
+    h.send(report, idempotency_key="report")
+    result = _direct_progress_view(dsn, h, budget=550)
+    assert report in result
+    assert "USER_REPORTED procedure discussion source turn" in result
+    assert len(result) <= 550
