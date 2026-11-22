@@ -84,6 +84,14 @@ def _named_topic_or_none(topic: str) -> str | None:
     return value
 
 
+def is_anaphoric_topic_return(text: str) -> bool:
+    """Return requests resolved by existing focused-dialogue anaphora logic."""
+    match = _EXPLICIT_TOPIC_RETURN.fullmatch(text.strip().replace("’", "'"))
+    return bool(
+        match and _ANAPHORIC_TOPIC_NAME.fullmatch(match.group("topic").strip())
+    )
+
+
 _TOPIC_PROGRESS_RECALL = re.compile(
     r"^where\s+(?:(?:did|do)\s+we\s+leave\s+off"
     r"|(?:had|did)\s+i\s+(?:stop|stopped))\s+with\s+"
@@ -97,8 +105,7 @@ def parse_explicit_topic_switch(text: str) -> str | None:
     match = _EXPLICIT_TOPIC_SWITCH.fullmatch(text.strip().replace("’", "'"))
     if match is None:
         return None
-    topic = match.group("topic").strip()
-    return topic if topic else None
+    return _named_topic_or_none(match.group("topic"))
 
 
 def parse_explicit_topic_return(text: str) -> str | None:
