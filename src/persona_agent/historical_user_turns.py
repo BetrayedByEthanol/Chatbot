@@ -463,19 +463,32 @@ def focused_procedure_discussion_context_block(
     )
     if len(header) + 110 > max_chars:
         return ""
-    output = header
-    # Emit recent changes in chronological order; maintain the most recent
-    # evidence even if the budget cannot fit older history.
-    selected = []
-    for row in rows[:3]:
-        line = (
+    # The latest eligible report is mandatory. It may contain a failure,
+    # rollback or qualification near its end. Never truncate a user report or
+    # fall back to an older, potentially superseded success when the newest
+    # full source cannot fit. Older reports are optional only AFTER this gate.
+    def source_line(row) -> str:
+        return (
             f"USER_REPORTED procedure discussion source turn {row['turn_id']} "
             f"on {row['created_at'].date().isoformat()}: "
-            + json.dumps(row["input_text"][:240],ensure_ascii=False) + "\n"
+            + json.dumps(row["input_text"],ensure_ascii=False) + "\n"
         )
-        if len(output) + sum(map(len,selected)) + len(line) <= max_chars:
-            selected.insert(0,line)
-    return output + "".join(selected) if selected else ""
+
+    newest = source_line(rows[0])
+    if len(header) + len(newest) > max_chars:
+        return ""
+
+    # Present the admitted evidence in chronological order, newest last.
+    # A long older report may be skipped because the complete latest report
+    # is already retained; neither quote can lose trailing qualifications.
+    selected = [newest]
+    used = len(header) + len(newest)
+    for row in rows[1:3]:
+        line = source_line(row)
+        if used + len(line) <= max_chars:
+            selected.append(line)
+            used += len(line)
+    return header + "".join(reversed(selected))
 
 
 
