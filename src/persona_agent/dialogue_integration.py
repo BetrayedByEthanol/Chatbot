@@ -287,10 +287,15 @@ def advance_on_delivery(
             # existing AUTO thread; multiple candidates must cause abstention.
             # New topics are opened only on delivered replies, not ingress.
             explicit_topic = (
-                parse_explicit_topic_switch(signal["label"])
-                or explicit_topic_history_request(signal["label"])
-                if signal["intent_kind"] == "REQUEST" else None
+                (parse_explicit_topic_switch(signal["label"])
+                 or explicit_topic_history_request(signal["label"]))
+                if (signal["intent_kind"] == "REQUEST"
+                    and not is_named_objective_reference(signal["label"]))
+                else None
             )
+            # An unresolved named goal/plan reference is not a fresh topic:
+            # retain the existing ambiguity guard even though the wording
+            # also matches the generic "return to X" parser.
             ambiguous_topic = False
             if explicit_topic is not None:
                 target, ambiguous_topic = _unique_explicit_topic_match(
