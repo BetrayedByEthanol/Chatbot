@@ -73,6 +73,28 @@ _MIN_CONTEXT = 210
 _MAX_CANDIDATES = 16
 _MAX_HITS = 3
 _MAX_QUOTE = 380
+# Only for explicit named-topic resumption. Exclude standalone navigation
+# turns *inside the indexed candidate query before LIMIT*, otherwise newer
+# "Back to Nginx" messages outrank the actual earlier user progress.
+# Anchored expressions keep substantive statements such as
+# "Back to Nginx: I generated the certificate" eligible as evidence.
+_BARE_TOPIC_NAVIGATION_PG = (
+    r"^[[:space:]]*("
+    r"((anyway[[:space:]]*,?[[:space:]]*)?back[[:space:]]+to"
+    r"|let('s|[[:space:]]+us)[[:space:]]+(go[[:space:]]+back|return)[[:space:]]+to"
+    r"|(can|could)[[:space:]]+we[[:space:]]+(go[[:space:]]+back|return)[[:space:]]+to)"
+    r"[[:space:]]+[^:!?.[:cntrl:]]{1,100}[.!?]?"
+    r"|where[[:space:]]+((did|do)[[:space:]]+we[[:space:]]+leave[[:space:]]+off"
+    r"|(had|did)[[:space:]]+i[[:space:]]+(stop|stopped))"
+    r"[[:space:]]+with[[:space:]]+[^:!?.[:cntrl:]]{1,100}[?]"
+    r"|((let('s|[[:space:]]+us)[[:space:]]+)?(switch|change)"
+    r"[[:space:]]+(the[[:space:]]+)?topics?[[:space:]]+to"
+    r"|((let('s|[[:space:]]+us)[[:space:]]+)?switch[[:space:]]+to))"
+    r"[[:space:]]+[^:!?.[:cntrl:]]{1,160}[.!?]?"
+    r"|new[[:space:]]+topic[[:space:]]*:[[:space:]]+"
+    r"[^:!?.[:cntrl:]]{1,160}[.!?]?"
+    r")[[:space:]]*$"
+)
 _HIGHLIGHT_START = "[[["
 _HIGHLIGHT_END = "]]]"
 
@@ -431,6 +453,7 @@ def historical_user_turn_context_block(
                  AND (%s::boolean OR t.conversation_id<>%s)
                  AND t.created_at<%s
                  AND t.status='RESPONDED'
+                 AND (NOT %s::boolean OR t.input_text !~* %s)
                  AND NOT EXISTS (
                      SELECT 1 FROM memory_revisions mr
                      WHERE mr.user_id=t.user_id
@@ -462,6 +485,7 @@ def historical_user_turn_context_block(
            ORDER BY c.relevance DESC, c.created_at DESC, c.turn_id""",
         (query, user_id, instance_id, resumed_topic is not None,
          conversation_id, before_at,
+         resumed_topic is not None, _BARE_TOPIC_NAVIGATION_PG,
          query, _MAX_CANDIDATES, _MAX_QUOTE, query),
     )
     rows=[
