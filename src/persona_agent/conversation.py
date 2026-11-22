@@ -456,11 +456,11 @@ def prepare_text_context(
             # back as the *active* discussion on this transition turn.
             # Actual focus changes still wait for delivery acknowledgment.
             from .intent_interpretation import (
-                parse_explicit_topic_switch, parse_explicit_topic_return,
+                parse_explicit_topic_switch, explicit_topic_history_request,
             )
             incoming_topic=(
                 parse_explicit_topic_switch(history[-1].content)
-                or parse_explicit_topic_return(history[-1].content)
+                or explicit_topic_history_request(history[-1].content)
             )
             if incoming_topic is not None:
                 advisory=(
