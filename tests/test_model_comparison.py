@@ -16,6 +16,14 @@ import compare_persona_models as comparison
 from persona_agent.scenario_validation import validate_scenario
 
 SCENARIO_PATH = ROOT / "scenarios" / "persona_model_comparison_v1.json"
+REQUIRED_EXTRA_MEMBERS = {
+    "scenario.json": {"name": "synthetic-test"},
+    "model_requests.json": [],
+    "interpretation_diagnostics.json": [],
+    "semantic_diagnostics.json": [],
+    "review_items.json": [],
+    "delivery_events.json": [],
+}
 
 
 def test_scenario_has_25_natural_turns_and_three_sessions():
@@ -73,6 +81,7 @@ def test_read_summary_uses_observed_routes_not_assumed_model(tmp_path):
         "evaluation.json": {"contract_passed": True, "behavioral_checks_passed": True},
         "errors.json": [],
     }
+    members.update(REQUIRED_EXTRA_MEMBERS)
     with ZipFile(bundle, "w") as z:
         for name, value in members.items():
             z.writestr(name, json.dumps(value))
@@ -230,6 +239,7 @@ def test_published_status_one_contract_failure_allows_next_model(tmp_path, monke
             },
             "errors.json": [{"type": "AssertionError"}] if first else [],
         }
+        members.update(REQUIRED_EXTRA_MEMBERS)
         with ZipFile(bundle, "w") as archive:
             for name, value in members.items():
                 archive.writestr(name, json.dumps(value))
@@ -273,6 +283,8 @@ def test_status_two_always_stops_even_with_readable_bundle(tmp_path, monkeypatch
             archive.writestr("state_snapshots.json", "[]")
             archive.writestr("evaluation.json", '{"contract_passed":false}')
             archive.writestr("errors.json", "[]")
+            for name, value in REQUIRED_EXTRA_MEMBERS.items():
+                archive.writestr(name, json.dumps(value))
         return SimpleNamespace(returncode=2)
 
     monkeypatch.setattr(comparison.subprocess, "run", fake_run)

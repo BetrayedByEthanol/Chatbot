@@ -65,14 +65,33 @@ def private_json(path: Path, obj: object) -> None:
 def read_summary(bundle: Path) -> dict:
     """Read only observational data already in the canonical E2E ZIP."""
     with ZipFile(bundle) as archive:
+        # An incomplete but parseable ZIP is not a published E2E bundle.
+        # Validate the canonical members and all CRCs before permitting
+        # another model to start against the shared local Compose port.
+        required = {
+            "manifest.json", "scenario.json", "transcript.json",
+            "state_snapshots.json", "model_requests.json",
+            "interpretation_diagnostics.json", "semantic_diagnostics.json",
+            "review_items.json", "delivery_events.json",
+            "evaluation.json", "errors.json",
+        }
+        names = archive.namelist()
+        if len(names) != len(set(names)) or not required <= set(names):
+            raise ValueError("incomplete or duplicate E2E bundle members")
+        if archive.testzip() is not None:
+            raise ValueError("E2E evidence ZIP failed CRC integrity check")
         manifest = json.loads(archive.read("manifest.json"))
+        scenario = json.loads(archive.read("scenario.json"))
         events = json.loads(archive.read("transcript.json"))
         snapshots = json.loads(archive.read("state_snapshots.json"))
+        review_items = json.loads(archive.read("review_items.json"))
         evaluation = json.loads(archive.read("evaluation.json"))
         errors = json.loads(archive.read("errors.json"))
     # A present pathname is not evidence of successful publication. Only a
     # readable canonical synthetic E2E ZIP with the required records counts.
-    if (not isinstance(manifest, dict) or manifest.get("synthetic_data") is not True
+    if (not isinstance(scenario, dict) or not isinstance(scenario.get("name"), str)
+        or not isinstance(review_items, list)
+        or not isinstance(manifest, dict) or manifest.get("synthetic_data") is not True
         or not isinstance(manifest.get("model"), str)
         or not manifest["model"]
         or not isinstance(events, list)
