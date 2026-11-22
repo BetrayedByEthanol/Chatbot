@@ -184,6 +184,57 @@ def _correction_followups(
     return tuple((*notes,*corrections)) if corrections else ()
 
 
+
+def _ambiguous_resumed_cadence(
+    cur, anchor: dict, *, user_id: UUID, instance_id: UUID,
+    before_at: datetime,
+) -> bool:
+    """Fail closed when a resumed objective has an unlinked later amendment.
+
+    Increment 1's stricter precedence view already abstains on these cases.
+    Resumption must not quietly resurrect the older cadence via a generic
+    source-turn fallback. The query is scoped to this exact source discussion
+    and bounded; neither a guess nor a new persisted correction link.
+    """
+    from .intent_interpretation import _FREQUENCY_CORRECTION
+
+    if not re.search(r"\\b(?:per|a)\\s+week\\b|\\bweekly\\b",
+                     anchor["input_text"], re.I):
+        return False
+    cur.execute(
+        """SELECT s.signal_id FROM conversation_intent_signals s
+           WHERE s.turn_id=%s AND s.conversation_id=%s
+             AND s.user_id=%s AND s.instance_id=%s
+             AND s.intent_kind='OBJECTIVE' LIMIT 1""",
+        (anchor["turn_id"], anchor["conversation_id"], user_id, instance_id),
+    )
+    if cur.fetchone() is None:
+        return False
+    cur.execute(
+        """SELECT t.input_text FROM conversation_intent_signals s
+           JOIN conversation_turns t
+             ON t.turn_id=s.turn_id AND t.conversation_id=s.conversation_id
+            AND t.user_id=s.user_id AND t.instance_id=s.instance_id
+           WHERE s.conversation_id=%s AND s.user_id=%s AND s.instance_id=%s
+             AND s.intent_kind='CORRECTION' AND s.related_signal_id IS NULL
+             AND s.turn_sequence>%s AND t.created_at<%s
+             AND t.status='RESPONDED'
+           ORDER BY s.turn_sequence DESC LIMIT 65""",
+        (anchor["conversation_id"], user_id, instance_id,
+         anchor["sequence"], before_at),
+    )
+    rows = cur.fetchall()
+    if len(rows) > 64:
+        return True  # Incomplete evidence must not assert precedence.
+    return any(
+        _FREQUENCY_CORRECTION.fullmatch(
+            row["input_text"].strip().replace("’", "'")
+        ) is not None
+        for row in rows
+    )
+
+
+
 def _eligible_activity_types(
     cur, *, user_id: UUID, instance_id: UUID, conversation_id: UUID,
     before_at: datetime, query: str,
@@ -380,6 +431,12 @@ def historical_user_turn_context_block(
     for row in rows:
         statement = row["input_text"]
         if _SENSITIVE.search(statement):
+            continue
+        if resumed_topic is not None and _ambiguous_resumed_cadence(
+            cur,row,user_id=user_id,instance_id=instance_id,before_at=before_at,
+        ):
+            # Do not present an older source/correction as the latest when a
+            # newer frequency amendment exists but its source link is lost.
             continue
         quote = _matching_excerpt(statement, row["highlighted"])
         if not quote:
