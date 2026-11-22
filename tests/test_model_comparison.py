@@ -166,3 +166,119 @@ def test_refuse_overwrite_prior_evidence(tmp_path, monkeypatch):
             "--models", "one,two", "--output-dir", str(output_dir),
             "--scenario", str(SCENARIO_PATH),
         ])
+
+
+@pytest.mark.parametrize("evidence", ["missing", "invalid_zip"])
+def test_unconfirmed_status_one_publication_aborts_remaining_models(
+    tmp_path, monkeypatch, evidence,
+):
+    class NoShuffle:
+        def shuffle(self, seq):
+            pass
+
+    monkeypatch.setattr(comparison.secrets, "SystemRandom", lambda: NoShuffle())
+    commands = []
+
+    def fake_run(command, cwd, check):
+        commands.append(command)
+        bundle = Path(command[command.index("--report") + 1])
+        if evidence == "invalid_zip":
+            bundle.write_bytes(b"partial ZIP bytes")
+        return SimpleNamespace(returncode=1)
+
+    monkeypatch.setattr(comparison.subprocess, "run", fake_run)
+    output = tmp_path / evidence
+    code = comparison.compare([
+        "--models", "model_a,model_b", "--scenario", str(SCENARIO_PATH),
+        "--output-dir", str(output),
+    ])
+    assert code == 1
+    assert len(commands) == 1, "Must not launch model B against the retained port"
+    result = json.loads((output / "summary.json").read_text())["results"]
+    assert len(result) == 1
+    assert result[0]["exit_code"] == 1
+    assert result[0]["evidence_status"] == (
+        "MISSING" if evidence == "missing" else "INVALID"
+    )
+    assert not list(output.glob("*.review.json"))
+
+
+def test_published_status_one_contract_failure_allows_next_model(tmp_path, monkeypatch):
+    class NoShuffle:
+        def shuffle(self, seq):
+            pass
+
+    monkeypatch.setattr(comparison.secrets, "SystemRandom", lambda: NoShuffle())
+    commands = []
+
+    def fake_run(command, cwd, check):
+        commands.append(command)
+        bundle = Path(command[command.index("--report") + 1])
+        first = len(commands) == 1
+        members = {
+            "manifest.json": {
+                "synthetic_data": True, "model": command[command.index("--model") + 1],
+            },
+            "transcript.json": [
+                {"action": "message", "assistant": "A synthetic reply",
+                 "response_elapsed_ms": 2, "model_id": "fake"},
+            ],
+            "state_snapshots.json": [],
+            "evaluation.json": {
+                "contract_passed": not first,
+                "behavioral_checks_passed": not first,
+            },
+            "errors.json": [{"type": "AssertionError"}] if first else [],
+        }
+        with ZipFile(bundle, "w") as archive:
+            for name, value in members.items():
+                archive.writestr(name, json.dumps(value))
+        return SimpleNamespace(returncode=1 if first else 0)
+
+    monkeypatch.setattr(comparison.subprocess, "run", fake_run)
+    monkeypatch.setattr(comparison, "packet_from_bundle", lambda bundle: {
+        "protocol": "test-blind", "cases": [],
+    })
+    monkeypatch.setattr(comparison, "rating_template", lambda packet, reviewer: {
+        "reviewer_id": reviewer, "ratings": [],
+    })
+    output = tmp_path / "published_contract_failure"
+    code = comparison.compare([
+        "--models", "model_a,model_b", "--scenario", str(SCENARIO_PATH),
+        "--output-dir", str(output),
+    ])
+    assert code == 1  # Contract failure remains a failed comparison.
+    assert len(commands) == 2  # But published evidence makes next run safe.
+    results = json.loads((output / "summary.json").read_text())["results"]
+    assert len(results) == 2
+    assert [item["evidence_status"] for item in results] == [
+        "VERIFIED", "VERIFIED",
+    ]
+    assert results[0]["exit_code"] == 1
+    assert results[0]["review_packet"] is None
+    assert results[1]["review_packet"] is not None
+
+
+def test_status_two_always_stops_even_with_readable_bundle(tmp_path, monkeypatch):
+    commands = []
+
+    def fake_run(command, cwd, check):
+        commands.append(command)
+        bundle = Path(command[command.index("--report") + 1])
+        with ZipFile(bundle, "w") as archive:
+            archive.writestr("manifest.json", json.dumps({
+                "synthetic_data": True, "model": "fake",
+            }))
+            archive.writestr("transcript.json", "[]")
+            archive.writestr("state_snapshots.json", "[]")
+            archive.writestr("evaluation.json", '{"contract_passed":false}')
+            archive.writestr("errors.json", "[]")
+        return SimpleNamespace(returncode=2)
+
+    monkeypatch.setattr(comparison.subprocess, "run", fake_run)
+    result = comparison.compare([
+        "--models", "model_a,model_b", "--scenario", str(SCENARIO_PATH),
+        "--output-dir", str(tmp_path / "status_two"),
+    ])
+    assert result == 1
+    assert len(commands) == 1
