@@ -5,6 +5,7 @@ strings, model assertions, Goal approvals or test-only state mutations.
 """
 from __future__ import annotations
 
+import re
 import pytest
 psycopg = pytest.importorskip("psycopg")
 
@@ -13,6 +14,7 @@ from persona_agent.behavioral_acceptance import BehavioralAcceptanceHarness
 from persona_agent.conversation_contracts import ModelReply
 from persona_agent.contracts import TrustedActor
 from persona_agent.dialogue_state import load_active_dialogue
+from persona_agent.event_delivery import dispatch_outbox
 from persona_agent.intent_interpretation import (
     classify_intent, parse_explicit_topic_switch,
     parse_explicit_topic_return, explicit_topic_history_request,
@@ -543,24 +545,41 @@ def test_bare_topic_returns_cannot_crowd_out_substantive_progress(
         idempotency_key="initial-topic",
     )
     progress = h.send(SOURCE, idempotency_key="certificate-progress")
+    bare_turns = []
     for index in range(bare_returns):
-        h.send("Back to Nginx.", idempotency_key=f"bare-return-{index}")
-    # Push the actual progress out of the ordinary 12-turn model history;
-    # historical retrieval must supply the authentic source turn instead.
-    for index in range(13):
-        h.send(
-            f"A separate thought about tea number {index}.",
-            idempotency_key=f"other-subject-{index}",
+        bare_turns.append(
+            h.send("Back to Nginx.", idempotency_key=f"bare-return-{index}")
         )
+    # Starting a new session places the progress outside the recent history
+    # without creating dozens of unrelated turns and excess outbox traffic.
+    h.begin_session("later")
+    h.restart_host()
     h.send("Back to Nginx.", idempotency_key="retrieve-progress")
     context = prompt(model)
     assert "Earlier source-linked user statements" in context
     assert progress.turn_id in context and SOURCE in context
-    # Navigation events are not substantive USER_REPORTED progress sources.
+    # The CURRENT input is correctly echoed in intent context, so do not
+    # forbid the literal phrase everywhere in the system prompt. Assert
+    # that no previous navigation turn is quoted as historical evidence.
     assert switch.turn_id not in context
+    assert all(turn.turn_id not in context for turn in bare_turns)
     assert 'USER_REPORTED source turn' in context
-    assert '"Back to Nginx."' not in context
+    assert not re.search(
+        r'USER_REPORTED (?:source turn|discussion update source turn)[^\\n]*'
+        r'"Back to Nginx\\."',
+        context,
+    )
     assert sum(len(m.content) for m in model.calls[-1]) <= 12000
+
+    # Dispatch the authenticated test events through the real event API.
+    # Large repeated-turn cases otherwise leave >100 stream-order rounds
+    # for a later unrelated memory-worker test's bounded setup.
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        for _ in range(250):
+            if dispatch_outbox(conn, limit=1000) == 0:
+                break
+        else:
+            pytest.fail("repeated-return test left an excessive outbox backlog")
 
 
 def test_return_with_substantive_update_is_still_retrieved(dsn):
