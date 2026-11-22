@@ -246,7 +246,7 @@ def test_non_cadence_unlinked_correction_does_not_mask_valid_link(dsn):
     # An unrelated correction without a weekly frequency should not
     # automatically invalidate a source-linked walking cadence.
     host.send(
-        "Actually, I meant the other keyboard.",
+        "Actually, the keyboard belongs to someone else.",
         idempotency_key="unrelated-correction",
     )
     host.begin_session("later")
