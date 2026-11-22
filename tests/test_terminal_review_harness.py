@@ -49,3 +49,84 @@ def test_human_journal_is_private_and_durable(tmp_path):
     assert '"score": 1' in path.read_text(encoding="utf-8")
     with pytest.raises(FileExistsError):
         PrivateJournal(path)
+
+
+def test_human_journal_fsync_failure_preserves_isolated_database(tmp_path, monkeypatch):
+    """A present-but-partial journal must never trigger database teardown."""
+    import terminal_review_harness as terminal
+
+    retained = []
+    monkeypatch.setattr(terminal, "_prepare", lambda dsn: ("persona_e2e_test", "db"))
+    monkeypatch.setattr(terminal, "OllamaChatGateway", lambda **kwargs: FakeGateway())
+    monkeypatch.setattr(
+        terminal, "drop_isolated_database", lambda *args: retained.append(args),
+    )
+    monkeypatch.setattr(
+        terminal, "human_session",
+        lambda dsn, gateway, journal: journal.append({"type": "start"}),
+    )
+
+    def fail_fsync(fd):
+        raise OSError("simulated disk sync failure")
+
+    monkeypatch.setattr(terminal.os, "fsync", fail_fsync)
+    report = tmp_path / "partial.jsonl"
+    code = terminal.main([
+        "human", "--admin-dsn", "maintenance", "--output", str(report),
+    ])
+    assert code == 1
+    assert report.exists()  # The original bug treated this as success.
+    assert retained == []  # The authoritative recovery source must survive.
+
+
+def test_human_journal_success_drops_isolated_database(tmp_path, monkeypatch):
+    import terminal_review_harness as terminal
+
+    dropped = []
+    monkeypatch.setattr(terminal, "_prepare", lambda dsn: ("persona_e2e_test", "db"))
+    monkeypatch.setattr(terminal, "OllamaChatGateway", lambda **kwargs: FakeGateway())
+    monkeypatch.setattr(
+        terminal, "drop_isolated_database", lambda *args: dropped.append(args),
+    )
+
+    def complete_session(dsn, gateway, journal):
+        journal.append({"type": "start"})
+        journal.append({"type": "end"})
+
+    monkeypatch.setattr(terminal, "human_session", complete_session)
+    report = tmp_path / "complete.jsonl"
+    code = terminal.main([
+        "human", "--admin-dsn", "maintenance", "--output", str(report),
+    ])
+    assert code == 0
+    assert dropped == [("maintenance", "persona_e2e_test")]
+    assert '"type": "end"' in report.read_text()
+
+
+def test_human_journal_close_failure_preserves_isolated_database(tmp_path, monkeypatch):
+    import terminal_review_harness as terminal
+
+    dropped = []
+    monkeypatch.setattr(terminal, "_prepare", lambda dsn: ("persona_e2e_test", "db"))
+    monkeypatch.setattr(terminal, "OllamaChatGateway", lambda **kwargs: FakeGateway())
+    monkeypatch.setattr(
+        terminal, "drop_isolated_database", lambda *args: dropped.append(args),
+    )
+    monkeypatch.setattr(
+        terminal, "human_session",
+        lambda dsn, gateway, journal: journal.append({"type": "end"}),
+    )
+    original_close = terminal.PrivateJournal.close
+
+    def fail_close(journal):
+        original_close(journal)
+        raise OSError("simulated close failure")
+
+    monkeypatch.setattr(terminal.PrivateJournal, "close", fail_close)
+    report = tmp_path / "close-error.jsonl"
+    code = terminal.main([
+        "human", "--admin-dsn", "maintenance", "--output", str(report),
+    ])
+    assert code == 1
+    assert report.exists()
+    assert dropped == []

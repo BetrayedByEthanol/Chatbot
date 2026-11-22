@@ -268,6 +268,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.mode == "human":
             journal = PrivateJournal(output)
             human_session(dsn, gateway, journal)
+            # Only a fully written and closed journal counts as publication.
+            # A partial file can exist after an append/fsync failure.
+            journal.close()
+            journal = None
             saved = True
         else:
             report = {"kind": "terminal-goal-injection-v1", "passed": False,
@@ -286,8 +290,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Review failed: {type(exc).__name__}: {exc}", file=sys.stderr)
     finally:
         if journal is not None:
-            journal.close()
-            saved = output.exists()
+            try:
+                journal.close()
+            except Exception as exc:
+                exit_code = 1
+                print(f"Journal close failed: {type(exc).__name__}: {exc}",
+                      file=sys.stderr)
+            # Never infer publication from file existence. On a failed
+            # append, fsync, or close, retain the database for recovery.
         if name is not None:
             if saved and not args.keep_db:
                 try:
