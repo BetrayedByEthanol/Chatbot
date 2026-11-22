@@ -11,6 +11,7 @@ permission is introduced.
 ```bash
 python -m pip install -e '.[test]'
 cp .env.e2e.example .env.e2e  # edit to set a strong local password
+source .env.e2e   # export Compose and test-DB environment values
 # Only use the repository's disposable Postgres server.
 docker compose -f compose.e2e.yaml -p persona-terminal up -d --wait
 ollama pull qwen2.5:7b
