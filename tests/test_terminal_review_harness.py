@@ -32,6 +32,18 @@ def test_goal_injection_requires_real_user_approval_and_replays_safely(dsn):
     }
 
 
+def test_goal_injection_never_reconfigures_existing_tool_pool(dsn, monkeypatch):
+    """A model-only test must not shrink capacity reserved by prior tests."""
+    import persona_agent.acceptance_host as host
+
+    def forbidden_reconfiguration(*args, **kwargs):
+        raise AssertionError("model-only goal injection reconfigured tool pool")
+
+    monkeypatch.setattr(host, "configure_resource_pool", forbidden_reconfiguration)
+    result = goal_injection(dsn, FakeGateway())
+    assert result["passed"]
+
+
 def test_private_reports_never_overwrite_or_change_world_permissions(tmp_path):
     path = tmp_path / "report.json"
     _save_private(path, {"status": "PENDING_HUMAN_REVIEW"})

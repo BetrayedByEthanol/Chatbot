@@ -83,7 +83,7 @@ def _prepare(admin_dsn: str):
 
 def goal_injection(dsn: str, gateway, report: dict | None = None) -> dict:
     """Inject user turns; use only authenticated Goal owner APIs for mutations."""
-    identity = seed_local_demo(dsn)
+    identity = seed_local_demo(dsn, configure_pool=False)
     harness = BehavioralAcceptanceHarness(dsn, identity, gateway)
     harness.begin_session("tentative_goal")
     actor = TrustedActor(user_id=identity.user_id, source_id="terminal-goal-review-user")
@@ -170,7 +170,7 @@ def goal_injection(dsn: str, gateway, report: dict | None = None) -> dict:
 
 
 def human_session(dsn: str, gateway, journal: PrivateJournal) -> None:
-    identity = seed_local_demo(dsn)
+    identity = seed_local_demo(dsn, configure_pool=False)
     harness = BehavioralAcceptanceHarness(dsn, identity, gateway)
     harness.begin_session("session_1")
     journal.append({"type": "start", "mode": "human", "model": gateway.model,

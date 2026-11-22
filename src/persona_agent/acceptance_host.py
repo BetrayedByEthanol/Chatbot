@@ -346,8 +346,12 @@ class WorkerSupervisor:
         self.stop()
 
 
-def seed_local_demo(dsn: str) -> HostIdentity:
-    """Operator-only fixture provisioning; NEVER an untrusted transport verb."""
+def seed_local_demo(dsn: str, *, configure_pool: bool = True) -> HostIdentity:
+    """Operator-only fixture provisioning; NEVER an untrusted transport verb.
+
+    Model-only hosts need no read-only tool pool. With configure_pool=False,
+    do not reconfigure shared capacity while other operations hold reservations.
+    """
     user,persona,instance,conversation=(uuid4() for _ in range(4))
     with psycopg.connect(dsn,autocommit=True) as conn:
         with conn.transaction():
@@ -365,7 +369,8 @@ def seed_local_demo(dsn: str) -> HostIdentity:
                 "INSERT INTO persona_selection(user_id,instance_id,generation,mode) "
                 "VALUES (%s,%s,1,'FOREGROUND')",(user,instance),
             )
-        configure_resource_pool(conn,RESOURCE_KEY,capacity_units=2)
+        if configure_pool:
+            configure_resource_pool(conn,RESOURCE_KEY,capacity_units=2)
     return HostIdentity(user,instance,conversation,1)
 
 
