@@ -5,7 +5,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
-from uuid import uuid4
+from uuid import UUID,uuid4
 from zipfile import ZipFile
 import json
 
@@ -680,9 +680,9 @@ def test_e2e_processes_relationship_preference_before_later_session_prompts(dsn)
     instance_id=result["identity"]["instance_id"]
     with psycopg.connect(dsn,autocommit=True) as conn:
         state=read_relationship_state(
-            conn,TrustedActor(user_id=__import__("uuid").UUID(user_id),
+            conn,TrustedActor(user_id=UUID(user_id),
                               source_id="e2e-relationship-read"),
-            __import__("uuid").UUID(instance_id),
+            UUID(instance_id),
         )
     matching=[p for p in state.preferences if p.preference_key=="RESPONSE_LENGTH"]
     assert len(matching)==1
