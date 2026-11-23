@@ -57,6 +57,10 @@ def test_grounding_view_quotes_only_first_party_input_and_preserves_time():
     )
     assert "none matching" in recall
     assert "cannot reliably recall" in recall
+    assert "not a complete inventory" in recall
+    assert "authenticated saved Relationship preferences" in recall
+    assert "other source-linked context may still support recall" in recall
+    assert len(recall)<=900
     facts=grounding_context_block(
         "Could you summarize our discussion and suggest one next step?",
         [
