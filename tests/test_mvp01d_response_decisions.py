@@ -8,7 +8,7 @@ psycopg=pytest.importorskip("psycopg")
 
 from persona_agent.acceptance_host import LocalAcceptanceSession, seed_local_demo
 from persona_agent.response_decisions import (
-    decide_response, explicit_analysis_payload,
+    decide_response, explicit_analysis_payload, preference_recall_topics,
 )
 from persona_agent.tool_contracts import SLOW_TOOL, TIME_TOOL
 from persona_agent.tool_gateway import run_one_text_tool
@@ -229,3 +229,37 @@ def test_unsafe_model_text_cannot_trigger_tool_execution(dsn):
                WHERE conversation_id=%s""",
             (identity.conversation_id,),
         ).fetchone()[0]==0
+
+
+
+@pytest.mark.parametrize("text,topics", [
+    ("Do you remember my preference about planning and response length?",
+     ("PLANNING","RESPONSE_LENGTH")),
+    ("Do you remember my response length preference?",("RESPONSE_LENGTH",)),
+    ("What response length did I most recently ask you to use?",("RESPONSE_LENGTH",)),
+    ("What is my current response length preference?",("RESPONSE_LENGTH",)),
+    ("Do you remember my planning preference?",("PLANNING",)),
+    ("Have I ever specified whether you should use emojis?",("EMOJI_USE",)),
+    ("Have I set an emoji preference?",("EMOJI_USE",)),
+])
+def test_direct_preference_questions_use_narrow_route(text,topics):
+    assert preference_recall_topics(text)==topics
+    decision=decide_response(text)
+    assert decision.route=="PREFERENCE_RECALL"
+    assert decision.preference_topics==topics
+
+
+@pytest.mark.parametrize("text", [
+    '"Do you remember my response length preference?"',
+    "If I asked about my response length preference, would you remember?",
+    "My friend asked: Do you remember my response length preference?",
+    "Do you remember my preference about planning and response length and can you plan my day?",
+    "Please summarize everything you remember about me.",
+    "What type of planning would you recommend?",
+    "Do you remember what I said about my health?",
+    "Can you change my preference to detailed replies?",
+    "Have I ever specified whether you should use emojis, and could you add some?",
+])
+def test_ambiguous_mixed_and_non_preference_questions_use_model(text):
+    assert preference_recall_topics(text) is None
+    assert decide_response(text).route=="MODEL"
