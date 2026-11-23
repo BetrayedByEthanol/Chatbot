@@ -71,7 +71,8 @@ def _planning_instruction(
         if any(p.fullmatch(normalized) for p in _ALLOW_BIG_PLAN):
             return "ALLOWED"
         if any(p.fullmatch(normalized) for p in _NO_BIG_PLAN):
-            return "NO_BIG_PLANS"
+            return ("NO_BIG_PLANS_CHAT" if normalized.endswith(
+                "; i just want to chat") else "NO_BIG_PLANS")
     return None
 
 
@@ -103,8 +104,10 @@ def _render_length(preference: PreferenceView | None) -> str:
 
 
 def _render_planning(preference: str | None) -> str:
+    if preference=="NO_BIG_PLANS_CHAT":
+        return "You asked me not to make big plans, and said you just wanted to chat."
     if preference=="NO_BIG_PLANS":
-        return "You asked me not to make big plans and to keep things conversational."
+        return "You asked me not to make big plans."
     if preference=="ALLOWED":
         return "You later said I could make big plans for you."
     return "I don't have a confirmed planning preference to recall."
