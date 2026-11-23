@@ -471,7 +471,7 @@ def test_direct_preference_recall_uses_durable_state_without_model(dsn):
         idempotency_key="unknown-emoji",mode="auto",
     )
     assert missing.model_id==ROUTE_ID
-    assert "don't have an active saved emoji preference" in missing.text
+    assert "don't have a saved record of you specifying an emoji preference" in missing.text
     assert len(model.calls)==3, "only the new normal-length instruction calls model"
 
 
@@ -631,3 +631,136 @@ def test_saved_sentence_limit_exception_matches_admission_and_recall(
         assert prompt_exception in assembled
         if exception=="MORE_DETAIL":
             assert "unless the current request asks for detailed instructions" not in assembled
+
+
+
+def test_emoji_ever_question_distinguishes_active_removed_and_never_saved(dsn):
+    """Only Relationship revision history can establish previous saved state."""
+    from uuid import UUID
+    from persona_agent.affect_contracts import SetRelationshipPreference
+    from persona_agent.preference_recall import ROUTE_ID
+    from persona_agent.relationship_state import (
+        has_saved_relationship_preference_history,
+        set_relationship_preference,
+    )
+
+    consumers=subscribe(dsn)
+    h,model=host(dsn)
+    identity=h.active_identity
+    actor=TrustedActor(user_id=identity.user_id,source_id="emoji-history-test")
+
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert not has_saved_relationship_preference_history(
+            conn,actor,identity.instance_id,"EMOJI_USE",
+        )
+    never=h.send(
+        "Have I ever specified whether you should use emojis?",
+        idempotency_key="never-saved",mode="auto",
+    )
+    assert never.model_id==ROUTE_ID
+    assert "don't have a saved record" in never.text
+    assert "never specified" not in never.text
+
+    source=h.send("Please don't use emojis.",
+                  idempotency_key="save-off",mode="model")
+    assert process(dsn,consumers).relationship_recorded>=1
+    active=h.send(
+        "Have I ever specified whether you should use emojis?",
+        idempotency_key="active-ever",mode="auto",
+    )
+    assert active.model_id==ROUTE_ID
+    assert "Yes." in active.text and "not to use emojis" in active.text
+    assert "still active" in active.text
+    current=h.send("What is my current emoji preference?",
+                   idempotency_key="active-current",mode="auto")
+    assert current.model_id==ROUTE_ID
+    assert "not to use emojis" in current.text
+
+    correction=h.send("I no longer want an emoji preference saved.",
+                      idempotency_key="remove-request",mode="model")
+    # A REMOVE is an authenticated Relationship command, not inferred from
+    # this correction. It leaves revision history intact but deactivates it.
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        removed=set_relationship_preference(conn,actor,SetRelationshipPreference(
+            instance_id=identity.instance_id,
+            expected_generation=identity.generation,
+            expected_version=1,
+            idempotency_key="remove-emoji-preference",
+            conversation_id=identity.conversation_id,
+            evidence_turn_id=UUID(correction.turn_id),
+            evidence_quote="I no longer want an emoji preference saved.",
+            preference_key="EMOJI_USE",
+            preference_value="OFF",
+            action="REMOVE",
+        ))
+    assert removed.status=="REMOVED" and removed.version==2
+    process(dsn,consumers)
+    h.begin_session("after-removal")
+    h.restart_host()
+    past=h.send(
+        "Have I ever specified whether you should use emojis?",
+        idempotency_key="removed-ever",mode="auto",
+    )
+    assert past.model_id==ROUTE_ID
+    assert "Yes." in past.text
+    assert "was removed" in past.text
+    assert "no emoji preference is currently active" in past.text
+    assert "not to use emojis" not in past.text  # retired value stays private
+
+    now=h.send("What is my current emoji preference?",
+               idempotency_key="removed-current",mode="auto")
+    assert now.model_id==ROUTE_ID
+    assert "don't have an active saved emoji preference" in now.text
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert has_saved_relationship_preference_history(
+            conn,actor,identity.instance_id,"EMOJI_USE",
+        )
+        assert conn.execute(
+            """SELECT version,status FROM relationship_preference_revisions
+               WHERE user_id=%s AND instance_id=%s AND preference_key='EMOJI_USE'
+               ORDER BY version""",
+            (identity.user_id,identity.instance_id),
+        ).fetchall()==[(1,"ACTIVE"),(2,"REMOVED")]
+
+    # A new saved preference supersedes the removed status, but history
+    # remains true and the current value is once again authoritative.
+    h.send("Please use emojis.",idempotency_key="re-enable",mode="model")
+    process(dsn,consumers)
+    again=h.send("Have I ever specified whether you should use emojis?",
+                 idempotency_key="reinstated-ever",mode="auto")
+    assert again.model_id==ROUTE_ID
+    assert "Yes." in again.text and "still active" in again.text
+    assert "emojis are okay" in again.text
+    assert len(model.calls)==3  # source, correction, reinstate only
+
+
+def test_emoji_preference_history_is_tenant_scoped(dsn):
+    from persona_agent.preference_recall import ROUTE_ID
+    from persona_agent.relationship_state import has_saved_relationship_preference_history
+    from persona_agent.runtime import PermissionDenied
+
+    consumers=subscribe(dsn)
+    first,_=host(dsn)
+    first.send("Please use emojis.",idempotency_key="first-emoji",mode="model")
+    process(dsn,consumers)
+    identity=first.active_identity
+
+    second,model=host(dsn)
+    foreign=second.active_identity
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert not has_saved_relationship_preference_history(
+            conn,TrustedActor(user_id=foreign.user_id,source_id="other-user"),
+            foreign.instance_id,"EMOJI_USE",
+        )
+        with pytest.raises(PermissionDenied):
+            has_saved_relationship_preference_history(
+                conn,TrustedActor(user_id=foreign.user_id,source_id="other-user"),
+                identity.instance_id,"EMOJI_USE",
+            )
+    answer=second.send(
+        "Have I ever specified whether you should use emojis?",
+        idempotency_key="other-ever",mode="auto",
+    )
+    assert answer.model_id==ROUTE_ID
+    assert "don't have a saved record" in answer.text
+    assert len(model.calls)==0
