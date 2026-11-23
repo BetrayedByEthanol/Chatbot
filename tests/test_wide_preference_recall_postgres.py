@@ -62,8 +62,8 @@ def isolated_scenario_dsn(dsn):
 
 
 def test_wider_25_turn_auto_scenario_recalls_exact_persisted_preferences(isolated_scenario_dsn):
-    dsn = isolated_scenario_dsn
     """Use the frozen scenario and actual post-delivery Relationship worker."""
+    dsn = isolated_scenario_dsn
     scenario=json.loads(SCENARIO.read_text(encoding="utf-8"))
     assert len([s for s in scenario["steps"] if s["action"]=="message"])==25
     assert len([s for s in scenario["steps"] if s["action"]=="session"])==3
