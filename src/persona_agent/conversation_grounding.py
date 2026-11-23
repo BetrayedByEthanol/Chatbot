@@ -77,22 +77,19 @@ def grounding_context_block(
         relevant=list(prior_user_turns)[-10:]
 
     guidance=(
-        "Conversation grounding (source: exact user messages in THIS "
-        "conversation ONLY; this is not an inventory of past sessions "
-        "or stored Relationship preferences). "
+        "Conversation grounding: exact user messages from THIS conversation "
+        "only, not a complete inventory of prior sessions or stored state. "
         "Prior assistant messages are NOT independent evidence of user "
-        "history. Never present inferred or assistant-proposed details "
-        "as something the user said or as remembered fact. "
+        "history. Never present guesses or assistant proposals as "
+        "remembered user facts. "
     )
     if mode=="RECALL":
         guidance+=(
-            "Only claim recollection supported by the quoted user turns, "
-            "source-linked prior-session user statements, or explicitly "
-            "supplied authenticated Relationship preferences. "
-            "If none of these supplied sources supports the requested "
-            "past discussion, say you cannot reliably recall its details "
-            "and ask for a reminder. Do not infer that other evidence "
-            "is absent just because this conversation has no matches. "
+            "Claim recall only from the quoted user turns, source-linked "
+            "prior-session user statements, or authenticated saved "
+            "Relationship preferences elsewhere in this prompt. "
+            "If no supplied source supports the requested details, "
+            "say you cannot reliably recall them and ask for a reminder. "
         )
     else:
         guidance+=(
