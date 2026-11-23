@@ -17,6 +17,7 @@ from .affect_contracts import (
     RelationshipPreferenceResult,SetRelationshipPreference,
 )
 from .affect_events import write_domain_event
+from .communication_preference_rules import is_explicit_sentence_limit
 from .contracts import TrustedActor
 from .conversation import _require_actor
 from .operation_contracts import require_idle
@@ -231,6 +232,8 @@ def observe_relationship_input(cur,event,source:dict) -> bool:
          feedback,source["input_text"] if feedback!="NONE" else None),
     )
     matched=_AUTO_PREFERENCES.get(normalized)
+    if matched is None and matchable and is_explicit_sentence_limit(source["input_text"]):
+        matched=("RESPONSE_LENGTH","","SHORT")
     if matched is not None:
         key,scope,value=matched
         _preference_update(

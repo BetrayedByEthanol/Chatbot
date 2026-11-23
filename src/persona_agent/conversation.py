@@ -593,6 +593,30 @@ def prepare_text_context(
                 )
                 prompt+=procedure_view.text
                 procedure_fence=procedure_view.fence
+            # Informal, untracked step-by-step help is not a ProcedureRun.
+            # When a user asks "What's the next step?" for the currently
+            # focused discussion, recover *only* their prior sourced
+            # progress. The ProcedureRun owner takes precedence whenever
+            # there is an actual tracked run.
+            if (procedure_fence is None and incoming_topic is None
+                    and active is not None):
+                from .historical_user_turns import (
+                    focused_procedure_discussion_context_block,
+                )
+                progress_room=min(
+                    900,max_context_chars//3,
+                    max_context_chars-len(prompt)-len(history[-1].content)-160,
+                )
+                if progress_room>=340:
+                    prompt+=focused_procedure_discussion_context_block(
+                        cursor,user_id=actor.user_id,
+                        instance_id=item["instance_id"],
+                        conversation_id=item["conversation_id"],
+                        before_at=item["turn_at"],
+                        latest_text=history[-1].content,
+                        focus_title=active["title"],
+                        max_chars=progress_room,
+                    )
             # P2-02: Summary eligibility must refer to the oldest message
             # *actually retained* after character budgeting, not the initial
             # SQL LIMIT window. Otherwise older summarized ranges can vanish

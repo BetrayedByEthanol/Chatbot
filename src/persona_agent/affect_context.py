@@ -8,6 +8,7 @@ is promoted into relationship authority by this view.
 from datetime import datetime,timezone
 
 from .emotion_state import _decay
+from .communication_preference_rules import is_explicit_sentence_limit
 
 
 def persona_affect_context_block(
@@ -21,7 +22,7 @@ def persona_affect_context_block(
     if max_chars<140:
         return ""
     cur.execute(
-        """SELECT preference_key,scope_key,preference_value
+        """SELECT preference_key,scope_key,preference_value,source_quote
            FROM relationship_preferences
            WHERE user_id=%s AND instance_id=%s AND status='ACTIVE'
            ORDER BY CASE preference_key
@@ -63,7 +64,15 @@ def persona_affect_context_block(
         k=p["preference_key"]
         value=p["preference_value"]
         if k=="RESPONSE_LENGTH":
-            line=f"Explicit user preference: response length {value.lower()}."
+            if value=="SHORT" and is_explicit_sentence_limit(p["source_quote"]):
+                # Preserve a precise explicit instruction using its domain-owned
+                # source evidence; the coarse SHORT enum stays unchanged.
+                line="Explicit user preference: keep replies to one or two sentences"
+                if "unless i ask for" in p["source_quote"].casefold():
+                    line+=" unless the current request asks for detailed instructions"
+                line+=". Follow a direct request for more detail when given."
+            else:
+                line=f"Explicit user preference: response length {value.lower()}."
         elif k=="EMOJI_USE":
             line=("Explicit user preference: do not use emojis."
                   if value=="OFF" else

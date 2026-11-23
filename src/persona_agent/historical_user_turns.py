@@ -379,6 +379,138 @@ def _eligible_activity_types(
     return found
 
 
+
+# Scoped, source-first support for an *informal* step-by-step discussion.
+# These are not ProcedureRun state transitions; tracked runs are projected
+# separately by procedure_dialogue_context.py.
+_FOCUSED_NEXT_STEP = re.compile(
+    r"^(?:what(?:'s| is) (?:my|the) next step|"
+    r"what (?:should|do) i do next|"
+    r"can we continue(?: (?:from|with) (?:the )?(?:next )?step)?|"
+    r"where (?:were we|did we leave off))\s*[?.!]?$",
+    re.I,
+)
+_USER_PROGRESS_PG = (
+    r"^[[:space:]]*(actually[[:space:]]*,?[[:space:]]*)?i[[:space:]]+"
+    r"((have|had|already|just|recently)[[:space:]]+)?"
+    r"(generated|created|installed|configured|tested|completed|finished|"
+    r"updated|added|built|ran|tried|attempted|"
+    r"haven't[[:space:]]+installed|have[[:space:]]+not[[:space:]]+installed)"
+    r"[[:>:]]"
+)
+# A newer removal, failure, or explicit correction can supersede earlier
+# success even when it is NOT phrased as "I installed/configured ...".
+# Do not narrow history to success/attempt verbs before ordering evidence.
+# The topic FTS match still applies to every candidate. This is source
+# evidence, never a verified state transition or permission to execute.
+_TOPIC_PROGRESS_REVISION_PG = (
+    r"(^[[:space:]]*(actually[[:space:]]*,?|correction[[:space:]]*[:,-]|"
+    r"update[[:space:]]*:|wait[[:space:]]*[,,:]))"
+    r"|[[:<:]](removed|reverted|undid|undone|rolled[[:space:]]+back|"
+    r"uninstalled|deleted|disabled|failed|failing|broken|"
+    r"retracted|cancelled|canceled)[[:>:]]"
+    r"|[[:<:]]not[[:space:]]+(installed|working|ready|configured|successful)[[:>:]]"
+)
+
+
+def focused_procedure_discussion_context_block(
+    cur, *, user_id: UUID, instance_id: UUID, conversation_id: UUID,
+    before_at: datetime, latest_text: str, focus_title: str,
+    max_chars: int,
+) -> str:
+    """Quote relevant earlier user-reported steps when a focused topic resumes.
+
+    The Dialogue focus is already scoped/owned by Conversation. This view
+    never invents or advances ProcedureRun progress. It never promotes a
+    source quote to verified completion or to a tool authorization.
+    """
+    if (max_chars < 340 or max_chars > 1200
+            or not 1 <= len(focus_title) <= 160
+            or len(latest_text) > 160 or _SENSITIVE.search(latest_text)
+            or _SENSITIVE.search(focus_title)
+            or _FOCUSED_NEXT_STEP.fullmatch(
+                latest_text.strip().replace("’", "'")
+            ) is None):
+        return ""
+    terms = [
+        word for word in _terms(focus_title)
+        if word not in _GENERIC and not _SENSITIVE.search(word)
+    ]
+    if not terms or len(terms) > 6:
+        return ""
+    query = " ".join(terms)
+    cur.execute(
+        """SELECT t.turn_id,t.created_at,t.input_text
+           FROM conversation_turns t
+           WHERE t.user_id=%s AND t.instance_id=%s AND t.created_at<%s
+             AND t.status='RESPONDED'
+             AND (t.input_text ~* %s OR t.input_text ~* %s)
+             AND t.input_text !~* %s
+             AND NOT EXISTS (
+                 SELECT 1 FROM memory_revisions revision
+                 WHERE revision.user_id=t.user_id
+                   AND revision.instance_id=t.instance_id
+                   AND revision.source_turn_id=t.turn_id
+             )
+             AND NOT EXISTS (
+                 SELECT 1 FROM memory_extraction_candidates candidate
+                 WHERE candidate.user_id=t.user_id
+                   AND candidate.instance_id=t.instance_id
+                   AND candidate.source_turn_id=t.turn_id
+             )
+             AND to_tsvector('english',t.input_text)
+                 @@ plainto_tsquery('english',%s)
+           ORDER BY t.created_at DESC,t.turn_id DESC LIMIT 4""",
+        (user_id,instance_id,before_at,
+         _USER_PROGRESS_PG,_TOPIC_PROGRESS_REVISION_PG,
+         _BARE_TOPIC_NAVIGATION_PG,query),
+    )
+    rows = cur.fetchall()
+    if not rows:
+        return ""
+    # If the newest matching amendment is sensitive, do not disclose it or
+    # resurrect an older report while pretending the latest was never said.
+    if _SENSITIVE.search(rows[0]["input_text"]):
+        return ""
+    rows = [r for r in rows if not _SENSITIVE.search(r["input_text"])]
+    header = (
+        "Earlier user-reported procedure DISCUSSION (source-linked, "
+        "NOT a tracked ProcedureRun, verified completion, or permission "
+        "to execute tools). The quotes describe what the user reported, "
+        "not independently confirmed results. Prefer the newest report, "
+        "acknowledge uncertainties, and clarify progress when necessary:\n"
+    )
+    if len(header) + 110 > max_chars:
+        return ""
+    # The latest eligible report is mandatory. It may contain a failure,
+    # rollback or qualification near its end. Never truncate a user report or
+    # fall back to an older, potentially superseded success when the newest
+    # full source cannot fit. Older reports are optional only AFTER this gate.
+    def source_line(row) -> str:
+        return (
+            f"USER_REPORTED procedure discussion source turn {row['turn_id']} "
+            f"on {row['created_at'].date().isoformat()}: "
+            + json.dumps(row["input_text"],ensure_ascii=False) + "\n"
+        )
+
+    newest = source_line(rows[0])
+    if len(header) + len(newest) > max_chars:
+        return ""
+
+    # Present the admitted evidence in chronological order, newest last.
+    # A long older report may be skipped because the complete latest report
+    # is already retained; neither quote can lose trailing qualifications.
+    selected = [newest]
+    used = len(header) + len(newest)
+    for row in rows[1:3]:
+        line = source_line(row)
+        if used + len(line) <= max_chars:
+            selected.append(line)
+            used += len(line)
+    return header + "".join(reversed(selected))
+
+
+
 def historical_user_turn_context_block(
     cur, *, user_id: UUID, instance_id: UUID,
     conversation_id: UUID, before_at: datetime,
