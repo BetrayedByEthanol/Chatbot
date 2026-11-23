@@ -671,7 +671,7 @@ def test_e2e_processes_relationship_preference_before_later_session_prompts(dsn)
     later_prompt = model.prompts[1][0].content
     assert "keep replies to one or two sentences" in later_prompt
     assert "unless the current request asks for detailed instructions" in later_prompt
-    assert "Follow a direct request for more detail" in later_prompt
+    assert "Follow a direct request for detailed instructions" in later_prompt
     # No first-party quote matches in the new session, but an authenticated
     # saved Relationship preference DOES. The grounding layer must not
     # misrepresent a current-session lookup miss as total memory absence.

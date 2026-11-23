@@ -15,7 +15,9 @@ psycopg = pytest.importorskip("psycopg")
 from persona_agent.acceptance_host import seed_local_demo
 from persona_agent.affect_observers import register_affect_consumers, run_affect_tick
 from persona_agent.behavioral_acceptance import BehavioralAcceptanceHarness
-from persona_agent.communication_preference_rules import is_explicit_sentence_limit
+from persona_agent.communication_preference_rules import (
+    is_explicit_sentence_limit,parse_explicit_sentence_limit,
+)
 from persona_agent.conversation_contracts import ModelReply
 from persona_agent.contracts import TrustedActor
 from persona_agent.event_delivery import dispatch_outbox
@@ -80,6 +82,9 @@ def process(dsn, consumers):
     "Keep replies to one or two sentences.",
     "Please limit your responses to 1 or 2 sentences.",
     "Please keep your answers to one or two sentences unless I ask for more detail!",
+    "Please keep replies to  one or two sentences unless I ask for more detail.",
+    "Please keep replies to one or two sentences unless I   ask for detailed   instructions.",
+    "Please keep replies to one or two sentences unless I ask for details.",
 ])
 def test_exact_sentence_limit_instructions(text):
     assert is_explicit_sentence_limit(text)
@@ -121,7 +126,7 @@ def test_explicit_sentence_limit_is_durable_and_visible_after_restart(dsn):
     h.send("Tell me a fun fact.", idempotency_key="later")
     assert "keep replies to one or two sentences" in prompt(model)
     assert "unless the current request asks for detailed instructions" in prompt(model)
-    assert "Follow a direct request for more detail" in prompt(model)
+    assert "Follow a direct request for detailed instructions" in prompt(model)
 
 
 def test_later_explicit_preference_supersedes_sentence_limit(dsn):
@@ -411,3 +416,218 @@ def test_unrelated_rollback_does_not_replace_nginx_progress(dsn):
     result = _direct_progress_view(dsn, h, budget=900)
     assert report in result
     assert "tea kettle" not in result
+
+
+
+def test_direct_preference_recall_uses_durable_state_without_model(dsn):
+    """Real auto router; Relationship writes still require its event consumer."""
+    from persona_agent.preference_recall import ROUTE_ID
+
+    consumers=subscribe(dsn)
+    h,model=host(dsn)
+    h.send(
+        "Please don't make a big plan for me; I just want to chat.",
+        idempotency_key="planning-instruction",mode="model",
+    )
+    process(dsn,consumers)
+    h.send(PREFERENCE,idempotency_key="short",mode="model")
+    assert process(dsn,consumers).relationship_recorded>=1
+    assert len(model.calls)==2
+
+    h.begin_session("recall")
+    h.restart_host()
+    answer=h.send(
+        "Do you remember my preference about planning and response length?",
+        idempotency_key="recall-preferences",mode="auto",
+    )
+    assert answer.model_id==ROUTE_ID
+    assert "not to make big plans" in answer.text
+    assert "one or two sentences" in answer.text
+    assert "unless you request detailed instructions" in answer.text
+    assert len(model.calls)==2, "direct state recall must not infer again"
+
+    replay=h.send(
+        "Do you remember my preference about planning and response length?",
+        idempotency_key="recall-preferences",mode="auto",
+    )
+    assert replay.response_id==answer.response_id
+    assert replay.replayed
+    assert len(model.calls)==2
+
+    h.send("Please use normal length replies.",
+           idempotency_key="normal",mode="model")
+    process(dsn,consumers)
+    h.begin_session("correction")
+    changed=h.send(
+        "What response length did I most recently ask you to use?",
+        idempotency_key="recall-correction",mode="auto",
+    )
+    assert changed.model_id==ROUTE_ID
+    assert "normal-length replies" in changed.text
+    assert "one or two sentences" not in changed.text
+
+    missing=h.send(
+        "Have I ever specified whether you should use emojis?",
+        idempotency_key="unknown-emoji",mode="auto",
+    )
+    assert missing.model_id==ROUTE_ID
+    assert "don't have an active saved emoji preference" in missing.text
+    assert len(model.calls)==3, "only the new normal-length instruction calls model"
+
+
+def test_direct_preference_recall_uses_latest_planning_correction(dsn):
+    from persona_agent.preference_recall import ROUTE_ID
+
+    h,model=host(dsn)
+    h.send("Please don't make a big plan for me; I just want to chat.",
+           idempotency_key="no-plans",mode="model")
+    h.send("Please make me a big plan for the weekend.",
+           idempotency_key="one-off",mode="model")
+    h.begin_session("later")
+    first=h.send("Do you remember my planning preference?",
+                 idempotency_key="recall-plan",mode="auto")
+    assert first.model_id==ROUTE_ID
+    assert "not to make big plans" in first.text
+
+    h.send("Actually, you can make big plans for me now.",
+           idempotency_key="revise-plan",mode="model")
+    h.begin_session("latest")
+    corrected=h.send("Do you remember my planning preference?",
+                     idempotency_key="recall-revised-plan",mode="auto")
+    assert corrected.model_id==ROUTE_ID
+    assert "later said I could make big plans" in corrected.text
+    assert len(model.calls)==3
+
+
+def test_preference_recall_abstains_for_other_persona_and_mixed_requests(dsn):
+    from persona_agent.preference_recall import ROUTE_ID
+
+    consumers=subscribe(dsn)
+    first,_=host(dsn)
+    first.send(PREFERENCE,idempotency_key="first-short",mode="model")
+    process(dsn,consumers)
+
+    other,model=host(dsn)
+    missing=other.send(
+        "Do you remember my response length preference?",
+        idempotency_key="other-user",mode="auto",
+    )
+    assert missing.model_id==ROUTE_ID
+    assert "don't have an active saved response-length preference" in missing.text
+    assert len(model.calls)==0
+
+    mixed=other.send(
+        "Do you remember my response length preference and can you plan my day?",
+        idempotency_key="mixed",mode="auto",
+    )
+    assert mixed.model_id=="increment3.capture"
+    assert len(model.calls)==1
+
+
+def test_preference_recall_fence_rejects_superseded_revision(dsn):
+    from dataclasses import replace
+    from persona_agent.conversation import (
+        commit_text_response,ingest_text,prepare_text_context,
+    )
+    from persona_agent.conversation_contracts import (
+        PreferenceReadFence,StaleConversation,TextInputCommand,
+    )
+    from persona_agent.preference_recall import ROUTE_ID
+
+    consumers=subscribe(dsn)
+    h,_=host(dsn)
+    h.send(PREFERENCE,idempotency_key="fenced-source",mode="model")
+    process(dsn,consumers)
+    identity=h.active_identity
+    actor=TrustedActor(user_id=identity.user_id,source_id="fenced-test")
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        receipt=ingest_text(conn,actor,TextInputCommand(
+            conversation_id=identity.conversation_id,
+            instance_id=identity.instance_id,
+            expected_generation=identity.generation,
+            idempotency_key="fenced-recall",
+            text="Do you remember my response length preference?",
+        ))
+        context=prepare_text_context(conn,actor,receipt.turn_id)
+        # The durable projection is already version 1; version 0 is stale.
+        fenced=replace(context,preference_fence=PreferenceReadFence(
+            ("RESPONSE_LENGTH",),(("RESPONSE_LENGTH","ACTIVE",0),),
+        ))
+        with pytest.raises(StaleConversation,match="preference changed"):
+            commit_text_response(
+                conn,actor,fenced,
+                ModelReply(model_id=ROUTE_ID,text="Outdated preference."),
+            )
+        assert conn.execute(
+            "SELECT count(*) FROM conversation_responses WHERE turn_id=%s",
+            (receipt.turn_id,),
+        ).fetchone()[0]==0
+
+
+@pytest.mark.parametrize("instruction,exception,spoken,prompt_exception", [
+    (
+        "Please keep replies to one or two sentences.",
+        None,None,None,
+    ),
+    (
+        "Please keep replies to one or two sentences unless I ask for detailed instructions.",
+        "DETAILED_INSTRUCTIONS",
+        "unless you request detailed instructions",
+        "unless the current request asks for detailed instructions",
+    ),
+    (
+        "Please keep replies to  one or two sentences unless I ask for more detail.",
+        "MORE_DETAIL",
+        "unless you ask for more detail",
+        "unless the current request asks for more detail",
+    ),
+    (
+        "Please keep replies to one or two sentences unless I   ask for detailed   instructions.",
+        "DETAILED_INSTRUCTIONS",
+        "unless you request detailed instructions",
+        "unless the current request asks for detailed instructions",
+    ),
+    (
+        "Please keep replies to one or two sentences unless I ask for details.",
+        "MORE_DETAIL",
+        "unless you ask for more detail",
+        "unless the current request asks for more detail",
+    ),
+])
+def test_saved_sentence_limit_exception_matches_admission_and_recall(
+    dsn,instruction,exception,spoken,prompt_exception,
+):
+    """Admission, prompt rendering and deterministic answer share one grammar."""
+    from persona_agent.preference_recall import ROUTE_ID
+
+    parsed=parse_explicit_sentence_limit(instruction)
+    assert parsed is not None and parsed.exception==exception
+    consumers=subscribe(dsn)
+    h,model=host(dsn)
+    h.send(instruction,idempotency_key="preference",mode="model")
+    assert process(dsn,consumers).relationship_recorded>=1
+
+    h.begin_session("later")
+    recall=h.send(
+        "Do you remember my response length preference?",
+        idempotency_key="recall",mode="auto",
+    )
+    assert recall.model_id==ROUTE_ID
+    assert "one or two sentences" in recall.text
+    if spoken is None:
+        assert "unless" not in recall.text
+    else:
+        assert spoken in recall.text
+        if exception=="MORE_DETAIL":
+            assert "detailed instructions" not in recall.text
+
+    # The same saved source drives the model-facing, non-deterministic route.
+    h.send("Tell me something interesting.",idempotency_key="ordinary",mode="model")
+    assembled=prompt(model)
+    assert "keep replies to one or two sentences" in assembled
+    if prompt_exception is None:
+        assert "unless the current request asks" not in assembled
+    else:
+        assert prompt_exception in assembled
+        if exception=="MORE_DETAIL":
+            assert "unless the current request asks for detailed instructions" not in assembled

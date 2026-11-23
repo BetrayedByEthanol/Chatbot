@@ -910,6 +910,34 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
                         raise StaleConversation(
                             "linked dialogue context changed during inference"
                         )
+            if context.preference_fence is not None:
+                # Preference recall is a read of Relationship-owned state.
+                # A correction/removal after rendering but before this short
+                # commit must not result in a stale authoritative answer.
+                # The Relationship owner serializes writes on its state row.
+                cursor.execute(
+                    """SELECT 1 FROM relationship_state
+                       WHERE user_id=%s AND instance_id=%s FOR SHARE""",
+                    (actor.user_id,context.instance_id),
+                )
+                cursor.fetchone()
+                fence=context.preference_fence
+                cursor.execute(
+                    """SELECT preference_key,status,version
+                       FROM relationship_preferences
+                       WHERE user_id=%s AND instance_id=%s AND scope_key=''
+                         AND preference_key=ANY(%s::text[])
+                       ORDER BY preference_key FOR SHARE""",
+                    (actor.user_id,context.instance_id,list(fence.keys)),
+                )
+                observed=tuple(
+                    (row["preference_key"],row["status"],row["version"])
+                    for row in cursor.fetchall()
+                )
+                if observed!=fence.revisions:
+                    raise StaleConversation(
+                        "Relationship preference changed during recall"
+                    )
             # MVP-01F.4: use only the persisted authenticated user input and
             # bounded prior user messages to enforce unavailable-capability
             # claims. Model output is untrusted, including conditional offers.

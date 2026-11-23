@@ -15,6 +15,7 @@ from .conversation import respond_to_text, _require_actor
 from .conversation_contracts import TextModelGateway, TextResponseResult
 from .operation_contracts import require_idle
 from .response_decisions import decide_response
+from .preference_recall import respond_with_preference_recall
 from .runtime import PermissionDenied
 from .tool_contracts import SlowTextToolCommand
 from .tool_gateway import respond_to_text_analysis, respond_with_time
@@ -48,6 +49,8 @@ def respond_to_user_text(
         raise PermissionDenied("response input outside authenticated scope")
 
     decision=decide_response(item["input_text"],default_timezone=default_timezone)
+    if decision.route=="PREFERENCE_RECALL":
+        return respond_with_preference_recall(connection,actor,turn_id)
     if decision.route=="CLOCK":
         return respond_with_time(
             connection,actor,turn_id,timezone_name=decision.timezone_name,

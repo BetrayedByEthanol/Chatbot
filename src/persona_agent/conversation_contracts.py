@@ -70,6 +70,18 @@ class ProcedureContextFence:
 
 
 @dataclass(frozen=True)
+class PreferenceReadFence:
+    """Relevant Relationship projection versions used by a direct recall.
+
+    Missing keys are represented by their absence from revisions but their
+    inclusion in keys; removal is represented by a revision with status
+    REMOVED. No Relationship write authority is granted to Conversation.
+    """
+    keys: tuple[str, ...]
+    revisions: tuple[tuple[str, str, int], ...]
+
+
+@dataclass(frozen=True)
 class ResponseContext:
     conversation_id: UUID
     turn_id: UUID
@@ -78,6 +90,7 @@ class ResponseContext:
     conversation_revision: int
     messages: tuple[ModelMessage, ...]
     procedure_fence: ProcedureContextFence | None = None
+    preference_fence: PreferenceReadFence | None = None
 
 
 class TextModelGateway(Protocol):
