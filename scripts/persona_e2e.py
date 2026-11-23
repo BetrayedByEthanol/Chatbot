@@ -83,6 +83,10 @@ def run(argv=None) -> int:
         default=os.environ.get("ACCEPTANCE_OLLAMA_URL","http://127.0.0.1:11434"),
     )
     parser.add_argument(
+        "--thinking", choices=("default", "on", "off"), default="default",
+        help="Ollama reasoning mode: omit think by default, or send true/false",
+    )
+    parser.add_argument(
         "--report",type=Path,
         default=Path("artifacts") / (
             "mvp01e-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -134,6 +138,7 @@ def run(argv=None) -> int:
                     conn.execute(path.read_text(encoding="utf-8"))
         gateway = OllamaChatGateway(
             model=args.model,base_url=args.ollama_url,timeout_seconds=180,
+            thinking={"default": None, "on": True, "off": False}[args.thinking],
         )
         result = run_scenario(
             dsn,scenario,gateway,

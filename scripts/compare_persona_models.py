@@ -124,7 +124,8 @@ def read_summary(bundle: Path) -> dict:
 
 
 def build_command(mode: str, model: str, scenario: Path, bundle: Path,
-                  ollama_url: str | None, direct: bool) -> list[str]:
+                  ollama_url: str | None, direct: bool,
+                  thinking: str = "default") -> list[str]:
     command = (
         [sys.executable, "scripts/persona_e2e.py"] if direct else
         ["bash", "scripts/run_persona_e2e.sh"]
@@ -136,6 +137,8 @@ def build_command(mode: str, model: str, scenario: Path, bundle: Path,
     ]
     if ollama_url:
         command += ["--ollama-url", ollama_url]
+    if thinking != "default":
+        command += ["--thinking", thinking]
     return command
 
 
@@ -148,6 +151,9 @@ def compare(argv: list[str] | None = None) -> int:
     parser.add_argument("--output-dir", type=Path,
                         help="New, private results directory; never overwritten")
     parser.add_argument("--ollama-url", help="Override the same Ollama URL for all runs")
+    parser.add_argument("--thinking", choices=("default", "on", "off"),
+                        default="default",
+                        help="Set Ollama think=true/false for every model run; default leaves it unset")
     parser.add_argument("--direct", action="store_true",
                         help="Use configured disposable PostgreSQL via persona_e2e.py; no Compose")
     args = parser.parse_args(argv)
@@ -185,7 +191,8 @@ def compare(argv: list[str] | None = None) -> int:
         "gateway_configuration": {
             "ollama_url": args.ollama_url or os.getenv("ACCEPTANCE_OLLAMA_URL",
                                                      "http://127.0.0.1:11434"),
-            "model_profiles": "gateway defaults; no per-model prompt overrides",
+            "model_profiles": "gateway defaults except explicit global thinking mode",
+            "thinking": args.thinking,
             "token_usage": "not captured by this gateway",
         },
         "warnings": [
@@ -200,7 +207,7 @@ def compare(argv: list[str] | None = None) -> int:
         bundle = destination / f"{alias}.zip"
         private_json(scenario_path, scenarios[mode])
         command = build_command(mode, model, scenario_path, bundle,
-                                args.ollama_url, args.direct)
+                                args.ollama_url, args.direct, args.thinking)
         print(f"Running {alias} ({mode}, {model}); {len(scenarios[mode]['steps'])} steps",
               flush=True)
         try:
@@ -210,7 +217,8 @@ def compare(argv: list[str] | None = None) -> int:
             code = 127
             print(f"{alias} could not launch: {type(exc).__name__}: {exc}",
                   file=sys.stderr)
-        entry = {"case_id": alias, "mode": mode, "exit_code": code,
+        entry = {"case_id": alias, "mode": mode, "thinking": args.thinking,
+                 "exit_code": code,
                  "bundle": bundle.name if bundle.exists() else None,
                  "review_packet": None,
                  "review_status": "NO_PACKET"}

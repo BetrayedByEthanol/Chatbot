@@ -58,3 +58,44 @@ def test_gateway_rejects_malformed_model_reply(monkeypatch,payload):
     with pytest.raises(ModelUnavailable):
         OllamaChatGateway(model="lexi").generate([
             ModelMessage(role="user",content="Hello")])
+
+
+
+@pytest.mark.parametrize("thinking,expected", [
+    (None,None),
+    (True,True),
+    (False,False),
+])
+def test_ollama_thinking_flag_applies_to_plain_and_structured_requests(
+    monkeypatch,thinking,expected,
+):
+    """Only an explicit bool adds think; structured calls use the same setting."""
+    captured=[]
+    def stub(req,timeout):
+        payload=json.loads(req.data)
+        captured.append(payload)
+        answer=(
+            '{"reply":"Hello","intent":null}'
+            if payload.get("format")=="json" else "Hello"
+        )
+        return FakeHTTPResponse(json.dumps({
+            "message":{"role":"assistant","content":answer,"thinking":"private"}
+        }).encode())
+    monkeypatch.setattr("persona_agent.model_gateway.urlopen",stub)
+    gateway=OllamaChatGateway(model="qwen3.5:9b",thinking=thinking)
+    messages=[ModelMessage(role="user",content="Hello")]
+    assert gateway.generate(messages).text=="Hello"
+    assert gateway.generate_interpreted(messages).text=="Hello"
+    assert len(captured)==2
+    assert "format" not in captured[0] and captured[1]["format"]=="json"
+    for request in captured:
+        if expected is None:
+            assert "think" not in request
+        else:
+            assert request["think"] is expected
+
+
+@pytest.mark.parametrize("value",["false",0,1,{},[]])
+def test_ollama_thinking_rejects_non_boolean_values(value):
+    with pytest.raises(TypeError,match="thinking must be bool or None"):
+        OllamaChatGateway(model="lexi",thinking=value)
