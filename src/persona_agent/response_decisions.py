@@ -46,6 +46,7 @@ _ANALYSIS_QUERY = re.compile(
 
 # A deliberately small allowlist of complete direct questions. Mixed requests,
 # hypotheticals, quotations and less explicit wording stay model-driven.
+_EMOJI_HISTORY_QUERY = re.compile(r"have i (?:(?:ever )?specified whether you should use emojis|(?:(?:ever )?set|told you about) an? emoji preference|(?:(?:ever )?told you) whether you should use emojis)")
 _PREFERENCE_RECALL = (
     (re.compile(r"do you remember my preference(?:s)? about planning and (?:response|reply) length"), ("PLANNING","RESPONSE_LENGTH")),
     (re.compile(r"do you remember my (?:response|reply) length preference(?:s)?"), ("RESPONSE_LENGTH",)),
@@ -53,23 +54,35 @@ _PREFERENCE_RECALL = (
     (re.compile(r"what (?:response|reply) length did i (?:(?:most recently|last) )?ask you to use"), ("RESPONSE_LENGTH",)),
     (re.compile(r"what (?:is|was) my (?:(?:current|saved|latest) )?(?:response|reply) length preference"), ("RESPONSE_LENGTH",)),
     (re.compile(r"what (?:is|was) my (?:(?:current|saved|latest) )?planning preference"), ("PLANNING",)),
-    (re.compile(r"have i (?:(?:ever )?specified whether you should use emojis|(?:(?:ever )?set|told you about) an? emoji preference|(?:(?:ever )?told you) whether you should use emojis)"), ("EMOJI_USE",)),
+    (_EMOJI_HISTORY_QUERY, ("EMOJI_USE",)),
     (re.compile(r"what (?:is|was) my (?:(?:current|saved|latest) )?emoji preference"), ("EMOJI_USE",)),
 )
 
 
+def _normalized_recall_query(text: str) -> str | None:
+    if not isinstance(text, str) or not 1<=len(text)<=200:
+        return None
+    value=re.sub(r"\s+"," ",text.strip().replace("’","'")).casefold()
+    if value.startswith(('"', "'", "“", "‘")):
+        return None
+    return value.removesuffix("?").strip()
+
+
 def preference_recall_topics(text: str) -> tuple[str, ...] | None:
     """Return recognized topics only for a standalone direct recollection."""
-    if not isinstance(text,str) or not 1<=len(text)<=200:
+    normalized=_normalized_recall_query(text)
+    if normalized is None:
         return None
-    normalized=re.sub(r"\s+"," ",text.strip().replace("’","'")).casefold()
-    if normalized.startswith(('"', "'", "“", "‘")):
-        return None
-    normalized=normalized.removesuffix("?").strip()
     for pattern,topics in _PREFERENCE_RECALL:
         if pattern.fullmatch(normalized):
             return topics
     return None
+
+
+def is_historical_emoji_preference_query(text: str) -> bool:
+    """Whether the exact routed question asks if a preference *ever* existed."""
+    normalized=_normalized_recall_query(text)
+    return normalized is not None and _EMOJI_HISTORY_QUERY.fullmatch(normalized) is not None
 
 
 @dataclass(frozen=True)

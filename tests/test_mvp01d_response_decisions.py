@@ -9,6 +9,7 @@ psycopg=pytest.importorskip("psycopg")
 from persona_agent.acceptance_host import LocalAcceptanceSession, seed_local_demo
 from persona_agent.response_decisions import (
     decide_response, explicit_analysis_payload, preference_recall_topics,
+    is_historical_emoji_preference_query,
 )
 from persona_agent.tool_contracts import SLOW_TOOL, TIME_TOOL
 from persona_agent.tool_gateway import run_one_text_tool
@@ -263,3 +264,18 @@ def test_direct_preference_questions_use_narrow_route(text,topics):
 def test_ambiguous_mixed_and_non_preference_questions_use_model(text):
     assert preference_recall_topics(text) is None
     assert decide_response(text).route=="MODEL"
+
+
+@pytest.mark.parametrize("text,historical", [
+    ("Have I ever specified whether you should use emojis?",True),
+    ("Have I specified whether you should use emojis?",True),
+    ("Have I set an emoji preference?",True),
+    ("Have I ever told you whether you should use emojis?",True),
+    ("What is my current emoji preference?",False),
+    ("What is my saved emoji preference?",False),
+    ("Do you remember my response length preference?",False),
+    ('"Have I ever specified whether you should use emojis?"',False),
+    ("Have I ever specified whether you should use emojis and can you use them?",False),
+])
+def test_emoji_ever_questions_are_distinct_from_current_preference(text,historical):
+    assert is_historical_emoji_preference_query(text) is historical

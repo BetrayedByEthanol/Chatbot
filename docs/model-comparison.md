@@ -99,6 +99,41 @@ The `model-only` mode intentionally bypasses this route and continues to
 measure each model's interpretation; `both` makes the difference visible
 without changing the existing rubric.
 
+**Emoji question semantics:** `What is my current emoji preference?` reads
+only the active Relationship projection. `Have I ever specified whether you
+should use emojis?` also checks the authenticated Relationship revision
+history. It can truthfully distinguish an active preference, a previously
+saved preference that was removed, and no *saved record*. The historical
+answer does not expose a removed preference's value, and absence of a saved
+record does not prove the user never mentioned emojis.
+
+## Wider 25-turn conversational comparison
+
+After landing changes to the narrow recall route, rerun the frozen,
+three-session, 25-turn scenario with the **same models and thinking mode**:
+
+```bash
+git checkout main
+git pull --ff-only
+
+scripts/compare-persona-models \
+  --models qwen2.5:7b,qwen3.5:9b \
+  --mode both \
+  --thinking off \
+  --scenario scenarios/persona_model_comparison_v1.json \
+  --output-dir artifacts/conversation-post-emoji-history
+```
+
+Use a **new** output directory. Compare the full/auto route with
+model-only, preserving model attribution in `PRIVATE_model_map.json`.
+Inspect all 25 turns, not only the direct preference-recall turn:
+grounding of unknown time/car details, walking correction and authorization,
+Nginx progress across interruption, brevity, and latency. A PostgreSQL
+integration test runs the same frozen conversation with the real workers
+and a stub model to verify routing and persistence; that smoke test is not
+an Ollama quality benchmark. Real-model outputs still require blinded
+independent review.
+
 The `review_case` criteria explicitly flag unsupported recall uncertainty,
 failure to give the precise sentence limit and its exception, reliance on
 superseded preferences after a correction, and fabricated emoji preferences.
