@@ -57,11 +57,11 @@ def _planning_instruction(
         cur.execute(
             """SELECT t.input_text
                FROM conversation_turns t
-               JOIN conversation_turns current ON current.turn_id=%s
-                 AND current.user_id=t.user_id
-                 AND current.instance_id=t.instance_id
+               JOIN conversation_turns anchor ON anchor.turn_id=%s
+                 AND anchor.user_id=t.user_id
+                 AND anchor.instance_id=t.instance_id
                WHERE t.user_id=%s AND t.instance_id=%s
-                 AND t.status='RESPONDED' AND t.created_at<current.created_at
+                 AND t.status='RESPONDED' AND t.created_at<anchor.created_at
                  AND char_length(t.input_text)<=200
                  AND t.input_text ILIKE '%%big plan%%'
                ORDER BY t.created_at DESC,t.turn_id DESC
