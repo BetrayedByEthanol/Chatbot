@@ -370,3 +370,40 @@ def read_relationship_state(
         last_interaction_at=state["last_interaction_at"] if state else None,
         preferences=preferences,
     )
+
+
+def has_saved_relationship_preference_history(
+    connection: Connection, actor: TrustedActor, instance_id: UUID,
+    preference_key: str, *, scope_key: str = "",
+) -> bool:
+    """Whether Relationship ever recorded an ACTIVE revision for this key.
+
+    An explicit REMOVE keeps immutable revision evidence but makes the
+    preference inactive. A historical "ever" question must not be answered
+    from the active projection alone. This read discloses no retired value or
+    user quote; absence means no *saved record*, not proof no utterance occurred.
+    """
+    require_idle(connection)
+    _require_actor(actor)
+    if preference_key not in (
+        "RESPONSE_LENGTH", "EMOJI_USE", "PROACTIVE_MESSAGES",
+        "AVOID_PROACTIVE_TOPIC",
+    ):
+        raise ValueError("unsupported relationship preference key")
+    with connection.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            "SELECT 1 FROM persona_instances WHERE user_id=%s AND id=%s",
+            (actor.user_id, instance_id),
+        )
+        if cur.fetchone() is None:
+            raise PermissionDenied("relationship state outside actor scope")
+        cur.execute(
+            """SELECT EXISTS(
+                   SELECT 1 FROM relationship_preference_revisions
+                   WHERE user_id=%s AND instance_id=%s
+                     AND preference_key=%s AND scope_key=%s
+                     AND status='ACTIVE'
+               ) AS ever_saved""",
+            (actor.user_id, instance_id, preference_key, scope_key),
+        )
+        return bool(cur.fetchone()["ever_saved"])
