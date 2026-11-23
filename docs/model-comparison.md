@@ -78,16 +78,26 @@ explicit correction to normal length, and an unknown emoji preference:
 ```bash
 scripts/compare-persona-models \
   --models qwen2.5:7b,qwen3.5:9b \
-  --mode model-only \
+  --mode both \
   --thinking off \
   --scenario scenarios/preference_recall_v1.json \
-  --output-dir artifacts/preference-recall-off
+  --output-dir artifacts/preference-recall-routing
 ```
 
 The Relationship/Emotion consumer runs at post-delivery boundaries in the
 disposable E2E host. Its source-linked preference is available on the next
 turn and across sessions/restarts. A deterministic PostgreSQL test checks that
 the stored current preference is supplied to the recalled-turn prompt.
+
+The **full/auto** route now handles only a small allowlist of standalone
+questions about reply length, planning, and emoji preferences. It reads
+authenticated Relationship state and carefully matched first-party planning
+instructions, then commits through the existing Conversation response fences.
+Unknown saved preferences are reported as unknown, not invented. Ambiguous,
+hypothetical, quoted, mixed-intent or unsupported queries remain model-driven.
+The `model-only` mode intentionally bypasses this route and continues to
+measure each model's interpretation; `both` makes the difference visible
+without changing the existing rubric.
 
 The `review_case` criteria explicitly flag unsupported recall uncertainty,
 failure to give the precise sentence limit and its exception, reliance on
