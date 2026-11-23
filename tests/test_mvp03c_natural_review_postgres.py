@@ -37,9 +37,15 @@ class RecordedFake:
 def test_actual_host_delivers_reviewable_three_session_trace(dsn,tmp_path):
     scenario=json.loads(SCENARIO.read_text(encoding="utf-8"))
     model=RecordedFake()
+    # This checks review-packet generation with an inert fake model,
+    # not the P0 affect integration. The session-scoped pytest database
+    # retains previous tests' event history; avoid subscribing the fake
+    # protocol run to that unrelated backlog. Dedicated affect E2E tests
+    # and the disposable model benchmark exercise the real consumers.
     report=run_scenario(
         dsn,scenario,model,
         run_tool_worker=False,run_memory_worker=False,
+        run_affect_worker=False,
     )
     assert not report["errors"],report["errors"]
     assert report["contract_passed"],report["checks"]
