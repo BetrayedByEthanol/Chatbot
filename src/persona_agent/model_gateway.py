@@ -24,6 +24,9 @@ class OllamaChatGateway:
     base_url: str = "http://127.0.0.1:11434"
     timeout_seconds: float = 25.0
     max_response_chars: int = 12000
+    # None preserves the model/Ollama default. False disables reasoning;
+    # True requests it for models that support Ollama's thinking mode.
+    thinking: bool | None = None
     # Optional evaluator hook: the fully composed Ollama request (including
     # the structured intent instruction) at the outbound boundary.
     # Supply a detached copy so observers cannot mutate the actual request.
@@ -43,6 +46,8 @@ class OllamaChatGateway:
             raise ValueError("timeout_seconds must be between 0 and 300")
         if not 1 <= self.max_response_chars <= 12000:
             raise ValueError("max_response_chars must be between 1 and 12000")
+        if self.thinking is not None and not isinstance(self.thinking, bool):
+            raise TypeError("thinking must be bool or None")
         if not (self.base_url.startswith("http://") or
                 self.base_url.startswith("https://")):
             raise ValueError("model endpoint must be HTTP(S)")
@@ -64,6 +69,8 @@ class OllamaChatGateway:
         }
         if json_mode:
             request_payload["format"] = "json"
+        if self.thinking is not None:
+            request_payload["think"] = self.thinking
         request = Request(
             self.base_url.rstrip("/") + "/api/chat",
             data=json.dumps(request_payload).encode("utf-8"),
