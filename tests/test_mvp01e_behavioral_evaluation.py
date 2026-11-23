@@ -639,10 +639,12 @@ def test_e2e_processes_relationship_preference_before_later_session_prompts(dsn)
         {"action":"message","text":instruction,"mode":"model"},
         {"action":"restart"},
         {"action":"session","name":"later"},
-        {"action":"message","text":"Tell me a fun fact.","mode":"model"},
+        {"action":"message","text":"Do you remember my response length preference?",
+         "mode":"model"},
         {"action":"message","text":"Please use normal length replies.","mode":"model"},
         {"action":"session","name":"after_correction"},
-        {"action":"message","text":"Tell me another fact.","mode":"model"},
+        {"action":"message","text":"What response length did I ask for most recently?",
+         "mode":"model"},
     ]}
     model = CapturingModel()
     result = run_scenario(dsn,scenario,model,run_memory_worker=False)
@@ -670,6 +672,13 @@ def test_e2e_processes_relationship_preference_before_later_session_prompts(dsn)
     assert "keep replies to one or two sentences" in later_prompt
     assert "unless the current request asks for detailed instructions" in later_prompt
     assert "Follow a direct request for more detail" in later_prompt
+    # No first-party quote matches in the new session, but an authenticated
+    # saved Relationship preference DOES. The grounding layer must not
+    # misrepresent a current-session lookup miss as total memory absence.
+    assert "Conversation grounding" in later_prompt
+    assert "none matching the requested earlier discussion" in later_prompt
+    assert "authenticated saved Relationship preferences" in later_prompt
+    assert "not a complete inventory" in later_prompt
 
     corrected_prompt = model.prompts[-1][0].content
     assert "Explicit user preference: response length normal." in corrected_prompt

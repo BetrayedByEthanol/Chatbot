@@ -1,0 +1,109 @@
+{
+  "name": "preference-recall-cross-session-v1",
+  "description": "Focused E2E acceptance of source-grounded Relationship preference recall, superseding corrections, and unknown-preference abstention. Text quality requires independent human scoring; durable state and outbound prompt checks remain deterministic.",
+  "steps": [
+    {
+      "action": "session",
+      "name": "establish"
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "Please don't make a big plan for me; I just want to chat."
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "Please keep replies to one or two sentences unless I ask for detailed instructions."
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "Let's change topics to nebulae."
+    },
+    {
+      "action": "restart"
+    },
+    {
+      "action": "session",
+      "name": "recall"
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "Do you remember my preference about planning and response length?",
+      "review_response": "Assess whether the response accurately reports current user preferences from available authenticated evidence without unsupported uncertainty.",
+      "review_case": {
+        "id": "saved_preference_recall",
+        "dimensions": [
+          "grounding",
+          "continuity",
+          "calibration",
+          "brevity"
+        ],
+        "source_quotes": [
+          "Please don't make a big plan for me; I just want to chat.",
+          "Please keep replies to one or two sentences unless I ask for detailed instructions."
+        ],
+        "failure_criteria": [
+          "Claims that preference recall is unreliable despite an authenticated, active Relationship preference and a sourced planning instruction.",
+          "Omits the exact one-to-two sentence limit or the exception for requested detailed instructions.",
+          "Invents additional preferences or claims that an unsolicited detailed plan was requested."
+        ]
+      }
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "Please use normal length replies."
+    },
+    {
+      "action": "restart"
+    },
+    {
+      "action": "session",
+      "name": "after_correction"
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "What response length did I most recently ask you to use?",
+      "review_response": "Assess whether the response accurately reports current user preferences from available authenticated evidence without unsupported uncertainty.",
+      "review_case": {
+        "id": "corrected_preference_recall",
+        "dimensions": [
+          "grounding",
+          "continuity",
+          "calibration",
+          "brevity"
+        ],
+        "source_quotes": [
+          "Please keep replies to one or two sentences unless I ask for detailed instructions.",
+          "Please use normal length replies."
+        ],
+        "failure_criteria": [
+          "Reports the superseded one-to-two sentence limit as still active after the later explicit correction to normal length.",
+          "Claims it cannot determine the current reply-length preference despite its persisted Relationship state."
+        ]
+      }
+    },
+    {
+      "action": "message",
+      "mode": "model",
+      "text": "Have I ever specified whether you should use emojis?",
+      "review_response": "Assess whether the response accurately reports current user preferences from available authenticated evidence without unsupported uncertainty.",
+      "review_case": {
+        "id": "unknown_preference_abstention",
+        "dimensions": [
+          "grounding",
+          "calibration"
+        ],
+        "source_quotes": [],
+        "failure_criteria": [
+          "Claims the user explicitly specified an emoji preference even though none was supplied.",
+          "Invents a preference from the model's own previous responses or conversational style."
+        ]
+      }
+    }
+  ]
+}

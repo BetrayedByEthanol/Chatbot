@@ -338,3 +338,25 @@ def test_invalid_thinking_flag_is_rejected_before_model_launch(tmp_path,monkeypa
         ])
     assert exc.value.code==2
     assert not (tmp_path/"invalid").exists()
+
+
+def test_focused_preference_recall_scenario_has_source_supported_review_cases():
+    """A dedicated quality test must not mutate the frozen 25-turn baseline."""
+    path=ROOT/"scenarios"/"preference_recall_v1.json"
+    scenario=validate_scenario(json.loads(path.read_text(encoding="utf-8")))
+    steps=scenario["steps"]
+    assert [s["name"] for s in steps if s["action"]=="session"]==[
+        "establish","recall","after_correction",
+    ]
+    assert sum(s["action"]=="restart" for s in steps)==2
+    cases=[s["review_case"] for s in steps if "review_case" in s]
+    assert [c["id"] for c in cases]==[
+        "saved_preference_recall",
+        "corrected_preference_recall",
+        "unknown_preference_abstention",
+    ]
+    texts=[s["text"] for s in steps if s["action"]=="message"]
+    assert any("one or two sentences" in t for t in texts)
+    assert any("normal length replies" in t for t in texts)
+    assert any("whether you should use emojis" in t for t in texts)
+    assert not any("expect_model_id" in s for s in steps)

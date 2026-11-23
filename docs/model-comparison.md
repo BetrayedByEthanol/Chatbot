@@ -69,6 +69,40 @@ An explicit `--thinking` flag controls the Ollama request setting globally
 without altering the scenario, prompt text, or domain-owned state.
 Run order is randomized; a private mapping preserves attribution.
 
+## Focused source-backed preference recall acceptance
+
+The frozen 25-turn scenario is unchanged. A separate scenario isolates the
+cross-session recall of a *persisted* one-to-two-sentence preference, an
+explicit correction to normal length, and an unknown emoji preference:
+
+```bash
+scripts/compare-persona-models \
+  --models qwen2.5:7b,qwen3.5:9b \
+  --mode model-only \
+  --thinking off \
+  --scenario scenarios/preference_recall_v1.json \
+  --output-dir artifacts/preference-recall-off
+```
+
+The Relationship/Emotion consumer runs at post-delivery boundaries in the
+disposable E2E host. Its source-linked preference is available on the next
+turn and across sessions/restarts. A deterministic PostgreSQL test checks that
+the stored current preference is supplied to the recalled-turn prompt.
+
+The `review_case` criteria explicitly flag unsupported recall uncertainty,
+failure to give the precise sentence limit and its exception, reliance on
+superseded preferences after a correction, and fabricated emoji preferences.
+The scenario **does not** automatically score answer quality from text or
+declare a model winner; use the blinded `case_XX.review.json` packets and
+independent human scoring.
+
+When diagnosing a model claiming it cannot remember, inspect both the
+`Conversation grounding` section and the `Scoped persona presentation context`
+section in the private outbound request evidence. The former covers only
+current-session quotes and must never imply that saved Relationship state is
+absent. The latter is a trusted authenticated source for the user's explicit
+communication preference. Do not distribute full prompts as blinded reviews.
+
 ## Private output and human review
 
 Each invocation creates a new **0700** directory containing:
