@@ -20,11 +20,20 @@ the existing E2E runner and MVP-03C independent-human review protocol.
 
 ```bash
 ollama pull qwen2.5:7b
-# Pull the exact Qwen 3.5 tag installed on your machine separately.
+ollama pull qwen3.5:9b
 scripts/compare-persona-models \
-  --models qwen2.5:7b,qwen3.5:latest \
-  --mode both
+  --models qwen2.5:7b,qwen3.5:9b \
+  --mode both \
+  --thinking off
 ```
+
+The thinking options are:
+
+- `--thinking default` (default): do not send Ollama's `think` field; use each model's configured default.
+- `--thinking off`: send `"think": false` to Ollama, including for interpreted/JSON responses.
+- `--thinking on`: send `"think": true` to Ollama; requires a model that supports thinking.
+
+The same thinking choice applies to every model/mode pair in one comparison. To compare Qwen 3.5 with thinking on versus off, run the script twice with **different** output directories. The model's `think` option is recorded in the private model map, per-case results, and outbound request evidence; it is not exposed to blind reviewers. No model profile is changed on disk.
 
 The mode options are:
 
@@ -40,8 +49,9 @@ natural-dialogue `review_case` rubrics:
 
 ```bash
 scripts/compare-persona-models \
-  --models qwen2.5:7b,qwen3.5:latest \
+  --models qwen2.5:7b,qwen3.5:9b \
   --mode full \
+  --thinking on \
   --scenario scenarios/persona_model_comparison_v1.json \
   --output-dir artifacts/my-comparison
 ```
@@ -55,6 +65,8 @@ procedure progress, interruptions, and multi-session recall.
 The text, session boundaries and human-review rubrics are identical across
 models. The only per-mode transformation is `mode=model` versus
 `mode=auto`. No model-specific prompt profile is applied by this v1 runner.
+An explicit `--thinking` flag controls the Ollama request setting globally
+without altering the scenario, prompt text, or domain-owned state.
 Run order is randomized; a private mapping preserves attribution.
 
 ## Private output and human review
