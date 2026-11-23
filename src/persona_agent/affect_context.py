@@ -8,7 +8,7 @@ is promoted into relationship authority by this view.
 from datetime import datetime,timezone
 
 from .emotion_state import _decay
-from .communication_preference_rules import is_explicit_sentence_limit
+from .communication_preference_rules import parse_explicit_sentence_limit
 
 
 def persona_affect_context_block(
@@ -64,13 +64,23 @@ def persona_affect_context_block(
         k=p["preference_key"]
         value=p["preference_value"]
         if k=="RESPONSE_LENGTH":
-            if value=="SHORT" and is_explicit_sentence_limit(p["source_quote"]):
-                # Preserve a precise explicit instruction using its domain-owned
-                # source evidence; the coarse SHORT enum stays unchanged.
+            instruction=(
+                parse_explicit_sentence_limit(p["source_quote"])
+                if value=="SHORT" else None
+            )
+            if instruction is not None:
+                # The exact admitted exception is domain-owned source evidence;
+                # do not narrow "more detail" to "detailed instructions".
                 line="Explicit user preference: keep replies to one or two sentences"
-                if "unless i ask for" in p["source_quote"].casefold():
+                if instruction.exception=="DETAILED_INSTRUCTIONS":
                     line+=" unless the current request asks for detailed instructions"
-                line+=". Follow a direct request for more detail when given."
+                elif instruction.exception=="MORE_DETAIL":
+                    line+=" unless the current request asks for more detail"
+                line+="."
+                if instruction.exception=="DETAILED_INSTRUCTIONS":
+                    line+=" Follow a direct request for detailed instructions when given."
+                elif instruction.exception=="MORE_DETAIL":
+                    line+=" Follow a direct request for more detail when given."
             else:
                 line=f"Explicit user preference: response length {value.lower()}."
         elif k=="EMOJI_USE":
