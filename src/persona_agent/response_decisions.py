@@ -44,10 +44,39 @@ _ANALYSIS_QUERY = re.compile(
 )
 
 
+# A deliberately small allowlist of complete direct questions. Mixed requests,
+# hypotheticals, quotations and less explicit wording stay model-driven.
+_PREFERENCE_RECALL = (
+    (re.compile(r"do you remember my preference(?:s)? about planning and (?:response|reply) length"), ("PLANNING","RESPONSE_LENGTH")),
+    (re.compile(r"do you remember my (?:response|reply) length preference(?:s)?"), ("RESPONSE_LENGTH",)),
+    (re.compile(r"do you remember my planning preference(?:s)?"), ("PLANNING",)),
+    (re.compile(r"what (?:response|reply) length did i (?:(?:most recently|last) )?ask you to use"), ("RESPONSE_LENGTH",)),
+    (re.compile(r"what (?:is|was) my (?:(?:current|saved|latest) )?(?:response|reply) length preference"), ("RESPONSE_LENGTH",)),
+    (re.compile(r"what (?:is|was) my (?:(?:current|saved|latest) )?planning preference"), ("PLANNING",)),
+    (re.compile(r"have i (?:(?:ever )?specified whether you should use emojis|(?:(?:ever )?set|told you about) an? emoji preference|(?:(?:ever )?told you) whether you should use emojis)"), ("EMOJI_USE",)),
+    (re.compile(r"what (?:is|was) my (?:(?:current|saved|latest) )?emoji preference"), ("EMOJI_USE",)),
+)
+
+
+def preference_recall_topics(text: str) -> tuple[str, ...] | None:
+    """Return recognized topics only for a standalone direct recollection."""
+    if not isinstance(text,str) or not 1<=len(text)<=200:
+        return None
+    normalized=re.sub(r"\s+"," ",text.strip().replace("’","'")).casefold()
+    if normalized.startswith(('"', "'", "“", "‘")):
+        return None
+    normalized=normalized.removesuffix("?").strip()
+    for pattern,topics in _PREFERENCE_RECALL:
+        if pattern.fullmatch(normalized):
+            return topics
+    return None
+
+
 @dataclass(frozen=True)
 class ResponseDecision:
-    route: Literal["MODEL", "CLOCK", "TEXT_ANALYSIS"]
+    route: Literal["MODEL", "CLOCK", "TEXT_ANALYSIS", "PREFERENCE_RECALL"]
     timezone_name: str | None = None
+    preference_topics: tuple[str, ...] = ()
     method_revision: str = "mvp01d.rules.1"
 
 
@@ -90,6 +119,9 @@ def decide_response(text: str, *, default_timezone: str = "UTC") -> ResponseDeci
         return ResponseDecision("MODEL")
     if explicit_analysis_payload(cleaned) is not None:
         return ResponseDecision("TEXT_ANALYSIS")
+    topics=preference_recall_topics(cleaned)
+    if topics is not None:
+        return ResponseDecision("PREFERENCE_RECALL",preference_topics=topics)
     match = _TIME_QUERY.fullmatch(cleaned)
     if match:
         place = match.group("place")
