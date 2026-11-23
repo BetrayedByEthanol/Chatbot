@@ -16,7 +16,7 @@ from pathlib import Path
 import subprocess
 import sys
 from typing import Any
-from uuid import UUID
+from uuid import UUID,uuid4
 from zipfile import ZIP_DEFLATED, ZipFile
 
 import psycopg
@@ -32,6 +32,8 @@ from .model_gateway import OllamaChatGateway
 from .semantic_contracts import SemanticClassifier
 from .observability import get_turn_trace
 from .tool_gateway import run_one_text_tool
+from .affect_observers import register_affect_consumers,run_affect_tick
+from .event_delivery import dispatch_outbox
 
 
 # Fixed allowlist: no scenario-supplied SQL identifiers or admin data exports.
@@ -43,7 +45,8 @@ TABLES = (
     "conversation_tool_calls", "conversation_assistant_followups",
     "memory_records", "memory_model_candidates", "goal_records", "cognitive_reflections",
     "cognitive_intentions", "emotion_appraisals",
-    "relationship_observations", "operations", "events",
+    "relationship_observations", "relationship_preferences",
+    "relationship_preference_revisions", "operations", "events",
 )
 TABLE_ROW_LIMIT = 500
 
@@ -321,7 +324,7 @@ def _compare_semantic_expectations(expected: list[dict], diagnostic: dict) -> bo
 def run_scenario(
     dsn: str, scenario: dict, gateway,
     *, run_tool_worker: bool = True, run_memory_worker: bool = True,
-    run_model_memory_worker: bool = False,
+    run_affect_worker: bool = True, run_model_memory_worker: bool = False,
     run_semantic_diagnostics: bool = False,
     semantic_classifier: SemanticClassifier | None = None,
 ) -> dict:
@@ -341,9 +344,29 @@ def run_scenario(
     harness = BehavioralAcceptanceHarness(dsn, identity, observed_gateway)
     if run_memory_worker:
         harness.enable_explicit_memory_worker()
+    affect_consumers = None
+    if run_affect_worker:
+        # The E2E driver models the existing asynchronous P0 worker at
+        # deterministic post-delivery boundaries. Subscribe BEFORE the first
+        # synthetic turn, with isolated IDs so prior fixture events cannot
+        # introduce duplicate Relationship observations.
+        suffix = uuid4().hex
+        affect_consumers = ("mvp01e-emotion-" + suffix,
+                            "mvp01e-relationship-" + suffix)
+        with psycopg.connect(dsn,autocommit=True) as conn:
+            # Subscriptions affect FUTURE outbox dispatch only. Drain any
+            # already pending fixture events before registering them.
+            for _ in range(100):
+                if dispatch_outbox(conn,limit=1000) == 0:
+                    break
+            else:
+                raise RuntimeError("outbox backlog exceeded affect setup bound")
+            register_affect_consumers(
+                conn,emotion_consumer_id=affect_consumers[0],
+                relationship_consumer_id=affect_consumers[1],
+            )
     model_memory_consumer = None
     if run_model_memory_worker:
-        from uuid import uuid4
         from .memory_model_extraction import register_model_memory_consumer
         model_memory_consumer = "mvp02c2-e2e-" + uuid4().hex
         with psycopg.connect(dsn,autocommit=True) as conn:
@@ -526,6 +549,23 @@ def run_scenario(
                     "actual":{"claimed":lease is not None,"delivered":delivered},
                     "expected":{"claimed":True,"delivered":1},
                 })
+            if run_affect_worker:
+                # Process AFTER delivery, never inside model generation or
+                # an open Conversation transaction. The next turn sees the
+                # durable Relationship/Emotion state through normal reads.
+                with psycopg.connect(dsn,autocommit=True) as conn:
+                    affect_tick = run_affect_tick(
+                        conn,worker_id="mvp01e-affect",
+                        emotion_consumer_id=affect_consumers[0],
+                        relationship_consumer_id=affect_consumers[1],
+                    )
+                recorded["affect_worker"] = vars(affect_tick)
+                affect_state = capture_state(
+                    dsn,harness,turn_id=turn.turn_id,
+                    checkpoint="after_affect_worker",
+                )
+                affect_state["step_index"] = index
+                report["snapshots"].append(affect_state)
             if run_memory_worker:
                 recorded["memory_worker"] = harness.tick_explicit_memory_worker()
                 memory_state = capture_state(

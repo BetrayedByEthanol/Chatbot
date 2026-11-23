@@ -5,7 +5,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
-from uuid import uuid4
+from uuid import UUID,uuid4
 from zipfile import ZipFile
 import json
 
@@ -615,3 +615,91 @@ def test_runner_publishes_marker_only_after_zip_written(tmp_path,monkeypatch):
     assert report.exists()
     assert not marker.exists()
     assert not dropped
+
+
+def test_e2e_processes_relationship_preference_before_later_session_prompts(dsn):
+    """Use real P0 event deliveries; no fixture writes into Relationship."""
+    from persona_agent.relationship_state import read_relationship_state
+    from persona_agent.contracts import TrustedActor
+
+    class CapturingModel:
+        def __init__(self):
+            self.prompts = []
+        def generate(self, messages):
+            self.prompts.append(tuple(messages))
+            return ModelReply(model_id="e2e-preference.capture",
+                              text="We can continue.")
+
+    instruction = (
+        "Please keep replies to one or two sentences "
+        "unless I ask for detailed instructions."
+    )
+    scenario = {"name":"e2e-affect-preference", "steps":[
+        {"action":"session","name":"first"},
+        {"action":"message","text":instruction,"mode":"model"},
+        {"action":"restart"},
+        {"action":"session","name":"later"},
+        {"action":"message","text":"Tell me a fun fact.","mode":"model"},
+        {"action":"message","text":"Please use normal length replies.","mode":"model"},
+        {"action":"session","name":"after_correction"},
+        {"action":"message","text":"Tell me another fact.","mode":"model"},
+    ]}
+    model = CapturingModel()
+    result = run_scenario(dsn,scenario,model,run_memory_worker=False)
+    assert result["passed"],(result["errors"],result["checks"])
+    assert len(model.prompts)==4
+
+    first = next(x for x in result["transcript"]
+                 if x.get("input")==instruction)
+    preference_snapshot = next(
+        x for x in result["snapshots"]
+        if x["checkpoint"]=="after_affect_worker"
+        and x["source_turn_id"]==first["turn_id"]
+    )
+    preferences=preference_snapshot["database"]["relationship_preferences"]["rows"]
+    assert len(preferences)==1
+    assert preferences[0]["preference_key"]=="RESPONSE_LENGTH"
+    assert preferences[0]["preference_value"]=="SHORT"
+    assert preferences[0]["source_quote"]==instruction
+    assert preferences[0]["source_turn_id"]==first["turn_id"]
+    assert preference_snapshot["database"]["relationship_observations"]["count"]==1
+    assert next(x for x in result["transcript"] if x.get("input")==instruction)[
+        "affect_worker"]["relationship_recorded"]>=1
+
+    later_prompt = model.prompts[1][0].content
+    assert "keep replies to one or two sentences" in later_prompt
+    assert "unless the current request asks for detailed instructions" in later_prompt
+    assert "Follow a direct request for more detail" in later_prompt
+
+    corrected_prompt = model.prompts[-1][0].content
+    assert "Explicit user preference: response length normal." in corrected_prompt
+    assert "keep replies to one or two sentences" not in corrected_prompt
+    assert result["snapshots"][-1]["database"]["relationship_preferences"]["count"]==1
+
+    user_id=result["identity"]["user_id"]
+    instance_id=result["identity"]["instance_id"]
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        state=read_relationship_state(
+            conn,TrustedActor(user_id=UUID(user_id),
+                              source_id="e2e-relationship-read"),
+            UUID(instance_id),
+        )
+    matching=[p for p in state.preferences if p.preference_key=="RESPONSE_LENGTH"]
+    assert len(matching)==1
+    assert matching[0].preference_value=="NORMAL"
+    assert matching[0].version==2
+
+
+def test_e2e_affect_worker_can_be_disabled_explicitly(dsn):
+    model=SimpleModel()
+    scenario={"name":"without-affect","steps":[
+        {"action":"session","name":"first"},
+        {"action":"message","mode":"model",
+         "text":"Please keep replies to one or two sentences."},
+    ]}
+    result=run_scenario(dsn,scenario,model,
+                        run_memory_worker=False,run_affect_worker=False)
+    assert result["passed"],result["errors"]
+    assert not any(x["checkpoint"]=="after_affect_worker"
+                   for x in result["snapshots"])
+    assert result["snapshots"][-1]["database"]["relationship_preferences"]["count"]==0
