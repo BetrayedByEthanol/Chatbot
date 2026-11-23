@@ -33,6 +33,9 @@ _NO_BIG_PLAN = (
 _ALLOW_BIG_PLAN = (
     re.compile(r"(?:actually,? )?(?:i changed my mind,? )?(?:you can|feel free to) make (?:me )?(?:a )?big plans?(?: for me)?(?: now| from now on)?"),
 )
+_ONE_OFF_PLAN = re.compile(
+    r"(?:please )?make (?:me )?a big plan for (?:the |my )[a-z -]{3,80}"
+)
 
 
 def _normalize_instruction(value: str) -> str:
@@ -73,6 +76,11 @@ def _planning_instruction(
         if any(p.fullmatch(normalized) for p in _NO_BIG_PLAN):
             return ("NO_BIG_PLANS_CHAT" if normalized.endswith(
                 "; i just want to chat") else "NO_BIG_PLANS")
+        if _ONE_OFF_PLAN.fullmatch(normalized):
+            continue  # A bounded request for one plan does not revise a preference.
+        # A newer statement about big plans may be a correction outside this
+        # exact grammar. Abstain rather than resurrect an obsolete preference.
+        return None
     return None
 
 
