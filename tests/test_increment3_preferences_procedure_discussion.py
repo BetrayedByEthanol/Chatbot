@@ -15,7 +15,9 @@ psycopg = pytest.importorskip("psycopg")
 from persona_agent.acceptance_host import seed_local_demo
 from persona_agent.affect_observers import register_affect_consumers, run_affect_tick
 from persona_agent.behavioral_acceptance import BehavioralAcceptanceHarness
-from persona_agent.communication_preference_rules import is_explicit_sentence_limit
+from persona_agent.communication_preference_rules import (
+    is_explicit_sentence_limit,parse_explicit_sentence_limit,
+)
 from persona_agent.conversation_contracts import ModelReply
 from persona_agent.contracts import TrustedActor
 from persona_agent.event_delivery import dispatch_outbox
@@ -80,6 +82,9 @@ def process(dsn, consumers):
     "Keep replies to one or two sentences.",
     "Please limit your responses to 1 or 2 sentences.",
     "Please keep your answers to one or two sentences unless I ask for more detail!",
+    "Please keep replies to  one or two sentences unless I ask for more detail.",
+    "Please keep replies to one or two sentences unless I   ask for detailed   instructions.",
+    "Please keep replies to one or two sentences unless I ask for details.",
 ])
 def test_exact_sentence_limit_instructions(text):
     assert is_explicit_sentence_limit(text)
@@ -121,7 +126,7 @@ def test_explicit_sentence_limit_is_durable_and_visible_after_restart(dsn):
     h.send("Tell me a fun fact.", idempotency_key="later")
     assert "keep replies to one or two sentences" in prompt(model)
     assert "unless the current request asks for detailed instructions" in prompt(model)
-    assert "Follow a direct request for more detail" in prompt(model)
+    assert "Follow a direct request for detailed instructions" in prompt(model)
 
 
 def test_later_explicit_preference_supersedes_sentence_limit(dsn):
@@ -557,3 +562,72 @@ def test_preference_recall_fence_rejects_superseded_revision(dsn):
             "SELECT count(*) FROM conversation_responses WHERE turn_id=%s",
             (receipt.turn_id,),
         ).fetchone()[0]==0
+
+
+@pytest.mark.parametrize("instruction,exception,spoken,prompt_exception", [
+    (
+        "Please keep replies to one or two sentences.",
+        None,None,None,
+    ),
+    (
+        "Please keep replies to one or two sentences unless I ask for detailed instructions.",
+        "DETAILED_INSTRUCTIONS",
+        "unless you request detailed instructions",
+        "unless the current request asks for detailed instructions",
+    ),
+    (
+        "Please keep replies to  one or two sentences unless I ask for more detail.",
+        "MORE_DETAIL",
+        "unless you ask for more detail",
+        "unless the current request asks for more detail",
+    ),
+    (
+        "Please keep replies to one or two sentences unless I   ask for detailed   instructions.",
+        "DETAILED_INSTRUCTIONS",
+        "unless you request detailed instructions",
+        "unless the current request asks for detailed instructions",
+    ),
+    (
+        "Please keep replies to one or two sentences unless I ask for details.",
+        "MORE_DETAIL",
+        "unless you ask for more detail",
+        "unless the current request asks for more detail",
+    ),
+])
+def test_saved_sentence_limit_exception_matches_admission_and_recall(
+    dsn,instruction,exception,spoken,prompt_exception,
+):
+    """Admission, prompt rendering and deterministic answer share one grammar."""
+    from persona_agent.preference_recall import ROUTE_ID
+
+    parsed=parse_explicit_sentence_limit(instruction)
+    assert parsed is not None and parsed.exception==exception
+    consumers=subscribe(dsn)
+    h,model=host(dsn)
+    h.send(instruction,idempotency_key="preference",mode="model")
+    assert process(dsn,consumers).relationship_recorded>=1
+
+    h.begin_session("later")
+    recall=h.send(
+        "Do you remember my response length preference?",
+        idempotency_key="recall",mode="auto",
+    )
+    assert recall.model_id==ROUTE_ID
+    assert "one or two sentences" in recall.text
+    if spoken is None:
+        assert "unless" not in recall.text
+    else:
+        assert spoken in recall.text
+        if exception=="MORE_DETAIL":
+            assert "detailed instructions" not in recall.text
+
+    # The same saved source drives the model-facing, non-deterministic route.
+    h.send("Tell me something interesting.",idempotency_key="ordinary",mode="model")
+    assembled=prompt(model)
+    assert "keep replies to one or two sentences" in assembled
+    if prompt_exception is None:
+        assert "unless the current request asks" not in assembled
+    else:
+        assert prompt_exception in assembled
+        if exception=="MORE_DETAIL":
+            assert "unless the current request asks for detailed instructions" not in assembled
