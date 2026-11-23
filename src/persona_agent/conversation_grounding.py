@@ -78,17 +78,21 @@ def grounding_context_block(
 
     guidance=(
         "Conversation grounding (source: exact user messages in THIS "
-        "conversation, not memories of prior sessions). "
+        "conversation ONLY; this is not an inventory of past sessions "
+        "or stored Relationship preferences). "
         "Prior assistant messages are NOT independent evidence of user "
         "history. Never present inferred or assistant-proposed details "
         "as something the user said or as remembered fact. "
     )
     if mode=="RECALL":
         guidance+=(
-            "Only claim recollection supported by the quoted user turns "
-            "or explicitly supplied retrieved, source-linked memory. "
-            "If none supports the requested past discussion, say you "
-            "cannot reliably recall its details and ask for a reminder. "
+            "Only claim recollection supported by the quoted user turns, "
+            "source-linked prior-session user statements, or explicitly "
+            "supplied authenticated Relationship preferences. "
+            "If none of these supplied sources supports the requested "
+            "past discussion, say you cannot reliably recall its details "
+            "and ask for a reminder. Do not infer that other evidence "
+            "is absent just because this conversation has no matches. "
         )
     else:
         guidance+=(
@@ -99,7 +103,9 @@ def grounding_context_block(
         )
     header=guidance+"\nUser statements in accessible current conversation: "
     if not relevant:
-        result=header+"none matching the requested earlier discussion.\n"
+        result=(header+"none matching the requested earlier discussion "
+                "in THIS conversation; other source-linked context may "
+                "still support recall.\n")
         return result if len(result)<=max_chars else ""
     # Keep the most recent evidence, respecting source order and budget.
     usable=[]
