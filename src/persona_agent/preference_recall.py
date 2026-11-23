@@ -12,7 +12,7 @@ from uuid import UUID
 from psycopg import Connection
 from psycopg.rows import dict_row
 
-from .communication_preference_rules import is_explicit_sentence_limit
+from .communication_preference_rules import parse_explicit_sentence_limit
 from .contracts import TrustedActor
 from .conversation import (
     commit_text_response, lookup_response, prepare_text_context, respond_to_text,
@@ -102,12 +102,15 @@ def _render_length(preference: PreferenceView | None) -> str:
     if preference.preference_value=="DETAILED":
         return "You asked for detailed replies."
     if preference.preference_value=="SHORT":
-        if is_explicit_sentence_limit(preference.source_quote):
-            if "unless i ask for" in preference.source_quote.casefold():
-                return ("You asked me to keep replies to one or two sentences "
-                        "unless you request detailed instructions.")
-            return "You asked me to keep replies to one or two sentences."
-        return "You prefer short replies."
+        instruction=parse_explicit_sentence_limit(preference.source_quote)
+        if instruction is None:
+            return "You prefer short replies."
+        answer="You asked me to keep replies to one or two sentences"
+        if instruction.exception=="DETAILED_INSTRUCTIONS":
+            return answer+" unless you request detailed instructions."
+        if instruction.exception=="MORE_DETAIL":
+            return answer+" unless you ask for more detail."
+        return answer+"."
     return "I can't establish the current response-length preference."
 
 
