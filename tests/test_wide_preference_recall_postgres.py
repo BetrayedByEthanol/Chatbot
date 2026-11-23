@@ -28,7 +28,41 @@ class StandInGateway:
         return ModelReply(model_id="wide-smoke.fake",text="We can continue.")
 
 
-def test_wider_25_turn_auto_scenario_recalls_exact_persisted_preferences(dsn):
+
+@pytest.fixture
+def isolated_scenario_dsn(dsn):
+    """Keep this long scenario independent of prior tests' active pool leases.
+
+    Reuse the already guarded E2E database lifecycle, rather than lowering
+    production resource-pool reservations or making the test order-dependent.
+    The TEST_DATABASE_URL role must have CREATEDB privilege (as in CI).
+    """
+    import importlib.util
+    import psycopg
+    from psycopg.conninfo import make_conninfo
+
+    root = Path(__file__).resolve().parents[1]
+    spec = importlib.util.spec_from_file_location(
+        "persona_e2e_wide_smoke", root / "scripts" / "persona_e2e.py",
+    )
+    assert spec is not None and spec.loader is not None
+    runner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runner)
+
+    admin_dsn = make_conninfo(dsn, dbname="postgres")
+    db_name, clean_dsn = runner.create_isolated_database(admin_dsn)
+    try:
+        with psycopg.connect(clean_dsn, autocommit=True) as conn:
+            for migration in sorted((root / "migrations").glob("*.sql")):
+                with conn.transaction():
+                    conn.execute(migration.read_text(encoding="utf-8"))
+        yield clean_dsn
+    finally:
+        runner.drop_isolated_database(admin_dsn, db_name)
+
+
+def test_wider_25_turn_auto_scenario_recalls_exact_persisted_preferences(isolated_scenario_dsn):
+    dsn = isolated_scenario_dsn
     """Use the frozen scenario and actual post-delivery Relationship worker."""
     scenario=json.loads(SCENARIO.read_text(encoding="utf-8"))
     assert len([s for s in scenario["steps"] if s["action"]=="message"])==25
