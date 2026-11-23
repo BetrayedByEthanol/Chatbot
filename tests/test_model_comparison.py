@@ -94,7 +94,8 @@ def test_read_summary_uses_observed_routes_not_assumed_model(tmp_path):
     assert result["quality_status"] == "AWAITING_INDEPENDENT_HUMAN_REVIEW"
 
 
-def test_comparison_runs_isolated_jobs_and_generates_blind_packets(tmp_path, monkeypatch):
+@pytest.mark.parametrize("thinking",["default","on","off"])
+def test_comparison_runs_isolated_jobs_and_generates_blind_packets(tmp_path, monkeypatch, thinking):
     class NoShuffle:
         def shuffle(self, seq):
             pass
@@ -125,10 +126,15 @@ def test_comparison_runs_isolated_jobs_and_generates_blind_packets(tmp_path, mon
         "--models", "qwen2.5:7b,qwen3.5:latest",
         "--scenario", str(SCENARIO_PATH),
         "--output-dir", str(output_dir),
-        "--mode", "both",
+        "--mode", "both", "--thinking", thinking,
     ])
     assert result == 0
     assert len(commands) == 4
+    if thinking == "default":
+        assert all("--thinking" not in cmd for cmd in commands)
+    else:
+        assert all(cmd[cmd.index("--thinking") + 1] == thinking
+                   for cmd in commands)
     assert all(cmd[:2] == ["bash", "scripts/run_persona_e2e.sh"] for cmd in commands)
     # Every job starts in a new database via the existing runner; no one DB
     # reused across model/mode pairs.
@@ -141,6 +147,8 @@ def test_comparison_runs_isolated_jobs_and_generates_blind_packets(tmp_path, mon
     assert {v["model"] for v in model_map["mapping"].values()} == {
         "qwen2.5:7b", "qwen3.5:latest",
     }
+    assert model_map["gateway_configuration"]["thinking"] == thinking
+    assert all(item["thinking"] == thinking for item in summaries["results"])
     for key in model_map["mapping"]:
         packet_content = (output_dir / f"{key}.review.json").read_text()
         assert "qwen" not in packet_content
@@ -294,3 +302,39 @@ def test_status_two_always_stops_even_with_readable_bundle(tmp_path, monkeypatch
     ])
     assert result == 1
     assert len(commands) == 1
+
+
+@pytest.mark.parametrize("thinking,expected",[
+    ("default",None),
+    ("on","on"),
+    ("off","off"),
+])
+@pytest.mark.parametrize("direct",[False,True])
+def test_build_command_passes_thinking_to_correct_e2e_runner(thinking,expected,direct):
+    command=comparison.build_command(
+        "full","qwen3.5:9b",Path("scenario.json"),Path("results.zip"),
+        "http://127.0.0.1:11434",direct,thinking,
+    )
+    assert command[:2] == (
+        [sys.executable,"scripts/persona_e2e.py"]
+        if direct else ["bash","scripts/run_persona_e2e.sh"]
+    )
+    if expected is None:
+        assert "--thinking" not in command
+    else:
+        assert command[command.index("--thinking")+1]==expected
+    assert command[command.index("--model")+1]=="qwen3.5:9b"
+
+
+def test_invalid_thinking_flag_is_rejected_before_model_launch(tmp_path,monkeypatch):
+    def unexpected(*args,**kwargs):
+        raise AssertionError("model runner must not start")
+    monkeypatch.setattr(comparison.subprocess,"run",unexpected)
+    with pytest.raises(SystemExit) as exc:
+        comparison.compare([
+            "--models","qwen2.5:7b,qwen3.5:9b",
+            "--thinking","sometimes",
+            "--output-dir",str(tmp_path/"invalid"),
+        ])
+    assert exc.value.code==2
+    assert not (tmp_path/"invalid").exists()
