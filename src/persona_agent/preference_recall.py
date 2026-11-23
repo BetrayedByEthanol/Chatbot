@@ -19,8 +19,13 @@ from .conversation import (
 )
 from .conversation_contracts import ModelReply, PreferenceReadFence, TextResponseResult
 from .operation_contracts import require_idle
-from .relationship_state import PreferenceView, read_relationship_state
-from .response_decisions import preference_recall_topics
+from .relationship_state import (
+    PreferenceView, read_relationship_state,
+    has_saved_relationship_preference_history,
+)
+from .response_decisions import (
+    preference_recall_topics, is_historical_emoji_preference_query,
+)
 
 ROUTE_ID = "conversation.preference_recall.v1"
 
@@ -134,6 +139,20 @@ def _render_emoji(preference: PreferenceView | None) -> str:
     return "I can't establish the current emoji preference."
 
 
+def _render_emoji_history(
+    preference: PreferenceView | None, ever_saved: bool,
+) -> str:
+    """Historical existence, unlike current preference, survives REMOVE."""
+    if preference is not None:
+        return "Yes. "+_render_emoji(preference)+" That preference is still active."
+    if ever_saved:
+        # History contains the removed preference's value and source quote,
+        # but the user only asked whether one had ever been specified.
+        return ("Yes. You previously had a saved emoji preference, "
+                "but it was removed and no emoji preference is currently active.")
+    return "I don't have a saved record of you specifying an emoji preference."
+
+
 def respond_with_preference_recall(
     connection: Connection, actor: TrustedActor, turn_id: UUID,
 ) -> TextResponseResult:
@@ -157,6 +176,15 @@ def respond_with_preference_recall(
     if topics is None:
         raise ValueError("preference recall requires an explicit direct question")
     snapshot=read_relationship_state(connection,actor,context.instance_id)
+    historical_emoji=(
+        "EMOJI_USE" in topics and
+        is_historical_emoji_preference_query(context.messages[-1].content)
+    )
+    ever_saved_emoji=(
+        has_saved_relationship_preference_history(
+            connection,actor,context.instance_id,"EMOJI_USE",
+        ) if historical_emoji else False
+    )
     planning=(
         _planning_instruction(connection,actor,context.instance_id,turn_id)
         if "PLANNING" in topics else None
@@ -170,9 +198,11 @@ def respond_with_preference_recall(
                 _active_preference(snapshot.preferences,"RESPONSE_LENGTH"),
             ))
         elif topic=="EMOJI_USE":
-            parts.append(_render_emoji(
-                _active_preference(snapshot.preferences,"EMOJI_USE"),
-            ))
+            current=_active_preference(snapshot.preferences,"EMOJI_USE")
+            parts.append(
+                _render_emoji_history(current,ever_saved_emoji)
+                if historical_emoji else _render_emoji(current)
+            )
         else:
             raise ValueError("unsupported preference recall topic")
 
