@@ -7,6 +7,7 @@ database locks; callers may substitute an in-process deterministic fake.
 import json
 import socket
 from dataclasses import dataclass, field
+from http.client import HTTPException
 from typing import Callable, Sequence
 
 from pydantic import ValidationError
@@ -16,6 +17,28 @@ from urllib.request import Request, urlopen
 from .conversation_contracts import (
     ModelIntentCandidate, ModelMessage, ModelReply, ModelUnavailable,
 )
+
+
+def _request_failure_message(exc: Exception) -> str:
+    """Bounded, source-free transport diagnostics; never echo URL/body/reason."""
+    if isinstance(exc, HTTPError):
+        code = exc.code
+        detail = f"HTTP {code}" if type(code) is int and 100 <= code <= 599 else "HTTP error"
+    else:
+        reason = exc.reason if isinstance(exc, URLError) else exc
+        if isinstance(reason, TimeoutError):
+            detail = "timeout"
+        elif isinstance(reason, ConnectionRefusedError):
+            detail = "connection refused"
+        elif isinstance(reason, ConnectionResetError):
+            detail = "connection reset"
+        elif isinstance(reason, socket.gaierror):
+            detail = "DNS resolution failed"
+        elif isinstance(reason, HTTPException):
+            detail = "HTTP protocol failure"
+        else:
+            detail = "transport failure"
+    return f"model gateway request failed ({detail})"
 
 
 @dataclass(frozen=True)
@@ -85,8 +108,8 @@ class OllamaChatGateway:
         try:
             with urlopen(request, timeout=self.timeout_seconds) as response:
                 payload = response.read(256_001)
-        except (HTTPError, URLError, TimeoutError, socket.timeout, OSError) as exc:
-            raise ModelUnavailable("model gateway request failed") from exc
+        except (URLError, OSError, HTTPException) as exc:
+            raise ModelUnavailable(_request_failure_message(exc)) from exc
         if len(payload) > 256_000:
             raise ModelUnavailable("model gateway response exceeds size limit")
         try:

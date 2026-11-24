@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
+from zipfile import BadZipFile
 
 from persona_agent.natural_dialogue_review import (
     packet_from_bundle,rating_template,
@@ -22,7 +24,8 @@ def load(path: Path) -> dict:
 
 def publish(path: Path, content: dict) -> None:
     path.parent.mkdir(parents=True,exist_ok=True)
-    with path.open("x",encoding="utf-8") as stream:
+    fd=os.open(path,os.O_WRONLY | os.O_CREAT | os.O_EXCL,0o600)
+    with os.fdopen(fd,"w",encoding="utf-8") as stream:
         json.dump(content,stream,indent=2,ensure_ascii=False,allow_nan=False)
         stream.write("\n")
 
@@ -42,18 +45,27 @@ def main(argv: list[str] | None = None) -> int:
     aggregate.add_argument("--first",type=Path,required=True)
     aggregate.add_argument("--second",type=Path,required=True)
     aggregate.add_argument("--out",type=Path,required=True)
+    status=cmds.add_parser("status",help="reconcile private comparison evidence and review completion")
+    status.add_argument("--directory",type=Path,required=True)
+    status.add_argument("--out",type=Path,required=True)
     args=parser.parse_args(argv)
-    if args.action=="packet":
-        result=packet_from_bundle(args.bundle)
-    else:
-        packet=validate_packet(load(args.packet))
-        if args.action=="template":
-            result=rating_template(packet,args.reviewer)
+    try:
+        if args.action=="status":
+            from compare_persona_models import comparison_review_status
+            result=comparison_review_status(args.directory)
+        elif args.action=="packet":
+            result=packet_from_bundle(args.bundle)
         else:
-            result=summarize_independent_reviews(
-                packet,load(args.first),load(args.second),
-            )
-    publish(args.out,result)
+            packet=validate_packet(load(args.packet))
+            if args.action=="template":
+                result=rating_template(packet,args.reviewer)
+            else:
+                result=summarize_independent_reviews(
+                    packet,load(args.first),load(args.second),
+                )
+        publish(args.out,result)
+    except (ValueError, OSError, BadZipFile) as exc:
+        parser.error(str(exc))
     return 0
 
 

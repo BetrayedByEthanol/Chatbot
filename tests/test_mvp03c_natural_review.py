@@ -246,3 +246,109 @@ def test_review_case_supports_adaptive_auto_route():
     definition=scenario()
     definition["steps"][2]["mode"]="auto"
     assert validate_scenario(definition) is definition
+
+def test_score_diagnostic_identifies_reviewer_case_and_dimension():
+    packet=build_review_packet(synthetic_report(),scenario())
+    reviewer=rating_template(packet,"reviewer_a")
+    item=reviewer["ratings"][0]
+    dimension=next(iter(item["scores"]))
+    with pytest.raises(ValueError) as exc:
+        validate_ratings(packet,reviewer)
+    message=str(exc.value)
+    assert all(value in message for value in ("reviewer_a",item["case_id"],dimension,"None"))
+    assert item["scores"][dimension] is None
+
+
+@pytest.mark.parametrize("flags", [
+    ["Narrative failure criterion"], ["fabricated_history","fabricated_history"],
+    [{"not":"a flag"}],
+])
+def test_bad_critical_flag_diagnostic_retains_review_without_relabeling(flags):
+    packet=build_review_packet(synthetic_report(),scenario())
+    reviewer=completed(packet,"reviewer_b")
+    item=reviewer["ratings"][0]
+    item["critical_failures"]=flags
+    item["notes"]="Synthetic negative evidence."
+    before=deepcopy(reviewer)
+    with pytest.raises(ValueError) as exc:
+        validate_ratings(packet,reviewer)
+    message=str(exc.value)
+    assert "reviewer_b" in message and item["case_id"] in message
+    assert "unknown or duplicate critical failure" in message
+    assert "allowed:" in message and "fabricated_history" in message
+    assert reviewer==before
+
+
+def test_consolidated_status_validates_actual_packet_and_reviewer_pair(tmp_path):
+    import sys
+    from zipfile import ZipFile
+    sys.path.insert(0,str(SCENARIO.parents[1]/"scripts"))
+    try:
+        from compare_persona_models import comparison_review_status, read_summary
+        from review_natural_dialogue import main as review_cli
+    finally:
+        sys.path.pop(0)
+    definition=scenario()
+    source_name=definition["name"]
+    definition["name"]=source_name+"-model-only"
+    report=synthetic_report()
+    bundle=tmp_path/"case_01.zip"
+    members={
+        "manifest.json":{"synthetic_data":True,"model":"test-model"},
+        "scenario.json":definition,
+        "transcript.json":report["transcript"],
+        "review_items.json":report["review_items"],
+        "evaluation.json":{"contract_passed":True,"behavioral_checks_passed":True},
+        "errors.json":[], "state_snapshots.json":[], "model_requests.json":[],
+        "interpretation_diagnostics.json":[], "semantic_diagnostics.json":[],
+        "delivery_events.json":[],
+    }
+    with ZipFile(bundle,"w") as archive:
+        for name,value in members.items():
+            archive.writestr(name,json.dumps(value))
+    def save(name,value):
+        (tmp_path/name).write_text(json.dumps(value),encoding="utf-8")
+    fmt="persona-model-comparison.v1"
+    save("PRIVATE_model_map.json",{"format":fmt,"scenario":source_name,"mapping":{
+        "case_01":{"model":"test-model","mode":"model-only"},
+        "case_02":{"model":"other-model","mode":"full"},
+    }})
+    summary={"format":fmt,"scenario":source_name,"case_order":["case_01","case_02"],
+             "results":[{"case_id":"case_01","mode":"model-only","exit_code":0,
+                         "bundle":bundle.name,"review_packet":"case_01.review.json",
+                         "evidence_status":"VERIFIED", **read_summary(bundle)}]}
+    save("summary.json",summary)
+    packet=packet_from_bundle(bundle)
+    save("case_01.review.json",packet)
+    save("case_01.reviewer_a.json",rating_template(packet,"reviewer_a"))
+    status=comparison_review_status(tmp_path)
+    assert [row["status"] for row in status["cases"]]==[
+        "REVIEW_INCOMPLETE_OR_INVALID","NOT_RUN"]
+    assert status["cases"][0]["reviewer_slots"]["a"]["status"]=="INCOMPLETE_OR_INVALID"
+    assert status["cases"][0]["reviewer_slots"]["b"]["status"]=="MISSING"
+    save("case_01.reviewer_a.json",completed(packet,"reviewer_a"))
+    second=completed(packet,"reviewer_b")
+    second["ratings"][0]["scores"]["calibration"]=1
+    second["ratings"][0]["notes"]="Synthetic evidence."
+    save("case_01.reviewer_b.json",second)
+    status=comparison_review_status(tmp_path)
+    assert status["cases"][0]["status"]=="REQUIRES_ADJUDICATION"
+    assert status["cases"][0]["review_summary"]["disagreement_count"]==1
+    assert status["quality_winner"] is None and status["natural_quality_accepted"] is None
+    output=tmp_path/"review-status.json"
+    assert review_cli(["status","--directory",str(tmp_path),"--out",str(output)])==0
+    assert output.stat().st_mode & 0o077==0
+    before=output.read_bytes()
+    with pytest.raises(SystemExit):
+        review_cli(["status","--directory",str(tmp_path),"--out",str(output)])
+    assert output.read_bytes()==before
+    # Replacement bundle, even with an unchanged packet, cannot masquerade
+    # as the original comparison result.
+    with ZipFile(bundle,"a") as archive:
+        archive.writestr("replacement-marker.txt","different evidence")
+    assert comparison_review_status(tmp_path)["cases"][0]["status"]=="EVIDENCE_MISMATCH"
+    # Older archives did not record a hash; still check observed outcomes.
+    summary["results"][0].pop("bundle_sha256")
+    summary["results"][0]["delivered_message_count"]=1
+    save("summary.json",summary)
+    assert comparison_review_status(tmp_path)["cases"][0]["status"]=="EVIDENCE_MISMATCH"

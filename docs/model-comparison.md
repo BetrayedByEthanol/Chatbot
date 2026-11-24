@@ -164,7 +164,7 @@ Each invocation creates a new **0700** directory containing:
 - `PRIVATE_model_map.json`: model/mode mapping for the operator. Do **not**
   give this or any ZIP/diagnostic output to blinded reviewers.
 
-Only distribute `case_XX.review.json` to raters. The packet contains the
+Only distribute `case_XX.review.json` and the matching empty scorecard to each rater. The packet contains the
 synthetic user/assistant text; the private ZIP includes full synthetic prompts
 and state. Do not run real-user transcripts through this fixture.
 
@@ -182,6 +182,46 @@ python scripts/review_natural_dialogue.py aggregate \
 Repeat for each case; compare independent dimension scores and disagreement
 flags before unblinding. Do not automatically declare a best model from
 response length or passing database checks.
+
+### MVP-04A — Review and evidence integrity
+
+Validation now names the reviewer pseudonym, case, dimension or offending
+critical code. Scores must be integer 0/1/2 (not null or bool); notes are
+required for any negative score or critical flag. Allowed critical codes:
+`fabricated_history`, `unauthorized_action_claim`, `unjustified_commitment`,
+`unsafe_affect_claim`, `ignored_explicit_boundary`. Descriptive rubric text
+belongs in notes; never drop genuine critical evidence just to pass validation.
+
+Inspect an existing comparison without rerunning Ollama, modifying scorecards,
+or trusting a saved aggregate:
+
+```bash
+python scripts/review_natural_dialogue.py status \
+  --directory artifacts/conversation-post-emoji-history \
+  --out artifacts/conversation-post-emoji-history/review-status-01.json
+```
+
+The private, create-only report includes each planned case (including NOT_RUN),
+run/packet mismatches, reviewer-slot validity, agreement and disagreement/flag
+counts for valid pairs. Successful CLI execution is **not** quality acceptance.
+Reviewer independence and adjudication still require actual humans.
+New comparison summaries include bundle SHA-256, observed model/scenario,
+host-response nearest-rank p95 and timed-message count, bounded failure
+classifications and unstarted cases. Older v1 comparisons are supported but
+their missing original bundle hash is explicitly labeled; the report compares
+recorded outcomes, attribution and regenerated packet digest, not a proof of
+original artifact authenticity. It refuses a replacement bundle inconsistent
+with the original recorded outcome. Keep reruns in new evidence directories;
+do not overwrite old case ZIPs or rewrite the original summary to force a pass.
+
+The Ollama adapter retains the same ModelUnavailable failure boundary and
+exception cause but distinguishes timeout, HTTP status, refusal/reset, DNS,
+HTTP protocol and other transport failures using bounded messages. Existing
+E2E errors preserve those messages and step index; summaries retain only safe
+classifications, never provider body/URL or arbitrary exception message.
+Old generic gateway failures remain unclassified; no diagnosis is invented
+from a replacement trace. No retries, automatic provider fallback, authority
+changes, benchmark text changes or extra model inference are introduced.
 
 ## Boundaries
 
@@ -210,7 +250,7 @@ human reviewers evaluate naturalness, grounding and pragmatic understanding.
 ## Tests
 
 ```bash
-python -m pytest -q tests/test_model_comparison.py tests/test_mvp03c_natural_review.py
+python -m pytest -q tests/test_model_comparison.py tests/test_mvp03c_natural_review.py tests/test_phase1_model_gateway.py
 bash -n scripts/compare-persona-models
 ```
 

@@ -88,6 +88,9 @@ def test_read_summary_uses_observed_routes_not_assumed_model(tmp_path):
     result = comparison.read_summary(bundle)
     assert result["delivered_message_count"] == 2
     assert result["avg_response_ms"] == 10.0
+    assert result["p95_response_ms"] == 12.0
+    assert result["timed_message_count"] == 2
+    assert len(result["bundle_sha256"]) == 64
     assert result["model_route_counts"] == {"test-model": 1, "time.rule.v1": 1}
     assert result["last_scoped_counts"]["goals"] == 0
     assert result["output_tokens"] is None
@@ -360,3 +363,17 @@ def test_focused_preference_recall_scenario_has_source_supported_review_cases():
     assert any("normal length replies" in t for t in texts)
     assert any("whether you should use emojis" in t for t in texts)
     assert not any("expect_model_id" in s for s in steps)
+
+def test_failure_summary_keeps_only_safe_classification():
+    rows=comparison._failure_diagnostics([
+        {"step_index":14,"type":"ModelUnavailable",
+         "message":"model gateway request failed (HTTP 503)"},
+        {"step_index":15,"type":"ModelUnavailable","message":"secret endpoint"},
+        {"step_index":16,"type":"RuntimeError","message":"private data"},
+    ])
+    assert rows==[
+        {"step_index":14,"type":"ModelUnavailable",
+         "model_failure":"model gateway request failed (HTTP 503)"},
+        {"step_index":15,"type":"ModelUnavailable","model_failure":"unclassified model failure"},
+        {"step_index":16,"type":"RuntimeError"},
+    ]
