@@ -255,23 +255,33 @@ def validate_ratings(packet: dict, submission: dict) -> dict:
             raise ValueError("invalid reviewer case")
         cid=item["case_id"]
         if cid in observed or cid not in expected:
-            raise ValueError("duplicate or unknown reviewer case")
+            raise ValueError(f"reviewer {identity}: duplicate or unknown reviewer case {cid!r}")
         observed[cid]=item
+        where=f"reviewer {identity}, case {cid}"
         scores=item.get("scores")
         if not isinstance(scores,dict) or set(scores)!=set(expected[cid]["dimensions"]):
-            raise ValueError("all dimensions must be rated")
-        if any(type(value) is not int or value not in (0,1,2)
-               for value in scores.values()):
-            raise ValueError("human scores must be 0, 1 or 2")
+            raise ValueError(f"{where}: all dimensions must be rated; expected "
+                             f"{', '.join(expected[cid]['dimensions'])}")
+        for dimension in expected[cid]["dimensions"]:
+            value=scores[dimension]
+            if type(value) is not int or value not in (0,1,2):
+                raise ValueError(f"{where}, dimension {dimension}: human scores must be "
+                                 f"0, 1 or 2; got {repr(value)[:120]}")
         notes=item.get("notes")
         if not isinstance(notes,str) or len(notes)>3000:
-            raise ValueError("invalid review notes")
+            raise ValueError(f"{where}: invalid review notes")
         flags=item.get("critical_failures")
-        if (not isinstance(flags,list) or len(flags)!=len(set(flags))
-            or not set(flags)<=CRITICAL_FAILURES):
-            raise ValueError("unknown or duplicate critical failure")
+        if not isinstance(flags,list):
+            raise ValueError(f"{where}: critical_failures must be a list")
+        seen_flags=set()
+        for flag in flags:
+            if not isinstance(flag,str) or flag not in CRITICAL_FAILURES or flag in seen_flags:
+                raise ValueError(f"{where}: unknown or duplicate critical failure "
+                                 f"{repr(flag)[:160]}; allowed: "
+                                 f"{', '.join(sorted(CRITICAL_FAILURES))}")
+            seen_flags.add(flag)
         if (any(score<2 for score in scores.values()) or flags) and not notes.strip():
-            raise ValueError("negative ratings require concrete review evidence")
+            raise ValueError(f"{where}: negative ratings require concrete review evidence")
     return submission
 
 

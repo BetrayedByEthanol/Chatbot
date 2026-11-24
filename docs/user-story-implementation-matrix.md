@@ -37,6 +37,10 @@
 
 The initial text MVP remains Phase 0–1, not the whole backlog. For release decisions, review confirmed and mixed-authority rows against their source criteria and the architectural phase gates. An I classification is not a release pass.
 
+## MVP-04A evidence update (24 November 2026)
+
+PPA-US-012 / 088: [MVP-04A diagnostics and review status](model-comparison.md#mvp-04a--review-and-evidence-integrity) adds bounded gateway failure classification, observed run fingerprints/p95, actionable scorecard validation and read-only comparison reconciliation. Test pointers: [gateway](../tests/test_phase1_model_gateway.py), [review](../tests/test_mvp03c_natural_review.py), [comparison](../tests/test_model_comparison.py). This is implementation evidence only; real-model completion, independent review, target-hardware budgets and acceptance remain pending. No I/P/M promotion or aggregate count change.
+
 ## Immediate follow-up
 
 1. PPA-US-016, 024, 090, 092, 088: evaluate real-model quality and adjudicate critical flags; fix grounded failure cases before adding infrastructure.

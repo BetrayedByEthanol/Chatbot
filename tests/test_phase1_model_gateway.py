@@ -99,3 +99,43 @@ def test_ollama_thinking_flag_applies_to_plain_and_structured_requests(
 def test_ollama_thinking_rejects_non_boolean_values(value):
     with pytest.raises(TypeError,match="thinking must be bool or None"):
         OllamaChatGateway(model="lexi",thinking=value)
+
+@pytest.mark.parametrize("failure,detail", [
+    (TimeoutError("private endpoint"), "timeout"),
+    (URLError(TimeoutError("private endpoint")), "timeout"),
+    (URLError(ConnectionRefusedError("secret")), "connection refused"),
+    (ConnectionResetError("secret"), "connection reset"),
+    (URLError("private endpoint"), "transport failure"),
+])
+def test_transport_diagnostic_is_bounded_and_keeps_original_cause(monkeypatch,failure,detail):
+    calls=[]
+    def stub(req,timeout):
+        calls.append(req)
+        raise failure
+    monkeypatch.setattr("persona_agent.model_gateway.urlopen",stub)
+    with pytest.raises(ModelUnavailable) as exc:
+        OllamaChatGateway(model="lexi").generate([ModelMessage("user","Private text")])
+    assert str(exc.value)==f"model gateway request failed ({detail})"
+    assert exc.value.__cause__ is failure
+    assert len(calls)==1
+
+
+def test_http_failure_reports_only_status_not_provider_body(monkeypatch):
+    from urllib.error import HTTPError
+    error=HTTPError("http://private.invalid",503,"secret message",None,BytesIO(b"secret body"))
+    def stub(req,timeout):
+        raise error
+    monkeypatch.setattr("persona_agent.model_gateway.urlopen",stub)
+    with pytest.raises(ModelUnavailable) as exc:
+        OllamaChatGateway(model="lexi").generate([ModelMessage("user","Hello")])
+    assert str(exc.value)=="model gateway request failed (HTTP 503)"
+    assert exc.value.__cause__ is error
+
+
+def test_incomplete_http_response_becomes_model_unavailable(monkeypatch):
+    from http.client import IncompleteRead
+    def stub(req,timeout):
+        raise IncompleteRead(b"private response",20)
+    monkeypatch.setattr("persona_agent.model_gateway.urlopen",stub)
+    with pytest.raises(ModelUnavailable,match="HTTP protocol failure"):
+        OllamaChatGateway(model="lexi").generate([ModelMessage("user","Hello")])

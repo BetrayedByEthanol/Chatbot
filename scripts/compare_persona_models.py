@@ -11,7 +11,9 @@ import argparse
 from collections import Counter
 from copy import deepcopy
 from datetime import datetime, timezone
+from hashlib import file_digest
 import json
+from math import ceil, isfinite
 import os
 from pathlib import Path
 import re
@@ -21,7 +23,10 @@ import subprocess
 import sys
 from zipfile import BadZipFile, ZipFile
 
-from persona_agent.natural_dialogue_review import packet_from_bundle, rating_template
+from persona_agent.natural_dialogue_review import (
+    packet_from_bundle, rating_template, summarize_independent_reviews,
+    validate_packet, validate_ratings,
+)
 from persona_agent.scenario_validation import validate_scenario
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -60,6 +65,43 @@ def private_json(path: Path, obj: object) -> None:
         stream.write("\n")
         stream.flush()
         os.fsync(stream.fileno())
+
+
+
+def _failure_diagnostics(errors: list) -> list[dict]:
+    """Only safe classifications; raw provider errors stay in the private ZIP."""
+    diagnostics = []
+    for item in errors[:20]:
+        if not isinstance(item, dict):
+            raise ValueError("invalid E2E error record")
+        kind = item.get("type")
+        if not isinstance(kind, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,79}", kind):
+            kind = "UnknownError"
+        step = item.get("step_index")
+        row = {"step_index": step if type(step) is int and step >= 0 else None,
+               "type": kind}
+        if kind == "ModelUnavailable":
+            message = item.get("message")
+            # The adapter deliberately uses bounded, source-free messages.
+            if isinstance(message, str) and re.fullmatch(
+                r"model gateway request failed \((?:HTTP [1-5][0-9]{2}|HTTP error|timeout|"
+                r"connection refused|connection reset|DNS resolution failed|"
+                r"HTTP protocol failure|transport failure)\)", message
+            ):
+                row["model_failure"] = message
+            elif message in (
+                "model gateway response exceeds size limit",
+                "model gateway returned invalid response",
+                "invalid structured model reply", "oversized plain model fallback",
+                "structured model reply has no response text",
+                "structured model reply must be an object",
+                "structured model reply is oversized",
+            ):
+                row["model_failure"] = message
+            else:
+                row["model_failure"] = "unclassified model failure"
+        diagnostics.append(row)
+    return diagnostics
 
 
 def read_summary(bundle: Path) -> dict:
@@ -102,24 +144,36 @@ def read_summary(bundle: Path) -> dict:
         raise ValueError("invalid or incomplete published E2E evidence")
     replies = [item for item in events if item.get("action") == "message"]
     durations = [item["response_elapsed_ms"] for item in replies
-                 if isinstance(item.get("response_elapsed_ms"), (int, float))]
+                 if type(item.get("response_elapsed_ms")) in (int, float)
+                 and isfinite(item["response_elapsed_ms"]) and item["response_elapsed_ms"] >= 0]
     word_counts = [len(item.get("assistant", "").split()) for item in replies]
     routes = Counter(item.get("model_id") or "unidentified" for item in replies)
     last = snapshots[-1] if snapshots else {}
+    with bundle.open("rb") as stream:
+        bundle_sha256 = file_digest(stream, "sha256").hexdigest()
     return {
+        "bundle_sha256": bundle_sha256,
+        "bundle_model": manifest["model"],
+        "bundle_scenario": scenario["name"],
+        "git_sha": manifest.get("git_sha"),
+        "failure_diagnostics": _failure_diagnostics(errors),
         "contract_passed": bool(evaluation.get("contract_passed")),
         "behavioral_checks_passed": evaluation.get("behavioral_checks_passed"),
         "error_count": len(errors),
         "delivered_message_count": len(replies),
         "avg_response_ms": round(mean(durations), 2) if durations else None,
         "median_response_ms": round(median(durations), 2) if durations else None,
+        "p95_response_ms": round(sorted(durations)[ceil(.95 * len(durations)) - 1], 2)
+                           if durations else None,
+        "timed_message_count": len(durations),
         "avg_reply_words": round(mean(word_counts), 2) if word_counts else None,
         "max_reply_words": max(word_counts) if word_counts else None,
         "model_route_counts": dict(sorted(routes.items())),
         "last_scoped_counts": last.get("application", {}).get("counts", {}),
         "model_identifier_recorded_in_bundle": bool(manifest.get("model")),
         "output_tokens": None,  # The current gateway does not record token usage.
-        "quality_status": "AWAITING_INDEPENDENT_HUMAN_REVIEW",
+        "quality_status": ("AWAITING_INDEPENDENT_HUMAN_REVIEW"
+                           if evaluation["contract_passed"] and not errors else "NO_PACKET"),
     }
 
 
@@ -228,6 +282,7 @@ def compare(argv: list[str] | None = None) -> int:
                 entry.update(read_summary(bundle))
                 evidence_verified = True
                 entry["evidence_status"] = "VERIFIED"
+                entry["quality_status"] = "NO_PACKET"
                 # A failed contract trace must never be rated as a successful
                 # natural-dialogue run, even if it contains plausible replies.
                 if code == 0 and entry["contract_passed"] and not entry["error_count"]:
@@ -239,6 +294,7 @@ def compare(argv: list[str] | None = None) -> int:
                                  rating_template(packet, "reviewer_b"))
                     entry["review_packet"] = f"{alias}.review.json"
                     entry["review_status"] = "AWAITING_INDEPENDENT_HUMAN_REVIEW"
+                    entry["quality_status"] = entry["review_status"]
             except (ValueError, OSError, KeyError, TypeError, RuntimeError, BadZipFile) as exc:
                 entry["evidence_error"] = f"{type(exc).__name__}: {str(exc)[:300]}"
         if not evidence_verified:
@@ -263,14 +319,143 @@ def compare(argv: list[str] | None = None) -> int:
         "scenario": source["name"],
         "case_order": list(mapping),
         "results": outcomes,
+        "not_run_case_ids": list(mapping)[len(outcomes):],
         "evaluation": "Unscored. Two independent humans must rate blind packets.",
         "quality_winner": None,
     }
     private_json(destination / "summary.json", summary)
     print(f"Private evidence: {destination}", flush=True)
     print("Blind review packets: case_XX.review.json; never give reviewers PRIVATE_model_map.json")
-    return 0 if all(item["exit_code"] == 0 and item["review_packet"]
-                    for item in outcomes) else 1
+    return 0 if len(outcomes) == len(mapping) and all(
+        item["exit_code"] == 0 and item["review_packet"] for item in outcomes
+    ) else 1
+
+
+def comparison_review_status(directory: Path) -> dict:
+    """Read-only operator report over an existing, private comparison directory.
+
+    Reconcile original run metadata with evidence and recompute review summaries
+    from scorecards, never trust a pre-existing aggregate or select a winner.
+    Legacy v1 bundles without recorded hashes get an explicit provenance warning.
+    """
+    def load(name: str):
+        return json.loads((directory / name).read_text(encoding="utf-8"))
+
+    summary = load("summary.json")
+    model_map = load("PRIVATE_model_map.json")
+    if (not isinstance(summary, dict) or not isinstance(model_map, dict)
+            or summary.get("format") != "persona-model-comparison.v1"
+            or model_map.get("format") != summary["format"]
+            or not isinstance(summary.get("scenario"), str)
+            or model_map.get("scenario") != summary["scenario"]):
+        raise ValueError("invalid or mismatched comparison metadata")
+    order, results, mapping = (summary.get("case_order"), summary.get("results"),
+                               model_map.get("mapping"))
+    if (not isinstance(order, list) or not 2 <= len(order) <= 10
+            or any(not isinstance(a, str) or not re.fullmatch(r"case_[0-9]{2}", a) for a in order)
+            or len(set(order)) != len(order) or not isinstance(mapping, dict)
+            or set(mapping) != set(order) or not isinstance(results, list)
+            or len(results) > len(order)
+            or any(not isinstance(r, dict) for r in results)
+            or [r.get("case_id") for r in results] != order[:len(results)]):
+        raise ValueError("invalid comparison case inventory")
+    cases = []
+    for index, alias in enumerate(order):
+        identity = mapping[alias]
+        if (not isinstance(identity, dict) or identity.get("mode") not in ("model-only", "full")
+                or not isinstance(identity.get("model"), str)
+                or not MODEL_PATTERN.fullmatch(identity["model"])):
+            raise ValueError(f"{alias}: invalid private model mapping")
+        row = {"case_id": alias, "model": identity["model"], "mode": identity["mode"],
+               "status": "NOT_RUN", "natural_quality_accepted": None}
+        cases.append(row)
+        if index >= len(results):
+            continue
+        recorded = results[index]
+        if recorded.get("mode") != identity["mode"]:
+            row.update(status="EVIDENCE_MISMATCH", diagnostic="recorded route differs from model map")
+            continue
+        row["exit_code"] = recorded.get("exit_code")
+        bundle = directory / f"{alias}.zip"
+        try:
+            actual = read_summary(bundle)
+        except (ValueError, OSError, TypeError, KeyError, RuntimeError, BadZipFile) as exc:
+            row.update(status="EVIDENCE_MISSING_OR_INVALID",
+                       diagnostic=f"bundle verification failed: {type(exc).__name__}")
+            continue
+        row["observed"] = actual
+        expected_scenario = summary["scenario"] + "-" + identity["mode"]
+        mismatches = [k for k in (
+            "contract_passed", "error_count", "delivered_message_count", "behavioral_checks_passed",
+            "bundle_sha256", "git_sha",
+        ) if k in recorded and recorded[k] != actual[k]]
+        if recorded.get("bundle") != bundle.name:
+            mismatches.append("bundle filename")
+        if actual["bundle_model"] != identity["model"]:
+            mismatches.append("model")
+        if actual["bundle_scenario"] != expected_scenario:
+            mismatches.append("scenario")
+        if mismatches:
+            row.update(status="EVIDENCE_MISMATCH",
+                       diagnostic="bundle differs from recorded run: " + ", ".join(mismatches))
+            continue
+        row["run_fingerprint"] = ("MATCHED" if recorded.get("bundle_sha256")
+                                  else "LEGACY_HASH_UNAVAILABLE")
+        if (recorded.get("exit_code") != 0 or not actual["contract_passed"]
+                or actual["error_count"] or actual["behavioral_checks_passed"] is False):
+            row["status"] = "RUN_FAILED"
+            continue
+        if recorded.get("review_packet") != f"{alias}.review.json":
+            row.update(status="REVIEW_PACKET_MISSING",
+                       diagnostic="successful run has no recorded review packet")
+            continue
+        try:
+            packet = validate_packet(load(f"{alias}.review.json"))
+            if packet["packet_sha256"] != packet_from_bundle(bundle)["packet_sha256"]:
+                raise ValueError("packet does not match bundle")
+        except (ValueError, OSError, TypeError, KeyError, RuntimeError, BadZipFile) as exc:
+            row.update(status="REVIEW_PACKET_INVALID",
+                       diagnostic=f"packet verification failed: {type(exc).__name__}")
+            continue
+        slots = {}
+        submissions = []
+        for slot in ("a", "b"):
+            try:
+                submission = validate_ratings(packet, load(f"{alias}.reviewer_{slot}.json"))
+            except FileNotFoundError:
+                slots[slot] = {"status": "MISSING"}
+            except (ValueError, OSError, TypeError, KeyError) as exc:
+                # Detailed validation errors aid local reviewers; do not echo notes,
+                # raw prompts or arbitrary OS error messages into this report.
+                slots[slot] = {"status": "INCOMPLETE_OR_INVALID",
+                               "diagnostic": str(exc)[:500] if isinstance(exc, ValueError)
+                               else type(exc).__name__}
+            else:
+                slots[slot] = {"status": "VALID"}
+                submissions.append(submission)
+        row["reviewer_slots"] = slots
+        if len(submissions) != 2:
+            row["status"] = "REVIEW_INCOMPLETE_OR_INVALID"
+            continue
+        try:
+            aggregate = summarize_independent_reviews(packet, *submissions)
+        except ValueError as exc:
+            row.update(status="REVIEW_INCOMPLETE_OR_INVALID", diagnostic=str(exc)[:500])
+            continue
+        row.update(status=aggregate["status"], review_summary={
+            "rated_dimensions": aggregate["rated_dimensions"],
+            "exact_agreement_rate": aggregate["exact_agreement_rate"],
+            "dimensions": aggregate["dimensions"],
+            "disagreement_count": len(aggregate["disagreements"]),
+            "critical_flag_count": len(aggregate["critical_flags"]),
+        })
+    return {
+        "format": "persona-model-comparison-review-status.v1",
+        "scenario": summary["scenario"], "cases": cases,
+        "status_counts": dict(sorted(Counter(r["status"] for r in cases).items())),
+        "quality_winner": None, "natural_quality_accepted": None,
+        "note": "Private operator diagnostics only. Valid submissions do not prove human independence.",
+    }
 
 
 if __name__ == "__main__":
