@@ -45,13 +45,15 @@ The matrix contains 45 implemented-core, 59 partial and 20 missing/not-located s
 | P6-F — Evaluation and hardening | 6 | Relevant owner contracts and earlier phase evidence | Continuous regression now; final hardening later |
 | DEC-01–07 — Proposal decisions | Various | Explicit approval of individual proposal(s) | Not scheduled as mandatory implementation |
 
-Recommended order for the next reviewable PRs: MVP-04A benchmark integrity and failure evidence → MVP-04B reproduced response defects → MVP-04C contextual intent and corrections → MVP-05A trusted time. Start MVP-07A authentication contract and MVP-07B deployment/data inventory in parallel if there is capacity, but never make an untrusted deployment available before their applicable safety gates. Continue with MVP-05B/C memory and entities, P2-F cognitive state and MVP-06 goal/procedure slices according to their dependencies. No release dates or hardware assumptions are fixed.
+Recommended order for the next reviewable PRs: MVP-04A benchmark integrity and failure evidence → MVP-04B reproduced response defects → MVP-04C contextual intent and corrections → MVP-05A trusted time. Start MVP-07A authentication contract and MVP-07B deployment/data inventory in parallel if there is capacity, but never make an untrusted deployment available before their applicable safety gates. Continue with MVP-05B/C memory and entities, P2-F cognitive state and MVP-06 goal/procedure slices according to their dependencies. No release dates or hardware assumptions are fixed. At each milestone review the linked [capability gaps (§9)](#9-capability-gap-review-register); a review checkpoint is not an implementation dependency or expanded MVP gate.
 
 ## 4. Implementation increments and exit checks
 
 All IDs in this document use the `PPA-US-` prefix. The crosswalk in §7 assigns each canonical story one primary work package; cross-cutting dependencies may appear more than once in the narrative. For each implementation increment, inspect the current owner API and exact backlog criteria, define the smallest useful contract, add automated tests, then record actual evidence in the matrix. Do not promote a status based on an intended milestone alone.
 
 ### BASE — Preserve the foundation
+
+**Capability-gap review checkpoints (not committed implementation):** GAP-15, GAP-18 — see [§9](#9-capability-gap-review-register).
 
 Primary IDs: 001, 002, 003, 005, 006, 007, 008, 011, 111.
 
@@ -60,6 +62,8 @@ Primary IDs: 001, 002, 003, 005, 006, 007, 008, 011, 111.
 - Exit/ongoing invariant: every selected-user switch invalidates the old authority; repeated command/delivery does not repeat committed effects; unrelated owner updates both survive; competing claims produce one valid worker; externally dispatched unknown outcomes are not retried blindly. Record test revision and run evidence. Keep LLM and provider calls outside DB transactions.
 
 ### MVP-04 — Conversational quality and pragmatic understanding
+
+**Capability-gap review checkpoints (not committed implementation):** GAP-02, GAP-03, GAP-07, GAP-08, GAP-13, GAP-14, GAP-18, GAP-19 — see [§9](#9-capability-gap-review-register).
 
 Primary IDs: 012, 104, 016, 017, 018, 019, 020, 021, 022, 023, 024, 090, 105, 088.
 
@@ -80,6 +84,8 @@ Quality acceptance procedure:
 
 ### MVP-05 — Trusted temporal context, retrieval and entity continuity
 
+**Capability-gap review checkpoints (not committed implementation):** GAP-04, GAP-05, GAP-07, GAP-08, GAP-09, GAP-12 — see [§9](#9-capability-gap-review-register).
+
 Primary IDs: 091, 113, 029, 030, 031, 034, 093, 027, 028, 032, 033, 092.
 
 | Increment | Deliverable | Demonstrable check |
@@ -93,6 +99,8 @@ Reuse [retrieval](phase2-05.md), [unified context](mvp-03b1-unified-context.md),
 
 ### P2-F — Finish cognitive state before the Phase 2 exit
 
+**Capability-gap review checkpoints (not committed implementation):** GAP-01–06, GAP-10, GAP-12, GAP-13, GAP-20 — see [§9](#9-capability-gap-review-register).
+
 Primary IDs: 036, 106, 035, 037, 038, 039, 040, 041, 094.
 
 - P2-F1: keep watermarked asynchronous reflections and evidence-linked hypotheses, add versioned belief correction and condition/relevance/expiry-aware conversational intentions. Owner-approved context projection, not arbitrary cognitive writes into Memory, Goal, Emotion or permissions.
@@ -101,6 +109,8 @@ Primary IDs: 036, 106, 035, 037, 038, 039, 040, 041, 094.
 - Exit: §14's compression/restart and independent concurrent-update demonstration plus confirmed backlog state/correction criteria, evidence-qualified natural expression and no stale or unauthorized owner writes. Depend on MVP-05 and the applicable MVP-07B lineage/correction contracts. The proposed AffectSchema and subjective-moment mechanisms remain DEC-04.
 
 ### MVP-06 — Natural-language goals and procedural continuity
+
+**Capability-gap review checkpoints (not committed implementation):** GAP-01, GAP-03, GAP-10, GAP-11, GAP-16 — see [§9](#9-capability-gap-review-register).
 
 Primary IDs: 046, 047, 048, 051, 100, 049, 050, 052, 053, 054, 055, 056, 057, 058, 098, 099.
 
@@ -115,6 +125,8 @@ Reuse [Goal authorization](mvp-03a1-delegated-goal-authorization.md), [decomposi
 
 ### MVP-07A — Authenticated application boundary
 
+**Capability-gap review checkpoints (not committed implementation):** GAP-15, GAP-17 — see [§9](#9-capability-gap-review-register).
+
 Primary IDs: 004, 009, 010.
 
 The existing [acceptance host](../src/persona_agent/acceptance_host.py) is a trusted local operator JSONL harness, not a production identity boundary. The [integrated acceptance document](phase1-integrated-acceptance.md) explicitly prohibits remote unauthenticated exposure.
@@ -126,6 +138,8 @@ The existing [acceptance host](../src/persona_agent/acceptance_host.py) is a tru
 
 ### MVP-07B — Data lifecycle and evidence provenance
 
+**Capability-gap review checkpoints (not committed implementation):** GAP-12, GAP-17, GAP-19 — see [§9](#9-capability-gap-review-register).
+
 Primary IDs: 117, 118, 085.
 
 - 07B1: inventory persisted private records, evidence and derived stores, logs, artifacts, backups and provider routes; agree actual deployment, retention/consent/access/erasure requirements and operator responsibilities. Distinguish mandatory scoped confidentiality/correction from additional policy proposals (DEC-03). Do not declare legal compliance or assume retention durations.
@@ -134,6 +148,8 @@ Primary IDs: 117, 118, 085.
 - Exit: correction or revocation does not reappear via a stale derived context or in-flight worker; cross-scope deletion denied; agreed retention/deletion and recovery procedures evidenced. Baseline safeguards and deployment requirements precede deployment; complete end-to-end privacy propagation remains Phase 6 acceptance work, with Phase 2 dependencies handled early.
 
 ### P4-F — Bounded Background autonomy
+
+**Capability-gap review checkpoints (not committed implementation):** GAP-11, GAP-18 — see [§9](#9-capability-gap-review-register).
 
 Primary IDs: 062, 063, 066, 067, 064, 065, 068, 069, 070, 101, 102, 103.
 
@@ -146,6 +162,8 @@ Build on [ALIGN-01](phase4-03-align01.md), [Phase 4 integrated acceptance](phase
 
 ### P5-F — Voice and social channels
 
+**Capability-gap review checkpoints (not committed implementation):** GAP-14, GAP-15, GAP-17, GAP-18 — see [§9](#9-capability-gap-review-register).
+
 Primary IDs: 073, 074, 075, 076, 077, 119, 116.
 
 - P5-F1: integrate authenticated media host using [streaming speech input](phase5-02-streaming-speech-input.md), [speech output](phase5-03-streaming-speech-output.md) and [turn-taking](phase5-04-natural-turn-taking.md). Test actual mic/speaker and hardware AEC before enabling full duplex. Default blocked mic is safe, not true barge-in; committed text synthesis is not token streaming.
@@ -154,6 +172,8 @@ Primary IDs: 073, 074, 075, 076, 077, 119, 116.
 - Exit: real concurrent input/interruptions do not mix sources, lose independent tasks or synthesize obsolete replies. Per-clip generated/queued/acknowledged playback are distinct; ACK is not proof of human comprehension. Test fallback and echo behavior only within confirmed contracts or explicitly adopted refinements. Live hardware/provider and third-party privacy evidence required.
 
 ### P6-F — Evaluation and final hardening
+
+**Capability-gap review checkpoints (not committed implementation):** GAP-01–03, GAP-07–09, GAP-12, GAP-13, GAP-18–20 — see [§9](#9-capability-gap-review-register).
 
 Primary IDs: 081, 082, 083, 084, 086, 087, 107.
 
@@ -224,3 +244,55 @@ I/P/M counts below are copied from the merged matrix; neither a story's primary 
 ## 8. Maintenance
 
 At each merged development PR update the affected matrix rows and milestone evidence, not historical counts. Replan only on reproduced defects, dependency changes, explicit proposal adoption or user direction. Keep the seven phases and MVP exclusions unchanged unless the architecture is explicitly amended. Preserve private review artifacts outside the public repository. This document records planning, not execution; no new runtime tests or benchmarks were performed to create it.
+
+## 9. Capability gap review register
+
+**Added 24 November 2026**, review baseline `d1ceda0036914a70eaffce7f0628808f965087d2` (PR #105 merged). Sources: predictive-user-model and broader feature-coverage reviews against Architecture v2.5.1, Appendix A baseline features, legacy [README](../README.md) and [systems list](../systems.md), BEH, MODEL/EMO/OUT, APS, CAP-OPP, CRA and the reconciled master backlog. This is a requirements/traceability review, not a fresh exhaustive implementation audit.
+
+Track overlooked or underspecified capabilities when their dependencies are being developed. GAP identifiers are stable planning references, not canonical PPA-US IDs, new architecture phases, status promotions or approval of companion proposals. Existing confirmed requirements remain binding; proposed details, placement and candidate checks await review. Bare three-digit source IDs below refer to PPA-US stories; BASE-FEAT refers to Architecture Appendix A. See the [matrix](user-story-implementation-matrix.md) for actual authority and evidence.
+
+### 9.1 Disposition policy
+
+- At the first applicable milestone planning/review, inspect existing code and tests against the source requirements. Record a disposition before closing that planning review; implementation of every gap is not a prerequisite to completing an existing increment.
+- **OPEN:** awaiting review. **COVERED:** existing evidence satisfies gap. **ADOPT:** approved work linked to story criteria and an increment. **DEFER:** retain item, record reason and future review milestone. **REJECT:** decline proposed extension with reason. Record date, decision reference, owner, target/review milestone and evidence or limitation. Deferred items remain visible, not implemented.
+- Existing confirmed obligations cannot be waived by this register. COVERED needs evidence; DEFER may reschedule work but not bypass required phase/release criteria. REJECT applies only to a proposed extension unless architecture is explicitly amended. Mixed-authority details and companion proposals remain unapproved.
+- Keep the 124-story crosswalk, Phase 0–1 initial MVP and next increment MVP-04A unchanged. On adoption, extend existing story criteria where appropriate through an explicit backlog decision; create new canonical IDs only if necessary. Update the matrix and checklist when scope or evidence changes.
+- Preserve existing domain ownership and bounded asynchronous work; no new scheduler, mandatory per-turn inference, standalone authoritative user/world model, or uncontrolled optimization. Predictions are private scoped interpretations, subject to source correction, expiry, revocation and retention. They cannot grant authority, override current explicit instructions or become verified facts.
+- User-specific learning requires comparable independent observations accumulated over time. Use persona defaults and explicit preferences at cold start; record missing outcomes as unknown. No sample-size, calibration, decay or training algorithm is fixed here. Begin with approved synthetic cases/evidence hygiene where useful.
+
+### 9.2 Tracked gaps and checkpoints
+
+All items initially OPEN. Review timing is a proposed opportunity, not an automatic implementation requirement. Candidate checks distinguish behavior; acceptance remains subject to the owning domain and original requirements.
+
+| Gap ID / capability | Review milestone(s) | Source / related stories | Candidate review scope and checks | Disposition |
+|---|---|---|---|---|
+| GAP-01 — Predictive user modeling and contextual surprise | P2-F1/F2 after 05B–D; 06C outcomes; P6-F2 calibration | ARCH §§19.1, 20.1–20.4, 22.2; 033, 036, 038, 039, 083, 106; proposed 044 | Scoped behavioral expectations, horizon, original evidence, comparable sample sufficiency and revision history. Compare expectations fixed before events to later observations. Test two different task-completion histories, cold start, changing habits and unknown outcomes; distinguish surprise from contradiction. No global reliability judgment or mandatory model pass. | OPEN |
+| GAP-02 — Next-intent prediction and context prefetch | 04C review; P2-F1 after 05B/C | BASE-FEAT-CON-07; 017, 018, 027, 090, 113, 083 | Compare prior anticipated next act to actual input. Optional scoped prefetch outside critical path; test hits, misses, topic switch, stale authority and cost. Current input wins. | OPEN |
+| GAP-03 — Individual conversational approach suitability | 04B feedback review; P2-F2 learning; 06D support; P6-F2 evaluation | ARCH §§20.2, 20.4, 21.2, 22.1–22.3; 024, 040, 082, 106; BEH R02/R03/R06 | Learn tentative context-specific suitability of brevity, humor, directness, encouragement, initiative and questions from repeated user-specific feedback. Cold start uses persona defaults and explicit preferences. Attribute feedback to delivered approach; distinguish approval, confusion, discomfort, outcomes and mere engagement. Test changing preferences and opt-out. No covert experiments or engagement maximization. | OPEN |
+| GAP-04 — MetaMemory and knowledge-gap lifecycle | 05D after 05B/C; P2-F1 follow-up | ARCH §§5, 19.1–19.3; BASE-FEAT-COG-02/MEM-05; 030, 034, 037, 092 | Track relevant unknown, ambiguous, contradictory, stale, awaiting clarification and unverifiable knowledge with evidence and resolution history. Test timely clarification, correction and repeated-query suppression; absence is not evidence of a fact. | OPEN |
+| GAP-05 — Subjective world model and belief projection | P2-F1 after 05B–D | ARCH §§20.1, 20.4; 036, 106, 093; proposed 043 / BEH R01 | Compose relevant facts, relationships, observations and competing interpretations into a read-only subjective context. Test revision across sessions and context changes, preserving uncertainty and role boundaries; no independent world-model authority or universal graph. | OPEN |
+| GAP-06 — Cognitive continuity across reflection ranges | P2-F1 before Phase 2 exit review | ARCH §20.1; 035, 036, 037, 106 | Revisit unresolved questions and prior hypotheses when new evidence arrives; link competing, superseded and supported interpretations. Test restart, interruption and correction across ranges. No endless reflection or self-corroboration. | OPEN |
+| GAP-07 — Conditional input, claim and output verification | 04B/04C; 05D sources; P6-F4 regression | BASE-FEAT-COG-08/OUT-04; ARCH §§11.3, 20.3–20.4; 105, 113, 117, 086 | Inspect existing grounding and claim enforcement. Test unsupported consequential claims, factual conflicts, stale sources and detectable output inconsistencies. Verify selectively through authorized sources or clarify/qualify; no unconditional verifier pass. | OPEN |
+| GAP-08 — Conversational repair and misunderstanding detection | 04C; 05B/C continuity; P6-F2 evaluate | ARCH §§18.1–18.2, 20.3; 017, 019, 027, 090, 105, 082 | Repair affected pending act, referent or interpretation from explicit corrections; consider repeated failed explanations without treating repetition as proof of dissatisfaction. Test clear versus ambiguous repair and stale dependent work; no silent goal mutation. | OPEN |
+| GAP-09 — Memory retrieval effectiveness feedback | 05B/05D; P6-F4 evaluate | BASE-FEAT-MEM-08; ARCH §§19.2–19.3, 22.1; 018, 031, 092, 113, 082 | Record retrieval misses, irrelevant hits and corrections against evidence. Test ranking/eligibility improvements on held-out cases; popularity cannot make a retrieved claim true. | OPEN |
+| GAP-10 — Conversational direction and next-action planning | P2-F1 after 04C; 06B guided dialogue | ARCH §§4.4, 18.2, 20.1; legacy Plan_Conversational_Direction / Plan_next_action; 027, 037, 041, 100 | Bounded next conversational acts, unresolved questions, expiry and relevance separate from goals/tasks. Test topic switch, interruption and return; no forced agenda or overriding current direct requests. | OPEN |
+| GAP-11 — Competing approved goal and value arbitration | 06C owner contracts; 06D alternatives; P4-F2 admission | BASE-FEAT-GOAL-04; ARCH §§6.1, 21.2; 046, 047, 051, 058 | Distinguish dependency/resource conflicts from incompatible approved outcomes. Test conflicting goals/deadlines and ask for priority when material; preserve objectives, continue unrelated authorized work. | OPEN |
+| GAP-12 — Experience significance and selective retention | 05D; P2-F1 and 07B policy; P6-F4 | ARCH §§5, 19.1–19.3; 029, 033, 034, 118, 085; proposed 043 / BEH R05 | Assess episodic significance and salience, distinguish attention decay from deletion. Test ordinary versus significant events, correction and revocation; preserve facts/instructions independently of summaries. Deletion governed by approved policy. | OPEN |
+| GAP-13 — Learning from agent mistakes | 04A/B collect examples; P2-F1/F2 adjustments; P6-F2 evaluate | ARCH §§20.1, 22.1–22.3; BASE-FEAT-COG-03; 082, 086, 106, 107 | Link specific agent error to correction or independent outcome; propose bounded, revisable owner-approved behavioral adjustment. Test recurrence reduction on novel cases and rollback. No automatic prompt/weight mutation or self-rating as ground truth. | OPEN |
+| GAP-14 — Intentional silence and response obligation | 04C/D; P5-F1 turn-taking; DEC-02/07 | BASE-FEAT-CON-04; ARCH §§4.4, 18.4; 016, 022, 037; proposed 110, 115 | Distinguish intentional no-output from failed delivery or missing required response. Test optional observations, direct questions, quiet preferences and delayed results; no silent loss of user requests. | OPEN |
+| GAP-15 — Owner/moderator priority interruption | 07A authority; P5-F2 channels; BASE cancellation | BASE-FEAT-CON-08/SAFE-02; 002, 004, 009, 066, 075, 076 | Define scoped authenticated interruption distinct from task cancellation or persona switching. Test forged moderator requests, stale authority, valid stop and unrelated task survival. | OPEN |
+| GAP-16 — Procedure composition and rollback | 06B/D after pinned definitions and runs | BASE-FEAT-PROC-04; ARCH §§6.3, 21.3–21.4; 052, 053, 054, 056, 084 | Review reusable subprocedures, typed parameters, version compatibility and definition rollback. Test pinned runs survive updates and composition failures; no implicit undo of irreversible effects. | OPEN |
+| GAP-17 — Image and game-environment perception | P5-F2/F3 after 07A and applicable 07B; DEC-07 | BASE-FEAT-IN-01/TOOL-03; ARCH §23; 004, 010, 077; proposed 078 | Review image/game-event ingress, source, capture time, permissions and historical versus live observation. Test untrusted/stale evidence; perception cannot grant game mutation authority. Select justified adapters only. | OPEN |
+| GAP-18 — Graceful degradation under provider failure | 04A/D text/model; DEC-02; P5-F1 audio; P6-F4 | BASE-FEAT-OPS-04; 007, 012, 021, 067, 087, 102; proposed 096, 080 | Review bounded safe retries, compatible fallbacks and visible limitations for model/tool/audio outages. Test failed generation, unsupported schema and obsolete results; preserve durable pending state, no fictitious success or unauthorized provider. | OPEN |
+| GAP-19 — Controlled evaluation dataset creation and cleanup | 04A evidence hygiene; 07B policy; P6-F4 | BASE-FEAT-OPS-05; ARCH §§12, 22.3; 085, 087, 088; proposed 015, 120, 121 | Use approved synthetic or explicitly permitted data, provenance, deduplication, retention and revocation-aware removal. Separate held-out evaluation from training; no private transcript publication or implicit training. Test deletion and private artifacts. | OPEN |
+| GAP-20 — Post-session experience and goal-alignment review | P2-F1 session boundary; P6-F2/F4 | BASE-FEAT-OPS-03; ARCH §§20.1, 22.1–22.3; 082, 086, 107 | Review meaningful sessions for unresolved friction, helpfulness, corrections and approved-goal alignment. Owner-specific evidence findings, not length or model rating alone; test missing feedback, neutral endings and explicit dissatisfaction. | OPEN |
+
+### 9.3 Decision history
+
+When an item is reviewed, update its disposition above and append a record below; preserve its ID and prior decisions.
+
+| Gap ID | Decision / date | Owner | Target or next review | Rationale, evidence, affected criterion and decision reference |
+|---|---|---|---|---|
+| — | Pending initial reviews | — | See §9.2 | No new feature adopted, deferred or rejected through this register. |
+
+**Coverage:** 20 capability gap review items, independent of the existing 124 canonical stories and 32 proposed-only story decisions. Grouping and review timing are planning proposals. No runtime changes, implementation count changes, acceptance promotions or benchmark execution.
