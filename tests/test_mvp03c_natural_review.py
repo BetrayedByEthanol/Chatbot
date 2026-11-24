@@ -316,7 +316,7 @@ def test_consolidated_status_validates_actual_packet_and_reviewer_pair(tmp_path)
     summary={"format":fmt,"scenario":source_name,"case_order":["case_01","case_02"],
              "results":[{"case_id":"case_01","mode":"model-only","exit_code":0,
                          "bundle":bundle.name,"review_packet":"case_01.review.json",
-                         **read_summary(bundle)}]}
+                         "evidence_status":"VERIFIED", **read_summary(bundle)}]}
     save("summary.json",summary)
     packet=packet_from_bundle(bundle)
     save("case_01.review.json",packet)

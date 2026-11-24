@@ -137,18 +137,27 @@ def read_summary(bundle: Path) -> dict:
         or not isinstance(manifest.get("model"), str)
         or not manifest["model"]
         or not isinstance(events, list)
+        or any(not isinstance(item, dict) for item in events)
         or not isinstance(snapshots, list)
+        or any(not isinstance(item, dict) for item in snapshots)
         or not isinstance(errors, list)
         or not isinstance(evaluation, dict)
         or type(evaluation.get("contract_passed")) is not bool):
         raise ValueError("invalid or incomplete published E2E evidence")
     replies = [item for item in events if item.get("action") == "message"]
+    if any(not isinstance(item.get("assistant"), str)
+           or (item.get("model_id") is not None and not isinstance(item["model_id"], str))
+           for item in replies):
+        raise ValueError("invalid delivered message record")
     durations = [item["response_elapsed_ms"] for item in replies
                  if type(item.get("response_elapsed_ms")) in (int, float)
                  and isfinite(item["response_elapsed_ms"]) and item["response_elapsed_ms"] >= 0]
     word_counts = [len(item.get("assistant", "").split()) for item in replies]
     routes = Counter(item.get("model_id") or "unidentified" for item in replies)
     last = snapshots[-1] if snapshots else {}
+    application = last.get("application", {})
+    if not isinstance(application, dict) or not isinstance(application.get("counts", {}), dict):
+        raise ValueError("invalid state snapshot counts")
     with bundle.open("rb") as stream:
         bundle_sha256 = file_digest(stream, "sha256").hexdigest()
     return {
@@ -169,7 +178,7 @@ def read_summary(bundle: Path) -> dict:
         "avg_reply_words": round(mean(word_counts), 2) if word_counts else None,
         "max_reply_words": max(word_counts) if word_counts else None,
         "model_route_counts": dict(sorted(routes.items())),
-        "last_scoped_counts": last.get("application", {}).get("counts", {}),
+        "last_scoped_counts": application.get("counts", {}),
         "model_identifier_recorded_in_bundle": bool(manifest.get("model")),
         "output_tokens": None,  # The current gateway does not record token usage.
         "quality_status": ("AWAITING_INDEPENDENT_HUMAN_REVIEW"
@@ -372,10 +381,11 @@ def comparison_review_status(directory: Path) -> dict:
         if index >= len(results):
             continue
         recorded = results[index]
-        if recorded.get("mode") != identity["mode"]:
-            row.update(status="EVIDENCE_MISMATCH", diagnostic="recorded route differs from model map")
+        if recorded.get("mode") != identity["mode"] or type(recorded.get("exit_code")) is not int:
+            row.update(status="EVIDENCE_MISMATCH", diagnostic="invalid recorded route or exit code")
             continue
-        row["exit_code"] = recorded.get("exit_code")
+        row["exit_code"] = recorded["exit_code"]
+        row["thinking"] = recorded.get("thinking")
         bundle = directory / f"{alias}.zip"
         try:
             actual = read_summary(bundle)
@@ -385,10 +395,14 @@ def comparison_review_status(directory: Path) -> dict:
             continue
         row["observed"] = actual
         expected_scenario = summary["scenario"] + "-" + identity["mode"]
-        mismatches = [k for k in (
-            "contract_passed", "error_count", "delivered_message_count", "behavioral_checks_passed",
-            "bundle_sha256", "git_sha",
-        ) if k in recorded and recorded[k] != actual[k]]
+        required_outcomes = ("contract_passed", "error_count", "delivered_message_count",
+                             "behavioral_checks_passed")
+        mismatches = [k for k in required_outcomes
+                      if k not in recorded or recorded[k] != actual[k]]
+        mismatches.extend(k for k in ("bundle_sha256", "git_sha")
+                          if k in recorded and recorded[k] != actual[k])
+        if recorded.get("evidence_status") != "VERIFIED":
+            mismatches.append("original evidence status")
         if recorded.get("bundle") != bundle.name:
             mismatches.append("bundle filename")
         if actual["bundle_model"] != identity["model"]:
@@ -413,6 +427,9 @@ def comparison_review_status(directory: Path) -> dict:
             packet = validate_packet(load(f"{alias}.review.json"))
             if packet["packet_sha256"] != packet_from_bundle(bundle)["packet_sha256"]:
                 raise ValueError("packet does not match bundle")
+        except FileNotFoundError:
+            row.update(status="REVIEW_PACKET_MISSING", diagnostic="review packet file missing")
+            continue
         except (ValueError, OSError, TypeError, KeyError, RuntimeError, BadZipFile) as exc:
             row.update(status="REVIEW_PACKET_INVALID",
                        diagnostic=f"packet verification failed: {type(exc).__name__}")
