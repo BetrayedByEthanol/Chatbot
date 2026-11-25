@@ -290,3 +290,37 @@ def test_same_relation_or_wrong_relation_does_not_select_a_candidate(dsn):
     _,wrong=ask(dsn,user,instance,"My sibling",g,conversation=conv)
     assert "does not identify one" in wrong.text
     assert g.calls==0
+
+
+def test_superseded_report_cannot_create_identity(dsn):
+    from persona_agent.conversation import prepare_direct_tool_context,commit_text_response
+    from persona_agent.conversation_contracts import StaleConversation,ModelReply
+    from persona_agent.entity_memory import find_entities
+    actor,call,seed,turn,_,_,_,_=_helpers()
+    user,instance,_=seed(dsn)
+    conversation=uuid4()
+    source=turn(dsn,user,instance,conversation,"Alex is my friend.")
+    ctx=call(dsn,prepare_direct_tool_context,actor(user),source.turn_id)
+    turn(dsn,user,instance,conversation,"Let's discuss something else.")
+    with pytest.raises(StaleConversation):
+        call(dsn,commit_text_response,actor(user),ctx,
+             ModelReply(model_id="entity-report",text="Entity report."),entity_report=True)
+    assert call(dsn,find_entities,actor(user),instance,"Alex")==()
+
+
+def test_choice_does_not_cross_selection_generation(dsn):
+    from persona_agent.lifecycle import SwitchPersonaCommand,switch_persona
+    actor,call,seed,_,ask,register,_,Gateway=_helpers()
+    user,instance,other=seed(dsn,alternative=True)
+    register(dsn,user,instance,"Alex","FRIEND")
+    register(dsn,user,instance,"Alex","COLLEAGUE")
+    conv=uuid4()
+    g=Gateway()
+    ask(dsn,user,instance,"Who is Alex to me?",g,conversation=conv)
+    for before,after,generation in ((instance,other,1),(other,instance,2)):
+        call(dsn,switch_persona,actor(user),SwitchPersonaCommand(
+            expected_instance_id=before,target_instance_id=after,expected_generation=generation,
+            idempotency_key=f"entity-switch-{generation}",
+        ))
+    _,reply=ask(dsn,user,instance,"My colleague",g,conversation=conv,generation=3)
+    assert reply.model_id=="guessing-entity-model" and g.calls==1

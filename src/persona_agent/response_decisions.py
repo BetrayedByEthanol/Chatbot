@@ -1,7 +1,8 @@
 """MVP-01D: bounded, explainable natural-language response decisions.
 
-These decisions are routing hints for the already registered read-only
-capabilities, not model-issued tool commands or permission grants.
+These decisions are routing hints for registered read-only capabilities
+and bounded user-evidenced entity reports, not model-issued commands or
+permission grants.
 Unrecognized, ambiguous, hypothetical and quoted requests abstain and
 take the existing conversational model path. No additional inference.
 """

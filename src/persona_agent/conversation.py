@@ -978,7 +978,8 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
             report=parse_entity_report(scoped["input_text"])
             if entity_report and report is None:
                 raise ValueError("entity report route requires a persisted explicit report")
-            if report is not None and (entity_report or model_generated):
+            writes_entity=report is not None and (entity_report or model_generated)
+            if writes_entity:
                 # Entity absence/collision and writes share one owner guard.
                 # Acquire BEFORE locking conversation/turn rows: a concurrent
                 # explicit owner command can reference the same source turn.
@@ -997,9 +998,12 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
                 lock_ids.add(prior_id)
             conversation=prior_conversation=None
             for lock_id in sorted(lock_ids,key=lambda value:value.int):
+                # Entity writes also append Memory provenance with foreign
+                # keys to existing sources. Non-key locks still serialize
+                # revisions while permitting concurrent FK validation.
                 lock_mode=(
-                    "FOR UPDATE" if lock_id==context.conversation_id
-                    else "FOR SHARE"
+                    ("FOR NO KEY UPDATE" if writes_entity else "FOR UPDATE")
+                    if lock_id==context.conversation_id else "FOR SHARE"
                 )
                 cursor.execute(
                     """SELECT * FROM conversations
@@ -1015,7 +1019,8 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
             if conversation is None:
                 raise StaleConversation("response conversation no longer exists")
             cursor.execute(
-                "SELECT status FROM conversation_turns WHERE turn_id=%s FOR UPDATE",
+                "SELECT status FROM conversation_turns WHERE turn_id=%s "
+                +("FOR NO KEY UPDATE" if writes_entity else "FOR UPDATE"),
                 (context.turn_id,),
             )
             current_turn=cursor.fetchone()

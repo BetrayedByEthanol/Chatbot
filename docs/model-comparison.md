@@ -675,9 +675,10 @@ fences; no learning on a failed or superseded response. Previously consumed
 sources read the existing eligible identity without a duplicate revision.
 All entity API writers take a short persona-scoped transaction advisory
 lock after selection SHARE and before receipt/entity row/event locks;
-natural report commits acquire it before conversation/turn row locks.
-This serializes first-name absence checks, including with explicit API
-registration. No lock spans inference. Existing identity revision triggers
+natural report commits acquire it before conversation/turn row locks,
+using non-key update locks for those rows to permit FK validation by
+concurrent Memory writers. This serializes first-name absence checks,
+including with explicit API registration. No lock spans inference. Existing identity revision triggers
 still advance the historical read dependency; no schema migration.
 
 Named recall that actually presents two distinct choices stores their IDs,
