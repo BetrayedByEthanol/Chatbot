@@ -1117,3 +1117,117 @@ def test_multiple_sessions_do_not_share_dialogue_focus(dsn):
     assert second_state.focus_thread_id is not None
     assert second_state.focus_thread_id!=first_state.focus_thread_id
     assert state(dsn,first).focus_thread_id==first_state.focus_thread_id
+
+def test_low_decision_observation_does_not_resolve_unrelated_pending_question(dsn):
+    identity=seed_local_demo(dsn)
+    model=ReplyModel((
+        "Which day would work for you?",
+        "Take your time. Which day would you prefer?",
+        "Tuesday works.",
+    ))
+    harness=BehavioralAcceptanceHarness(dsn,identity,model)
+    harness.begin_session("pragmatic-pending")
+    harness.send("I want to walk more.",idempotency_key="objective")
+    before=state(dsn,identity)
+    assert len(before.pending_acts)==1
+    first=before.pending_acts[0].act_id
+    reply=harness.send("Even deciding what to do feels like too much work today.",
+                       idempotency_key="low-decision")
+    assert "?" not in reply.text
+    after=state(dsn,identity)
+    assert len(after.pending_acts)==1 and after.pending_acts[0].act_id==first
+    assert after.focus_thread_id==before.focus_thread_id
+    assert model.calls==2
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            """SELECT payload->>'reason' FROM events
+               WHERE user_id=%s AND instance_id=%s
+                 AND event_type='conversation.response.pragmatic_adjusted.v1'""",
+            (identity.user_id,identity.instance_id),
+        ).fetchall()==[("current_boundary:low_decision",)]
+        assert conn.execute(
+            "SELECT count(*) FROM goal_records WHERE user_id=%s AND instance_id=%s",
+            (identity.user_id,identity.instance_id),
+        ).fetchone()[0]==0
+
+
+def test_pause_then_switch_refocuses_only_after_delivery_and_preserves_old_pending(dsn):
+    identity=seed_local_demo(dsn)
+    model=ReplyModel(("What error did you see?","Nebulae are fascinating."))
+    harness=BehavioralAcceptanceHarness(dsn,identity,model)
+    harness.begin_session("pause-switch")
+    harness.send("Help me configure Nginx.",idempotency_key="nginx")
+    before=state(dsn,identity)
+    old=before.focus_thread_id
+    assert len(before.pending_acts)==1
+    reply=harness.send("Don't troubleshoot yet. Let's talk about nebulae instead.",
+                       idempotency_key="switch")
+    after=state(dsn,identity)
+    assert after.focus_thread_id!=old
+    assert next(t.title for t in after.threads if t.thread_id==after.focus_thread_id)=="nebulae"
+    # Old question stays pending on its original thread; switching isn't
+    # an answer or cancellation of independent work.
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT status FROM dialogue_pending_acts WHERE thread_id=%s",
+            (old,),
+        ).fetchall()==[("PENDING",)]
+        assert conn.execute(
+            "SELECT count(*) FROM operations WHERE user_id=%s AND instance_id=%s",
+            (identity.user_id,identity.instance_id),
+        ).fetchone()[0]==0
+    assert reply.turn_id
+
+
+def test_timezone_offset_clarification_survives_delivery_and_stays_pending(dsn):
+    identity=seed_local_demo(dsn)
+    clarification="Do you mean UTC+10:00 or UTC+11:00?"
+    model=ReplyModel(("We can discuss Nginx.",clarification))
+    harness=BehavioralAcceptanceHarness(dsn,identity,model)
+    harness.begin_session("clock-clarification")
+    harness.send("Help me configure Nginx.",idempotency_key="clock-context")
+    before=state(dsn,identity)
+    assert before.focus_thread_id is not None
+    assert before.pending_acts==()
+    reply=harness.send("What time is it in Sydney?",
+                       idempotency_key="unresolved-zone",mode="auto")
+    assert reply.text==clarification
+    after=state(dsn,identity)
+    assert after.focus_thread_id==before.focus_thread_id
+    assert len(after.pending_acts)==1
+    assert after.pending_acts[0].kind=="QUESTION"
+    assert after.pending_acts[0].label==clarification
+    assert after.pending_acts[0].source_response_id==UUID(reply.response_id)
+    assert model.calls==2
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            """SELECT count(*) FROM events
+               WHERE user_id=%s AND instance_id=%s
+                 AND event_type='conversation.response.pragmatic_adjusted.v1'""",
+            (identity.user_id,identity.instance_id),
+        ).fetchone()[0]==0
+
+
+def test_agreement_to_defer_is_delivered_without_adjustment_event(dsn):
+    identity=seed_local_demo(dsn)
+    acknowledgment="We've agreed not to create a goal. We can keep exploring what interests you."
+    model=ReplyModel((acknowledgment,))
+    harness=BehavioralAcceptanceHarness(dsn,identity,model)
+    harness.begin_session("defer-commitment")
+    reply=harness.send("Don't create a goal yet.",idempotency_key="defer")
+    assert reply.text==acknowledgment
+    harness.restart_host()
+    replay=harness.send("Don't create a goal yet.",idempotency_key="defer")
+    assert replay.response_id==reply.response_id and replay.text==acknowledgment
+    assert model.calls==1
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            """SELECT count(*) FROM events
+               WHERE user_id=%s AND instance_id=%s
+                 AND event_type='conversation.response.pragmatic_adjusted.v1'""",
+            (identity.user_id,identity.instance_id),
+        ).fetchone()[0]==0
+        assert conn.execute(
+            "SELECT count(*) FROM goal_records WHERE user_id=%s AND instance_id=%s",
+            (identity.user_id,identity.instance_id),
+        ).fetchone()[0]==0

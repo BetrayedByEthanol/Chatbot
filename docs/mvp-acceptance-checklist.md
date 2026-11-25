@@ -221,6 +221,8 @@ Use existing ordered migration/test fixtures, record skips/reasons; a run withou
 
 ## 4. Q — Real-model conversational quality (MVP-04)
 
+MVP-04C first increment: [pragmatic and dialogue safeguards](model-comparison.md#mvp-04c--current-turn-pragmatics-and-dialogue-repair-first-increment) contributes targeted B-X1/B-X2 and Q04/Q05/Q07 evidence. No new acceptance; independent reviews, real-model reruns and owner-authority C15/C16 cases remain open. Model-only retains host safeguards; distinguish raw model behavior from delivered output.
+
 MVP-04B candidate evidence: [grounding and presentation](model-comparison.md#mvp-04b--grounding-and-response-presentation) adds direct clock qualifiers, personal-fact source guidance and narrowly scoped eligible Memory retrieval, plus response-presentation guidance. Q04/Q05/Q07 remain pending real-model verification and adjudication. No new acceptance decision.
 
 MVP-04A tooling evidence: [model comparison diagnostics](model-comparison.md#mvp-04a--review-and-evidence-integrity) provides create-only status reconciliation, reviewer/case/field diagnostics, safe gateway failure categories and bundle fingerprints/host p95. Q01–Q03, Q06 and Q08 benefit from the tooling; no Q gate is accepted without candidate runs, genuine independent evidence and agreed targets. See the linked focused regression tests; execution evidence must be recorded separately.
