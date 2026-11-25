@@ -1177,3 +1177,57 @@ def test_pause_then_switch_refocuses_only_after_delivery_and_preserves_old_pendi
             (identity.user_id,identity.instance_id),
         ).fetchone()[0]==0
     assert reply.turn_id
+
+
+def test_timezone_offset_clarification_survives_delivery_and_stays_pending(dsn):
+    identity=seed_local_demo(dsn)
+    clarification="Do you mean UTC+10:00 or UTC+11:00?"
+    model=ReplyModel(("We can discuss Nginx.",clarification))
+    harness=BehavioralAcceptanceHarness(dsn,identity,model)
+    harness.begin_session("clock-clarification")
+    harness.send("Help me configure Nginx.",idempotency_key="clock-context")
+    before=state(dsn,identity)
+    assert before.focus_thread_id is not None
+    assert before.pending_acts==()
+    reply=harness.send("What time is it in Sydney?",
+                       idempotency_key="unresolved-zone",mode="auto")
+    assert reply.text==clarification
+    after=state(dsn,identity)
+    assert after.focus_thread_id==before.focus_thread_id
+    assert len(after.pending_acts)==1
+    assert after.pending_acts[0].kind=="QUESTION"
+    assert after.pending_acts[0].label==clarification
+    assert after.pending_acts[0].source_response_id==UUID(reply.response_id)
+    assert model.calls==2
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            """SELECT count(*) FROM events
+               WHERE user_id=%s AND instance_id=%s
+                 AND event_type='conversation.response.pragmatic_adjusted.v1'""",
+            (identity.user_id,identity.instance_id),
+        ).fetchone()[0]==0
+
+
+def test_agreement_to_defer_is_delivered_without_adjustment_event(dsn):
+    identity=seed_local_demo(dsn)
+    acknowledgment="We've agreed not to create a goal. We can keep exploring what interests you."
+    model=ReplyModel((acknowledgment,))
+    harness=BehavioralAcceptanceHarness(dsn,identity,model)
+    harness.begin_session("defer-commitment")
+    reply=harness.send("Don't create a goal yet.",idempotency_key="defer")
+    assert reply.text==acknowledgment
+    harness.restart_host()
+    replay=harness.send("Don't create a goal yet.",idempotency_key="defer")
+    assert replay.response_id==reply.response_id and replay.text==acknowledgment
+    assert model.calls==1
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            """SELECT count(*) FROM events
+               WHERE user_id=%s AND instance_id=%s
+                 AND event_type='conversation.response.pragmatic_adjusted.v1'""",
+            (identity.user_id,identity.instance_id),
+        ).fetchone()[0]==0
+        assert conn.execute(
+            "SELECT count(*) FROM goal_records WHERE user_id=%s AND instance_id=%s",
+            (identity.user_id,identity.instance_id),
+        ).fetchone()[0]==0
