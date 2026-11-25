@@ -82,7 +82,9 @@ def _normalized(text):
 def _has_label(text,labels):
     value=_normalized(text)
     return any(re.search(
-        r"(?<![a-z'-])"+re.escape(_normalized(label))+r"(?![a-z'-])",value,
+        # A qualified label must end at a clause boundary. "my friend Alex"
+        # is not evidence for Alex when the source says "my friend Alex Smith".
+        r"(?<![a-z'-])"+re.escape(_normalized(label))+r"(?= *(?:$|[.,;:!?]))",value,
     ) for label in labels)
 
 
@@ -129,7 +131,10 @@ def link_entity_evidence(connection: Connection,actor: TrustedActor,
                     or record["conversation_id"]!=command.conversation_id
                     or record["source_quote"].casefold() not in source["input_text"].casefold()
                     or not _safe_source(source["input_text"])
-                    or not _has_label(record["source_quote"],_qualified_labels(cur,entity))):
+                    or not _safe_source(record["source_quote"])):
+                raise EntityConflict("source does not support an eligible qualified entity binding")
+            labels=_qualified_labels(cur,entity)
+            if not (_has_label(record["source_quote"],labels) and _has_label(source["input_text"],labels)):
                 raise EntityConflict("source does not support an eligible qualified entity binding")
             memory_id=command.source_id if command.source_type=="USER_MEMORY" else None
             episode_id=command.source_id if command.source_type=="EPISODE" else None

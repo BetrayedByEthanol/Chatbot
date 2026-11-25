@@ -177,7 +177,7 @@ def entity_history_context(cur,*,user_id,instance_id,conversation_id,sequence,
         return unavailable_view("AMBIGUOUS" if hits else "UNKNOWN",max_chars=max_chars)
     entity=hits[0]
     snapshot=_snapshot(cur,user_id,instance_id,entity,since=None,until=before_at,
-                       max_results=6,max_chars=max_chars)
+                       max_results=6,max_chars=8000)
     header=(
         f"Entity-conditioned history: {entity.entity_id} revision {entity.version}; "
         +json.dumps(entity.name,ensure_ascii=False)
@@ -192,9 +192,9 @@ def entity_history_context(cur,*,user_id,instance_id,conversation_id,sequence,
     # Keep current directed relationship reports distinct from episode text.
     for relation in snapshot.relationships:
         label=(
-            f"{relation.subject_relation.lower()} {relation.subject_name} "
+            f"{RELATIONS[relation.subject_relation][1]} {relation.subject_name} "
             f"{RELATION_LABELS[relation.relation]} "
-            f"{relation.object_relation.lower()} {relation.object_name}"
+            f"{RELATIONS[relation.object_relation][1]} {relation.object_name}"
         )
         lines.append((relation.source_turn_id,
             f"USER_REPORTED relationship {relation.relationship_id} v{relation.version}, "

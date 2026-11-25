@@ -710,6 +710,63 @@ entity-conditioned historical retrieval. No new scheduler/model pass or
 acceptance promotion. Test concurrency and atomic rollback in PostgreSQL;
 measure latency separately.
 
+### MVP-05C.3 — Entity-bound historical evidence and directed relationships
+
+Migration 0046 adds Memory-owned bindings to current Memory revisions or
+existing interpreted episodes, and a bounded directed relationship per
+ordered pair of stable entity IDs. Typed authenticated link/relationship
+commands reuse selection, owner receipts, evidence scope, optimistic
+versions, entity-write serialization, event/outbox and historical
+revision triggers. Source quotes must include a uniquely resolving
+relation-qualified label at a clause boundary for evidence binding;
+relationship writes require the entire explicit pair assertion,
+correction or retraction. Name-prefix, unqualified or ambiguous labels
+do not prove a binding. The original authenticated source is retained;
+a linked episode remains MODEL_INTERPRETED. No automatic extraction,
+name merging, graph traversal, inverse/transitive inference, or duplicate
+copy of Memory content. The initial relations are KNOWS, WORKS_WITH,
+WORKS_AT and LOCATED_AT with compatible endpoint kinds. Correction
+changes the accepted relation on the same ordered pair; retraction
+retains immutable revisions. No automatic endpoint replacement.
+
+The read API selects eligible current evidence by exact entity ID,
+including a pinned Memory revision and exact source anchor or episode ID.
+Owner corrections invalidate older bindings; explicit relinking is
+required. Preserve current Memory/episode eligibility and evidence
+class. Suppress repeat episode projections of the same source and
+conservatively omit exact source turns linked to ineligible entities
+from generic Memory/raw/episode recall. Relationship revision source
+turns are governed by their owner, not generic recall. A relationship
+is visible only while both endpoints are eligible. Original transcripts
+and revision history are not erased.
+
+Explicit history questions ("What do you remember about my friend
+Alex?", "What do you remember about the entity Alex?") and supported
+adjacent follow-up questions resolve one identity before selecting
+bounded linked history. Adjacent references reuse the delivered known
+entity gate; no binding from arbitrary model history prose. No lexical,
+summary or verbatim history fallback, even within the current session,
+on this explicit route. Preserve selected persona context, latest input
+and optional communication/affect preferences; use one model pass.
+Canonical fallback replaces model guesses on unknown, ambiguous,
+missing or budget-excluded evidence. Successful history replies remain
+model-generated from the supplied evidence, not generally fact-verified.
+Record selected identity/version and actually supplied source-turn IDs
+in the response context event. Reuse 05B historical revision/expiry
+validation and its single bounded retry; entity expiry now participates
+in the scope deadline. No locks span inference. The read API supports
+absolute source report-time bounds; natural dated-entity history is
+not part of this grammar.
+
+This slice requires explicit owner commands to bind evidence and edges;
+no automatic conversational edge/link admission, unlink operation,
+entity-to-entity edge traversal, multiple parallel relations per pair,
+as-of reconstruction, broad semantic identity resolution or full
+derived lineage. Ineligible linked sources can conservatively hide
+otherwise useful data from generic recall. No acceptance promotion.
+Measure query/lock costs and independent conversational quality
+separately.
+
 ## Tests
 
 ```bash
