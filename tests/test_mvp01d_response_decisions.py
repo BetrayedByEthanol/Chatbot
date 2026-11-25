@@ -314,3 +314,32 @@ def test_extended_clock_query_returns_real_clock_without_model(dsn):
     )
     assert answer["model_id"]==TIME_TOOL
     assert answer["text"].startswith("Current time in Europe/Berlin:")
+
+def test_clock_safeguard_distinguishes_model_claim_from_verified_clock_route(dsn):
+    identity=seed_local_demo(dsn)
+    output=[]
+    class GuessingModel:
+        calls=0
+        def generate(self,messages):
+            self.calls+=1
+            return ModelReply(model_id="clock-guess-test",text="It's currently 3:45 PM.")
+    model=GuessingModel()
+    host=LocalAcceptanceSession(dsn,identity,model,output.append)
+    question="What time is it right now? Please check instead of guessing."
+    guess=host.message(text=question,idempotency_key="pragmatic-clock-model",mode="model")
+    assert guess["model_id"]=="clock-guess-test"
+    assert guess["text"]=="I don't have a verified current clock reading for this request."
+    replay=host.message(text=question,idempotency_key="pragmatic-clock-model",mode="model")
+    assert replay["response_id"]==guess["response_id"]
+    assert replay["replayed"] and replay["text"]==guess["text"]
+    verified=host.message(text=question,idempotency_key="pragmatic-clock-auto",timezone_name="Europe/Berlin")
+    assert verified["model_id"]==TIME_TOOL
+    assert verified["text"].startswith("Current time in Europe/Berlin:")
+    assert model.calls==1
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            """SELECT payload->>'reason' FROM events
+               WHERE user_id=%s AND instance_id=%s
+                 AND event_type='conversation.response.pragmatic_adjusted.v1'""",
+            (identity.user_id,identity.instance_id),
+        ).fetchall()==[("unverified_clock_claim",)]

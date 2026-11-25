@@ -44,6 +44,8 @@ def test_current_turn_safeguard_changes_only_conflicting_model_reply(message,rep
      "Would that mean you prefer fewer options?"),
     ('"I just want to chat."',"Let's make a plan for discussing this quote."),
     ("I haven't decided yet. What do you recommend?", "Would you prefer tea or coffee?"),
+    ("I might work later. Please check the clock. I haven't decided.",
+     "Which timezone do you mean?"),
     ("I want to walk regularly.","Which day would suit you?"),
     ("What time is it right now?","I don't have a current clock reading."),
     ("What is 12:30 in 24-hour notation?","12:30."),
@@ -51,6 +53,10 @@ def test_current_turn_safeguard_changes_only_conflicting_model_reply(message,rep
 def test_compliant_or_ambiguous_replies_are_preserved(message,reply):
     result=enforce_pragmatic_reply(message,reply,model_generated=True)
     assert result.reason is None and result.text==reply
+
+
+def test_compound_input_does_not_turn_into_an_undecided_cue():
+    assert pragmatic_cue("I might work later. Please check the clock. I haven't decided.") is None
 
 
 def test_context_is_current_turn_only_and_budgeted():

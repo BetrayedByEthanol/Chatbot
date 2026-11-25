@@ -44,7 +44,7 @@ _NO_GOAL = re.compile(
 _UNDECIDED = re.compile(
     r"(?:i (?:haven't|have not) decided(?: yet)?"
     r"|(?:i (?:might|may|want to|would like to)|maybe|perhaps)"
-    r" [^?\r\n]{1,135}(?:[.;,]\s*|,?\s+but\s+)"
+    r" [^?.;,\r\n]{1,135}(?:[.;,]\s*|,?\s+but\s+)"
     r"(?:i (?:haven't|have not) decided(?: yet)?|"
     r"(?:that|this|it) (?:isn't|is not) a commitment))",
     re.I,
@@ -145,7 +145,10 @@ def enforce_pragmatic_reply(
         return PragmaticEnforcement(
             "We can just chat without making a plan.", "current_boundary:chat_only",
         )
-    if cue in ("NO_GOAL", "UNDECIDED") and _GOAL_COMMITMENT.search(normalized):
+    if cue in ("NO_GOAL", "UNDECIDED") and (
+        _GOAL_COMMITMENT.search(normalized)
+        or (cue == "NO_GOAL" and (menu or _PLAN_PROMPT.search(normalized)))
+    ):
         text = ("We can keep it as an idea without saving a goal."
                 if cue == "NO_GOAL" else "Nothing has been decided yet.")
         return PragmaticEnforcement(text, "unconfirmed_commitment:" + cue.lower())
