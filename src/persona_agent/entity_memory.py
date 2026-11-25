@@ -23,6 +23,20 @@ from .operation_contracts import require_idle
 from .runtime import PermissionDenied, VersionConflict
 
 
+def lock_entity_writes(cur,instance_id: UUID) -> None:
+    """Short transaction-only serialization for the entity owner.
+
+    Take after selection SHARE and before conversation/turn, receipt,
+    entity and event locks. A separate advisory namespace avoids a new
+    state table or broad Memory mutex. Hash collisions only serialize.
+    """
+    cur.execute(
+        "SELECT pg_advisory_xact_lock(hashtextextended(%s,0))",
+        (f"memory.entity.write:{instance_id}",),
+    )
+    cur.fetchone()
+
+
 def _source(cur,actor,command):
     cur.execute(
         """SELECT t.input_text,t.created_at,t.source_input_event_id
@@ -44,11 +58,11 @@ def _source(cur,actor,command):
 def _relation_source(source: str,name: str,relation: str,*,correction: bool) -> bool:
     # Complete assertion only; a quoted/negated/hypothetical substring is
     # not evidence. The chosen entity ID comes from the explicit command.
-    prefix=r"actually,?\s+" if correction else r"(?:remember that\s+)?"
+    prefix=r"actually,?\s+" if correction else r"(?:(?:remember that|another)\s+)?"
     label=RELATIONS[relation][1]
     return re.fullmatch(
-        prefix+re.escape(name)+r" is my "+re.escape(label)+r"\.?",
-        source.strip(),re.I,
+        prefix+re.escape(name.replace("’","'"))+r" is my "+re.escape(label)+r"\.?",
+        source.strip().replace("’","'"),re.I,
     ) is not None
 
 
@@ -87,30 +101,40 @@ def register_entity(connection: Connection,actor: TrustedActor,
         raise TypeError("validated entity registration required")
     with connection.transaction():
         with connection.cursor(row_factory=dict_row) as cur:
-            # Explicit scope check before receipt creation/replay, as Memory.
-            cur.execute("SELECT 1 FROM persona_instances WHERE user_id=%s AND id=%s",
-                        (actor.user_id,command.instance_id))
-            if cur.fetchone() is None:
-                raise PermissionDenied("entity instance outside user scope")
-            receipt,prior=_receipt(cur,actor,command.instance_id,"memory.entity.register.v1",
-                                   command,result_type=EntityWriteResult)
-            if prior is not None:
-                return prior
-            _selection(cur,actor,command.instance_id,command.expected_generation)
-            source=_source(cur,actor,command)
-            if not _relation_source(source["input_text"],command.name,command.relation,correction=False):
-                raise EntityConflict("source does not explicitly identify the requested relation")
-            entity_id=uuid4()
-            cur.execute(
-                """INSERT INTO memory_entities(
-                       entity_id,user_id,instance_id,entity_kind,name,name_keys,relation,
-                       source_turn_at,relation_source_conversation_id,relation_source_turn_id
-                   ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *""",
-                (entity_id,actor.user_id,command.instance_id,RELATIONS[command.relation][0],
-                 command.name,[normalize_name(command.name)],command.relation,
-                 source["created_at"],command.conversation_id,command.evidence_turn_id),
-            )
-            return _record_revision(cur,actor,command,cur.fetchone(),source,receipt,"REGISTER")
+            return _register_entity_in_transaction(cur,actor,command)
+
+
+def _register_entity_in_transaction(cur,actor,command: RegisterEntityCommand) -> EntityWriteResult:
+    # Explicit scope check before receipt creation/replay, as Memory.
+    cur.execute("SELECT 1 FROM persona_instances WHERE user_id=%s AND id=%s",
+                (actor.user_id,command.instance_id))
+    if cur.fetchone() is None:
+        raise PermissionDenied("entity instance outside user scope")
+    # Serialize entity writes (including name absence) before receipts and
+    # row locks. The selection SHARE lock precedes this guard even for a
+    # replay; replay does not require the selection to remain current.
+    cur.execute("SELECT 1 FROM persona_selection WHERE user_id=%s FOR SHARE",(actor.user_id,))
+    cur.fetchone()
+    lock_entity_writes(cur,command.instance_id)
+    receipt,prior=_receipt(cur,actor,command.instance_id,"memory.entity.register.v1",
+                           command,result_type=EntityWriteResult)
+    if prior is not None:
+        return prior
+    _selection(cur,actor,command.instance_id,command.expected_generation)
+    source=_source(cur,actor,command)
+    if not _relation_source(source["input_text"],command.name,command.relation,correction=False):
+        raise EntityConflict("source does not explicitly identify the requested relation")
+    entity_id=uuid4()
+    cur.execute(
+        """INSERT INTO memory_entities(
+               entity_id,user_id,instance_id,entity_kind,name,name_keys,relation,
+               source_turn_at,relation_source_conversation_id,relation_source_turn_id
+           ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *""",
+        (entity_id,actor.user_id,command.instance_id,RELATIONS[command.relation][0],
+         command.name,[normalize_name(command.name)],command.relation,
+         source["created_at"],command.conversation_id,command.evidence_turn_id),
+    )
+    return _record_revision(cur,actor,command,cur.fetchone(),source,receipt,"REGISTER")
 
 
 def amend_entity(connection: Connection,actor: TrustedActor,
@@ -121,70 +145,80 @@ def amend_entity(connection: Connection,actor: TrustedActor,
         raise TypeError("validated entity amendment required")
     with connection.transaction():
         with connection.cursor(row_factory=dict_row) as cur:
-            cur.execute("SELECT 1 FROM persona_instances WHERE user_id=%s AND id=%s",
-                        (actor.user_id,command.instance_id))
-            if cur.fetchone() is None:
-                raise PermissionDenied("entity instance outside user scope")
-            receipt,prior=_receipt(cur,actor,command.instance_id,"memory.entity.amend.v1",
-                                   command,result_type=EntityWriteResult)
-            if prior is not None:
-                return prior
-            _selection(cur,actor,command.instance_id,command.expected_generation)
-            cur.execute(
-                """SELECT * FROM memory_entities
-                   WHERE entity_id=%s AND user_id=%s AND instance_id=%s FOR UPDATE""",
-                (command.entity_id,actor.user_id,command.instance_id),
-            )
-            row=cur.fetchone()
-            if row is None:
-                raise PermissionDenied("entity outside authenticated scope")
-            if row["version"]!=command.expected_version:
-                raise VersionConflict("entity version is stale")
-            if row["record_status"]!="ACTIVE":
-                raise EntityConflict("entity is retracted")
-            source=_source(cur,actor,command)
-            if source["created_at"]<=row["source_turn_at"]:
-                raise VersionConflict("entity change requires newer evidence")
-            text=source["input_text"].strip()
-            names=[row["name"],*row["aliases"]]
-            relation=row["relation"]
-            aliases=list(row["aliases"])
-            state=row["record_status"]
-            relation_conversation=row["relation_source_conversation_id"]
-            relation_turn=row["relation_source_turn_id"]
-            if command.action=="CORRECT_RELATION":
-                if (command.relation==relation
-                    or RELATIONS[command.relation][0]!=row["entity_kind"]
-                    or not any(_relation_source(text,name,command.relation,correction=True)
-                               for name in names)):
-                    raise EntityConflict("unsupported or unevidenced relation correction")
-                relation=command.relation
-                relation_conversation=command.conversation_id
-                relation_turn=command.evidence_turn_id
-            elif command.action=="ADD_ALIAS":
-                if (len(aliases)>=8 or normalize_name(command.alias) in row["name_keys"]
-                    or not any(re.fullmatch(
-                        r"i also call "+re.escape(name)+r" "+re.escape(command.alias)+r"\.?",
-                        text,re.I,
-                    ) for name in names)):
-                    raise EntityConflict("unsupported, duplicate or unevidenced alias")
-                aliases.append(command.alias)
-            else:
-                if not any(re.fullmatch(
-                    r"forget my saved entity "+re.escape(name)+r"\.?",text,re.I,
-                ) for name in names):
-                    raise EntityConflict("explicit entity retraction evidence required")
-                state="RETRACTED"
-            cur.execute(
-                """UPDATE memory_entities SET aliases=%s,name_keys=%s,relation=%s,
-                       record_status=%s,version=version+1,source_turn_at=%s,
-                       relation_source_conversation_id=%s,relation_source_turn_id=%s
-                   WHERE entity_id=%s AND user_id=%s AND instance_id=%s RETURNING *""",
-                (aliases,[normalize_name(name) for name in [row["name"],*aliases]],
-                 relation,state,source["created_at"],relation_conversation,relation_turn,
-                 row["entity_id"],actor.user_id,command.instance_id),
-            )
-            return _record_revision(cur,actor,command,cur.fetchone(),source,receipt,command.action)
+            return _amend_entity_in_transaction(cur,actor,command)
+
+
+def _amend_entity_in_transaction(cur,actor,command: AmendEntityCommand) -> EntityWriteResult:
+    cur.execute("SELECT 1 FROM persona_instances WHERE user_id=%s AND id=%s",
+                (actor.user_id,command.instance_id))
+    if cur.fetchone() is None:
+        raise PermissionDenied("entity instance outside user scope")
+    # Serialize entity writes (including name absence) before receipts and
+    # row locks. The selection SHARE lock precedes this guard even for a
+    # replay; replay does not require the selection to remain current.
+    cur.execute("SELECT 1 FROM persona_selection WHERE user_id=%s FOR SHARE",(actor.user_id,))
+    cur.fetchone()
+    lock_entity_writes(cur,command.instance_id)
+    receipt,prior=_receipt(cur,actor,command.instance_id,"memory.entity.amend.v1",
+                           command,result_type=EntityWriteResult)
+    if prior is not None:
+        return prior
+    _selection(cur,actor,command.instance_id,command.expected_generation)
+    cur.execute(
+        """SELECT * FROM memory_entities
+           WHERE entity_id=%s AND user_id=%s AND instance_id=%s FOR UPDATE""",
+        (command.entity_id,actor.user_id,command.instance_id),
+    )
+    row=cur.fetchone()
+    if row is None:
+        raise PermissionDenied("entity outside authenticated scope")
+    if row["version"]!=command.expected_version:
+        raise VersionConflict("entity version is stale")
+    if row["record_status"]!="ACTIVE":
+        raise EntityConflict("entity is retracted")
+    source=_source(cur,actor,command)
+    if source["created_at"]<=row["source_turn_at"]:
+        raise VersionConflict("entity change requires newer evidence")
+    text=source["input_text"].strip()
+    names=[row["name"],*row["aliases"]]
+    relation=row["relation"]
+    aliases=list(row["aliases"])
+    state=row["record_status"]
+    relation_conversation=row["relation_source_conversation_id"]
+    relation_turn=row["relation_source_turn_id"]
+    if command.action=="CORRECT_RELATION":
+        if (command.relation==relation
+            or RELATIONS[command.relation][0]!=row["entity_kind"]
+            or not any(_relation_source(text,name,command.relation,correction=True)
+                       for name in names)):
+            raise EntityConflict("unsupported or unevidenced relation correction")
+        relation=command.relation
+        relation_conversation=command.conversation_id
+        relation_turn=command.evidence_turn_id
+    elif command.action=="ADD_ALIAS":
+        if (len(aliases)>=8 or normalize_name(command.alias) in row["name_keys"]
+            or not any(re.fullmatch(
+                r"i also call "+re.escape(name)+r" "+re.escape(command.alias)+r"\.?",
+                text,re.I,
+            ) for name in names)):
+            raise EntityConflict("unsupported, duplicate or unevidenced alias")
+        aliases.append(command.alias)
+    else:
+        if not any(re.fullmatch(
+            r"forget my saved entity "+re.escape(name)+r"\.?",text,re.I,
+        ) for name in names):
+            raise EntityConflict("explicit entity retraction evidence required")
+        state="RETRACTED"
+    cur.execute(
+        """UPDATE memory_entities SET aliases=%s,name_keys=%s,relation=%s,
+               record_status=%s,version=version+1,source_turn_at=%s,
+               relation_source_conversation_id=%s,relation_source_turn_id=%s
+           WHERE entity_id=%s AND user_id=%s AND instance_id=%s RETURNING *""",
+        (aliases,[normalize_name(name) for name in [row["name"],*aliases]],
+         relation,state,source["created_at"],relation_conversation,relation_turn,
+         row["entity_id"],actor.user_id,command.instance_id),
+    )
+    return _record_revision(cur,actor,command,cur.fetchone(),source,receipt,command.action)
 
 
 def _read_entities(cur,*,user_id: UUID,instance_id: UUID,reference: EntityReference,

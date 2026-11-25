@@ -91,3 +91,63 @@ def entity_reference(text: str) -> EntityReference | None:
         return EntityReference(name_key=normalize_name(match["name"]),kind=kind)
     except ValueError:
         return None
+
+
+# Whole-source reports only. A bare first-person relation with a proper
+# name is a user report, not verified identity. "Another" explicitly
+# requests a distinct identity; "Actually" explicitly corrects a relation.
+_REPORT = re.compile(
+    r"(?:(?P<marker>remember that|actually,?|another) +)?"
+    r"(?P<name>[^.\r\n?!]+?) is my (?P<relation>"
+    +"|".join(re.escape(label) for label in sorted(_LABEL_TO_RELATION,key=len,reverse=True))
+    +r")\.?", re.I,
+)
+_NON_NAME_WORDS = re.compile(
+    r"\b(?:i|we|you|a|an|the|another|actually|remember|please|if|"
+    r"perhaps|probably|suppose|imagine|pretend|formerly|example|"
+    r"fictional|would|could|might|was|is|joke)\b",re.I,
+)
+_PROPER_NAME = re.compile(r"[A-Z][A-Za-z'’-]*(?: [A-Z][A-Za-z'’-]*){0,2}")
+_CLARIFICATION = re.compile(
+    r"(?:my|the) (?P<relation>"
+    +"|".join(re.escape(label) for label in sorted(_LABEL_TO_RELATION,key=len,reverse=True))
+    +r")[.!]?",re.I,
+)
+
+
+@dataclass(frozen=True)
+class EntityReport:
+    name: str
+    relation: EntityRelation
+    action: Literal["REPORT","DISTINCT","CORRECT"]
+
+
+def entity_report(text: str) -> EntityReport | None:
+    """Bounded explicit relationship reports; never quoted or qualified claims."""
+    if not isinstance(text,str) or not 1<=len(text)<=180:
+        return None
+    match=_REPORT.fullmatch(text.strip())
+    if match is None:
+        return None
+    name=match["name"]
+    marker=(match["marker"] or "").casefold().rstrip(",")
+    try:
+        normalize_name(name)
+    except ValueError:
+        return None
+    if _NON_NAME_WORDS.search(name):
+        return None
+    # For unmarked speech require a name-like label, not arbitrary nouns.
+    # Explicit remember/correction/distinction can use lowercase labels.
+    if not marker and _PROPER_NAME.fullmatch(name) is None:
+        return None
+    action="CORRECT" if marker=="actually" else "DISTINCT" if marker=="another" else "REPORT"
+    return EntityReport(name,_LABEL_TO_RELATION[match["relation"].casefold()],action)
+
+
+def entity_clarification_relation(text: str) -> EntityRelation | None:
+    """A possible short selection, not a route or permission on its own."""
+    if not isinstance(text,str) or not 1<=len(text)<=64:
+        return None
+    match=_CLARIFICATION.fullmatch(text.strip())
+    return _LABEL_TO_RELATION[match["relation"].casefold()] if match else None
