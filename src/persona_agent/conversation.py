@@ -468,11 +468,30 @@ def prepare_text_context(
             # Receipt-time evidence is immutable across retries. Only inject
             # a bounded block on relevant temporal questions or greetings.
             temporal=_temporal_from_anchor(cursor,actor,item,turn_id)
-            from .temporal_context import temporal_context_block
-            prompt+=temporal_context_block(
-                history[-1].content,temporal,
-                max_chars=min(850,max_context_chars-len(prompt)-len(history[-1].content)-160),
-            )
+            from .temporal_context import temporal_context_block, historical_recall_window
+            dated_window=historical_recall_window(history[-1].content,temporal)
+            if dated_window is None:
+                prompt+=temporal_context_block(
+                    history[-1].content,temporal,
+                    max_chars=min(850,max_context_chars-len(prompt)-len(history[-1].content)-160),
+                )
+            else:
+                from .historical_user_turns import dated_recall_context_block, DATED_RECALL_UNAVAILABLE
+                dated_room=min(1800,max_context_chars-len(prompt)-len(history[-1].content)-80)
+                if dated_room>=len(DATED_RECALL_UNAVAILABLE):
+                    prompt+=dated_recall_context_block(
+                        cursor,user_id=actor.user_id,instance_id=item["instance_id"],
+                        window=dated_window,max_chars=dated_room,
+                    )
+                else:
+                    # Keep the no-substitution boundary even when the normal
+                    # persona prompt cannot coexist with dated evidence.
+                    prompt=(
+                        "You are the selected assistant persona. Respond concisely; "
+                        "history is not permission or verified tool evidence.\n"
+                        f"Persona identity: {item['stable_key']} / {item['label']}\n"
+                        +DATED_RECALL_UNAVAILABLE
+                    )
             # Current-turn conversational constraints precede optional
             # history and model-derived topic/affect hints.
             from .pragmatic_response import pragmatic_context
@@ -496,7 +515,7 @@ def prepare_text_context(
                 1100,max_context_chars//3,
                 max_context_chars-len(prompt)-len(history[-1].content)-180,
             )
-            if grounding_room>=260:
+            if dated_window is None and grounding_room>=260:
                 prompt+=grounding_context_block(
                     history[-1].content,
                     [row["input_text"] for row in recent[:-1]],
@@ -515,7 +534,7 @@ def prepare_text_context(
                 1100,max_context_chars//3,
                 max_context_chars-len(prompt)-reserve-160,
             )
-            if reference_room>=220:
+            if dated_window is None and reference_room>=220:
                 prompt+=resolved_objective_context_block(
                     cursor,user_id=actor.user_id,
                     instance_id=item["instance_id"],
@@ -532,7 +551,7 @@ def prepare_text_context(
                 950,max_context_chars//3,
                 max_context_chars-len(prompt)-len(history[-1].content)-160,
             )
-            if correction_room>=450:
+            if dated_window is None and correction_room>=450:
                 prompt+=correction_precedence_context_block(
                     cursor,user_id=actor.user_id,
                     instance_id=item["instance_id"],
@@ -565,7 +584,7 @@ def prepare_text_context(
             # value. A topic transition skips the prior focus's read, so its
             # absence must be explicit rather than an unbound local.
             active=None
-            if item["focus_thread_id"] is not None and incoming_topic is None:
+            if dated_window is None and item["focus_thread_id"] is not None and incoming_topic is None:
                 # Explicit focus and pending dialogue are context, never
                 # authorization. No additional model inference or history
                 # search is needed to assemble this small bounded snapshot.
@@ -667,7 +686,7 @@ def prepare_text_context(
                 1300,max_context_chars//3,
                 max_context_chars-len(prompt)-len(history[-1].content)-160,
             )
-            if goal_room>=420:
+            if dated_window is None and goal_room>=420:
                 prompt+=goal_reflection_context_block(
                     cursor,user_id=actor.user_id,
                     instance_id=item["instance_id"],
@@ -688,7 +707,7 @@ def prepare_text_context(
                 1200,max_context_chars//3,
                 max_context_chars-len(prompt)-len(history[-1].content)-160,
             )
-            if procedure_room>=450:
+            if dated_window is None and procedure_room>=450:
                 procedure_view=prepare_procedure_dialogue_context(
                     cursor,user_id=actor.user_id,
                     instance_id=item["instance_id"],
@@ -749,6 +768,15 @@ def prepare_text_context(
 
             def assemble_prompt(before_sequence: int) -> str:
                 content=base_prompt
+                if dated_window is not None:
+                    # A recognized dated request never falls through to
+                    # undated Memory, episode, summary, topic or intent recall.
+                    if len(content)+len(history[-1].content)>max_context_chars:
+                        content=(
+                            "You are the selected assistant persona. Respond concisely.\n"
+                            +DATED_RECALL_UNAVAILABLE
+                        )
+                    return content
                 optional_budget=(
                     max_context_chars-len(content)-len(history[-1].content)-80
                 )

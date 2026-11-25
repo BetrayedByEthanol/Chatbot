@@ -69,6 +69,10 @@ PPA-US-091 / 018 / 020 / 113: [trusted temporal context](model-comparison.md#mvp
 
 PPA-US-029 / 030 / 031 / 034 / 117: [shared historical eligibility and correction precedence](model-comparison.md#mvp-05b1--shared-historical-eligibility-and-correction-precedence) unifies conflict filtering across current Memory read paths, excludes stale exact-source episodes and preserves complete owner values and correction/anchor units under budget pressure. [Retrieval](../tests/test_phase2_retrieval.py) and [correction budget](../tests/test_mvp02b2_context_recall.py) regressions. Date-language routing, semantic corrections, general model-context revision fences and complete lineage remain open. No I/P/M promotion.
 
+## MVP-05B.2 evidence update (25 November 2026)
+
+PPA-US-031 / 034 / 091 / 113 / 117: [bounded dated historical retrieval](model-comparison.md#mvp-05b2--bounded-dated-historical-retrieval) resolves one explicit past calendar period against trusted ingress metadata, reuses date-filtered eligible Memory/episode candidates and bounded original user-turn search, and abstains instead of undated fallback on unresolved dates. [Temporal retrieval regressions](../tests/test_mvp05b2_temporal_retrieval.py) cover UTC boundaries, DST, scope, source ambiguity, replay, corrected records and tight budgets. General temporal question families, event-time/as-of revision retrieval and semantic corrections remain open. No I/P/M promotion.
+
 ## Immediate follow-up
 
 1. PPA-US-016, 024, 090, 092, 088: evaluate real-model quality and adjudicate critical flags; fix grounded failure cases before adding infrastructure.
