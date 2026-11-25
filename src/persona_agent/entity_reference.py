@@ -189,3 +189,38 @@ def entity_clarification_relation(text: str) -> EntityRelation | None:
         return None
     match=_CLARIFICATION.fullmatch(text.strip())
     return _LABEL_TO_RELATION[match["relation"].casefold()] if match else None
+
+
+_ENTITY_HISTORY=re.compile(r"what do you remember about (?P<label>.+)\?",re.I)
+
+
+def entity_history_reference(text: str) -> EntityReference | None:
+    """Explicit entity history, separate from generic named-topic recall.
+
+    Unqualified names require 'the entity' to avoid intercepting ordinary
+    topical recall. Qualified labels reuse the canonical identity parser.
+    Adjacent pronouns require a previously delivered KNOWN entity binding.
+    """
+    if not isinstance(text,str) or not 1<=len(text)<=180:
+        return None
+    value=text.strip()
+    pronouns={
+        "what else do you remember about them?":"PERSON",
+        "what else do you remember about it?":"NONPERSON",
+    }
+    if value.casefold() in pronouns:
+        return EntityReference(kind=pronouns[value.casefold()],adjacent=True)
+    match=_ENTITY_HISTORY.fullmatch(value)
+    if match is None:
+        return None
+    label=match["label"]
+    if label.casefold().startswith("my "):
+        # Require a recognized relation qualifier, not just any name.
+        reference=entity_reference("Do you remember "+label+"?")
+        return reference if reference is not None and reference.relation else None
+    if label.casefold().startswith("the entity "):
+        try:
+            return EntityReference(name_key=normalize_name(label[len("the entity "):]))
+        except ValueError:
+            return None
+    return None

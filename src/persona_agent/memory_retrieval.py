@@ -425,7 +425,7 @@ def needs_historical_read_fence(text: str) -> bool:
     Canonical personal-fact rendering already refreshes at response commit.
     """
     from .response_decisions import personal_fact_topic
-    from .entity_reference import entity_reference, entity_report
+    from .entity_reference import entity_reference, entity_report, entity_history_reference
     from .memory import _RECALL_CUE
     from .conversation_grounding import grounding_mode
     from .historical_user_turns import _RETROSPECTIVE_ACTIVITY, _FOCUSED_NEXT_STEP
@@ -437,7 +437,7 @@ def needs_historical_read_fence(text: str) -> bool:
         return False
     value=text.strip()
     return bool(
-        _RECALL_CUE.search(value) or grounding_mode(value)
+        entity_history_reference(text) is not None or _RECALL_CUE.search(value) or grounding_mode(value)
         or _ANAPHORA.fullmatch(value)
         or explicit_topic_history_request(value)
         or _RETROSPECTIVE_ACTIVITY.fullmatch(value)
