@@ -73,6 +73,10 @@ PPA-US-029 / 030 / 031 / 034 / 117: [shared historical eligibility and correctio
 
 PPA-US-031 / 034 / 091 / 113 / 117: [bounded dated historical retrieval](model-comparison.md#mvp-05b2--bounded-dated-historical-retrieval) resolves one explicit past calendar period against trusted ingress metadata, reuses date-filtered eligible Memory/episode candidates and bounded original user-turn search, and abstains instead of undated fallback on unresolved dates. [Temporal retrieval regressions](../tests/test_mvp05b2_temporal_retrieval.py) cover UTC boundaries, DST, scope, source ambiguity, replay, corrected records and tight budgets. General temporal question families, event-time/as-of revision retrieval and semantic corrections remain open. No I/P/M promotion.
 
+## MVP-05B.3 evidence update (25 November 2026)
+
+PPA-US-018 / 030 / 031 / 034 / 117: [immediate report precedence and historical response fencing](model-comparison.md#mvp-05b3--immediate-report-precedence-and-historical-response-fencing) projects existing allowlisted exact-slot reports at ingress without Memory mutation, suppresses unresolved stale records and sources, and rejects changed/expired historical context at response commit. One bounded retry refreshes historical model context only. [Regression tests](../tests/test_mvp05b3_history_consistency.py) cover owner authority, scope, retry, expiry and rollback. Coarse tracked-source fence and prospective grammar do not establish general semantic conflict or full lineage coverage. No I/P/M promotion.
+
 ## Immediate follow-up
 
 1. PPA-US-016, 024, 090, 092, 088: evaluate real-model quality and adjudicate critical flags; fix grounded failure cases before adding infrastructure.

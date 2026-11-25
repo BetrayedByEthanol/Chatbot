@@ -12,6 +12,7 @@ from datetime import datetime
 from uuid import UUID
 
 from .memory_retrieval import _terms, is_historical_recall_query
+from .memory_read_policy import eligible_report_source_sql
 from .intent_interpretation import explicit_topic_history_request
 
 # Raw conversation turns have no fine-grained privacy classification. Until
@@ -341,7 +342,7 @@ def _eligible_activity_types(
         name="mvp02b2_activity_ambiguity", row_factory=dict_row,
     ) as scan:
         scan.execute(
-            """SELECT t.input_text
+            f"""SELECT t.input_text
                FROM conversation_turns t
                WHERE t.user_id=%s AND t.instance_id=%s
                  AND t.conversation_id<>%s AND t.created_at<%s
@@ -358,7 +359,8 @@ def _eligible_activity_types(
                        AND candidate.instance_id=t.instance_id
                        AND candidate.source_turn_id=t.turn_id
                  )
-                 AND to_tsvector('english', t.input_text)
+                 AND {eligible_report_source_sql("t")}
+                 AND to_tsvector('english',t.input_text)
                      @@ websearch_to_tsquery('english', %s)""",
             (user_id, instance_id, conversation_id, before_at, query),
         )
@@ -440,7 +442,7 @@ def focused_procedure_discussion_context_block(
         return ""
     query = " ".join(terms)
     cur.execute(
-        """SELECT t.turn_id,t.created_at,t.input_text
+        f"""SELECT t.turn_id,t.created_at,t.input_text
            FROM conversation_turns t
            WHERE t.user_id=%s AND t.instance_id=%s AND t.created_at<%s
              AND t.status='RESPONDED'
@@ -458,6 +460,7 @@ def focused_procedure_discussion_context_block(
                    AND candidate.instance_id=t.instance_id
                    AND candidate.source_turn_id=t.turn_id
              )
+             AND {eligible_report_source_sql("t")}
              AND to_tsvector('english',t.input_text)
                  @@ plainto_tsquery('english',%s)
            ORDER BY t.created_at DESC,t.turn_id DESC LIMIT 4""",
@@ -573,7 +576,7 @@ def historical_user_turn_context_block(
     # Limit/rank under the existing GIN index *before* computing a
     # potentially expensive headline on large original user turns.
     cur.execute(
-        """WITH candidates AS MATERIALIZED (
+        f"""WITH candidates AS MATERIALIZED (
                SELECT t.turn_id,t.conversation_id,t.sequence,
                       t.created_at,t.input_text,
                       ts_rank_cd(
@@ -598,7 +601,8 @@ def historical_user_turn_context_block(
                        AND candidate.instance_id=t.instance_id
                        AND candidate.source_turn_id=t.turn_id
                  )
-                 AND to_tsvector('english', t.input_text)
+                 AND {eligible_report_source_sql("t")}
+                 AND to_tsvector('english',t.input_text)
                      @@ websearch_to_tsquery('english', %s)
                ORDER BY relevance DESC, t.created_at DESC, t.turn_id
                LIMIT %s
@@ -778,7 +782,7 @@ def dated_recall_context_block(cur, *, user_id: UUID, instance_id: UUID,
     # Apply the same revision/candidate exclusion used by historical fallback.
     # Do not abridge a source so that a trailing correction can disappear.
     cur.execute(
-        """SELECT t.turn_id,t.conversation_id,t.created_at,t.input_text
+        f"""SELECT t.turn_id,t.conversation_id,t.created_at,t.input_text
            FROM conversation_turns t
            WHERE t.user_id=%s AND t.instance_id=%s
              AND t.created_at>=%s AND t.created_at<%s
@@ -793,6 +797,7 @@ def dated_recall_context_block(cur, *, user_id: UUID, instance_id: UUID,
                  WHERE c.user_id=t.user_id AND c.instance_id=t.instance_id
                    AND c.source_turn_id=t.turn_id
              )
+             AND {eligible_report_source_sql("t")}
              AND to_tsvector('english',t.input_text)
                  @@ websearch_to_tsquery('english',%s)
            ORDER BY t.created_at DESC,t.turn_id LIMIT 13""",

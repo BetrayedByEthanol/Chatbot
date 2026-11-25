@@ -14,7 +14,7 @@ from psycopg.rows import dict_row
 from .contracts import TrustedActor
 from .conversation_contracts import (
     ModelMessage, ModelReply, ModelUnavailable, ResponseContext,
-    StaleConversation, TextInputCommand, TextInputResult, TextModelGateway,
+    StaleConversation, StaleHistoricalContext, TextInputCommand, TextInputResult, TextModelGateway,
     TextResponseResult,
 )
 from .multimodal_contracts import VoiceInputProvenance
@@ -269,6 +269,12 @@ def ingest_text(connection: Connection, actor: TrustedActor,
                 "WHERE turn_id=%s AND user_id=%s",
                 (event_id,temporal.model_dump_json(),turn_id,actor.user_id),
             )
+            from .explicit_memory_reports import record_explicit_memory_report
+            record_explicit_memory_report(
+                cursor,user_id=actor.user_id,instance_id=command.instance_id,
+                conversation_id=command.conversation_id,turn_id=turn_id,
+                source_event_id=event_id,text=command.text,
+            )
             result = TextInputResult(
                 conversation_id=command.conversation_id,
                 turn_id=turn_id,event_id=event_id,sequence=seq,
@@ -412,6 +418,15 @@ def prepare_text_context(
     with connection.transaction():
         with connection.cursor(row_factory=dict_row) as cursor:
             item=_pending_response_anchor(cursor,actor,turn_id)
+            # Observe the scope dependency BEFORE any model-context recall.
+            # Canonical personal-fact replies instead re-read their exact
+            # slot inside the existing response commit.
+            from .memory_retrieval import needs_historical_read_fence
+            from .memory_read_policy import capture_historical_read_fence
+            historical_fence=(
+                capture_historical_read_fence(cursor,actor.user_id,item["instance_id"])
+                if needs_historical_read_fence(item["input_text"]) else None
+            )
             cursor.execute(
                 """
                 SELECT t.turn_id,t.sequence,t.input_text,r.response_text,r.delivery_status
@@ -924,6 +939,7 @@ def prepare_text_context(
                 conversation_revision=item["revision"],
                 messages=(system,*kept),
                 procedure_fence=procedure_fence,temporal_context=temporal,
+                historical_fence=historical_fence,
             )
 
 
@@ -1078,6 +1094,11 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
                     raise StaleConversation(
                         "Relationship preference changed during recall"
                     )
+            if context.historical_fence is not None:
+                from .memory_read_policy import require_historical_read_fence
+                require_historical_read_fence(
+                    cursor,actor.user_id,context.instance_id,context.historical_fence,
+                )
             # Personal-fact replies are rendered from the current Memory
             # owner snapshot inside the existing fenced commit. A forced
             # model-only benchmark still calls its model but cannot deliver
@@ -1374,18 +1395,34 @@ def respond_to_text(connection: Connection, actor: TrustedActor, turn_id: UUID,
                             "undelivered reply superseded by a newer input"
                         )
         return prior
-    context=prepare_text_context(
-        connection,actor,turn_id,max_turns=max_turns,
-        max_context_chars=max_context_chars,
-    )
-    # MVP-01B: on narrow implicit-language cues, a capable gateway can
-    # enrich the *same* primary response pass. Ordinary text and all legacy
-    # gateways keep their exact existing single-call behavior.
-    from .intent_interpretation import should_interpret_with_model
-    enriched=getattr(gateway,"generate_interpreted",None)
-    if (callable(enriched) and context.messages[-1].role=="user"
-            and should_interpret_with_model(context.messages[-1].content)):
-        generated=enriched(context.messages)
-    else:
-        generated=gateway.generate(context.messages)
-    return commit_text_response(connection,actor,context,generated,model_generated=True)
+    # Retry exactly once for a changed historical dependency. Never retry a
+    # superseded turn, revoked selection, procedure fence, or model failure.
+    # Preparation and each response commit finish before another model call.
+    for attempt in range(2):
+        context=prepare_text_context(
+            connection,actor,turn_id,max_turns=max_turns,
+            max_context_chars=max_context_chars,
+        )
+        # MVP-01B: on narrow implicit-language cues, a capable gateway can
+        # enrich the *same* primary response pass. Ordinary text and all legacy
+        # gateways keep their exact existing single-call behavior.
+        from .intent_interpretation import should_interpret_with_model
+        enriched=getattr(gateway,"generate_interpreted",None)
+        if (callable(enriched) and context.messages[-1].role=="user"
+                and should_interpret_with_model(context.messages[-1].content)):
+            generated=enriched(context.messages)
+        else:
+            generated=gateway.generate(context.messages)
+        try:
+            return commit_text_response(connection,actor,context,generated,model_generated=True)
+        except StaleHistoricalContext:
+            if attempt:
+                raise
+            # A competing responder may have committed while this attempt
+            # was stale. Reuse its durable response through the replay path.
+            if lookup_response(connection,actor,turn_id) is not None:
+                return respond_to_text(
+                    connection,actor,turn_id,gateway,
+                    max_turns=max_turns,max_context_chars=max_context_chars,
+                )
+    raise AssertionError("unreachable historical response retry")

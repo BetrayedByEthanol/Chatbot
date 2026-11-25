@@ -1,6 +1,7 @@
 """Phase 1 text conversation contracts; persistence remains PostgreSQL-owned."""
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Literal, Protocol, Sequence
 from uuid import UUID
 
@@ -84,6 +85,13 @@ class PreferenceReadFence:
 
 
 @dataclass(frozen=True)
+class HistoricalReadFence:
+    """Conservative scoped revision and next eligibility expiry."""
+    revision: int
+    next_expiry: datetime | None
+
+
+@dataclass(frozen=True)
 class ResponseContext:
     conversation_id: UUID
     turn_id: UUID
@@ -94,6 +102,7 @@ class ResponseContext:
     procedure_fence: ProcedureContextFence | None = None
     preference_fence: PreferenceReadFence | None = None
     temporal_context: TemporalContext | None = None
+    historical_fence: HistoricalReadFence | None = None
 
 
 class TextModelGateway(Protocol):
@@ -114,6 +123,10 @@ class TextResponseResult(BaseModel):
 
 class StaleConversation(Exception):
     """The reply context or persona authority was superseded."""
+
+
+class StaleHistoricalContext(StaleConversation):
+    """Optional historical evidence changed; the same input can be retried."""
 
 
 class ModelUnavailable(Exception):

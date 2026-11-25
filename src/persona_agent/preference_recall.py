@@ -215,7 +215,12 @@ def respond_with_preference_recall(
         if p.scope_key=="" and p.preference_key in keys
     ))
     from dataclasses import replace
-    context=replace(context,preference_fence=PreferenceReadFence(keys,revisions))
+    # The canonical Relationship reply does not use the optional historical
+    # model context; its own owner-specific fence remains authoritative.
+    context=replace(
+        context,preference_fence=PreferenceReadFence(keys,revisions),
+        historical_fence=None,
+    )
     return commit_text_response(
         connection,actor,context,
         ModelReply(model_id=ROUTE_ID,text=" ".join(parts)),

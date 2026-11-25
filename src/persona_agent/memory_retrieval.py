@@ -416,3 +416,29 @@ def topic_recall_block(
 def is_historical_recall_query(text: str) -> bool:
     """Cheap routing signal for future selective interpretation."""
     return bool(_RECALL.search(text))
+
+
+def needs_historical_read_fence(text: str) -> bool:
+    """Fence explicit recall paths, not routine recent-window compression.
+
+    Use established routing predicates; no additional model inference.
+    Canonical personal-fact rendering already refreshes at response commit.
+    """
+    from .response_decisions import personal_fact_topic
+    from .memory import _RECALL_CUE
+    from .conversation_grounding import grounding_mode
+    from .historical_user_turns import _RETROSPECTIVE_ACTIVITY, _FOCUSED_NEXT_STEP
+    from .intent_interpretation import explicit_topic_history_request
+    from .temporal_context import _DATED_RECALL
+
+    if personal_fact_topic(text) is not None:
+        return False
+    value=text.strip()
+    return bool(
+        _RECALL_CUE.search(value) or grounding_mode(value)
+        or _ANAPHORA.fullmatch(value)
+        or explicit_topic_history_request(value)
+        or _RETROSPECTIVE_ACTIVITY.fullmatch(value)
+        or _FOCUSED_NEXT_STEP.fullmatch(value)
+        or _DATED_RECALL.fullmatch(value)
+    )
