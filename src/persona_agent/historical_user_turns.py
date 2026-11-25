@@ -723,3 +723,137 @@ def historical_user_turn_context_block(
         if count >= _MAX_HITS:
             break
     return result if count else ""
+
+
+DATED_RECALL_UNAVAILABLE = (
+    "Dated recall: no usable dated evidence was supplied. "
+    "Do not substitute newer information; ask for clarification or a reminder.\n"
+)
+
+
+def dated_recall_context_block(cur, *, user_id: UUID, instance_id: UUID,
+                               window, max_chars: int) -> str:
+    """One bounded date-constrained view of eligible owner and original sources.
+
+    Use the existing hybrid candidate query and raw-turn privacy/ownership
+    guards. Dates constrain when the user reported something, not when an
+    event happened. Superseded owner revisions remain ineligible even for
+    dated recall; this is not an unrestricted revision-history reader.
+    """
+    from datetime import timedelta
+    from .memory_retrieval import _candidates
+    from .temporal_context import HistoricalWindow
+
+    if not isinstance(window,HistoricalWindow):
+        raise TypeError("expected resolved historical retrieval window")
+    if max_chars<len(DATED_RECALL_UNAVAILABLE):
+        return ""
+    if window.status!="RESOLVED":
+        reason={
+            "UNKNOWN_TIMEZONE":"Ask which timezone to use.",
+            "AMBIGUOUS_PERIOD":"Ask which single topic or period the user means.",
+            "UNSUPPORTED_PERIOD":"Ask for one explicit past date or calendar period.",
+        }[window.status]
+        notice=f"Dated recall unresolved ({window.status}). {reason} Do not search an undated substitute.\n"
+        return notice if len(notice)<=max_chars else DATED_RECALL_UNAVAILABLE
+    terms=[word for word in _terms(window.topic)
+           if word not in _GENERIC and not _SENSITIVE.search(word)]
+    if not terms or _SENSITIVE.search(window.topic):
+        return DATED_RECALL_UNAVAILABLE
+    # Conjunctive topical matching prevents a generic word from fetching
+    # unrelated events in the same time period. Preserve query parameterization.
+    query=" ".join(terms[:6])
+    start,end=window.start,window.end
+    header=(
+        f"Dated recall — interpreted period: {window.label}. "
+        "These are reports recorded in this window, not verified event dates "
+        "or necessarily current facts. Recent dialogue is not dated evidence. "
+        "Use only the following sources for this historical question.\n"
+    )
+    if len(header)+len(DATED_RECALL_UNAVAILABLE)>max_chars:
+        return DATED_RECALL_UNAVAILABLE
+    rows=_candidates(cur,user_id,instance_id,query,start,
+                     end-timedelta(microseconds=1),12)
+    # Original turns are separate Conversation-owned evidence, not facts.
+    # Apply the same revision/candidate exclusion used by historical fallback.
+    # Do not abridge a source so that a trailing correction can disappear.
+    cur.execute(
+        """SELECT t.turn_id,t.conversation_id,t.created_at,t.input_text
+           FROM conversation_turns t
+           WHERE t.user_id=%s AND t.instance_id=%s
+             AND t.created_at>=%s AND t.created_at<%s
+             AND t.status='RESPONDED' AND t.source_input_event_id IS NOT NULL
+             AND NOT EXISTS (
+                 SELECT 1 FROM memory_revisions mr
+                 WHERE mr.user_id=t.user_id AND mr.instance_id=t.instance_id
+                   AND mr.source_turn_id=t.turn_id
+             )
+             AND NOT EXISTS (
+                 SELECT 1 FROM memory_extraction_candidates c
+                 WHERE c.user_id=t.user_id AND c.instance_id=t.instance_id
+                   AND c.source_turn_id=t.turn_id
+             )
+             AND to_tsvector('english',t.input_text)
+                 @@ websearch_to_tsquery('english',%s)
+           ORDER BY t.created_at DESC,t.turn_id LIMIT 13""",
+        (user_id,instance_id,start,end,query),
+    )
+    original=cur.fetchall()
+    # Prefer eligible owner records, then original user turns, then
+    # interpreted episodes. Never count two projections of a source as
+    # independent corroboration. Suppressed sources stay suppressed.
+    items=[]
+    seen=set()
+    def add(source_id,at,kind,value):
+        if source_id in seen:
+            return
+        seen.add(source_id)
+        line=(f"{kind} source turn {source_id} at {at.isoformat()}: "
+              +json.dumps(value,ensure_ascii=False)+"\n")
+        items.append(line)
+
+    for row in rows:
+        if row["source_type"]=="USER_MEMORY":
+            add(row["source_turn_id"],row["source_turn_at"],
+                f"USER_REPORTED revision {row['record_version']}",
+                row["topic"]+": "+row["excerpt"])
+    omitted=len(original)>12 or any(
+        sum(r["source_type"]==kind for r in rows)>=12
+        for kind in ("USER_MEMORY","EPISODE")
+    )
+    for row in original[:12]:
+        text=row["input_text"]
+        if _SENSITIVE.search(text) or len(text)>_MAX_QUOTE:
+            omitted=True
+            continue
+        add(row["turn_id"],row["created_at"],"USER_REPORTED quotation",text)
+    for row in rows:
+        if row["source_type"]=="EPISODE":
+            add(row["source_turn_id"],row["source_turn_at"],
+                "MODEL_INTERPRETED episode",row["topic"]+": "+row["excerpt"])
+    if not items:
+        return header+DATED_RECALL_UNAVAILABLE
+    # Reserve ambiguity guidance before selecting excerpts. Several matches
+    # may be distinct events, not conflicting facts; never silently merge.
+    caution=(
+        "Multiple matching source turns; if the intended event is unclear, "
+        "ask which one rather than combining them. "
+        if len(items)>1 else ""
+    )+"Bounded search; absence or one match does not prove uniqueness.\n"
+    if len(header)+len(caution)>max_chars:
+        return DATED_RECALL_UNAVAILABLE
+    output=header+caution
+    count=0
+    for line in items:
+        if count>=4 or len(output)+len(line)>max_chars:
+            omitted=True
+            continue
+        output+=line
+        count+=1
+    if not count:
+        return header+DATED_RECALL_UNAVAILABLE
+    if omitted:
+        notice="Some candidate evidence was omitted by eligibility or budget; do not assume completeness.\n"
+        if len(output)+len(notice)<=max_chars:
+            output+=notice
+    return output

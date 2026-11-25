@@ -6,6 +6,7 @@ the input receipt, never against a later retry or model inference timestamp.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 import re
 from typing import Literal
@@ -255,3 +256,112 @@ def temporal_context_block(text: str, context: TemporalContext, *, max_chars: in
     parts.append("Elapsed time is not user presence or permission to act.")
     block=" ".join(parts)+"\n"
     return block if len(block)<=max_chars else ""
+
+
+# Explicit historical questions only. This is a retrieval window, not an
+# event timestamp or a scheduling instruction.
+_DATED_RECALL = re.compile(
+    r"^what did (?:i|we) (?:say|tell you|discuss|mention) about "
+    r"(?P<body>[^\r\n?]{1,300})\?$", re.I,
+)
+_PAST_PERIOD = re.compile(
+    r"\b(?:yesterday|today|tomorrow|last (?:week|month|year|monday|tuesday|"
+    r"wednesday|thursday|friday|saturday|sunday)|"
+    r"(?:days?|weeks?|months?|years?|hours?|minutes?) ago|"
+    r"\d{4}-\d{1,2}-\d{1,2}|a while ago|recently|"
+    r"earlier this (?:week|month|year))\b", re.I,
+)
+_PERIOD_SUFFIX = re.compile(
+    r"(?P<topic>.+?)\s+(?P<period>yesterday|today|last week|last month|"
+    r"on \d{4}-\d{2}-\d{2}|"
+    r"(?:[1-9]\d?|one|two|three|four|five|six|seven|eight|nine|ten|"
+    r"eleven|twelve) (?:days?|weeks?) ago)$", re.I,
+)
+_NUMBERS = dict(zip(
+    ("one","two","three","four","five","six","seven","eight","nine","ten","eleven","twelve"),
+    range(1,13),
+))
+
+
+@dataclass(frozen=True)
+class HistoricalWindow:
+    status: Literal["RESOLVED","UNKNOWN_TIMEZONE","AMBIGUOUS_PERIOD","UNSUPPORTED_PERIOD"]
+    topic: str = ""
+    label: str = ""
+    start: datetime | None = None
+    end: datetime | None = None  # exclusive
+
+
+def _unique_midnight(day: date, zone: ZoneInfo) -> datetime | None:
+    wall=datetime.combine(day,datetime.min.time())
+    candidates=set()
+    for fold in (0,1):
+        instant=wall.replace(tzinfo=zone,fold=fold).astimezone(timezone.utc)
+        if instant.astimezone(zone).replace(tzinfo=None)==wall:
+            candidates.add(instant)
+    return next(iter(candidates)) if len(candidates)==1 else None
+
+
+def historical_recall_window(text: str, context: TemporalContext) -> HistoricalWindow | None:
+    """Resolve one explicit topic/date question against immutable receipt time.
+
+    Days use local calendar dates; weeks use Monday-Sunday calendar weeks.
+    N weeks ago means the calendar week containing local receipt minus N
+    weeks, not a guessed event day. Unsupported or competing period wording
+    never widens this recognized request to an undated search.
+    """
+    request=_DATED_RECALL.fullmatch(text.strip())
+    if request is None or not _PAST_PERIOD.search(request["body"]):
+        return None
+    match=_PERIOD_SUFFIX.fullmatch(request["body"])
+    if match is None:
+        return HistoricalWindow("UNSUPPORTED_PERIOD")
+    topic=match["topic"].strip()
+    period=match["period"].casefold()
+    if (_PAST_PERIOD.search(topic) or re.search(r"\b(?:or|and)\b",topic,re.I)
+            or not topic or topic.casefold() in ("it","that","this","the topic","my plans")):
+        return HistoricalWindow("AMBIGUOUS_PERIOD")
+    if context.timezone_name is None:
+        return HistoricalWindow("UNKNOWN_TIMEZONE",topic)
+    zone=validate_timezone(context.timezone_name)
+    receipt=context.receipt.at.astimezone(timezone.utc)
+    today=receipt.astimezone(zone).date()
+    try:
+        if period=="today":
+            start_day=today
+            end_day=today+timedelta(days=1)
+        elif period=="yesterday":
+            start_day=today-timedelta(days=1)
+            end_day=today
+        elif period=="last week":
+            end_day=today-timedelta(days=today.weekday())
+            start_day=end_day-timedelta(weeks=1)
+        elif period=="last month":
+            end_day=today.replace(day=1)
+            start_day=(end_day-timedelta(days=1)).replace(day=1)
+        elif period.startswith("on "):
+            start_day=date.fromisoformat(period[3:])
+            end_day=start_day+timedelta(days=1)
+        else:
+            number,unit,_=period.split()
+            count=int(number) if number.isdigit() else _NUMBERS[number]
+            if unit.startswith("week"):
+                if count>52:
+                    return HistoricalWindow("UNSUPPORTED_PERIOD",topic)
+                day=today-timedelta(weeks=count)
+                start_day=day-timedelta(days=day.weekday())
+                end_day=start_day+timedelta(weeks=1)
+            else:
+                start_day=today-timedelta(days=count)
+                end_day=start_day+timedelta(days=1)
+        start=_unique_midnight(start_day,zone)
+        end=_unique_midnight(end_day,zone)
+    except (OverflowError,ValueError):
+        return HistoricalWindow("UNSUPPORTED_PERIOD",topic)
+    if start is None or end is None:
+        return HistoricalWindow("AMBIGUOUS_PERIOD",topic)
+    end=min(end,receipt)
+    if start>=end:
+        return HistoricalWindow("UNSUPPORTED_PERIOD",topic)
+    label=f"{start_day.isoformat()} through {(end_day-timedelta(days=1)).isoformat()} ({zone.key}; local calendar dates)"
+    return HistoricalWindow("RESOLVED",topic,label,start,end)
