@@ -511,7 +511,7 @@ def prepare_text_context(
                 if active is not None:
                     cursor.execute(
                         """
-                        SELECT a.kind,a.label,r.delivery_status,
+                        SELECT a.kind,a.label,a.origin_kind,r.delivery_status,
                                t.sequence AS source_sequence
                         FROM dialogue_pending_acts a
                         LEFT JOIN conversation_responses r

@@ -17,6 +17,9 @@ from persona_agent.intent_interpretation import classify_intent
     ("Yes", "Do you mean UTC+10:00 or UTC+11:00?", False),
     ("Yes", "Don't you want to continue?", False),
     ("Yes", "Did you finish and upload the file?", False),
+    ("Yes", "Can you tell me which day works?", False),
+    ("Yes", "Do you know how to configure the server?", False),
+    ("Yes", "Do you want tea, coffee, or water?", False),
     ("Maybe", "Did you finish the exercise?", False),
     ("That one", "Did you finish the exercise?", False),
     ("Okay", "Did you finish the exercise?", False),
@@ -27,6 +30,7 @@ def test_short_reply_requires_compatible_question(reply,question,expected):
 
 def test_pending_context_distinguishes_adjacent_from_stale_or_competing():
     pending={"kind":"QUESTION","label":"Which day would work?",
+             "origin_kind":"AUTO_DELIVERED_QUESTION",
              "source_sequence":4,"delivery_status":"DELIVERED"}
     assert "ask one short clarification" in pending_reply_context(
         "Yes",[pending],turn_sequence=5,max_chars=420,
@@ -45,6 +49,13 @@ def test_pending_context_distinguishes_adjacent_from_stale_or_competing():
     )
     assert pending_reply_context("Tuesday",[pending],turn_sequence=5,max_chars=420)==""
     assert pending_reply_context("Yes",[],turn_sequence=5,max_chars=420)==""
+    polar=dict(pending,label="Is the file open?")
+    assert "addresses the adjacent polar question" in pending_reply_context(
+        "Yes",[polar],turn_sequence=5,max_chars=420,
+    )
+    assert "ask one short clarification" in pending_reply_context(
+        "Yes",[dict(polar,origin_kind="EXPLICIT")],turn_sequence=5,max_chars=420,
+    )
     assert pending_reply_context("Yes",[pending],turn_sequence=5,max_chars=20)==""
 
 

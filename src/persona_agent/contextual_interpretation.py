@@ -25,7 +25,8 @@ _POLAR_QUESTION = re.compile(
     r"\s+[^?!.;\r\n]{1,170}\?$", re.I,
 )
 _POLAR_AMBIGUITY = re.compile(
-    r"\b(?:or|not|never|and|but)\b|n't\b|[,/:]", re.I,
+    r"\b(?:or|not|never|and|but|what|which|who|whom|whose|where|when|why|how)\b"
+    r"|n't\b|[,/:]", re.I,
 )
 
 
@@ -83,6 +84,7 @@ def pending_reply_context(
             "Keep the pending discussion open; acknowledge uncertainty without pressure."
         )
     elif (kind == "POLAR" and pending[0]["kind"] == "QUESTION"
+          and pending[0]["origin_kind"] == "AUTO_DELIVERED_QUESTION"
           and short_reply_answers_question(text, pending[0]["label"])):
         guidance = (
             "The short reply addresses the adjacent polar question. "
@@ -139,7 +141,7 @@ def correction_authority_context(text: str, *, max_chars: int) -> str:
     kind = draft.kind if draft else "CORRECTION"
     # Limit this context contribution to pertinent evidence/authority turns.
     # Ordinary greetings, questions, objectives and generic observations
-    # do not acquire an additional classification or retrieval pass.
+    # acquire no additional context block, model inference or retrieval.
     if not arithmetic and kind not in ("CORRECTION", "HYPOTHETICAL", "INSTRUCTION"):
         if kind != "OBSERVATION" or not is_direct_observation(text):
             return ""

@@ -336,7 +336,8 @@ A concrete ingress defect remained after 04C.1: adjacency and absence of
 competing acts were sufficient to close an automatic QUESTION even if "yes"
 answered a "which day?" question, or a bare reference/uncertainty did not
 answer it. The new bounded compatibility gate resolves only supported polar
-short replies against a unique adjacent delivered automatic QUESTION.
+short replies against a unique adjacent delivered automatic QUESTION;
+indirect questions, negative/compound questions and alternatives abstain.
 The existing longer free-text path is unchanged; automatic DECISION and
 explicit caller-owned acts remain outside this gate. A pending-act context
 view uses scoped response delivery and source sequence to distinguish
