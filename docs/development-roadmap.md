@@ -299,6 +299,10 @@ When an item is reviewed, update its disposition above and append a record below
 | GAP-03 | OPEN / 25 Nov 2026 | Conversation / Relationship | P2-F2; 06D; P6-F2 | MVP-04B reviews casual-chat and low-effort failures and adjusts bounded guidance; no personalized learning adopted. Real-model response evidence pending. |
 | GAP-07 | OPEN / 25 Nov 2026 | Conversation / Memory / Tool Gateway | 04C; 05D; P6-F4 | MVP-04B extends trusted clock routing and source-qualified personal-fact context. Guidance is not a general output verifier; unsupported claims still require behavioral tests. |
 | GAP-13 | OPEN / 25 Nov 2026 | Evaluation | 04B rerun; P2-F1/F2 | Reproduced archived examples inform focused routing and prompt tests. No automated learning or accepted review; verify recurrence on held-out cases. |
+| GAP-02 | OPEN / 25 Nov 2026 | Conversation | P2-F1; 05B/C | Current input cues and explicit topic switch suppress stale pending-question interpretation. No predictive prefetch added. |
+| GAP-07 | OPEN / 25 Nov 2026 | Conversation / Tool Gateway | 04C follow-up; 05D; P6-F4 | Narrow current-turn reply adjustment with source-correlated audit event; clock claim safeguards only on model path. General personal-fact verifier and D&D/weather owner checks remain open. |
+| GAP-08 | OPEN / 25 Nov 2026 | Conversation | 04C follow-up; 05B/C; P6-F2 | Explicit pause-and-switch and deferral preserve independent pending questions; ambiguous correction/repair still needs broader cases. |
+| GAP-14 | OPEN / 25 Nov 2026 | Conversation / Communication | 04D; P5-F1 | Low-effort and no-question safeguards deliver short acknowledgments, not silent missing replies. Intentional silence not adopted. |
 | — | Pending other initial reviews | — | See §9.2 | No new feature adopted, deferred or rejected through this register. |
 
 **Coverage:** 20 capability gap review items, independent of the existing 124 canonical stories and 32 proposed-only story decisions. Grouping and review timing are planning proposals. No runtime changes, implementation count changes, acceptance promotions or benchmark execution.

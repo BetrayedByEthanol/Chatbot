@@ -100,9 +100,22 @@ _TOPIC_PROGRESS_RECALL = re.compile(
 )
 
 
+# A local pause followed by an explicit named subject is navigation,
+# not cancellation of a persisted operation or authorization to resume one.
+_PAUSE_AND_SWITCH = re.compile(
+    r"^(?:please\s+)?(?:don't|do not)\s+"
+    r"(?:troubleshoot|debug|plan|work on that|continue)\s+"
+    r"(?:yet|now|for now|right now)[.;]\s*"
+    r"let(?:'s| us)\s+(?:talk about|discuss)\s+"
+    r"(?P<topic>[^:\r\n.!?]{1,120}?)(?:\s+instead)?\s*[.!]?$",
+    re.I,
+)
+
+
 def parse_explicit_topic_switch(text: str) -> str | None:
     """A clear named topic switch, not a hypothetical or permission to act."""
-    match = _EXPLICIT_TOPIC_SWITCH.fullmatch(text.strip().replace("’", "'"))
+    value = text.strip().replace("’", "'")
+    match = _EXPLICIT_TOPIC_SWITCH.fullmatch(value) or _PAUSE_AND_SWITCH.fullmatch(value)
     if match is None:
         return None
     return _named_topic_or_none(match.group("topic"))
@@ -134,6 +147,11 @@ class IntentDraft:
     confidence: float
     method_revision: str = "mvp01a.rules.1"
 
+def _current_pragmatic_cue(text: str) -> str | None:
+    from .pragmatic_response import pragmatic_cue
+    return pragmatic_cue(text)
+
+
 def classify_intent(text: str) -> IntentDraft | None:
     """Abstain on unclear inputs, returning discussion cues rather than commands."""
     original = text.strip()
@@ -144,6 +162,12 @@ def classify_intent(text: str) -> IntentDraft | None:
         kind, label, confidence = "HYPOTHETICAL", original, .95
     elif _CORRECTION.match(value):
         kind, label, confidence = "CORRECTION", original, .92
+    elif (cue := _current_pragmatic_cue(value)) is not None:
+        # Current conversational constraints are source-linked discussion
+        # signals, never durable preferences or commands to other owners.
+        kind = ("INSTRUCTION" if cue in ("CHAT_ONLY", "NO_QUESTIONS", "NO_GOAL")
+                else "OBSERVATION")
+        return IntentDraft(kind, original[:200], .90, "mvp04c.pragmatic.1")
     elif match := _OBJECTIVE.match(value):
         subject = match.group(1).strip().rstrip(" .!?")
         if not subject or _INFO.match(subject):
@@ -176,6 +200,8 @@ def conservative_implicit_objective(text: str) -> IntentDraft | None:
     *tentative discussion topic*, never an approved Goal.
     """
     value=text.strip().replace("’","'")
+    if _current_pragmatic_cue(value) is not None:
+        return None
     match=_IMPLICIT_ROUTINE.fullmatch(value)
     if len(value)>200 or "\n" in value or match is None:
         return None

@@ -278,6 +278,47 @@ Keep case 02's mismatched replacement evidence separate; do not repair
 historical summary metadata or alter reviewer scores. No real-model
 acceptance or quality winner is established by these code changes.
 
+### MVP-04C — Current-turn pragmatics and dialogue repair (first increment)
+
+The MVP-04B archive (runtime `5a2195b`) contains four technically complete
+runs. In each, a low-decision observation elicited another choice or question.
+The forced 7B model path still fabricated clock and vehicle details despite
+the new prompt guidance. An explicit pause followed by a named topic switch
+also missed the narrow switch parser. These findings are diagnostics, not
+independent human ratings.
+
+This increment recognizes bounded first-party low-decision, chat-only,
+no-question, no-goal and undecided cues. It adds current-turn guidance and
+a selective post-model safeguard at the existing fenced response commit.
+Compliant replies are unchanged; a directly conflicting choice, agenda,
+commitment or detectable unverified clock claim can be replaced by a short
+acknowledgment or limitation. The adjustment records a reason and policy
+revision in `conversation.response.pragmatic_adjusted.v1`, correlated with
+the input event. The model ID remains the actual generator; private raw model
+evidence and delivered responses can differ. The forced model-only route
+continues to make its primary model call and uses the same host safeguards;
+it is not unrestricted raw model evaluation. No added LLM pass, new tool,
+persistent mood/preference, task, or goal authority. The clock guard does not
+apply to the trusted clock result path.
+
+Explicit pause-and-switch syntax now uses existing topic navigation and
+delivery fencing. Recognized pragmatic cues and quoted input cannot resolve
+an unrelated automatic pending question; indecision and explicit refusal
+produce discussion-level observations or instructions rather than objective
+commitments. The prior question is preserved, not cancelled, and operation
+state is untouched. A genuine later answer still uses existing dialogue
+resolution rules.
+
+Limits: narrow English grammars and detectable reply patterns only; no
+universal verifier, sentence-count enforcement, durable no-question policy,
+automatic goal admission or intentional silence. General personal-fact
+verification, ambiguous reference repair, sarcasm calibration, D&D/weather
+owner-authority scenarios and full procedure progress remain outstanding.
+Do not equate passing deterministic tests with real-model naturalness.
+The frozen comparison and review protocol are unchanged. Re-run on a new
+directory after merging; inspect both raw model output and delivered replies,
+including held-out examples, and retain independent review requirements.
+
 ## Tests
 
 ```bash

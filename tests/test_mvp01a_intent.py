@@ -229,3 +229,31 @@ def test_short_prompt_budget_preserves_latest_input(dsn):
         )
         assert context.messages[-1].content=="I want to build a vegetable garden."
         assert len(context.messages[0].content)<512
+
+@pytest.mark.parametrize("message,kind",[
+    ("Even deciding what to do feels like too much work today.","OBSERVATION"),
+    ("I haven't decided yet.","OBSERVATION"),
+    ("I might work on a software project later. I haven't decided.","OBSERVATION"),
+    ("Maybe midnight to five AM for sleep, but that isn't a commitment.","OBSERVATION"),
+    ("I want to learn piano, but I haven't decided.","OBSERVATION"),
+    ("Please don't make a big plan for me; I just want to chat.","INSTRUCTION"),
+    ("I'm not agreeing to save that as a goal yet.","INSTRUCTION"),
+    ("I'm still exploring the idea; please don't create a goal.","INSTRUCTION"),
+    ("Please don't ask me any questions right now.","INSTRUCTION"),
+    ("Don't troubleshoot yet. Let's talk about nebulae instead.","REQUEST"),
+])
+def test_pragmatic_constraints_distinguish_discussion_from_commitment(message,kind):
+    from persona_agent.intent_interpretation import should_interpret_with_model
+    assert classify_intent(message).kind==kind
+    assert not should_interpret_with_model(message)
+
+
+def test_quoted_hypothetical_and_direct_request_do_not_gain_pragmatic_constraint():
+    from persona_agent.pragmatic_response import pragmatic_cue
+    for text in (
+        '"I haven\'t decided yet."',
+        "What if I said I don't want to make decisions today?",
+        "I haven't decided yet. Could you compare the two options?",
+        "Please tell me what my friend meant by 'I just want to chat'.",
+    ):
+        assert pragmatic_cue(text) is None

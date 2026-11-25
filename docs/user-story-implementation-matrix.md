@@ -45,6 +45,10 @@ PPA-US-012 / 088: [MVP-04A diagnostics and review status](model-comparison.md#mv
 
 PPA-US-016 / 018 / 020 / 024 / 031 / 092 / 105 / 117: [grounding and presentation](model-comparison.md#mvp-04b--grounding-and-response-presentation) extends the direct read-only clock route, provides explicit current-time and personal-fact grounding, reuses eligible scoped Memory retrieval and clarifies concise casual chat and prerequisite-aware step guidance. Evidence pointers: [routing](../tests/test_mvp01d_response_decisions.py), [grounding](../tests/test_mvp01f3_conversation_grounding.py), [Memory](../tests/test_phase2_memory.py), [25-turn smoke](../tests/test_wide_preference_recall_postgres.py). Guidance is not an output verifier. Real-model quality and procedure continuity (054/055/100) remain open; no I/P/M promotion.
 
+## MVP-04C evidence update (25 November 2026)
+
+PPA-US-016 / 017 / 019 / 024 / 027 / 090 / 105 / 117: [current-turn pragmatic safeguards](model-comparison.md#mvp-04c--current-turn-pragmatics-and-dialogue-repair-first-increment) adds explicit discussion/deferral cues, narrow post-model enforcement and pause-plus-topic navigation. [Focused tests](../tests/test_mvp04c_pragmatic_response.py), [intent](../tests/test_mvp01a_intent.py) and [dialogue](../tests/test_mvp01c_dialogue.py) cover false-positive boundaries, no new Goal authority, and pending-question preservation. General correction authority, unsupported personal-fact claims, sarcasm and broader contextual inference remain open; no status promotion or accepted quality judgment.
+
 ## Immediate follow-up
 
 1. PPA-US-016, 024, 090, 092, 088: evaluate real-model quality and adjudicate critical flags; fix grounded failure cases before adding infrastructure.

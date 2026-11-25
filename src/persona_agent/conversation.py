@@ -402,6 +402,13 @@ def prepare_text_context(
             boundary = capability_claim_context(history[-1].content)
             if len(prompt)+len(boundary)+len(history[-1].content)<max_context_chars:
                 prompt += boundary
+            # Current-turn conversational constraints precede optional
+            # history and model-derived topic/affect hints.
+            from .pragmatic_response import pragmatic_context
+            prompt+=pragmatic_context(
+                history[-1].content,
+                max_chars=min(360,max_context_chars-len(prompt)-len(history[-1].content)-80),
+            )
             # MVP-01F.3: on requests for recall or a summary, give the
             # model a bounded view of actual first-party user statements.
             # Old assistant output is never promoted to user evidence, and
@@ -795,7 +802,8 @@ def prepare_text_context(
 
 def commit_text_response(connection: Connection, actor: TrustedActor,
                          context: ResponseContext,
-                         generated: ModelReply) -> TextResponseResult:
+                         generated: ModelReply, *,
+                         model_generated: bool = False) -> TextResponseResult:
     """Commit one generated reply only if its context remains current."""
     require_idle(connection)
     _require_actor(actor)
@@ -954,6 +962,15 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
                 ),
             )
             text=enforcement.text
+            # Apply current-turn safeguards only to the primary model path.
+            # A caller-owned route supplies verified data separately. Never
+            # mask an existing unavailable-capability denial.
+            from .pragmatic_response import enforce_pragmatic_reply
+            pragmatic=enforce_pragmatic_reply(
+                scoped["input_text"],text,
+                model_generated=model_generated and enforcement.reason is None,
+            )
+            text=pragmatic.text
             response_id=uuid4()
             cursor.execute(
                 """
@@ -996,6 +1013,18 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
                         "reason":enforcement.reason,
                         "policy_revision":enforcement.policy_revision,
                     },
+                )
+            if pragmatic.reason is not None:
+                _event(
+                    cursor,user_id=actor.user_id,instance_id=context.instance_id,
+                    conversation_id=context.conversation_id,
+                    event_type="conversation.response.pragmatic_adjusted.v1",
+                    source_id="conversation.runtime",trust_level="TRUSTED_PLATFORM",
+                    detail={
+                        "turn_id":str(context.turn_id),"response_id":str(response_id),
+                        "reason":pragmatic.reason,"policy_revision":pragmatic.policy_revision,
+                    },
+                    correlation_id=scoped["source_input_event_id"],
                 )
             from .intent_interpretation import (
                 conservative_implicit_objective, record_intent_on_ingress,
@@ -1196,4 +1225,4 @@ def respond_to_text(connection: Connection, actor: TrustedActor, turn_id: UUID,
         generated=enriched(context.messages)
     else:
         generated=gateway.generate(context.messages)
-    return commit_text_response(connection,actor,context,generated)
+    return commit_text_response(connection,actor,context,generated,model_generated=True)

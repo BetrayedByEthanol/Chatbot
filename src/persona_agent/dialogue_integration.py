@@ -459,7 +459,11 @@ def resolve_auto_question_on_ingress(
     """
     value=text.strip()
     simple=value.casefold().strip(" .!?")
+    from .pragmatic_response import pragmatic_cue
     if (not value or simple in _NOT_ANSWERS or "?" in value
+            or value.startswith(('"', "'", "“", "‘"))
+            or pragmatic_cue(value) is not None
+            or parse_explicit_topic_switch(value) is not None
             or _CLEAR_SWITCH.match(value)
             or explicit_topic_history_request(value) is not None
             or is_anaphoric_topic_return(value)):
