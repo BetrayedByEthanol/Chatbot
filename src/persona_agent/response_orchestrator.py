@@ -37,7 +37,7 @@ def respond_to_user_text(
     _require_actor(actor)
     with connection.cursor(row_factory=dict_row) as cur:
         cur.execute(
-            """SELECT t.input_text,t.temporal_context
+            """SELECT t.input_text,t.temporal_context,t.conversation_id,t.instance_id,t.sequence
                FROM conversation_turns t
                JOIN conversations c ON c.conversation_id=t.conversation_id
                  AND c.user_id=t.user_id AND c.instance_id=t.instance_id
@@ -60,9 +60,23 @@ def respond_to_user_text(
     if decision.route=="PERSONAL_FACT_RECALL":
         from .personal_fact_recall import respond_with_personal_fact_recall
         return respond_with_personal_fact_recall(connection,actor,turn_id)
-    if decision.route=="ENTITY_RECALL":
+    if decision.route in ("ENTITY_RECALL","ENTITY_REPORT"):
         from .entity_recall import respond_with_entity_recall
-        return respond_with_entity_recall(connection,actor,turn_id)
+        return respond_with_entity_recall(
+            connection,actor,turn_id,report=decision.route=="ENTITY_REPORT",
+        )
+    # A short relation phrase is not a standalone command. Only a previous
+    # delivered grounded choice makes it a candidate for a direct reply.
+    from .entity_reference import entity_clarification_relation
+    if entity_clarification_relation(item["input_text"]) is not None:
+        from .entity_recall import adjacent_entity_clarification,respond_with_entity_recall
+        with connection.cursor(row_factory=dict_row) as cur:
+            pending=adjacent_entity_clarification(
+                cur,user_id=actor.user_id,instance_id=item["instance_id"],
+                conversation_id=item["conversation_id"],sequence=item["sequence"],
+            )
+        if pending is not None:
+            return respond_with_entity_recall(connection,actor,turn_id)
     if decision.route=="CLOCK":
         return respond_with_time(
             connection,actor,turn_id,timezone_name=decision.timezone_name,

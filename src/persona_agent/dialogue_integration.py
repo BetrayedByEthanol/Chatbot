@@ -399,6 +399,19 @@ def advance_on_delivery(
     label=question.group(1).strip()
     if not label or len(label)>200:
         return
+    # Grounded entity questions have their own delivered-event reference
+    # context. Do not create a second generic pending act that a short,
+    # unrelated or ambiguous reply could accidentally close.
+    cur.execute(
+        """SELECT 1 FROM events WHERE user_id=%s AND instance_id=%s
+             AND event_type='conversation.response.entity_grounded.v1'
+             AND trust_level='TRUSTED_PLATFORM'
+             AND payload->>'response_id'=%s AND payload->>'status'='AMBIGUOUS'
+           LIMIT 1""",
+        (user_id,instance_id,str(response_id)),
+    )
+    if cur.fetchone() is not None:
+        return
     is_decision=bool(_CHOICE_QUESTION.match(label))
     act_kind="DECISION" if is_decision else "QUESTION"
     origin_kind=(
