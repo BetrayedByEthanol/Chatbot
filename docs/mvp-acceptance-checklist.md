@@ -221,6 +221,8 @@ Use existing ordered migration/test fixtures, record skips/reasons; a run withou
 
 ## 4. Q — Real-model conversational quality (MVP-04)
 
+MVP-04C.2 candidate evidence: [contextual replies and correction authority](model-comparison.md#mvp-04c2--contextual-replies-and-correction-authority) adds short-reply compatibility, bounded clarification guidance and correction/source-authority separation. Q04/Q07 and PPA-US-017/090/105 remain pending broader evidence; C15/C16 are conversational fixtures only, with no registered game/weather owner. No acceptance promotion.
+
 MVP-04C first increment: [pragmatic and dialogue safeguards](model-comparison.md#mvp-04c--current-turn-pragmatics-and-dialogue-repair-first-increment) contributes targeted B-X1/B-X2 and Q04/Q05/Q07 evidence. No new acceptance; independent reviews, real-model reruns and owner-authority C15/C16 cases remain open. Model-only retains host safeguards; distinguish raw model behavior from delivered output.
 
 MVP-04B candidate evidence: [grounding and presentation](model-comparison.md#mvp-04b--grounding-and-response-presentation) adds direct clock qualifiers, personal-fact source guidance and narrowly scoped eligible Memory retrieval, plus response-presentation guidance. Q04/Q05/Q07 remain pending real-model verification and adjudication. No new acceptance decision.

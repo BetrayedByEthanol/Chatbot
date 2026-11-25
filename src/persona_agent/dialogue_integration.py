@@ -547,6 +547,16 @@ def resolve_auto_question_on_ingress(
             or acts[0]["sequence"]!=turn_sequence-1
             or acts[0]["delivery_status"]!="DELIVERED"):
         return
+    # A literal yes/no is not an answer to a wh-question or an
+    # alternative; uncertainty and bare references never close a question.
+    # Keep the existing free-text path for longer answers in this slice.
+    from .contextual_interpretation import (
+        short_reply_kind, short_reply_answers_question,
+    )
+    if short_reply_kind(value) is not None and not short_reply_answers_question(
+        value, acts[0]["label"],
+    ):
+        return
     _link_turn(cur,conversation_id,user_id,instance_id,current,turn_id)
     cur.execute(
         """UPDATE dialogue_pending_acts

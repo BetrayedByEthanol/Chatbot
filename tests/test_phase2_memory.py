@@ -293,3 +293,33 @@ def test_direct_personal_fact_retrieves_only_eligible_scoped_memory(dsn):
     context=call(dsn,prepare_text_context,actor(user),unknown.turn_id)
     assert "phone: Fairphone" not in context.messages[0].content
     assert "if unsupported, say you don't know" in context.messages[0].content
+
+def test_conversational_correction_claim_requires_memory_owner_amendment(dsn):
+    from persona_agent.conversation import respond_to_text
+    from persona_agent.conversation_contracts import ModelReply
+
+    user,instance,_=seed(dsn)
+    conversation=uuid4()
+    old=turn(dsn,user,instance,conversation,"My favorite drink is tea.")
+    saved=call(dsn,admit_memory,actor(user),candidate(instance,conversation,old))
+    new=turn(dsn,user,instance,conversation,"Actually my favorite drink is coffee.")
+    class Model:
+        def generate(self,messages):
+            assert "Correction authority (advisory)" in messages[0].content
+            return ModelReply(model_id="correction-evidence-test",
+                              text="You've corrected your preference to coffee.")
+    call(dsn,respond_to_text,actor(user),new.turn_id,Model())
+    # The assistant's response does not itself amend the authoritative slot.
+    before=call(dsn,search_memories,actor(user),instance,"favorite drink")
+    assert len(before)==1 and before[0].value_text=="tea" and before[0].version==1
+    changed=call(dsn,amend_memory,actor(user),
+                 correction(instance,conversation,new,saved.memory_id))
+    assert changed.version==2
+    after=call(dsn,search_memories,actor(user),instance,"favorite drink")
+    assert len(after)==1 and after[0].value_text=="coffee" and after[0].version==2
+    assert after[0].source_turn_id==new.turn_id
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            """SELECT action,version,source_turn_id FROM memory_revisions
+               WHERE memory_id=%s ORDER BY version""",(saved.memory_id,),
+        ).fetchall()==[("ADMIT",1,old.turn_id),("CORRECT",2,new.turn_id)]
