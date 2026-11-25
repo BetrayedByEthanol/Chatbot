@@ -651,6 +651,60 @@ historical retrieval, or general identity resolution. These are follow-up
 05C/05D/07B concerns. Explicit owner registration is an API contract,
 not a new UI. No acceptance promotion or frozen benchmark changes.
 
+### MVP-05C.2 — Conversational entity reports and delivered clarification
+
+The bounded positive whole-source grammar recognizes name-like first-person
+relation reports, explicit remember requests, "Another NAME is my RELATION"
+as a distinct identity, and "Actually, NAME is my RELATION" as a correction.
+Unmarked names require capitalized name-like tokens; quoted, qualified,
+compound, hypothetical and unsupported relation inputs abstain. The report
+is a user assertion, not verified identity. First reports can register when
+the scoped name/alias is absent; matching eligible reports do not create
+another identity or revision. Differing plain reports and ambiguous,
+ineligible, unknown or incompatible corrections request identification
+rather than changing any record. Explicit distinction creates a separate
+identity; it never merges. No automatic alias discovery or semantic
+matching is introduced.
+
+Conversation dispatch uses a direct report route; forced model-only commit
+also validates the persisted user text independently of model output.
+Reuse typed owner commands, receipts, whole-source validation, scope,
+selection, versions, immutable revisions and transactional event/outbox.
+The owner mutation and response commit are atomic, after current-turn
+fences; no learning on a failed or superseded response. Previously consumed
+sources read the existing eligible identity without a duplicate revision.
+All entity API writers take a short persona-scoped transaction advisory
+lock after selection SHARE and before receipt/entity row/event locks;
+natural report commits acquire it before conversation/turn row locks.
+This serializes first-name absence checks, including with explicit API
+registration. No lock spans inference. Existing identity revision triggers
+still advance the historical read dependency; no schema migration.
+
+Named recall that actually presents two distinct choices stores their IDs,
+versions and relation labels in the existing trusted grounding event.
+A bounded short phrase such as "My colleague" routes directly only if
+that choice response was delivered before this input, in the same
+conversation and selection generation, immediately adjacent, without an
+intervening delivered tool follow-up. At commit re-read the original
+named lookup and compare the full displayed candidate set. A unique
+matching relation resolves; changed, wrong or still-ambiguous matches
+request explicit identification. No identity mutation or goal/decision
+authorization follows from a short reply. Generic pending-act creation
+is skipped for grounded ambiguous entity responses to avoid competing
+question state. Known adjacent pronouns reuse the stronger delivery gate.
+Legacy events without choice snapshots do not create a short-reply route.
+
+This is a deliberately bounded conversational admission/repair slice.
+Name-like grammar is not proof of a real-world person or distinct identity.
+A blocked name can produce a generic abstention without disclosing its
+stored content; existence inference and full privacy/deletion policy
+need further work. No persistent clarification across intervening topics,
+automatic ambiguous mutation resolution, broad alias learning, general
+pronoun inference, multi-relation identities, entity-to-entity edges or
+entity-conditioned historical retrieval. No new scheduler/model pass or
+acceptance promotion. Test concurrency and atomic rollback in PostgreSQL;
+measure latency separately.
+
 ## Tests
 
 ```bash

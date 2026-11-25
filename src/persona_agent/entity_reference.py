@@ -104,8 +104,8 @@ _REPORT = re.compile(
 )
 _NON_NAME_WORDS = re.compile(
     r"\b(?:i|we|you|a|an|the|another|actually|remember|please|if|"
-    r"perhaps|probably|suppose|imagine|pretend|formerly|example|"
-    r"fictional|would|could|might|was|is|joke)\b",re.I,
+    r"perhaps|probably|possibly|likely|suppose|imagine|pretend|formerly|example|"
+    r"fictional|would|could|might|was|is|joke|yes|no|never|someone|somebody)\b",re.I,
 )
 _PROPER_NAME = re.compile(r"[A-Z][A-Za-z'’-]*(?: [A-Z][A-Za-z'’-]*){0,2}")
 _CLARIFICATION = re.compile(

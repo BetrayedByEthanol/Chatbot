@@ -73,6 +73,12 @@ def _adjacent_grounding(cur,*,user_id,instance_id,conversation_id,sequence):
              AND anchor.sequence=%s AND r.delivery_status='DELIVERED'
              AND r.selection_generation=anchor.selection_generation
              AND r.delivered_at<=anchor.created_at
+             AND NOT EXISTS (
+                 SELECT 1 FROM conversation_assistant_followups f
+                 WHERE f.user_id=anchor.user_id AND f.instance_id=anchor.instance_id
+                   AND f.conversation_id=anchor.conversation_id
+                   AND f.delivered_at>r.delivered_at AND f.delivered_at<=anchor.created_at
+             )
            LIMIT 2""",
         (user_id,instance_id,conversation_id,sequence),
     )

@@ -50,8 +50,8 @@ def apply_entity_report(cur,actor,context,scoped):
         ))
         return read(saved.entity_id)
 
-    # Include ineligible names in admission's absence check, but NEVER
-    # expose their names, relation or existence in a response. This avoids
+    # Include ineligible names in admission's absence check, but do not
+    # return their names or relation. A generic abstention avoids
     # resurrecting a retracted/private identity as a new saved identity.
     cur.execute(
         """SELECT entity_id,entity_kind,relation,version,source_turn_at,
@@ -59,7 +59,7 @@ def apply_entity_report(cur,actor,context,scoped):
                    AND (expires_at IS NULL OR expires_at>clock_timestamp())) AS eligible
            FROM memory_entities WHERE user_id=%s AND instance_id=%s
              AND name_keys @> ARRAY[%s]::text[]
-           ORDER BY entity_id LIMIT 2""",
+           ORDER BY entity_id LIMIT 2 FOR UPDATE""",
         (user_id,instance_id,normalize_name(report.name)),
     )
     matches=cur.fetchall()
