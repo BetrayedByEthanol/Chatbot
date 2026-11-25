@@ -171,3 +171,54 @@ def test_host_persists_explicit_zone_without_treating_utc_fallback_as_user_zone(
             """SELECT temporal_context->>'timezone_name' FROM conversation_turns
                WHERE conversation_id=%s ORDER BY sequence""",(identity.conversation_id,),
         ).fetchall()==[(None,),("Europe/Berlin",)]
+
+
+@pytest.mark.parametrize("original,expected",[
+    (None,"UTC"),("Europe/Berlin","Europe/Berlin"),
+])
+def test_pending_auto_clock_retry_uses_original_ingress_zone(dsn,original,expected):
+    from test_phase1_conversation import seed,actor,call,command,FakeGateway
+    from persona_agent.conversation import ingest_text
+    from persona_agent.response_orchestrator import respond_to_user_text
+    user,instance=seed(dsn)
+    request=command(instance,text="What time is it?")
+    turn=call(dsn,ingest_text,actor(user),request,timezone_name=original)
+    replay=call(dsn,ingest_text,actor(user),request,timezone_name="Asia/Tokyo")
+    assert replay.replayed and replay.turn_id==turn.turn_id
+    model=FakeGateway("Not used")
+    reply=call(dsn,respond_to_user_text,actor(user),turn.turn_id,model,
+               default_timezone="Asia/Tokyo")
+    assert reply.text.startswith(f"Current time in {expected}:")
+    assert not model.calls
+
+
+def test_temporal_anchors_do_not_cross_persona_switch(dsn):
+    from test_phase1_conversation import seed,actor,call,command
+    from persona_agent.conversation import ingest_text,prepare_text_context
+    from persona_agent.lifecycle import SwitchPersonaCommand,switch_persona
+    user,instance,other=seed(dsn,two=True)
+    first=call(dsn,ingest_text,actor(user),command(instance,text="Hello"))
+    call(dsn,switch_persona,actor(user),SwitchPersonaCommand(
+        expected_instance_id=instance,target_instance_id=other,
+        expected_generation=1,idempotency_key=str(uuid4()),
+    ))
+    second=call(dsn,ingest_text,actor(user),
+                command(other,text="Hello",generation=2))
+    snapshot=call(dsn,prepare_text_context,actor(user),second.turn_id).temporal_context
+    assert snapshot.previous_message is None
+    assert snapshot.previous_other_session is None
+    assert snapshot.first_recorded.turn_id==second.turn_id
+    assert str(first.turn_id) not in snapshot.model_dump_json()
+
+
+def test_unsupported_relative_wording_gets_qualified_context():
+    receipt=InteractionAnchor(turn_id=uuid4(),conversation_id=uuid4(),
+                              at=utc("2026-11-25T11:00:00+00:00"))
+    context=TemporalContext(
+        receipt=receipt,timezone_name=None,local_receipt_at=None,
+        first_recorded=receipt,previous_message=None,previous_other_session=None,
+        relative=None,
+    )
+    assert "No exact relative-time resolution recorded" in temporal_context_block(
+        "Next Friday",context,max_chars=850,
+    )

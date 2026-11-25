@@ -206,6 +206,7 @@ _TEMPORAL_CUE = re.compile(
     r"previous (?:session|message)|how long (?:ago|since|have)|"
     r"first (?:met|talked|interaction)|since we (?:last|first)|"
     r"current (?:date|time)|what (?:date|time|day) is it|"
+    r"(?:next|last) (?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)|"
     r"in \d+ (?:minutes?|hours?|days?|weeks?))\b",re.I,
 )
 _GREETING = re.compile(r"(?:hi|hello|hey|good morning|good evening|i'm back)[.!]?",re.I)
@@ -222,7 +223,7 @@ def temporal_context_block(text: str, context: TemporalContext, *, max_chars: in
     if context.local_receipt_at is None:
         parts.append("User timezone unknown; ask if local date/time is needed.")
     else:
-        parts.append(f"Configured timezone {context.timezone_name}; local receipt "
+        parts.append(f"Host-supplied timezone {context.timezone_name}; local receipt "
                      f"{context.local_receipt_at.isoformat()}.")
     if context.relative is not None:
         relative=context.relative
@@ -234,6 +235,12 @@ def temporal_context_block(text: str, context: TemporalContext, *, max_chars: in
         else:
             parts.append("Relative expression unresolved ("+relative.status+
                          "); clarify timezone or local time if needed.")
+    elif re.search(
+        r"\b(?:today|tomorrow|yesterday|tonight|next|in \d+ (?:minutes?|hours?|days?|weeks?))\b",
+        value,re.I,
+    ):
+        parts.append("No exact relative-time resolution recorded for this wording; "
+                     "clarify an ambiguous date/time before treating it as definite.")
     if _GREETING.fullmatch(value) or re.search(
         r"\b(?:last|previous|since|first|how long)\b",value,re.I,
     ):

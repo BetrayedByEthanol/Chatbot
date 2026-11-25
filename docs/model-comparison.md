@@ -460,9 +460,11 @@ assistant output, timers and notification policies cannot establish presence.
 The same immutable snapshot accompanies full and minimal response contexts.
 Host timezone metadata is optional and not inferred from user text, device
 location or quiet-hours policy. Existing UTC-labeled clock fallback remains
-available without pretending UTC is the user's timezone. An explicit zone
-applies to that input; changes apply to subsequent new turns, never replay
-or old date resolution. The metadata follows the existing ingress
+available without pretending UTC is the user's timezone. New auto-routed
+clock requests use their persisted zone or UTC, including a pending-turn
+retry with a different host default; the older default argument is retained
+for pre-migration turns. An explicit zone applies to that input; changes
+apply to subsequent new turns, never replay or old date resolution. The metadata follows the existing ingress
 idempotency convention (not part of the command fingerprint).
 Legacy rows get a qualified read-only snapshot with unknown timezone.
 

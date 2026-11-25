@@ -52,8 +52,9 @@ def respond_to_user_text(
     # An absent zone retains the existing explicitly labeled UTC fallback;
     # the temporal snapshot itself never treats that fallback as user-local.
     snapshot=item["temporal_context"]
-    zone=snapshot.get("timezone_name") if snapshot is not None else None
-    decision=decide_response(item["input_text"],default_timezone=zone or default_timezone)
+    zone=(snapshot["timezone_name"] or "UTC"
+          if snapshot is not None else default_timezone)
+    decision=decide_response(item["input_text"],default_timezone=zone)
     if decision.route=="PREFERENCE_RECALL":
         return respond_with_preference_recall(connection,actor,turn_id)
     if decision.route=="PERSONAL_FACT_RECALL":
