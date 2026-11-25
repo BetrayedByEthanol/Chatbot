@@ -61,6 +61,10 @@ PPA-US-018 / 030 / 031 / 034 / 092 / 117: [exact saved personal-fact grounding](
 
 PPA-US-012 / 020 / 021 / 022 / 023 / 111: [responsive tool and terminal outcome paths](model-comparison.md#mvp-04d--responsive-tool-and-terminal-outcome-paths) separate deterministic tool snapshots from model context, validate waits before admission, surface terminal failure/cancellation/missing-result notices through existing relevance and delivery gates, and replay acknowledged follow-up text. [PostgreSQL regressions](../tests/test_phase1_tools.py) include a complete new response while the old worker is blocked. No new effectful tools, retry authority, release targets, real hardware evidence or I/P/M promotion.
 
+## MVP-05A evidence update (25 November 2026)
+
+PPA-US-091 / 018 / 020 / 113: [trusted temporal context](model-comparison.md#mvp-05a--trusted-temporal-context) persists the primary-user receipt snapshot, optional explicit host timezone, interaction anchors and bounded relative date/time resolution. [Focused and PostgreSQL tests](../tests/test_mvp05a_temporal_context.py) cover DST, scope, replay, legacy input, missing timezone and selective context. General temporal language, persisted user timezone configuration beyond host metadata, session-end/presence semantics and measured query cost remain open; no I/P/M promotion.
+
 ## Immediate follow-up
 
 1. PPA-US-016, 024, 090, 092, 088: evaluate real-model quality and adjudicate critical flags; fix grounded failure cases before adding infrastructure.

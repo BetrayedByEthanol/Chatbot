@@ -445,6 +445,47 @@ migration, new tool/provider or intentional-silence policy. No numeric
 latency threshold or quality acceptance promotion. Measure the actual host
 latency and queue/resource behavior separately on target hardware.
 
+### MVP-05A — Trusted temporal context
+
+Conversation captures a typed receipt-time snapshot in the existing ingress
+transaction, keyed by the authenticated turn. Migration 0043 adds nullable
+JSONB and a scoped temporal index; old inputs are not assigned invented
+timezones. The database-generated receipt instant, explicit host-provided
+IANA zone (or unknown), local offset, earliest recorded input, previous
+recorded input and last earlier input in another conversation are distinct.
+The latter is a prior-session interaction anchor, not an observed session
+end or logout. Only source-linked primary-user turns count; callbacks,
+assistant output, timers and notification policies cannot establish presence.
+
+The same immutable snapshot accompanies full and minimal response contexts.
+Host timezone metadata is optional and not inferred from user text, device
+location or quiet-hours policy. Existing UTC-labeled clock fallback remains
+available without pretending UTC is the user's timezone. An explicit zone
+applies to that input; changes apply to subsequent new turns, never replay
+or old date resolution. The metadata follows the existing ingress
+idempotency convention (not part of the command fingerprint).
+Legacy rows get a qualified read-only snapshot with unknown timezone.
+
+Complete standalone relative expressions today/tomorrow/yesterday,
+24-hour HH:MM local wall times, simple date questions and bounded
+"in N minutes/hours" durations receive typed, persisted resolution. Local
+dates do not invent midnight; durations use UTC elapsed time. DST gaps and
+folds abstain rather than rolling forward or choosing an offset. General
+natural-language scheduling, relative dates embedded in instructions,
+calendar policies and arbitrary date ranges are not implemented here.
+A resolved timestamp is evidence, never an approved notification,
+Goal deadline, operation admission or presence transition.
+
+Only temporal cues and short greetings receive bounded prompt context;
+ordinary model requests do not acquire temporal prose. Every new input
+performs one scoped indexed anchor query; target-host query cost and
+long-session selectivity need measurement. The snapshot reflects prior
+committed visible inputs, not a total order across concurrent sessions.
+Earliest recorded contact is not proof of actual first acquaintance.
+Tests cover DST, timezone change, unknown zone, elapsed instants, legacy
+reads, scoped history, restart/replay and clock routing. No new acceptance
+promotion or frozen scenario modifications.
+
 ## Tests
 
 ```bash

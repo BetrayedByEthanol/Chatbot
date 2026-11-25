@@ -102,7 +102,7 @@ class LocalAcceptanceSession:
 
     def message(
         self, *, text: str, idempotency_key: str,
-        mode: str="auto", timezone_name: str="UTC",
+        mode: str="auto", timezone_name: str | None=None,
         max_words: int=5,
     ) -> dict:
         if mode not in ("auto","model","time","analyze"):
@@ -116,18 +116,18 @@ class LocalAcceptanceSession:
                     expected_generation=self.identity.generation,
                     idempotency_key=idempotency_key,
                     text=text,
-                ),
+                ),timezone_name=timezone_name,
             )
         with self._connection() as conn:
             if mode=="auto":
                 reply=respond_to_user_text(
                     conn,self.actor,entered.turn_id,self.gateway,
-                    default_timezone=timezone_name,
+                    default_timezone=timezone_name or "UTC",
                     max_words=max_words,await_seconds=self.await_seconds,
                 )
             elif mode=="time":
                 reply=respond_with_time(
-                    conn,self.actor,entered.turn_id,timezone_name=timezone_name,
+                    conn,self.actor,entered.turn_id,timezone_name=timezone_name or "UTC",
                 )
             elif mode=="analyze":
                 reply=respond_to_text_analysis(
@@ -393,7 +393,7 @@ def serve_jsonl(session: LocalAcceptanceSession, lines) -> None:
                     text=packet["text"],
                     idempotency_key=packet["idempotency_key"],
                     mode=packet.get("mode","auto"),
-                    timezone_name=packet.get("timezone","UTC"),
+                    timezone_name=packet.get("timezone"),
                     max_words=packet.get("max_words",5),
                 )
             elif action=="recover":
