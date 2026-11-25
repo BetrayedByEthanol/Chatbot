@@ -6,6 +6,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from .temporal_context import TemporalContext
+
 
 class TextInputCommand(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -91,6 +93,7 @@ class ResponseContext:
     messages: tuple[ModelMessage, ...]
     procedure_fence: ProcedureContextFence | None = None
     preference_fence: PreferenceReadFence | None = None
+    temporal_context: TemporalContext | None = None
 
 
 class TextModelGateway(Protocol):

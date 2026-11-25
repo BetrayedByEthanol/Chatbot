@@ -37,7 +37,7 @@ def respond_to_user_text(
     _require_actor(actor)
     with connection.cursor(row_factory=dict_row) as cur:
         cur.execute(
-            """SELECT t.input_text
+            """SELECT t.input_text,t.temporal_context
                FROM conversation_turns t
                JOIN conversations c ON c.conversation_id=t.conversation_id
                  AND c.user_id=t.user_id AND c.instance_id=t.instance_id
@@ -48,7 +48,13 @@ def respond_to_user_text(
     if item is None:
         raise PermissionDenied("response input outside authenticated scope")
 
-    decision=decide_response(item["input_text"],default_timezone=default_timezone)
+    # Use the persisted ingress zone, not a different host setting on retry.
+    # An absent zone retains the existing explicitly labeled UTC fallback;
+    # the temporal snapshot itself never treats that fallback as user-local.
+    snapshot=item["temporal_context"]
+    zone=(snapshot["timezone_name"] or "UTC"
+          if snapshot is not None else default_timezone)
+    decision=decide_response(item["input_text"],default_timezone=zone)
     if decision.route=="PREFERENCE_RECALL":
         return respond_with_preference_recall(connection,actor,turn_id)
     if decision.route=="PERSONAL_FACT_RECALL":

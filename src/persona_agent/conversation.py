@@ -108,7 +108,8 @@ def _event(cursor, *, user_id: UUID, instance_id: UUID, conversation_id: UUID,
 
 def ingest_text(connection: Connection, actor: TrustedActor,
                 command: TextInputCommand, *,
-                provenance: VoiceInputProvenance | None = None) -> TextInputResult:
+                provenance: VoiceInputProvenance | None = None,
+                timezone_name: str | None = None) -> TextInputResult:
     """Commit user text, a receipt, event and outbox before model inference.
 
     A duplicate authenticated command replays its original turn even after a
@@ -118,6 +119,11 @@ def ingest_text(connection: Connection, actor: TrustedActor,
     _require_actor(actor)
     if provenance is not None and type(provenance) is not VoiceInputProvenance:
         raise TypeError("voice provenance must be a validated host contract")
+    # Explicit trusted host metadata; never infer a timezone from message text.
+    from .temporal_context import (
+        InteractionAnchor, capture_temporal_context, validate_timezone,
+    )
+    validate_timezone(timezone_name)
     # Do not include optional metadata in the existing text command fingerprint:
     # historical idempotency receipts must remain valid across the upgrade.
     fingerprint = _fingerprint(command)
@@ -206,10 +212,18 @@ def ingest_text(connection: Connection, actor: TrustedActor,
                     turn_id,conversation_id,user_id,instance_id,sequence,
                     selection_generation,source_id,input_text
                 ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+                RETURNING created_at
                 """,
                 (turn_id,command.conversation_id,actor.user_id,
                  command.instance_id,seq,command.expected_generation,
                  actor.source_id,command.text),
+            )
+            receipt_at=cursor.fetchone()["created_at"]
+            temporal=capture_temporal_context(
+                cursor,user_id=actor.user_id,instance_id=command.instance_id,
+                receipt=InteractionAnchor(turn_id=turn_id,
+                    conversation_id=command.conversation_id,at=receipt_at),
+                text=command.text,timezone_name=timezone_name,
             )
             cursor.execute(
                 """
@@ -251,9 +265,9 @@ def ingest_text(connection: Connection, actor: TrustedActor,
             # Preserve provenance for optional interpretation derived from
             # a later response without searching the event journal by JSON.
             cursor.execute(
-                "UPDATE conversation_turns SET source_input_event_id=%s "
+                "UPDATE conversation_turns SET source_input_event_id=%s,temporal_context=%s::jsonb "
                 "WHERE turn_id=%s AND user_id=%s",
-                (event_id,turn_id,actor.user_id),
+                (event_id,temporal.model_dump_json(),turn_id,actor.user_id),
             )
             result = TextInputResult(
                 conversation_id=command.conversation_id,
@@ -316,7 +330,7 @@ def _pending_response_anchor(cursor, actor: TrustedActor, turn_id: UUID):
     cursor.execute(
         """
         SELECT t.conversation_id,t.instance_id,t.selection_generation,t.input_text,
-               t.status,t.sequence,t.created_at AS turn_at,
+               t.temporal_context,t.status,t.sequence,t.created_at AS turn_at,
                c.revision,c.last_input_turn_id,
                c.focus_thread_id,c.summary_watermark,p.stable_key,i.label
         FROM conversation_turns t
@@ -335,6 +349,11 @@ def _pending_response_anchor(cursor, actor: TrustedActor, turn_id: UUID):
     if item["status"]!="PENDING" or item["last_input_turn_id"]!=turn_id:
         raise StaleConversation("only the latest pending input may be answered")
     return item
+
+
+def _temporal_from_anchor(cursor,actor,item,turn_id):
+    from .temporal_context import temporal_from_anchor
+    return temporal_from_anchor(cursor,user_id=actor.user_id,item=item,turn_id=turn_id)
 
 
 def prepare_direct_tool_context(
@@ -371,6 +390,7 @@ def prepare_direct_tool_context(
                 instance_id=item["instance_id"],
                 selection_generation=item["selection_generation"],
                 conversation_revision=item["revision"],messages=messages,
+                temporal_context=_temporal_from_anchor(cursor,actor,item,turn_id),
             )
 
 
@@ -445,6 +465,14 @@ def prepare_text_context(
             boundary = capability_claim_context(history[-1].content)
             if len(prompt)+len(boundary)+len(history[-1].content)<max_context_chars:
                 prompt += boundary
+            # Receipt-time evidence is immutable across retries. Only inject
+            # a bounded block on relevant temporal questions or greetings.
+            temporal=_temporal_from_anchor(cursor,actor,item,turn_id)
+            from .temporal_context import temporal_context_block
+            prompt+=temporal_context_block(
+                history[-1].content,temporal,
+                max_chars=min(850,max_context_chars-len(prompt)-len(history[-1].content)-160),
+            )
             # Current-turn conversational constraints precede optional
             # history and model-derived topic/affect hints.
             from .pragmatic_response import pragmatic_context
@@ -863,7 +891,7 @@ def prepare_text_context(
                 selection_generation=item["selection_generation"],
                 conversation_revision=item["revision"],
                 messages=(system,*kept),
-                procedure_fence=procedure_fence,
+                procedure_fence=procedure_fence,temporal_context=temporal,
             )
 
 

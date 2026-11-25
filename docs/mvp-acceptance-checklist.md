@@ -221,6 +221,8 @@ Use existing ordered migration/test fixtures, record skips/reasons; a run withou
 
 ## 4. Q — Real-model conversational quality (MVP-04)
 
+MVP-05A candidate evidence: [trusted temporal context](model-comparison.md#mvp-05a--trusted-temporal-context) adds source-linked ingress snapshots and scoped relative-time resolution; PPA-US-091 remains partial pending general relative language, user timezone configuration and measured temporal behavior. No new acceptance promotion.
+
 MVP-04D candidate evidence: [responsive tool and terminal outcome paths](model-comparison.md#mvp-04d--responsive-tool-and-terminal-outcome-paths) extends existing P1 tool contracts with terminal failure/cancellation notices, direct tool context and persisted outcome delivery/replay. Existing P0 retries/authority unchanged. Q08 measured target-host latency and independent behavioral acceptance remain pending; no acceptance promotion.
 
 MVP-04C.3 candidate evidence: [exact saved personal-fact grounding](model-comparison.md#mvp-04c3--exact-saved-personal-fact-grounding) adds narrowly routed saved-fact responses and canonical rendering on forced model-only. Q04/Q07 still need real-model/held-out verification and independent review. Frozen benchmark unchanged, expected auto call count now 22; do not treat guarded delivered text as raw model output.
