@@ -89,7 +89,11 @@ def test_wider_25_turn_auto_scenario_recalls_exact_persisted_preferences(isolate
     clock=next(x for x in messages if x["input"].startswith("What time is it right now?"))
     assert clock["model_id"]==TIME_TOOL
     assert clock["assistant"].startswith("Current time in ")
-    assert model.calls==23  # Clock and preference recall use existing trusted routes.
+    from persona_agent.personal_fact_recall import ROUTE_ID as FACT_ROUTE
+    personal=next(x for x in messages if x["input"]=="By the way, what car do I drive?")
+    assert personal["model_id"]==FACT_ROUTE
+    assert personal["assistant"]=="I don't have a reliable saved answer for that."
+    assert model.calls==22  # Clock, preference and personal-fact recall.
 
     after=next(
         x for x in report["snapshots"]

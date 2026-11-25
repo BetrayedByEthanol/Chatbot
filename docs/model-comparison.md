@@ -363,6 +363,48 @@ verification, general semantic reference resolution and sarcasm likewise
 remain open. Existing Memory, preference and pragmatic output safeguards
 are unchanged. No new status promotion, no benchmark scenario changes.
 
+### MVP-04C.3 — Exact saved personal-fact grounding
+
+The 04B archive demonstrated that prompt-only guidance did not prevent the
+7B model from inventing a vehicle. For three supported standalone relations
+(car driven, phone used, camera owned), auto mode now uses
+`conversation.personal_fact_recall.v1` instead of a model call. Model-only
+still runs its original inference but the same fenced commit renders the
+answer from current eligible Memory evidence, not generated prose. This is
+canonical presentation of a narrowly specified saved fact, not a general
+semantic verifier. Other questions retain model routing; advice, different
+relations, quotations and mixed requests abstain.
+
+The Memory-owned exact FACT/user/predicate slot is read in the short response
+commit after selection/current-turn/revision checks. Existing slot revisions
+are share-locked before reading the source and conflict eligibility. Missing,
+expired, retracted, non-normal, future-source and unsupported-source records
+produce a bounded unknown answer. Newer unresolved extracted conflicts
+produce a disputed answer without either value. The integration conflict
+fixture seeds the existing candidate schema directly because device/vehicle
+extraction is not enabled; it does not claim real extraction coverage.
+A supported source must be a
+complete first-person assertion of the requested relation and value, not a
+substring from a qualified, quoted or historical claim. A known answer is
+explicitly the last saved user report, not independent verification or a
+claim about the current physical world. Recall never writes Memory.
+
+The source-correlated `conversation.response.personal_fact_grounded.v1`
+event records status and policy revision; known responses include Memory
+identity/version/source turn, but unknown/disputed replies omit these
+references. Model-only records whether canonical rendering replaced its
+reply. No raw values are added to audit payloads. The frozen scenario is
+unchanged; its auto smoke now expects 22 model calls. Model-only is still
+host-guarded, so inspect raw provider output separately.
+
+Limitations: three supported relations, exact slot keys, bounded English
+source grammar and existing Memory admission/privacy rules. No automatic
+device/vehicle extraction, raw-transcript recovery, semantic entity
+resolution, or detection of every unconsolidated correction. A missing
+eligible saved record does not mean the user never said it; a known
+response describes the saved report. Broader recall and correction lineage
+remain MVP-05B/C work. No new acceptance promotion.
+
 ## Tests
 
 ```bash

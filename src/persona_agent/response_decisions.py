@@ -43,17 +43,25 @@ _TIME_QUERY = re.compile(
 _PERSONAL_FACT_QUERY = re.compile(
     r"^(?:by the way,\s+)?(?:what|which)\s+"
     r"(?P<topic>[a-z][a-z-]{1,30}(?:\s+[a-z][a-z-]{1,30}){0,2})"
-    r"\s+do i\s+(?:drive|own|use|wear|prefer|like)\s*\?$",
+    r"\s+do i\s+(?P<verb>drive|own|use|wear|prefer|like)\s*\?$",
     re.I,
 )
 
 
+# These exact subject/relationship pairs have explicit source semantics.
+# An arbitrary noun in "What command do I use?" is not a recall request.
+_PERSONAL_FACT_RELATIONS = {"car": "drive", "phone": "use", "camera": "own"}
+
+
 def personal_fact_topic(text: str) -> str | None:
-    """Return the explicitly requested topic, not an inferred personal fact."""
+    """Recognize only a supported standalone personal-fact recall question."""
     if not isinstance(text, str) or not 1 <= len(text) <= 160:
         return None
     match = _PERSONAL_FACT_QUERY.fullmatch(text.strip())
-    return match["topic"].casefold() if match else None
+    if match is None:
+        return None
+    topic, verb = match["topic"].casefold(), match["verb"].casefold()
+    return topic if _PERSONAL_FACT_RELATIONS.get(topic) == verb else None
 
 
 def is_direct_clock_question(text: str) -> bool:
@@ -115,7 +123,7 @@ def is_historical_emoji_preference_query(text: str) -> bool:
 
 @dataclass(frozen=True)
 class ResponseDecision:
-    route: Literal["MODEL", "CLOCK", "TEXT_ANALYSIS", "PREFERENCE_RECALL"]
+    route: Literal["MODEL", "CLOCK", "TEXT_ANALYSIS", "PREFERENCE_RECALL", "PERSONAL_FACT_RECALL"]
     timezone_name: str | None = None
     preference_topics: tuple[str, ...] = ()
     method_revision: str = "mvp01d.rules.1"
@@ -163,6 +171,8 @@ def decide_response(text: str, *, default_timezone: str = "UTC") -> ResponseDeci
     topics=preference_recall_topics(cleaned)
     if topics is not None:
         return ResponseDecision("PREFERENCE_RECALL",preference_topics=topics)
+    if personal_fact_topic(cleaned) is not None:
+        return ResponseDecision("PERSONAL_FACT_RECALL",method_revision="mvp04c3.rules.1")
     match = _TIME_QUERY.fullmatch(cleaned) if is_direct_clock_question(cleaned) else None
     if match:
         place = match.group("place")

@@ -221,6 +221,8 @@ Use existing ordered migration/test fixtures, record skips/reasons; a run withou
 
 ## 4. Q — Real-model conversational quality (MVP-04)
 
+MVP-04C.3 candidate evidence: [exact saved personal-fact grounding](model-comparison.md#mvp-04c3--exact-saved-personal-fact-grounding) adds narrowly routed saved-fact responses and canonical rendering on forced model-only. Q04/Q07 still need real-model/held-out verification and independent review. Frozen benchmark unchanged, expected auto call count now 22; do not treat guarded delivered text as raw model output.
+
 MVP-04C.2 candidate evidence: [contextual replies and correction authority](model-comparison.md#mvp-04c2--contextual-replies-and-correction-authority) adds short-reply compatibility, bounded clarification guidance and correction/source-authority separation. Q04/Q07 and PPA-US-017/090/105 remain pending broader evidence; C15/C16 are conversational fixtures only, with no registered game/weather owner. No acceptance promotion.
 
 MVP-04C first increment: [pragmatic and dialogue safeguards](model-comparison.md#mvp-04c--current-turn-pragmatics-and-dialogue-repair-first-increment) contributes targeted B-X1/B-X2 and Q04/Q05/Q07 evidence. No new acceptance; independent reviews, real-model reruns and owner-authority C15/C16 cases remain open. Model-only retains host safeguards; distinguish raw model behavior from delivered output.
