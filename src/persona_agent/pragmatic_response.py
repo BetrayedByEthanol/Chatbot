@@ -49,7 +49,25 @@ _UNDECIDED = re.compile(
     r"(?:that|this|it) (?:isn't|is not) a commitment))",
     re.I,
 )
-_NUMBERED_MENU = re.compile(r"(?m)^\s*(?:[1-9]\d?[.)]|[-*])\s+\S")
+# Formatting alone is not evidence of a decision or agenda. A list can
+# contain ordinary conversational information. Require an explicit directive,
+# user-facing menu introduction, or proposed agenda before replacing a reply.
+_CHOICE_MENU = re.compile(
+    r"(?m)^\s*(?:here (?:are|is) (?:two|three|some|a few|several|\d+) "
+    r"(?:options|choices) for you|your (?:options|choices) are)\s*:",
+    re.I,
+)
+_AGENDA_INTRO = re.compile(
+    r"(?m)^\s*(?:here(?:'s| is) (?:a|the|your) "
+    r"(?:plan|schedule|agenda|routine)(?: for [^:\r\n]+)?"
+    r"|your (?:plan|schedule|agenda|routine)(?: for [^:\r\n]+)?"
+    r"|here are the steps you should follow)\s*:",
+    re.I,
+)
+_GOAL_CHOICE = re.compile(
+    r"(?:^|[.!?;\n]\s*)(?:please\s+)?(?:choose|pick|select)"
+    r"\s+(?:a|the|your|one) goal\b", re.I,
+)
 _CHOICE_PROMPT = re.compile(
     r"(?:^|[.!?;\n]\s*)(?:please\s+)?(?:choose|pick|decide|select)\b",
     re.I,
@@ -115,7 +133,7 @@ def pragmatic_context(text: str, *, max_chars: int) -> str:
 class PragmaticEnforcement:
     text: str
     reason: str | None = None
-    policy_revision: str = "mvp04c.1"
+    policy_revision: str = "mvp04c.2"
 
 
 def enforce_pragmatic_reply(
@@ -132,22 +150,23 @@ def enforce_pragmatic_reply(
         return PragmaticEnforcement(reply)
     cue = pragmatic_cue(user_text)
     normalized = reply.replace("’", "'")
-    menu = len(_NUMBERED_MENU.findall(reply)) >= 2
+    choice = bool(_CHOICE_MENU.search(normalized) or _CHOICE_PROMPT.search(normalized))
+    agenda = bool(_AGENDA_INTRO.search(normalized) or _PLAN_PROMPT.search(normalized))
     if cue in ("LOW_DECISION", "NO_QUESTIONS") and (
         "?" in reply or (cue == "LOW_DECISION" and (
-            menu or _CHOICE_PROMPT.search(normalized) or _PLAN_PROMPT.search(normalized)
+            choice or agenda
         ))
     ):
         text = ("We can keep chatting without making another decision."
                 if cue == "LOW_DECISION" else "Understood. No questions for now.")
         return PragmaticEnforcement(text, "current_boundary:" + cue.lower())
-    if cue == "CHAT_ONLY" and (menu or _PLAN_PROMPT.search(normalized)):
+    if cue == "CHAT_ONLY" and (choice or agenda):
         return PragmaticEnforcement(
             "We can just chat without making a plan.", "current_boundary:chat_only",
         )
     if cue in ("NO_GOAL", "UNDECIDED") and (
         _GOAL_COMMITMENT.search(normalized)
-        or (cue == "NO_GOAL" and (menu or _PLAN_PROMPT.search(normalized)))
+        or (cue == "NO_GOAL" and (agenda or _GOAL_CHOICE.search(normalized)))
     ):
         text = ("We can keep it as an idea without saving a goal."
                 if cue == "NO_GOAL" else "Nothing has been decided yet.")

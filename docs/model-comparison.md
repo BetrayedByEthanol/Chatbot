@@ -290,7 +290,10 @@ independent human ratings.
 This increment recognizes bounded first-party low-decision, chat-only,
 no-question, no-goal and undecided cues. It adds current-turn guidance and
 a selective post-model safeguard at the existing fenced response commit.
-Compliant replies are unchanged; a directly conflicting choice, agenda,
+Compliant replies are unchanged; list formatting alone is not evidence of
+an agenda or choice. Require an explicit directive, user-facing choice menu
+or proposed agenda; goal refusal does not by itself prohibit unrelated
+conversational choices. A directly conflicting choice, agenda,
 commitment or detectable unverified clock claim can be replaced by a short
 acknowledgment or limitation. The adjustment records a reason and policy
 revision in `conversation.response.pragmatic_adjusted.v1`, correlated with

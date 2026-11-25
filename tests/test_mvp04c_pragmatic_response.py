@@ -13,11 +13,19 @@ from persona_agent.intent_interpretation import parse_explicit_topic_switch
     ("Choosing anything feels overwhelming right now.",
      "Pick one of these activities.", "current_boundary:low_decision"),
     ("I don't want to make any decisions right now.",
-     "1. Read.\n2. Cook.", "current_boundary:low_decision"),
+     "Here are two options for you:\n1. Read.\n2. Cook.", "current_boundary:low_decision"),
     ("Please don't ask me any questions right now.",
      "I understand. How are you feeling?", "current_boundary:no_questions"),
     ("Please don't make a big plan for me; I just want to chat.",
      "Let's make a plan for the evening.", "current_boundary:chat_only"),
+    ("I just want to chat.",
+     "Here's a plan for tonight:\n- Read.\n- Cook.", "current_boundary:chat_only"),
+    ("I just want to chat.",
+     "Here are two options for you:\n- Read.\n- Cook.", "current_boundary:chat_only"),
+    ("Don't create a goal yet.",
+     "Your plan for this week:\n- Walk daily.\n- Track meals.", "unconfirmed_commitment:no_goal"),
+    ("Don't create a goal yet.",
+     "Choose a goal from the following.", "unconfirmed_commitment:no_goal"),
     ("I'm not agreeing to save that as a goal yet.",
      "I'll save that as a goal.", "unconfirmed_commitment:no_goal"),
     ("I might work later. I haven't decided.",
@@ -74,9 +82,34 @@ def test_context_is_current_turn_only_and_budgeted():
     ("Please do not debug right now; let us discuss music instead.","music"),
     ("Don't plan for now. Let's talk about gardening.","gardening"),
     ("What if I said don't troubleshoot yet. Let's talk about nebulae instead.",None),
-    ('"Don't troubleshoot yet. Let's talk about nebulae instead."',None),
+    ('''"Don't troubleshoot yet. Let's talk about nebulae instead."''',None),
     ("Don't troubleshoot yet.",None),
     ("Don't troubleshoot yet. Let's talk about that instead.",None),
 ])
 def test_pause_and_named_switch_is_not_an_execution_instruction(text,topic):
     assert parse_explicit_topic_switch(text)==topic
+
+@pytest.mark.parametrize("message",[
+    "I just want to chat.",
+    "Even deciding what to do feels like too much work today.",
+    "Please don't ask me any questions right now.",
+    "Don't create a goal yet.",
+    "I haven't decided yet.",
+])
+@pytest.mark.parametrize("reply",[
+    "Here are two films I enjoyed:\n- Arrival\n- Moon",
+    "Some interesting films:\n1. Arrival\n2. Moon",
+    "Two observations:\n* The sky is clear.\n* The air is cool.",
+    "1. Read.\n2. Cook.",
+    "We don't need a plan. Here are two things I noticed:\n- Rain\n- Wind",
+])
+def test_list_format_alone_never_replaces_a_conversational_reply(message,reply):
+    result=enforce_pragmatic_reply(message,reply,model_generated=True)
+    assert result.reason is None
+    assert result.text==reply
+
+
+def test_goal_refusal_does_not_forbid_unrelated_conversational_choices():
+    reply="Here are two options for you:\n- Tea\n- Coffee"
+    result=enforce_pragmatic_reply("Don't create a goal yet.",reply,model_generated=True)
+    assert result.reason is None and result.text==reply
