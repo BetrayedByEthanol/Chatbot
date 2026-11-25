@@ -405,6 +405,46 @@ eligible saved record does not mean the user never said it; a known
 response describes the saved report. Broader recall and correction lineage
 remain MVP-05B/C work. No new acceptance promotion.
 
+### MVP-04D — Responsive tool and terminal outcome paths
+
+The existing P0 scheduler, read-only operation admission, persisted UUID
+correlation and explicit delivery acknowledgment remain authoritative. The
+registered immediate clock and asynchronous text-statistics paths now use a
+minimal authenticated response snapshot (current turn, previous user input
+for capability-claim enforcement, selection generation and conversation
+revision). They do not assemble optional model/Memory/affect/procedure
+context or perform LLM inference. The clock samples after that snapshot;
+temporal locale/presence policy remains MVP-05A.
+
+The foreground wait parameter is checked before durable admission. It
+bounds polling/sleep, not database/network round-trip latency or a hard
+end-to-end SLA. A pending notice describes admitted work, not a running
+provider or promised success. Retry-wait and cancellation-requested
+operations remain pending. Confirmed successful completion still requires
+the matching operation result reference and attempt. FAILED/CANCELLED
+produce fixed, non-sensitive terminal notices. An inconsistent COMPLETED
+record with missing/mismatched attempt evidence produces an unavailable
+notice, not success. If already terminal, the initial direct reply carries
+the outcome; otherwise the existing ready/deferred/suppressed and initial
+delivery checks apply to the terminal notice. No new operation retries or
+effect authority are introduced.
+
+The follow-up event records outcome separately from delivery state; the
+acknowledged text is persisted as assistant context, and replay reads that
+exact delivered text instead of reconstructing it from worker state.
+Preparation rechecks the call after locking selection and conversation.
+Transport still owns send/ACK; this is not exactly-once delivery across an
+external channel crash or proof of user comprehension.
+
+Regression coverage includes real retry exhaustion, owner cancellation,
+missing attempt evidence, invalid wait input, blank output, direct context
+isolation, restart/replay, and full new-turn response plus acknowledgment
+while a worker is blocked. Existing tool tests retain successful direct and
+deferred execution, authorization, restart and relevance checks. No schema
+migration, new tool/provider or intentional-silence policy. No numeric
+latency threshold or quality acceptance promotion. Measure the actual host
+latency and queue/resource behavior separately on target hardware.
+
 ## Tests
 
 ```bash

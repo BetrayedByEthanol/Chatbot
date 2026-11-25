@@ -5,10 +5,11 @@ operation scheduler remains the sole worker-claim/lease/recovery authority.
 """
 
 from collections import Counter
+from dataclasses import dataclass
 from datetime import datetime, timezone
 import re
 import time
-from typing import Callable
+from typing import Callable, Literal
 from uuid import UUID, NAMESPACE_URL, uuid5
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -18,7 +19,7 @@ from psycopg.rows import dict_row
 from .contracts import TrustedActor
 from .conversation import (
     _event, _require_actor, _selection, acknowledge_text_delivery,
-    commit_text_response, lookup_response, prepare_text_context,
+    commit_text_response, lookup_response, prepare_direct_tool_context,
     respond_to_text,
 )
 from .conversation_contracts import ModelReply, StaleConversation, TextResponseResult
@@ -62,10 +63,11 @@ def respond_with_time(
             def generate(self,messages):
                 raise AssertionError("persisted clock response must not regenerate")
         return respond_to_text(connection,actor,turn_id,NoRegeneration())
-    instant = now or datetime.now(timezone.utc)
-    if instant.tzinfo is None or instant.utcoffset() is None:
+    if now is not None and (now.tzinfo is None or now.utcoffset() is None):
         raise ValueError("clock instant must be timezone-aware")
-    context = prepare_text_context(connection, actor, turn_id)
+    context = prepare_direct_tool_context(connection, actor, turn_id)
+    # Sample the trusted clock after the minimal scoped context read.
+    instant = now or datetime.now(timezone.utc)
     value = instant.astimezone(zone).strftime("%Y-%m-%d %H:%M:%S %Z")
     return commit_text_response(
         connection, actor, context,
@@ -300,7 +302,7 @@ def run_one_text_tool(
         source=payload["input_text"]
         analysis_text=explicit_analysis_payload(source) or source
         text=executor(analysis_text,payload["tool_config"]["max_words"])
-        if not isinstance(text,str) or not 1<=len(text)<=12000:
+        if not isinstance(text,str) or not 1<=len(text)<=12000 or not text.strip():
             raise ValueError("tool returned invalid text")
     except Exception as exc:
         fail_operation(connection,lease,reason=f"tool execution failed: {type(exc).__name__}")
@@ -323,7 +325,20 @@ def run_one_text_tool(
     return lease
 
 
-def _completed_result(cur, row) -> str | None:
+@dataclass(frozen=True)
+class _ToolOutcome:
+    """A deliverable outcome, not worker execution or permission."""
+    kind: Literal["SUCCESS", "FAILED", "CANCELLED", "UNAVAILABLE"]
+    text: str
+
+
+def _read_outcome(cur, row) -> _ToolOutcome | None:
+    """Read terminal evidence only; retry and cancellation requests are pending.
+
+    A successful result must reference the exact completed worker attempt.
+    Terminal failures have safe fixed notices, never provider error strings
+    or an orphaned attempt's unconfirmed output. No operation state changes.
+    """
     if row["operation_id"] is None:
         return None
     cur.execute(
@@ -339,10 +354,41 @@ def _completed_result(cur, row) -> str | None:
         (row["operation_id"],row["user_id"],row["instance_id"],SLOW_TOOL),
     )
     op=cur.fetchone()
-    if (op is None or op["status"]!="COMPLETED"
-        or op["result_ref"]!=_result_ref(row["operation_id"],op["claim_generation"])):
+    if op is None:
         return None
-    return op["result_text"]
+    if op["status"]=="FAILED":
+        return _ToolOutcome("FAILED","The text analysis failed; I don't have a result.")
+    if op["status"]=="CANCELLED":
+        return _ToolOutcome("CANCELLED","The text analysis was cancelled.")
+    if op["status"]!="COMPLETED":
+        return None
+    text=op["result_text"]
+    if (op["result_ref"]!=_result_ref(row["operation_id"],op["claim_generation"])
+            or not isinstance(text,str) or not text.strip()):
+        # Inconsistent completion evidence must not masquerade as success
+        # or leave the user waiting for a job the scheduler already ended.
+        return _ToolOutcome(
+            "UNAVAILABLE","I don't have a verified result for the text analysis.",
+        )
+    return _ToolOutcome("SUCCESS",text)
+
+
+def _replay_delivered_followup(cur, row) -> ToolFollowup:
+    """Replay the exact acknowledged assistant output, not current worker data."""
+    cur.execute(
+        """SELECT response_text FROM conversation_assistant_followups
+           WHERE tool_call_id=%s AND conversation_id=%s AND turn_id=%s
+             AND user_id=%s AND instance_id=%s""",
+        (row["tool_call_id"],row["conversation_id"],row["turn_id"],
+         row["user_id"],row["instance_id"]),
+    )
+    saved=cur.fetchone()
+    if saved is None:
+        raise ToolResultNotReady("acknowledged follow-up text missing")
+    return ToolFollowup(
+        tool_call_id=row["tool_call_id"],operation_id=row["operation_id"],
+        text=saved["response_text"],replayed=True,
+    )
 
 
 def _relevant_to_latest(cur, call, latest_turn_id: UUID) -> bool:
@@ -384,14 +430,18 @@ def _relevant_to_latest(cur, call, latest_turn_id: UUID) -> bool:
     return cur.fetchone() is not None
 
 
-def _await_result(connection,actor,tool_id,seconds:float) -> str | None:
+def _validate_wait_budget(seconds: float) -> None:
     if not 0<=seconds<=5:
         raise ValueError("foreground wait budget must be within 0..5 seconds")
+
+
+def _await_result(connection,actor,tool_id,seconds:float) -> _ToolOutcome | None:
+    _validate_wait_budget(seconds)
     end=time.monotonic()+seconds
     while True:
         with connection.cursor(row_factory=dict_row) as cur:
             row=_read_call(cur,actor.user_id,tool_id)
-            result=_completed_result(cur,row)
+            result=_read_outcome(cur,row)
         if result is not None:
             return result
         remaining=end-time.monotonic()
@@ -411,6 +461,8 @@ def respond_to_text_analysis(
     """
     require_idle(connection)
     _require_actor(actor)
+    # Validate before staging a call or enqueueing durable work, even on retry.
+    _validate_wait_budget(await_seconds)
     existing=lookup_response(connection,actor,command.turn_id)
     if existing is not None:
         # Preserve P1-01's authority checks for previously generated text:
@@ -420,15 +472,15 @@ def respond_to_text_analysis(
             def generate(self,messages):
                 raise AssertionError("historical response should be replayed")
         return respond_to_text(connection,actor,command.turn_id,NeverRun())
-    context=prepare_text_context(connection,actor,command.turn_id)
+    context=prepare_direct_tool_context(connection,actor,command.turn_id)
     tool=schedule_text_analysis(connection,actor,command)
     result=_await_result(connection,actor,tool.tool_call_id,await_seconds)
     if result is not None:
-        reply=ModelReply(model_id=_DIRECT_MODEL,text=result)
+        reply=ModelReply(model_id=_DIRECT_MODEL,text=result.text)
     else:
         reply=ModelReply(
             model_id=_DEFERRED_MODEL,
-            text="I'm processing the text analysis and will follow up when it is ready.",
+            text="I've submitted the text analysis and will follow up when its outcome is available.",
         )
     return commit_text_response(connection,actor,context,reply)
 
@@ -436,7 +488,7 @@ def respond_to_text_analysis(
 def reconcile_tool_followup(
     connection: Connection, actor: TrustedActor, tool_call_id: UUID,
 ) -> ToolCallResult:
-    """Durably compute a conservative follow-up policy after worker completion.
+    """Durably compute a conservative follow-up policy for terminal outcomes.
 
     No automatic delivery: the adapter must explicitly fetch and acknowledge.
     New conversation input -> DEFERRED; persona revocation -> SUPPRESSED.
@@ -475,7 +527,7 @@ def reconcile_tool_followup(
                 "DIRECT" if response and response["model_id"]==_DIRECT_MODEL else
                 "DEFERRED" if response and response["model_id"]==_DEFERRED_MODEL else None
             )
-            done=_completed_result(cur,row)
+            outcome=_read_outcome(cur,row)
             if (
                 selection is None or selection["instance_id"]!=row["instance_id"]
                 or selection["generation"]!=row["selection_generation"]
@@ -483,8 +535,8 @@ def reconcile_tool_followup(
             ):
                 status="SUPPRESSED"
             elif mode=="DIRECT":
-                status="SUPPRESSED"  # result was already used in initial response
-            elif mode is None or done is None:
+                status="SUPPRESSED"  # outcome was already used in initial response
+            elif mode is None or outcome is None:
                 status="PENDING"
             elif (
                 response["delivery_status"]!="DELIVERED"
@@ -512,7 +564,10 @@ def reconcile_tool_followup(
                     conversation_id=row["conversation_id"],
                     event_type="conversation.tool.followup_state.v1",
                     source_id="tool.gateway",trust_level="TRUSTED_PLATFORM",
-                    detail={"tool_call_id":str(tool_call_id),"status":status},
+                    detail={
+                        "tool_call_id":str(tool_call_id),"status":status,
+                        "outcome":outcome.kind if outcome is not None else None,
+                    },
                 )
             return _typed(row)
 
@@ -539,13 +594,16 @@ def prepare_tool_followup(
                 cur,row,current["last_input_turn_id"]
             ):
                 raise StaleConversation("tool follow-up no longer relevant")
+            # Re-read after selection and conversation locks: another
+            # acknowledgment/reconciliation may have changed the old row.
+            row=_read_call(cur,actor.user_id,tool_call_id,lock=True)
             if row["followup_state"]!="READY":
                 raise ToolResultNotReady("tool follow-up not ready")
-            text=_completed_result(cur,row)
-            if text is None:
-                raise ToolResultNotReady("completed result unavailable")
+            outcome=_read_outcome(cur,row)
+            if outcome is None:
+                raise ToolResultNotReady("terminal outcome unavailable")
             return ToolFollowup(
-                tool_call_id=tool_call_id,operation_id=row["operation_id"],text=text,
+                tool_call_id=tool_call_id,operation_id=row["operation_id"],text=outcome.text,
             )
 
 
@@ -559,13 +617,7 @@ def acknowledge_tool_followup(
         with connection.cursor(row_factory=dict_row) as cur:
             row=_read_call(cur,actor.user_id,tool_call_id)
             if row["followup_state"]=="DELIVERED":
-                text=_completed_result(cur,row)
-                if text is None:
-                    raise ToolResultNotReady("prior delivered tool result missing")
-                return ToolFollowup(
-                    tool_call_id=tool_call_id,operation_id=row["operation_id"],
-                    text=text,replayed=True,
-                )
+                return _replay_delivered_followup(cur,row)
             _selection(cur,actor,row["instance_id"],row["selection_generation"])
             cur.execute(
                 "SELECT last_input_turn_id FROM conversations "
@@ -575,20 +627,17 @@ def acknowledge_tool_followup(
             conv=cur.fetchone()
             row=_read_call(cur,actor.user_id,tool_call_id,lock=True)
             if row["followup_state"]=="DELIVERED":
-                text=_completed_result(cur,row)
-                return ToolFollowup(
-                    tool_call_id=tool_call_id,operation_id=row["operation_id"],
-                    text=text,replayed=True,
-                )
+                return _replay_delivered_followup(cur,row)
             if conv is None or not _relevant_to_latest(
                 cur,row,conv["last_input_turn_id"]
             ):
                 raise StaleConversation("follow-up superseded before acknowledgment")
             if row["followup_state"]!="READY":
                 raise ToolResultNotReady("tool follow-up not ready")
-            text=_completed_result(cur,row)
-            if text is None:
-                raise ToolResultNotReady("completed result unavailable")
+            outcome=_read_outcome(cur,row)
+            if outcome is None:
+                raise ToolResultNotReady("terminal outcome unavailable")
+            text=outcome.text
             # Preserve the original request turn as provenance but anchor
             # this assistant output at the user turn active when delivery
             # was acknowledged. The conversation lock serializes the anchor
@@ -622,7 +671,10 @@ def acknowledge_tool_followup(
                 conversation_id=row["conversation_id"],
                 event_type="conversation.tool.followup_delivered.v1",
                 source_id=actor.source_id,trust_level="AUTHENTICATED_USER",
-                detail={"tool_call_id":str(tool_call_id),"operation_id":str(row["operation_id"])},
+                detail={
+                    "tool_call_id":str(tool_call_id),"operation_id":str(row["operation_id"]),
+                    "outcome":outcome.kind,
+                },
             )
             return ToolFollowup(
                 tool_call_id=tool_call_id,operation_id=row["operation_id"],text=text,

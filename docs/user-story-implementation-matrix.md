@@ -57,6 +57,10 @@ PPA-US-017 / 018 / 019 / 090 / 105 / 117: [contextual replies and correction aut
 
 PPA-US-018 / 030 / 031 / 034 / 092 / 117: [exact saved personal-fact grounding](model-comparison.md#mvp-04c3--exact-saved-personal-fact-grounding) uses current eligible Memory evidence and full-source relation checks for three supported direct questions. [Focused and integration tests](../tests/test_mvp04c3_personal_fact_recall.py) cover unknown/disputed/unsupported-source states, tenant scope, owner correction/retraction and replay. General semantic fact verification, raw recall, unconsolidated correction detection and real-model quality remain open; no status promotion.
 
+## MVP-04D evidence update (25 November 2026)
+
+PPA-US-012 / 020 / 021 / 022 / 023 / 111: [responsive tool and terminal outcome paths](model-comparison.md#mvp-04d--responsive-tool-and-terminal-outcome-paths) separate deterministic tool snapshots from model context, validate waits before admission, surface terminal failure/cancellation/missing-result notices through existing relevance and delivery gates, and replay acknowledged follow-up text. [PostgreSQL regressions](../tests/test_phase1_tools.py) include a complete new response while the old worker is blocked. No new effectful tools, retry authority, release targets, real hardware evidence or I/P/M promotion.
+
 ## Immediate follow-up
 
 1. PPA-US-016, 024, 090, 092, 088: evaluate real-model quality and adjudicate critical flags; fix grounded failure cases before adding infrastructure.
