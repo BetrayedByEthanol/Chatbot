@@ -21,6 +21,10 @@ from .memory_contracts import (
     MemoryWriteResult,
 )
 from .operation_contracts import require_idle
+from .memory_read_policy import (
+    eligible_record_sql, visible_record_sql, disputed_record_sql,
+    has_matching_dispute, DISPUTE_NOTICE,
+)
 from .runtime import IdempotencyConflict, PermissionDenied, VersionConflict, _fingerprint
 
 
@@ -306,27 +310,12 @@ def _select_memories(cur, user_id: UUID, instance_id: UUID,
                      until: datetime | None = None):
     """Query only current normal-privacy records; index is derived, not authority."""
     cur.execute(
-        """SELECT memory_id,memory_kind,subject_key,predicate_key,value_text,
+        f"""SELECT memory_id,memory_kind,subject_key,predicate_key,value_text,
                   confidence,epistemic_status,version,source_conversation_id,
                   source_turn_id,source_turn_at
            FROM memory_records
-           WHERE user_id=%s AND instance_id=%s AND record_status='ACTIVE'
-             AND privacy_class='NORMAL'
-             AND NOT EXISTS (
-                 SELECT 1 FROM memory_extraction_candidates unresolved
-                 JOIN conversation_turns newer_turn
-                   ON newer_turn.turn_id=unresolved.source_turn_id
-                  AND newer_turn.conversation_id=unresolved.conversation_id
-                  AND newer_turn.user_id=unresolved.user_id
-                  AND newer_turn.instance_id=unresolved.instance_id
-                 WHERE unresolved.target_memory_id=memory_records.memory_id
-                   AND unresolved.user_id=memory_records.user_id
-                   AND unresolved.instance_id=memory_records.instance_id
-                   AND unresolved.status='CONFLICT'
-                   AND newer_turn.created_at>memory_records.source_turn_at
-                   AND unresolved.value_text<>memory_records.value_text
-             )
-             AND (expires_at IS NULL OR expires_at>clock_timestamp())
+           WHERE user_id=%s AND instance_id=%s
+             AND {eligible_record_sql("memory_records")}
              AND (%s::timestamptz IS NULL OR source_turn_at >= %s::timestamptz)
              AND (%s::timestamptz IS NULL OR source_turn_at <= %s::timestamptz)
              AND to_tsvector('simple',replace(subject_key,'_',' ') || ' ' ||
@@ -396,26 +385,11 @@ def read_personal_fact_slot(cur, *, user_id: UUID, instance_id: UUID,
     if slot is None:
         return None
     cur.execute(
-        """SELECT m.memory_id,m.version,m.value_text,m.source_quote,m.source_turn_id,
+        f"""SELECT m.memory_id,m.version,m.value_text,m.source_quote,m.source_turn_id,
                   t.input_text AS original_source_text,
-                  (m.record_status='ACTIVE' AND m.privacy_class='NORMAL'
-                   AND m.epistemic_status='USER_REPORTED'
-                   AND (m.expires_at IS NULL OR m.expires_at>clock_timestamp())
+                  ({visible_record_sql("m")}
                    AND m.source_turn_at<anchor.created_at) AS eligible,
-                  EXISTS (
-                      SELECT 1 FROM memory_extraction_candidates unresolved
-                      JOIN conversation_turns newer
-                        ON newer.turn_id=unresolved.source_turn_id
-                       AND newer.conversation_id=unresolved.conversation_id
-                       AND newer.user_id=unresolved.user_id
-                       AND newer.instance_id=unresolved.instance_id
-                      WHERE unresolved.target_memory_id=m.memory_id
-                        AND unresolved.user_id=m.user_id
-                        AND unresolved.instance_id=m.instance_id
-                        AND unresolved.status='CONFLICT'
-                        AND newer.created_at>m.source_turn_at
-                        AND unresolved.value_text<>m.value_text
-                  ) AS disputed
+                  {disputed_record_sql("m")} AS disputed
            FROM memory_records m
            JOIN conversation_turns t
              ON t.turn_id=m.source_turn_id
@@ -456,27 +430,7 @@ def contextual_memory_block(cur, user_id: UUID, instance_id: UUID,
     # A newer authenticated user correction can leave the old Memory
     # revision authoritative yet unsafe to repeat as a current preference.
     # Surface only an epistemic caution (never either disputed value).
-    cur.execute(
-        """SELECT 1 FROM memory_extraction_candidates c
-           JOIN memory_records m ON m.memory_id=c.target_memory_id
-             AND m.user_id=c.user_id AND m.instance_id=c.instance_id
-           JOIN conversation_turns t ON t.turn_id=c.source_turn_id
-             AND t.conversation_id=c.conversation_id
-             AND t.user_id=c.user_id AND t.instance_id=c.instance_id
-           WHERE c.user_id=%s AND c.instance_id=%s
-             AND c.status='CONFLICT'
-             AND t.created_at>m.source_turn_at
-             AND c.value_text<>m.value_text
-             AND to_tsvector('simple',replace(m.subject_key,'_',' ')||' '||
-                 replace(m.predicate_key,'_',' ')||' '||m.value_text)
-                 @@ websearch_to_tsquery('simple',%s)
-           LIMIT 1""",
-        (user_id,instance_id,query),
-    )
-    caution=(
-        "A newer user-reported correction to a matching preference is "
-        "unresolved. Do not assert the old value; ask for clarification.\n"
-    ) if cur.fetchone() is not None else ""
+    caution=DISPUTE_NOTICE if has_matching_dispute(cur,user_id,instance_id,query) else ""
     block=head
     if caution and len(block)+len(caution)<=max_chars:
         block+=caution
@@ -484,6 +438,12 @@ def contextual_memory_block(cur, user_id: UUID, instance_id: UUID,
         line=(f"[{item.memory_kind}] {item.subject_key}.{item.predicate_key}: "
               f"{item.value_text} (source turn {item.source_turn_id})\n")
         if len(block)+len(line)>max_chars:
-            break
+            continue
         block+=line
-    return block if block!=head else ""
+    if block==head:
+        return ""
+    precedence=(
+        "Current eligible Memory revisions take precedence over older "
+        "quotations and summaries about the same claim.\n"
+    )
+    return block+precedence if len(block)+len(precedence)<=max_chars else block

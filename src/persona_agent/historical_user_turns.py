@@ -696,31 +696,30 @@ def historical_user_turn_context_block(
                 continue
         if len(result) + len(line) > max_chars:
             continue
-        result += line
-        count += 1
-        if count <= _MAX_HITS:
-            # A tentative earlier cadence is NEVER emitted without the
-            # subsequent correction. Budget the whole chain atomically;
-            # if necessary, prioritize the most recent explicit correction.
-            followups=_correction_followups(
-                cur,row,user_id=user_id,instance_id=instance_id,before_at=before_at,
-            )
-            follow_lines=[
-                (follow["turn_id"],
-                 f"USER_REPORTED discussion update source turn "
-                 f"{follow['turn_id']} on "
-                 f"{follow['created_at'].date().isoformat()}: "
-                 +json.dumps(follow["input_text"],ensure_ascii=False)+"\n")
-                for follow in followups
-                if follow["turn_id"] not in emitted_updates
-            ]
-            if follow_lines and len(result)+sum(len(line) for _,line in follow_lines)<=max_chars:
-                result+="".join(line for _,line in follow_lines)
-                emitted_updates.update(uid for uid,_ in follow_lines)
-            elif follow_lines and len(result)+len(follow_lines[-1][1])<=max_chars:
-                uid,line=follow_lines[-1]
-                result+=line
-                emitted_updates.add(uid)
+        # Reserve the anchor AND its latest correction before emitting
+        # either. The anchor alone can misrepresent the user's position.
+        followups=_correction_followups(
+            cur,row,user_id=user_id,instance_id=instance_id,before_at=before_at,
+        )
+        if followups and followups[-1]["turn_id"] in emitted_updates:
+            continue  # Do not reintroduce an old anchor after its correction.
+        follow_lines=[
+            (follow["turn_id"],
+             f"USER_REPORTED discussion update source turn "
+             f"{follow['turn_id']} on "
+             f"{follow['created_at'].date().isoformat()}: "
+             +json.dumps(follow["input_text"],ensure_ascii=False)+"\n")
+            for follow in followups
+            if follow["turn_id"] not in emitted_updates
+        ]
+        if follow_lines:
+            if len(result)+len(line)+sum(len(text) for _,text in follow_lines)>max_chars:
+                follow_lines=follow_lines[-1:]
+            if len(result)+len(line)+len(follow_lines[-1][1])>max_chars:
+                continue
+        result+=line+"".join(text for _,text in follow_lines)
+        emitted_updates.update(uid for uid,_ in follow_lines)
+        count+=1
         if count >= _MAX_HITS:
             break
     return result if count else ""

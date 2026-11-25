@@ -65,6 +65,10 @@ PPA-US-012 / 020 / 021 / 022 / 023 / 111: [responsive tool and terminal outcome 
 
 PPA-US-091 / 018 / 020 / 113: [trusted temporal context](model-comparison.md#mvp-05a--trusted-temporal-context) persists the primary-user receipt snapshot, optional explicit host timezone, interaction anchors and bounded relative date/time resolution. [Focused and PostgreSQL tests](../tests/test_mvp05a_temporal_context.py) cover DST, scope, replay, legacy input, missing timezone and selective context. General temporal language, persisted user timezone configuration beyond host metadata, session-end/presence semantics and measured query cost remain open; no I/P/M promotion.
 
+## MVP-05B.1 evidence update (25 November 2026)
+
+PPA-US-029 / 030 / 031 / 034 / 117: [shared historical eligibility and correction precedence](model-comparison.md#mvp-05b1--shared-historical-eligibility-and-correction-precedence) unifies conflict filtering across current Memory read paths, excludes stale exact-source episodes and preserves complete owner values and correction/anchor units under budget pressure. [Retrieval](../tests/test_phase2_retrieval.py) and [correction budget](../tests/test_mvp02b2_context_recall.py) regressions. Date-language routing, semantic corrections, general model-context revision fences and complete lineage remain open. No I/P/M promotion.
+
 ## Immediate follow-up
 
 1. PPA-US-016, 024, 090, 092, 088: evaluate real-model quality and adjudicate critical flags; fix grounded failure cases before adding infrastructure.

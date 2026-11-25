@@ -236,6 +236,11 @@ def test_latest_correction_survives_tight_context_budget(dsn):
             short_budget=sum(len(lines[i]) for i in (0,1,4))+4
             assert short_budget<len(full)
             constrained=retrieve(short_budget)
+            # An anchor-only budget must not resurrect a superseded cadence.
+            anchor_only_budget=len(lines[0])+len(lines[1])+4
+            too_small=retrieve(anchor_only_budget)
+            assert SOURCE not in too_small
+            assert len(too_small)<=anchor_only_budget
     assert SOURCE in constrained
     assert LATEST_CORRECTION in constrained
     assert NOTE not in constrained

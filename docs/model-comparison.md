@@ -488,6 +488,42 @@ Tests cover DST, timezone change, unknown zone, elapsed instants, legacy
 reads, scoped history, restart/replay and clock routing. No new acceptance
 promotion or frozen scenario modifications.
 
+### MVP-05B.1 — Shared historical eligibility and correction precedence
+
+Hybrid/focused retrieval previously omitted the newer-conflict exclusion
+already used by direct Memory recall. Shared Memory-owned eligibility now
+applies to direct, exact-slot and hybrid reads. Conflicts compare source
+chronology and value to the current revision, not the candidate target
+version. Focused recall supplies a topical uncertainty notice for visible
+disputes; accepted corrections remain owner-versioned.
+
+Exclude episodes anchored to a superseded/ineligible Memory revision or a
+deterministic candidate source whose target is ineligible or disagrees,
+before ranking/limits in hybrid and topical episode search. This is exact
+turn-level lineage, not semantic claim matching. A multi-topic source may
+lose an otherwise useful episode; original turns and episodes remain
+stored. Direct historical source inspection remains a separate existing
+contract. Full derived-data lineage and deletion/summary reconciliation
+remain MVP-07B work.
+
+Current eligible Memory values precede optional summaries and interpreted
+episodes in the existing context assembly; repeated identical recall
+budgets reuse their reads within that assembly. Owner values are
+indivisible under retrieval/rendering budgets: skip an oversized value,
+never truncate a qualification. Episode descriptions retain bounded
+abridgment. Historical fallback reserves the adjacent cadence anchor and
+latest eligible correction together; omit the anchor if both cannot fit.
+
+PostgreSQL regressions exercise disputed/current revisions, focused recall,
+episode suppression with retained source, expiry/privacy/retraction and
+exact-value budgets. Extend the existing tight correction-budget test.
+No new owner, schema, model call, vector service, or acceptance promotion.
+General semantic matching of unconsolidated corrections, date-expression
+routing, general historical model-context revision fencing and full
+summary/derived-store lineage remain open. Explicit API date bounds are
+unchanged. This is a bounded read-contract increment, not a general factual
+output verifier.
+
 ## Tests
 
 ```bash
