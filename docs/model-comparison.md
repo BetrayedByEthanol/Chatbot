@@ -247,6 +247,37 @@ When `auto` chooses a non-model route, the observed route is recorded and
 must not be mistaken for an LLM response. Automatic tests validate contracts;
 human reviewers evaluate naturalness, grounding and pragmatic understanding.
 
+### MVP-04B — Grounding and response presentation
+
+Private archived traces at runtime revision `9c2ce5c` show that the direct
+clock question with a verification qualifier went through the model in both
+modes. The 7B model claimed a specific time without a clock result, and
+invented a vehicle in the next personal-fact question. The 9B model-only
+reply skipped a missing Nginx configuration prerequisite. Casual-chat replies
+sometimes introduced large menus or extra choices after the user signaled
+low effort. The current full-route preference recall already uses the
+source-backed deterministic path; retain it and its exact sentence-limit
+exceptions.
+
+MVP-04B extends only the bounded direct clock grammar, adds explicit
+personal-fact grounding and narrowly enables the existing scoped Memory
+retrieval for named personal facts, and strengthens the existing presentation
+prompt. The forced model-only path remains a model path and receives a
+current-time evidence reminder rather than a fabricated result. No new
+model pass, retrieval subsystem, task authority, new procedure or reply
+truncation policy. Personal-fact recall uses current eligible sources and
+does not guess from a question, assistant assertion or missing context.
+New retrieval is limited to already eligible normal-privacy Memory records;
+broader raw historical retrieval and entity resolution remain later work.
+
+The deterministic clock route is directly testable; the other prompt changes
+are behavioral guidance, not a proof that a model cannot hallucinate or skip
+a step. Re-evaluate both models using the unchanged frozen scenario and
+held-out examples, with independent review and source-qualified findings.
+Keep case 02's mismatched replacement evidence separate; do not repair
+historical summary metadata or alter reviewer scores. No real-model
+acceptance or quality winner is established by these code changes.
+
 ## Tests
 
 ```bash

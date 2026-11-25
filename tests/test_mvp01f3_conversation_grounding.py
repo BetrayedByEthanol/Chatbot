@@ -296,3 +296,69 @@ def test_named_thread_exact_match_precedes_broader_keyword_abstention():
     assert _unique_named_discussion(
         Cur([thread,uuid4()]),**named,
     ) is None
+
+@pytest.mark.parametrize("question,topic",[
+    ("By the way, what car do I drive?","car"),
+    ("Which phone do I use?","phone"),
+    ("What camera do I own?","camera"),
+])
+def test_direct_personal_fact_question_is_grounded_without_inventing_answer(question,topic):
+    from persona_agent.response_decisions import personal_fact_topic
+    assert personal_fact_topic(question)==topic
+    assert grounding_mode(question)=="PERSONAL_FACT"
+    block=grounding_context_block(question,[],max_chars=1000)
+    assert "if unsupported, say you don't know" in block
+    assert "A question is not evidence of its answer" in block
+    assert "none matching" in block
+
+
+@pytest.mark.parametrize("text",[
+    "What car should I drive?",
+    "What can I use?",
+    "What if I asked what car do I drive?",
+    '"What car do I drive?"',
+    "What car do I drive? And where should I go?",
+])
+def test_personal_fact_grammar_abstains_on_advice_quotes_and_mixed_requests(text):
+    from persona_agent.response_decisions import personal_fact_topic
+    assert personal_fact_topic(text) is None
+    assert grounding_mode(text)!="PERSONAL_FACT"
+
+
+def test_personal_fact_context_preserves_source_order_and_trailing_correction():
+    block=grounding_context_block(
+        "Which phone do I use?",
+        ["My phone was a Pixel.","I like tea.","I now use a Fairphone, not the old phone."],
+        max_chars=1000,
+    )
+    assert "My phone was a Pixel." in block
+    assert "I now use a Fairphone, not the old phone." in block
+    assert "I like tea." not in block
+    assert block.index("My phone was a Pixel.")<block.index("I now use a Fairphone")
+    oversized="My phone report: "+"x"*900+"; actually I no longer use it."
+    limited=grounding_context_block(
+        "Which phone do I use?",["My phone was a Pixel.",oversized],max_chars=900,
+    )
+    assert "My phone was a Pixel." not in limited
+    assert "not enough space" in limited
+
+
+def test_model_context_reaches_grounded_clock_personal_fact_and_presentation_guidance(dsn):
+    model=CapturingModel()
+    host=BehavioralAcceptanceHarness(dsn,seed_local_demo(dsn),model)
+    host.begin_session("grounding-presentation")
+    host.send("I just want to chat.",idempotency_key="chat")
+    prompt=model.calls[-1][0].content
+    assert "Casual chat is not a request for a plan" in prompt
+    assert "Respect reply-length preferences and their exceptions" in prompt
+    host.send("Which phone do I use?",idempotency_key="unknown-phone")
+    prompt=model.calls[-1][0].content
+    assert "A question is not evidence of its answer" in prompt
+    host.send("What time is it right now? Please check.",idempotency_key="clock")
+    prompt=model.calls[-1][0].content
+    assert "Current-time grounding" in prompt
+    assert "do not give a specific time" in prompt
+    host.send("I copied the files, but haven't configured the service.",idempotency_key="progress")
+    prompt=model.calls[-1][0].content
+    assert "do not skip unresolved prerequisites" in prompt
+    assert model.calls[-1][-1].content=="I copied the files, but haven't configured the service."

@@ -279,3 +279,38 @@ def test_ambiguous_mixed_and_non_preference_questions_use_model(text):
 ])
 def test_emoji_ever_questions_are_distinct_from_current_preference(text,historical):
     assert is_historical_emoji_preference_query(text) is historical
+
+@pytest.mark.parametrize("message,zone",[
+    ("What time is it right now? Please check instead of guessing.","UTC"),
+    ("What time is it now?","UTC"),
+    ("What time is it in Tokyo right now? Please check.","Asia/Tokyo"),
+    ("What is the current time right now in Europe/Berlin?","Europe/Berlin"),
+    ("Tell me the time in London. Please check instead of guessing.","Europe/London"),
+])
+def test_direct_clock_qualifiers_preserve_read_only_route(message,zone):
+    decision=decide_response(message)
+    assert decision.route=="CLOCK"
+    assert decision.timezone_name==zone
+
+
+@pytest.mark.parametrize("message",[
+    "What time is it tomorrow? Please check.",
+    "What time is it right now and can you delete my files?",
+    "What time is it in Atlantis right now?",
+    '"What time is it right now? Please check."',
+    "If I asked what time is it right now, what would you say?",
+    "What time is it right now? Don't check.",
+])
+def test_clock_extension_does_not_route_mixed_or_unknown_requests(message):
+    assert decide_response(message).route=="MODEL"
+
+
+def test_extended_clock_query_returns_real_clock_without_model(dsn):
+    identity=seed_local_demo(dsn)
+    host=LocalAcceptanceSession(dsn,identity,NoInference(),lambda _:None)
+    answer=host.message(
+        text="What time is it right now? Please check instead of guessing.",
+        idempotency_key="clock-qualifiers",timezone_name="Europe/Berlin",
+    )
+    assert answer["model_id"]==TIME_TOOL
+    assert answer["text"].startswith("Current time in Europe/Berlin:")
