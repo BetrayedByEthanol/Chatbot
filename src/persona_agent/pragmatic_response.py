@@ -89,18 +89,34 @@ _AGREEMENT_CONDITION = re.compile(
 )
 
 
-def _has_asserted_goal_commitment(text: str) -> bool:
-    """Distinguish an asserted agreement from an explicit future condition.
+# An agreement alone says nothing about what the user committed to.
+# Require a positive goal/plan object or a concrete action commitment.
+# Agreements to defer, not act, or continue discussing are not evidence.
+_AFFIRMATIVE_AGREEMENT = re.compile(
+    r"\s+(?:on|upon)\s+(?:a|an|the|our|your|this|that)\s+"
+    r"(?:goal|objective|target|plan|schedule)\b"
+    r"|\s+to\s+(?:create|save|set|adopt|approve|pursue|commit to|follow)"
+    r"\s+(?:a|an|the|our|your|this|that)\s+(?:goal|objective|target|plan|schedule)\b"
+    r"|\s+to\s+(?:work|walk|exercise|study|train|run|practice)"
+    r"\s+(?:today|tonight|tomorrow|daily|every day|each week)\b",
+    re.I,
+)
 
-    Exempt only the individual agreement match introduced by a conditional
-    or uncertainty marker. A later independent agreement or creation claim
-    must still be checked, even within the same sentence. This narrow rule
-    does not exempt conditional tool promises or authorize goal creation.
+
+def _has_asserted_goal_commitment(text: str) -> bool:
+    """Distinguish positive asserted commitments from deferral or conditions.
+
+    An agreement must have a recognized affirmative object and must not
+    be introduced by a conditional or uncertainty marker. Check each match
+    independently, so an unrelated deferral cannot hide a later creation
+    claim. Ambiguous agreement wording is left to the model; this rule
+    neither exempts tool promises nor authorizes goal creation.
     """
     for match in _GOAL_COMMITMENT.finditer(text):
         if match.group("agreement") is not None:
             prefix = text[max(0, match.start() - 80):match.start()]
-            if _AGREEMENT_CONDITION.search(prefix):
+            if (_AGREEMENT_CONDITION.search(prefix)
+                    or _AFFIRMATIVE_AGREEMENT.match(text, match.end()) is None):
                 continue
         return True
     return False
@@ -109,6 +125,12 @@ def _has_asserted_goal_commitment(text: str) -> bool:
 _CLOCK_VALUE = re.compile(
     r"\b(?:[01]?\d|2[0-3]):[0-5]\d(?:\s*[ap]\.?m\.?)?\b"
     r"|\b(?:1[0-2]|[1-9])\s*[ap]\.?m\.?\b", re.I,
+)
+# A labeled signed offset is a timezone descriptor, not a clock reading.
+# Mask only that token, never an adjacent independent time or tool claim.
+_CLOCK_OFFSET = re.compile(
+    r"\b(?:UTC|GMT)[ \t]*[+\-\u2212][ \t]*(?:0?\d|1[0-4]):[0-5]\d\b"
+    r"(?![ \t]*[ap]\.?m\.?\b)", re.I,
 )
 _CLOCK_CHECK = re.compile(
     r"\b(?:i(?:'ve| have)?|we(?:'ve| have)?)\s+"
@@ -156,7 +178,7 @@ def pragmatic_context(text: str, *, max_chars: int) -> str:
 class PragmaticEnforcement:
     text: str
     reason: str | None = None
-    policy_revision: str = "mvp04c.3"
+    policy_revision: str = "mvp04c.4"
 
 
 def enforce_pragmatic_reply(
@@ -195,7 +217,8 @@ def enforce_pragmatic_reply(
                 if cue == "NO_GOAL" else "Nothing has been decided yet.")
         return PragmaticEnforcement(text, "unconfirmed_commitment:" + cue.lower())
     if is_direct_clock_question(user_text) and (
-        _CLOCK_VALUE.search(normalized) or _CLOCK_CHECK.search(normalized)
+        _CLOCK_VALUE.search(_CLOCK_OFFSET.sub(" ", normalized))
+        or _CLOCK_CHECK.search(normalized)
     ):
         return PragmaticEnforcement(
             "I don't have a verified current clock reading for this request.",

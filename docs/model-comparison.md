@@ -296,6 +296,11 @@ or proposed agenda; goal refusal does not by itself prohibit unrelated
 conversational choices. Explicit conditional agreement language (e.g. "until
 we've agreed") is not an asserted commitment; the exemption applies only to
 the matching agreement clause, not later independent claims or promises.
+Agreement detection also requires a recognized affirmative goal/plan object
+or concrete scheduled action; agreements to defer or discuss and ambiguous
+agreement wording are preserved. Explicit UTC/GMT signed numeric offsets are
+timezone descriptors, not clock readings; preserve offset clarifications
+while still checking adjacent time values and tool-check claims.
 A directly conflicting choice, agenda,
 commitment or detectable unverified clock claim can be replaced by a short
 acknowledgment or limitation. The adjustment records a reason and policy

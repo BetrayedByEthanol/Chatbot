@@ -156,4 +156,73 @@ def test_condition_does_not_hide_a_separate_asserted_commitment(message,reason,r
     result=enforce_pragmatic_reply(message,reply,model_generated=True)
     assert result.reason==reason
     assert result.text!=reply
-    assert result.policy_revision=="mvp04c.3"
+    assert result.policy_revision=="mvp04c.4"
+
+@pytest.mark.parametrize("message",[
+    "Don't create a goal yet.",
+    "I haven't decided yet.",
+])
+@pytest.mark.parametrize("reply",[
+    "We've agreed not to create a goal. We can keep exploring what interests you.",
+    "We've agreed to not save a goal.",
+    "We have agreed on not creating a goal yet.",
+    "We've agreed to postpone creating a goal.",
+    "We've agreed to wait before setting a goal.",
+    "We've agreed to keep exploring the idea.",
+    "We've agreed to talk about the goal.",
+    "We've agreed that nothing needs to be decided yet.",
+    "We've agreed on a topic to discuss.",
+    "We've agreed.",
+])
+def test_agreement_to_defer_or_discuss_is_not_an_affirmative_goal_commitment(message,reply):
+    result=enforce_pragmatic_reply(message,reply,model_generated=True)
+    assert result.reason is None
+    assert result.text==reply
+
+
+@pytest.mark.parametrize("message,reason",[
+    ("Don't create a goal yet.","unconfirmed_commitment:no_goal"),
+    ("I haven't decided yet.","unconfirmed_commitment:undecided"),
+])
+@pytest.mark.parametrize("reply",[
+    "We've agreed to create a goal.",
+    "We have agreed to adopt a plan.",
+    "We've agreed to walk daily.",
+    "We've agreed on the target.",
+    "We've agreed not to create a goal, but we've agreed on a plan.",
+    "We've agreed to wait. I've saved that as a goal.",
+    "I've saved that as a goal; we've agreed not to create a goal.",
+])
+def test_deferral_does_not_hide_affirmative_commitments(message,reason,reply):
+    result=enforce_pragmatic_reply(message,reply,model_generated=True)
+    assert result.reason==reason
+    assert result.text!=reply
+
+
+@pytest.mark.parametrize("reply",[
+    "Do you mean UTC+10:00 or UTC+11:00?",
+    "Which offset should I use: GMT-05:00 or GMT-04:00?",
+    "Could you confirm UTC + 05:30?",
+    "Do you mean UTC−03:30?",
+    "I don't have a clock reading. Could you confirm UTC+9:00?",
+])
+def test_timezone_offset_clarifications_are_preserved(reply):
+    from persona_agent.response_decisions import decide_response
+    question="What time is it in Sydney?"
+    assert decide_response(question).route=="MODEL"
+    result=enforce_pragmatic_reply(question,reply,model_generated=True)
+    assert result.reason is None
+    assert result.text==reply
+
+
+@pytest.mark.parametrize("reply",[
+    "It's currently 10:00 in Sydney (UTC+10:00).",
+    "It's 3:45 PM. Do you mean UTC+10:00 or UTC+11:00?",
+    "UTC+10:00 or UTC+11:00? It's 14:25 now.",
+    "I checked the clock. Do you mean UTC+10:00?",
+    "It's 10:00 UTC+10:00.",
+])
+def test_offset_does_not_hide_an_unverified_clock_claim(reply):
+    result=enforce_pragmatic_reply("What time is it in Sydney?",reply,model_generated=True)
+    assert result.reason=="unverified_clock_claim"
+    assert result.text!=reply
