@@ -77,6 +77,10 @@ PPA-US-031 / 034 / 091 / 113 / 117: [bounded dated historical retrieval](model-c
 
 PPA-US-018 / 030 / 031 / 034 / 117: [immediate report precedence and historical response fencing](model-comparison.md#mvp-05b3--immediate-report-precedence-and-historical-response-fencing) projects existing allowlisted exact-slot reports at ingress without Memory mutation, suppresses unresolved stale records and sources, and rejects changed/expired historical context at response commit. One bounded retry refreshes historical model context only. [Regression tests](../tests/test_mvp05b3_history_consistency.py) cover owner authority, scope, retry, expiry and rollback. Coarse tracked-source fence and prospective grammar do not establish general semantic conflict or full lineage coverage. No I/P/M promotion.
 
+## MVP-05C.1 evidence update (25 November 2026)
+
+PPA-US-030 / 031 / 034 / 093 / 117: [scoped entity identities and grounded reference recall](model-comparison.md#mvp-05c1--scoped-entity-identities-and-grounded-reference-recall) adds stable scoped identity, alias and user-relation revisions with exact authenticated source/owner commands; canonical named/qualified lookup and delivered-adjacent pronoun references abstain on ambiguous or missing data. [Regression tests](../tests/test_mvp05c1_entity_continuity.py) cover duplicate names, revisions, collisions, scope, delivery and current read. Broad natural-language admission/repair and entity-conditioned historical retrieval remain open. No I/P/M promotion.
+
 ## Immediate follow-up
 
 1. PPA-US-016, 024, 090, 092, 088: evaluate real-model quality and adjudicate critical flags; fix grounded failure cases before adding infrastructure.

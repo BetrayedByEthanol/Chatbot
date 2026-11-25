@@ -102,6 +102,22 @@ def eligible_report_source_sql(alias: Literal["t","memory_episodes"]) -> str:
     )"""
 
 
+def unmanaged_entity_source_sql(alias: Literal["t","memory_episodes"]) -> str:
+    """Registered entity evidence is recalled via its identity owner only.
+
+    Conservatively omit its exact source turns from generic raw/episode
+    recall; explicit entity lookup retains current relation and provenance.
+    """
+    if alias not in ("t","memory_episodes"):
+        raise ValueError("invalid internal source alias")
+    source_key="turn_id" if alias=="t" else "source_turn_id"
+    return f"""NOT EXISTS (
+        SELECT 1 FROM memory_entity_revisions er
+        WHERE er.user_id={alias}.user_id AND er.instance_id={alias}.instance_id
+          AND er.source_turn_id={alias}.{source_key}
+    )"""
+
+
 def eligible_episode_source_sql() -> str:
     """Conservative exact-turn lineage, not semantic claim matching.
 
@@ -110,6 +126,7 @@ def eligible_episode_source_sql() -> str:
     """
     return f"""(
         {eligible_report_source_sql("memory_episodes")}
+        AND {unmanaged_entity_source_sql("memory_episodes")}
         AND NOT EXISTS (
             SELECT 1 FROM memory_revisions mr
             JOIN memory_records linked ON linked.memory_id=mr.memory_id

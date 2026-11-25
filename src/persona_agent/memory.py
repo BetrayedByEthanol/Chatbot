@@ -46,7 +46,7 @@ _STOP = frozenset({
 
 
 def _receipt(cur, actor: TrustedActor, instance_id: UUID, kind: str,
-             command) -> tuple[UUID, MemoryWriteResult | None]:
+             command, *, result_type=MemoryWriteResult):
     receipt_id = uuid4()
     fingerprint = _fingerprint(command)
     cur.execute(
@@ -71,12 +71,12 @@ def _receipt(cur, actor: TrustedActor, instance_id: UUID, kind: str,
     if (prior is None or prior["request_fingerprint"]!=fingerprint
             or prior["result_json"] is None):
         raise IdempotencyConflict("memory idempotency key reused with different command")
-    return receipt_id, MemoryWriteResult.model_validate(
+    return receipt_id, result_type.model_validate(
         prior["result_json"]
     ).model_copy(update={"replayed":True})
 
 
-def _finish(cur, receipt_id: UUID, result: MemoryWriteResult) -> MemoryWriteResult:
+def _finish(cur, receipt_id: UUID, result):
     cur.execute(
         """UPDATE command_receipts SET event_id=%s,result_json=%s::jsonb
            WHERE receipt_id=%s""",
@@ -104,7 +104,10 @@ def _evidence(cur, actor: TrustedActor | TrustedPlatformActor, instance_id: UUID
 
 def _event(cur, actor: TrustedActor | TrustedPlatformActor, instance_id: UUID, memory_id: UUID,
            version: int, event_type: str, turn_id: UUID, receipt_id: UUID,
-           *, trust_level: str = "AUTHENTICATED_USER") -> UUID:
+           *, trust_level: str = "AUTHENTICATED_USER",
+           aggregate_key: str = "memory_id") -> UUID:
+    if aggregate_key not in ("memory_id","entity_id"):
+        raise ValueError("unsupported Memory event aggregate")
     stream_id=uuid5(NAMESPACE_URL,f"persona-agent/{instance_id}/memory")
     cur.execute(
         """INSERT INTO event_streams(stream_id,user_id,instance_id,domain)
@@ -130,7 +133,7 @@ def _event(cur, actor: TrustedActor | TrustedPlatformActor, instance_id: UUID, m
            ) VALUES (%s,%s,1,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)""",
         (event_id,event_type,actor.user_id,instance_id,stream_id,
          sequence["last_sequence"],actor.source_id,trust_level,receipt_id,
-         json.dumps({"memory_id":str(memory_id),"version":version,
+         json.dumps({aggregate_key:str(memory_id),"version":version,
                      "evidence_turn_id":str(turn_id)})),
     )
     cur.execute(

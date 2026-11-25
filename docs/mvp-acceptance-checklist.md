@@ -221,6 +221,8 @@ Use existing ordered migration/test fixtures, record skips/reasons; a run withou
 
 ## 4. Q — Real-model conversational quality (MVP-04)
 
+MVP-05C.1 candidate evidence: [scoped entity identities and grounded reference recall](model-comparison.md#mvp-05c1--scoped-entity-identities-and-grounded-reference-recall) adds owner-validated identity, alias and relation revisions, canonical scoped name/alias resolution and immediately adjacent delivered pronoun binding. General conversational entity admission/ambiguity repair, entity-to-entity relations, derived lineage and behavioral acceptance remain pending.
+
 MVP-05B.3 candidate evidence: [immediate report precedence and historical response fencing](model-comparison.md#mvp-05b3--immediate-report-precedence-and-historical-response-fencing) adds prospective exact-slot ingress report projection and atomic scope revision/expiry checks for explicit historical model responses, with one bounded stale-context retry. No new Memory mutation authority or acceptance promotion; broad semantic correction/lineage and measured latency remain pending.
 
 MVP-05B.2 candidate evidence: [bounded dated historical retrieval](model-comparison.md#mvp-05b2--bounded-dated-historical-retrieval) uses trusted receipt and explicit timezone to constrain a small family of explicit topical recollection questions, distinguishes reports from event dates/current facts, and blocks undated fallback for unresolved periods. Broader temporal/semantic ambiguity and independent real-model verification remain pending.
