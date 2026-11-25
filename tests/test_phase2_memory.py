@@ -310,8 +310,14 @@ def test_conversational_correction_claim_requires_memory_owner_amendment(dsn):
                               text="You've corrected your preference to coffee.")
     call(dsn,respond_to_text,actor(user),new.turn_id,Model())
     # The assistant's response does not itself amend the authoritative slot.
-    before=call(dsn,search_memories,actor(user),instance,"favorite drink")
-    assert len(before)==1 and before[0].value_text=="tea" and before[0].version==1
+    # Immediate report eligibility now suppresses the conflicting old value
+    # even before the worker consolidates a candidate.
+    assert call(dsn,search_memories,actor(user),instance,"favorite drink")==()
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT value_text,version FROM memory_records WHERE memory_id=%s",
+            (saved.memory_id,),
+        ).fetchone()==("tea",1)
     changed=call(dsn,amend_memory,actor(user),
                  correction(instance,conversation,new,saved.memory_id))
     assert changed.version==2
