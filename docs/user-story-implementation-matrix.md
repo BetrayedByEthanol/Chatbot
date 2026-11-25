@@ -49,6 +49,10 @@ PPA-US-016 / 018 / 020 / 024 / 031 / 092 / 105 / 117: [grounding and presentatio
 
 PPA-US-016 / 017 / 019 / 024 / 027 / 090 / 105 / 117: [current-turn pragmatic safeguards](model-comparison.md#mvp-04c--current-turn-pragmatics-and-dialogue-repair-first-increment) adds explicit discussion/deferral cues, narrow post-model enforcement and pause-plus-topic navigation. [Focused tests](../tests/test_mvp04c_pragmatic_response.py), [intent](../tests/test_mvp01a_intent.py) and [dialogue](../tests/test_mvp01c_dialogue.py) cover false-positive boundaries, no new Goal authority, and pending-question preservation. General correction authority, unsupported personal-fact claims, sarcasm and broader contextual inference remain open; no status promotion or accepted quality judgment.
 
+## MVP-04C.2 evidence update (25 November 2026)
+
+PPA-US-017 / 018 / 019 / 090 / 105 / 117: [contextual replies and correction authority](model-comparison.md#mvp-04c2--contextual-replies-and-correction-authority) gates short replies against compatible delivered pending questions, adds provenance-aware clarification context and bounded correction-authority guidance with arithmetic evidence. Tests: [focused](../tests/test_mvp04c2_contextual_interpretation.py), [dialogue](../tests/test_mvp01c_dialogue.py), [Memory owner amendment](../tests/test_phase2_memory.py). Actual Game/Weather owner execution, broad reference resolution, personal-fact verification and real-model behavior remain unverified. No I/P/M promotion.
+
 ## Immediate follow-up
 
 1. PPA-US-016, 024, 090, 092, 088: evaluate real-model quality and adjudicate critical flags; fix grounded failure cases before adding infrastructure.

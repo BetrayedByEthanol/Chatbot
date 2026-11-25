@@ -409,6 +409,13 @@ def prepare_text_context(
                 history[-1].content,
                 max_chars=min(360,max_context_chars-len(prompt)-len(history[-1].content)-80),
             )
+            # Source credibility is not authority to mutate an owner record.
+            # Arithmetic evidence is limited to explicit complete equations.
+            from .contextual_interpretation import correction_authority_context
+            prompt+=correction_authority_context(
+                history[-1].content,
+                max_chars=min(920,max_context_chars-len(prompt)-len(history[-1].content)-180),
+            )
             # MVP-01F.3: on requests for recall or a summary, give the
             # model a bounded view of actual first-party user statements.
             # Old assistant output is never promoted to user evidence, and
@@ -504,14 +511,31 @@ def prepare_text_context(
                 if active is not None:
                     cursor.execute(
                         """
-                        SELECT kind,label FROM dialogue_pending_acts
-                        WHERE conversation_id=%s AND user_id=%s
-                          AND thread_id=%s AND status='PENDING'
-                        ORDER BY created_at,act_id LIMIT 4
+                        SELECT a.kind,a.label,a.origin_kind,r.delivery_status,
+                               t.sequence AS source_sequence
+                        FROM dialogue_pending_acts a
+                        LEFT JOIN conversation_responses r
+                          ON r.response_id=a.source_response_id
+                         AND r.conversation_id=a.conversation_id
+                         AND r.user_id=a.user_id AND r.instance_id=a.instance_id
+                        LEFT JOIN conversation_turns t
+                          ON t.turn_id=r.turn_id AND t.conversation_id=a.conversation_id
+                         AND t.user_id=a.user_id AND t.instance_id=a.instance_id
+                        WHERE a.conversation_id=%s AND a.user_id=%s
+                          AND a.instance_id=%s AND a.thread_id=%s AND a.status='PENDING'
+                        ORDER BY a.created_at,a.act_id LIMIT 4
                         """,
-                        (item["conversation_id"],actor.user_id,item["focus_thread_id"]),
+                        (item["conversation_id"],actor.user_id,item["instance_id"],
+                         item["focus_thread_id"]),
                     )
-                    pending=[dict(p) for p in cursor.fetchall()]
+                    pending_rows=cursor.fetchall()
+                    pending=[{"kind":p["kind"],"label":p["label"]} for p in pending_rows]
+                    from .contextual_interpretation import pending_reply_context
+                    prompt+=pending_reply_context(
+                        history[-1].content,pending_rows,
+                        turn_sequence=item["sequence"],
+                        max_chars=min(420,max_context_chars-len(prompt)-len(history[-1].content)-160),
+                    )
                     cursor.execute(
                         """
                         SELECT kind,label FROM dialogue_referents

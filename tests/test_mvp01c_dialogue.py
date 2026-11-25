@@ -1231,3 +1231,78 @@ def test_agreement_to_defer_is_delivered_without_adjustment_event(dsn):
             "SELECT count(*) FROM goal_records WHERE user_id=%s AND instance_id=%s",
             (identity.user_id,identity.instance_id),
         ).fetchone()[0]==0
+
+@pytest.mark.parametrize("question,answer,resolved",[
+    ("Which day would work for you?","Yes",False),
+    ("Do you mean UTC+10:00 or UTC+11:00?","Yes",False),
+    ("Did you finish the exercise?","No",True),
+    ("Did you finish the exercise?","Yes",True),
+    ("Did you finish the exercise?","Maybe",False),
+    ("Which day would work for you?","That one",False),
+])
+def test_short_reply_compatibility_preserves_owner_boundaries(dsn,question,answer,resolved):
+    identity=seed_local_demo(dsn)
+    class Capturing(ReplyModel):
+        def __init__(self):
+            super().__init__((question,"We can clarify that."))
+            self.prompts=[]
+        def generate(self,messages):
+            self.prompts.append(messages[0].content)
+            return super().generate(messages)
+    model=Capturing()
+    host=BehavioralAcceptanceHarness(dsn,identity,model)
+    host.begin_session("short-answer")
+    host.send("I want to exercise more.",idempotency_key="start")
+    original=state(dsn,identity).pending_acts[0]
+    host.restart_host()
+    host.send(answer,idempotency_key="short")
+    after=state(dsn,identity)
+    if resolved:
+        assert after.pending_acts==()
+    else:
+        assert [a.act_id for a in after.pending_acts]==[original.act_id]
+        assert "Pending-reply interpretation (advisory)" in model.prompts[-1]
+    assert model.calls==2
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT status FROM dialogue_pending_acts WHERE act_id=%s",
+            (original.act_id,),
+        ).fetchone()==(("RESOLVED" if resolved else "PENDING"),)
+        assert conn.execute(
+            "SELECT count(*) FROM goal_records WHERE user_id=%s",
+            (identity.user_id,),
+        ).fetchone()[0]==0
+        assert conn.execute(
+            "SELECT count(*) FROM operations WHERE user_id=%s",
+            (identity.user_id,),
+        ).fetchone()[0]==0
+
+
+def test_correction_examples_reach_main_inference_as_evidence_not_authority(dsn):
+    identity=seed_local_demo(dsn)
+    class Capturing(ReplyModel):
+        def __init__(self):
+            super().__init__(("We can discuss the reported correction.",)*3)
+            self.prompts=[]
+        def generate(self,messages):
+            self.prompts.append(messages[0].content)
+            return super().generate(messages)
+    model=Capturing()
+    host=BehavioralAcceptanceHarness(dsn,identity,model)
+    host.begin_session("correction-authority")
+    for idx, text in enumerate((
+        "Change the recorded roll to 18.",
+        "Actually, 8 + 3 = 11.",
+        "I can see rain falling outside.",
+    )):
+        host.send(text,idempotency_key=f"evidence-{idx}")
+        assert "Correction authority (advisory)" in model.prompts[-1]
+        assert "Credibility and mutation authority are separate" in model.prompts[-1]
+    assert "Checked arithmetic only: 8 + 3 = 11" in model.prompts[1]
+    assert "Compare time, location and source reliability" in model.prompts[2]
+    assert model.calls==3
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT count(*) FROM operations WHERE user_id=%s",
+            (identity.user_id,),
+        ).fetchone()[0]==0

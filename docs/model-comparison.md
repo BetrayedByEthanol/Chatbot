@@ -330,6 +330,39 @@ The frozen comparison and review protocol are unchanged. Re-run on a new
 directory after merging; inspect both raw model output and delivered replies,
 including held-out examples, and retain independent review requirements.
 
+### MVP-04C.2 — Contextual replies and correction authority
+
+A concrete ingress defect remained after 04C.1: adjacency and absence of
+competing acts were sufficient to close an automatic QUESTION even if "yes"
+answered a "which day?" question, or a bare reference/uncertainty did not
+answer it. The new bounded compatibility gate resolves only supported polar
+short replies against a unique adjacent delivered automatic QUESTION;
+indirect questions, negative/compound questions and alternatives abstain.
+The existing longer free-text path is unchanged; automatic DECISION and
+explicit caller-owned acts remain outside this gate. A pending-act context
+view uses scoped response delivery and source sequence to distinguish
+adjacent, stale and competing acts. It asks the primary model to clarify
+only when needed rather than assuming approval. No second inference or
+new state store.
+
+For PPA-US-105/PERS-ALIGN-01, explicit recorded-state change requests and
+direct observations receive bounded intent signals and source/authority
+guidance. Correction claims, instructions and hypotheticals are not
+permission to alter the state. A complete bounded integer addition,
+subtraction or multiplication equation can be checked deterministically;
+the result does not validate its operands, rules or source provenance.
+The existing Memory owner amendment test exercises the actual separation
+between conversational correction and versioned authoritative revision.
+
+C15/C16 input examples are tested as context delivery, not real Game/Weather
+execution: neither capability is registered. No fabricated game-state
+owner, weather observation, owner write or generic authorization layer.
+The actual accepted game-roll/rules correction and API discrepancy owner
+integration are still outstanding. Source-backed personal-fact output
+verification, general semantic reference resolution and sarcasm likewise
+remain open. Existing Memory, preference and pragmatic output safeguards
+are unchanged. No new status promotion, no benchmark scenario changes.
+
 ## Tests
 
 ```bash

@@ -152,6 +152,16 @@ def _current_pragmatic_cue(text: str) -> str | None:
     return pragmatic_cue(text)
 
 
+def _record_change_request(text: str) -> bool:
+    from .contextual_interpretation import is_record_change_request
+    return is_record_change_request(text)
+
+
+def _direct_observation(text: str) -> bool:
+    from .contextual_interpretation import is_direct_observation
+    return is_direct_observation(text)
+
+
 def classify_intent(text: str) -> IntentDraft | None:
     """Abstain on unclear inputs, returning discussion cues rather than commands."""
     original = text.strip()
@@ -181,9 +191,9 @@ def classify_intent(text: str) -> IntentDraft | None:
         # Keep the exact user wording as source evidence. Dialogue routing
         # extracts the named subject only after the REQUEST signal is stored.
         kind, label, confidence = "REQUEST", original, .95
-    elif _INSTRUCTION.match(value):
+    elif _INSTRUCTION.match(value) or _record_change_request(value):
         kind, label, confidence = "INSTRUCTION", original, .86
-    elif _OBSERVATION.match(value):
+    elif _OBSERVATION.match(value) or _direct_observation(value):
         kind, label, confidence = "OBSERVATION", original, .79
     elif _REQUEST.match(value):
         kind, label, confidence = "REQUEST", original, .84
