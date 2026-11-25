@@ -305,6 +305,7 @@ When an item is reviewed, update its disposition above and append a record below
 | GAP-14 | OPEN / 25 Nov 2026 | Conversation / Communication | 04D; P5-F1 | Low-effort and no-question safeguards deliver short acknowledgments, not silent missing replies. Intentional silence not adopted. |
 | GAP-07 | OPEN / 25 Nov 2026 | Conversation / Memory | 05D; P6-F4 | 04C.2 checks bounded arithmetic evidence and separates user-reported claims from owning-domain changes; no Game/Weather capability or generic personal-fact verifier introduced. |
 | GAP-08 | OPEN / 25 Nov 2026 | Conversation | 05B/C; P6-F2 | 04C.2 checks polar short-reply compatibility and scoped delivered pending-act provenance. Longer free-text and broad reference repair remain open. |
+| GAP-07 | OPEN / 25 Nov 2026 | Conversation / Memory | 05B/C/D; P6-F4 | 04C.3 canonical exact-slot saved personal-fact replies for three relationships; source/eligibility checks and evidence audit. Unconsolidated corrections, broader entity recall and general verification remain open. |
 | — | Pending other initial reviews | — | See §9.2 | No new feature adopted, deferred or rejected through this register. |
 
 **Coverage:** 20 capability gap review items, independent of the existing 124 canonical stories and 32 proposed-only story decisions. Grouping and review timing are planning proposals. No runtime changes, implementation count changes, acceptance promotions or benchmark execution.

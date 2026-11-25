@@ -375,6 +375,61 @@ def search_memories(connection: Connection, actor: TrustedActor, instance_id: UU
     return tuple(kept)
 
 
+def read_personal_fact_slot(cur, *, user_id: UUID, instance_id: UUID,
+                            topic: str, before_turn_id: UUID) -> dict | None:
+    """Exact Memory-owned slot, with eligibility and source in one read.
+
+    Caller has already checked authenticated scope and current selection.
+    Lock the existing slot before reading its revision and conflict evidence.
+    Missing slots are UNKNOWN as of the read, not proof of absent history.
+    This does not broaden the existing normal-privacy retrieval policy.
+    """
+    if topic not in ("car","phone","camera"):
+        raise ValueError("unsupported personal-fact slot")
+    cur.execute(
+        """SELECT memory_id FROM memory_records
+           WHERE user_id=%s AND instance_id=%s AND memory_kind='FACT'
+             AND subject_key='user' AND predicate_key=%s FOR SHARE""",
+        (user_id,instance_id,topic),
+    )
+    slot=cur.fetchone()
+    if slot is None:
+        return None
+    cur.execute(
+        """SELECT m.memory_id,m.version,m.value_text,m.source_quote,m.source_turn_id,
+                  t.input_text AS original_source_text,
+                  (m.record_status='ACTIVE' AND m.privacy_class='NORMAL'
+                   AND m.epistemic_status='USER_REPORTED'
+                   AND (m.expires_at IS NULL OR m.expires_at>clock_timestamp())
+                   AND m.source_turn_at<anchor.created_at) AS eligible,
+                  EXISTS (
+                      SELECT 1 FROM memory_extraction_candidates unresolved
+                      JOIN conversation_turns newer
+                        ON newer.turn_id=unresolved.source_turn_id
+                       AND newer.conversation_id=unresolved.conversation_id
+                       AND newer.user_id=unresolved.user_id
+                       AND newer.instance_id=unresolved.instance_id
+                      WHERE unresolved.target_memory_id=m.memory_id
+                        AND unresolved.user_id=m.user_id
+                        AND unresolved.instance_id=m.instance_id
+                        AND unresolved.status='CONFLICT'
+                        AND newer.created_at>m.source_turn_at
+                        AND unresolved.value_text<>m.value_text
+                  ) AS disputed
+           FROM memory_records m
+           JOIN conversation_turns t
+             ON t.turn_id=m.source_turn_id
+            AND t.conversation_id=m.source_conversation_id
+            AND t.user_id=m.user_id AND t.instance_id=m.instance_id
+           JOIN conversation_turns anchor
+             ON anchor.turn_id=%s AND anchor.user_id=m.user_id
+            AND anchor.instance_id=m.instance_id
+           WHERE m.memory_id=%s AND m.user_id=%s AND m.instance_id=%s""",
+        (before_turn_id,slot["memory_id"],user_id,instance_id),
+    )
+    return cur.fetchone()
+
+
 def contextual_memory_block(cur, user_id: UUID, instance_id: UUID,
                             user_text: str, max_chars: int) -> str:
     """Optional recall only for explicit references; never query every turn."""

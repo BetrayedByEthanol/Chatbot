@@ -53,6 +53,10 @@ PPA-US-016 / 017 / 019 / 024 / 027 / 090 / 105 / 117: [current-turn pragmatic sa
 
 PPA-US-017 / 018 / 019 / 090 / 105 / 117: [contextual replies and correction authority](model-comparison.md#mvp-04c2--contextual-replies-and-correction-authority) gates short replies against compatible delivered pending questions, adds provenance-aware clarification context and bounded correction-authority guidance with arithmetic evidence. Tests: [focused](../tests/test_mvp04c2_contextual_interpretation.py), [dialogue](../tests/test_mvp01c_dialogue.py), [Memory owner amendment](../tests/test_phase2_memory.py). Actual Game/Weather owner execution, broad reference resolution, personal-fact verification and real-model behavior remain unverified. No I/P/M promotion.
 
+## MVP-04C.3 evidence update (25 November 2026)
+
+PPA-US-018 / 030 / 031 / 034 / 092 / 117: [exact saved personal-fact grounding](model-comparison.md#mvp-04c3--exact-saved-personal-fact-grounding) uses current eligible Memory evidence and full-source relation checks for three supported direct questions. [Focused and integration tests](../tests/test_mvp04c3_personal_fact_recall.py) cover unknown/disputed/unsupported-source states, tenant scope, owner correction/retraction and replay. General semantic fact verification, raw recall, unconsolidated correction detection and real-model quality remain open; no status promotion.
+
 ## Immediate follow-up
 
 1. PPA-US-016, 024, 090, 092, 088: evaluate real-model quality and adjudicate critical flags; fix grounded failure cases before adding infrastructure.

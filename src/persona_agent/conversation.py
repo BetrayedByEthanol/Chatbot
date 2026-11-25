@@ -827,7 +827,8 @@ def prepare_text_context(
 def commit_text_response(connection: Connection, actor: TrustedActor,
                          context: ResponseContext,
                          generated: ModelReply, *,
-                         model_generated: bool = False) -> TextResponseResult:
+                         model_generated: bool = False,
+                         personal_fact_recall: bool = False) -> TextResponseResult:
     """Commit one generated reply only if its context remains current."""
     require_idle(connection)
     _require_actor(actor)
@@ -974,6 +975,24 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
                     raise StaleConversation(
                         "Relationship preference changed during recall"
                     )
+            # Personal-fact replies are rendered from the current Memory
+            # owner snapshot inside the existing fenced commit. A forced
+            # model-only benchmark still calls its model but cannot deliver
+            # an invented value for these standalone questions.
+            from .response_decisions import personal_fact_topic
+            fact_topic=personal_fact_topic(scoped["input_text"])
+            fact_answer=None
+            fact_changed=False
+            if personal_fact_recall and fact_topic is None:
+                raise ValueError("personal-fact route requires a supported persisted question")
+            if fact_topic is not None and (personal_fact_recall or model_generated):
+                from .personal_fact_recall import resolve_saved_fact
+                fact_answer=resolve_saved_fact(
+                    cursor,user_id=actor.user_id,instance_id=context.instance_id,
+                    topic=fact_topic,before_turn_id=context.turn_id,
+                )
+                fact_changed=(text!=fact_answer.text)
+                text=fact_answer.text
             # MVP-01F.4: use only the persisted authenticated user input and
             # bounded prior user messages to enforce unavailable-capability
             # claims. Model output is untrusted, including conditional offers.
@@ -1037,6 +1056,23 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
                         "reason":enforcement.reason,
                         "policy_revision":enforcement.policy_revision,
                     },
+                )
+            if fact_answer is not None:
+                from .personal_fact_recall import POLICY_REVISION
+                _event(
+                    cursor,user_id=actor.user_id,instance_id=context.instance_id,
+                    conversation_id=context.conversation_id,
+                    event_type="conversation.response.personal_fact_grounded.v1",
+                    source_id="conversation.runtime",trust_level="TRUSTED_PLATFORM",
+                    detail={
+                        "turn_id":str(context.turn_id),"response_id":str(response_id),
+                        "status":fact_answer.status,"policy_revision":POLICY_REVISION,
+                        "model_reply_replaced":model_generated and fact_changed,
+                        "memory_id":str(fact_answer.memory_id) if fact_answer.memory_id else None,
+                        "memory_version":fact_answer.version,
+                        "evidence_turn_id":str(fact_answer.source_turn_id) if fact_answer.source_turn_id else None,
+                    },
+                    correlation_id=scoped["source_input_event_id"],
                 )
             if pragmatic.reason is not None:
                 _event(
