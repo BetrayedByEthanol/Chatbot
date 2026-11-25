@@ -27,7 +27,8 @@ def visible_record_sql(alias: RecordAlias) -> str:
 def disputed_record_sql(alias: RecordAlias) -> str:
     """Compare unresolved candidates to the current revision, not target_version."""
     a = _alias(alias)
-    return f"""EXISTS (
+    return f"""(
+      EXISTS (
         SELECT 1 FROM memory_extraction_candidates unresolved
         JOIN conversation_turns newer_turn
           ON newer_turn.turn_id=unresolved.source_turn_id
@@ -40,11 +41,65 @@ def disputed_record_sql(alias: RecordAlias) -> str:
           AND unresolved.status='CONFLICT'
           AND newer_turn.created_at>{a}.source_turn_at
           AND unresolved.value_text<>{a}.value_text
+      )
+      OR EXISTS (
+        SELECT 1 FROM explicit_memory_reports report
+        JOIN conversation_turns newer
+          ON newer.turn_id=report.source_turn_id
+         AND newer.conversation_id=report.conversation_id
+         AND newer.user_id=report.user_id AND newer.instance_id=report.instance_id
+        WHERE report.user_id={a}.user_id AND report.instance_id={a}.instance_id
+          AND report.memory_kind={a}.memory_kind
+          AND report.subject_key={a}.subject_key AND report.predicate_key={a}.predicate_key
+          AND newer.created_at>{a}.source_turn_at
+          AND report.value_text<>{a}.value_text
+      )
     )"""
 
 
 def eligible_record_sql(alias: RecordAlias) -> str:
     return f"({visible_record_sql(alias)} AND NOT {disputed_record_sql(alias)})"
+
+
+def eligible_report_source_sql(alias: Literal["t","memory_episodes"]) -> str:
+    """Do not recover a disputed or superseded exact slot via its raw source.
+
+    An unowned source without a newer conflicting report can still be
+    quoted as historical user speech, not a saved fact.
+    """
+    if alias not in ("t","memory_episodes"):
+        raise ValueError("invalid internal source alias")
+    source_key="turn_id" if alias=="t" else "source_turn_id"
+    return f"""NOT EXISTS (
+        SELECT 1 FROM explicit_memory_reports report
+        LEFT JOIN memory_records linked
+          ON linked.user_id=report.user_id AND linked.instance_id=report.instance_id
+         AND linked.memory_kind=report.memory_kind
+         AND linked.subject_key=report.subject_key AND linked.predicate_key=report.predicate_key
+        JOIN conversation_turns origin
+          ON origin.turn_id=report.source_turn_id
+         AND origin.conversation_id=report.conversation_id
+         AND origin.user_id=report.user_id AND origin.instance_id=report.instance_id
+        WHERE report.user_id={alias}.user_id AND report.instance_id={alias}.instance_id
+          AND report.source_turn_id={alias}.{source_key}
+          AND (
+              (linked.memory_id IS NOT NULL AND (
+                  NOT {eligible_record_sql("linked")} OR linked.value_text<>report.value_text
+              ))
+              OR EXISTS (
+                  SELECT 1 FROM explicit_memory_reports later
+                  JOIN conversation_turns newer
+                    ON newer.turn_id=later.source_turn_id
+                   AND newer.conversation_id=later.conversation_id
+                   AND newer.user_id=later.user_id AND newer.instance_id=later.instance_id
+                  WHERE later.user_id=report.user_id AND later.instance_id=report.instance_id
+                    AND later.memory_kind=report.memory_kind
+                    AND later.subject_key=report.subject_key AND later.predicate_key=report.predicate_key
+                    AND newer.created_at>origin.created_at
+                    AND later.value_text<>report.value_text
+              )
+          )
+    )"""
 
 
 def eligible_episode_source_sql() -> str:
@@ -54,7 +109,8 @@ def eligible_episode_source_sql() -> str:
     linked record is superseded or ineligible. The original remains stored.
     """
     return f"""(
-        NOT EXISTS (
+        {eligible_report_source_sql("memory_episodes")}
+        AND NOT EXISTS (
             SELECT 1 FROM memory_revisions mr
             JOIN memory_records linked ON linked.memory_id=mr.memory_id
               AND linked.user_id=mr.user_id AND linked.instance_id=mr.instance_id
@@ -98,3 +154,48 @@ def has_matching_dispute(cur, user_id: UUID, instance_id: UUID, query: str) -> b
         (user_id,instance_id,query),
     )
     return cur.fetchone() is not None
+
+
+def capture_historical_read_fence(cur, user_id: UUID, instance_id: UUID):
+    """Observe revision before reading optional historical context.
+
+    Any tracked evidence change invalidates the response, even if another
+    slot changed. Also retain the next normal active expiry, because time
+    can change eligibility without a database write.
+    """
+    from .conversation_contracts import HistoricalReadFence, StaleConversation
+    cur.execute(
+        """SELECT revision,(
+               SELECT min(m.expires_at) FROM memory_records m
+               WHERE m.user_id=r.user_id AND m.instance_id=r.instance_id
+                 AND m.record_status='ACTIVE' AND m.privacy_class='NORMAL'
+                 AND m.expires_at>clock_timestamp()
+           ) AS next_expiry
+           FROM historical_recall_revisions r WHERE user_id=%s AND instance_id=%s""",
+        (user_id,instance_id),
+    )
+    row=cur.fetchone()
+    if row is None:
+        raise StaleConversation("historical recall revision is unavailable")
+    return HistoricalReadFence(row["revision"],row["next_expiry"])
+
+
+def require_historical_read_fence(cur, user_id: UUID, instance_id: UUID, fence) -> None:
+    """Short commit lock orders this reply before later evidence commits.
+
+    Deferred write triggers need this row exclusively before they commit.
+    Do not acquire Memory record/candidate locks after this check.
+    """
+    from .conversation_contracts import StaleConversation
+    cur.execute(
+        """SELECT revision FROM historical_recall_revisions
+           WHERE user_id=%s AND instance_id=%s FOR SHARE""",
+        (user_id,instance_id),
+    )
+    row=cur.fetchone()
+    if row is None or row["revision"]!=fence.revision:
+        raise StaleConversation("historical evidence changed during inference")
+    if fence.next_expiry is not None:
+        cur.execute("SELECT clock_timestamp() AS now")
+        if cur.fetchone()["now"]>=fence.next_expiry:
+            raise StaleConversation("historical evidence expired during inference")
