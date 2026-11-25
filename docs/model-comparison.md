@@ -293,7 +293,10 @@ a selective post-model safeguard at the existing fenced response commit.
 Compliant replies are unchanged; list formatting alone is not evidence of
 an agenda or choice. Require an explicit directive, user-facing choice menu
 or proposed agenda; goal refusal does not by itself prohibit unrelated
-conversational choices. A directly conflicting choice, agenda,
+conversational choices. Explicit conditional agreement language (e.g. "until
+we've agreed") is not an asserted commitment; the exemption applies only to
+the matching agreement clause, not later independent claims or promises.
+A directly conflicting choice, agenda,
 commitment or detectable unverified clock claim can be replaced by a short
 acknowledgment or limitation. The adjustment records a reason and policy
 revision in `conversation.response.pragmatic_adjusted.v1`, correlated with

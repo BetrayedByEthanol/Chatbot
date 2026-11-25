@@ -80,9 +80,32 @@ _PLAN_PROMPT = re.compile(
 _GOAL_COMMITMENT = re.compile(
     r"\b(?:i(?:'ll| will| have|'ve)|we(?:'ll| will| have|'ve))\s+"
     r"(?:create(?:d)?|sav(?:e|ed)|set)\s+(?:that|this|a|the|your|our)"
-    r"(?: as a)? goal\b|\b(?:we(?:'ve| have) agreed|your approved goal)\b",
+    r"(?: as a)? goal\b|\b(?:(?P<agreement>we(?:'ve| have) agreed)|your approved goal)\b",
     re.I,
 )
+_AGREEMENT_CONDITION = re.compile(
+    r"\b(?:until|once|if|when|after|before|unless|whether|"
+    r"provided(?: that)?|as soon as)\s+\Z", re.I,
+)
+
+
+def _has_asserted_goal_commitment(text: str) -> bool:
+    """Distinguish an asserted agreement from an explicit future condition.
+
+    Exempt only the individual agreement match introduced by a conditional
+    or uncertainty marker. A later independent agreement or creation claim
+    must still be checked, even within the same sentence. This narrow rule
+    does not exempt conditional tool promises or authorize goal creation.
+    """
+    for match in _GOAL_COMMITMENT.finditer(text):
+        if match.group("agreement") is not None:
+            prefix = text[max(0, match.start() - 80):match.start()]
+            if _AGREEMENT_CONDITION.search(prefix):
+                continue
+        return True
+    return False
+
+
 _CLOCK_VALUE = re.compile(
     r"\b(?:[01]?\d|2[0-3]):[0-5]\d(?:\s*[ap]\.?m\.?)?\b"
     r"|\b(?:1[0-2]|[1-9])\s*[ap]\.?m\.?\b", re.I,
@@ -133,7 +156,7 @@ def pragmatic_context(text: str, *, max_chars: int) -> str:
 class PragmaticEnforcement:
     text: str
     reason: str | None = None
-    policy_revision: str = "mvp04c.2"
+    policy_revision: str = "mvp04c.3"
 
 
 def enforce_pragmatic_reply(
@@ -165,7 +188,7 @@ def enforce_pragmatic_reply(
             "We can just chat without making a plan.", "current_boundary:chat_only",
         )
     if cue in ("NO_GOAL", "UNDECIDED") and (
-        _GOAL_COMMITMENT.search(normalized)
+        _has_asserted_goal_commitment(normalized)
         or (cue == "NO_GOAL" and (agenda or _GOAL_CHOICE.search(normalized)))
     ):
         text = ("We can keep it as an idea without saving a goal."

@@ -113,3 +113,47 @@ def test_goal_refusal_does_not_forbid_unrelated_conversational_choices():
     reply="Here are two options for you:\n- Tea\n- Coffee"
     result=enforce_pragmatic_reply("Don't create a goal yet.",reply,model_generated=True)
     assert result.reason is None and result.text==reply
+
+@pytest.mark.parametrize("message",[
+    "Don't create a goal yet.",
+    "I haven't decided yet.",
+])
+@pytest.mark.parametrize("reply",[
+    "I won't save anything until we've agreed on a goal.",
+    "Once we've agreed on what you want, we can discuss the details. There's no rush.",
+    "If we have agreed on a goal, we can revisit the details.",
+    "When we’ve agreed on a goal, we can talk about the next steps.",
+    "Nothing needs to happen before we've agreed on a goal.",
+    "We can discuss details after we've agreed on the aim.",
+    "No need to decide unless we've agreed on what matters.",
+    "I'm not sure whether we've agreed on a goal.",
+    "We can revisit this provided that we've agreed on the aim.",
+    "As soon as we've agreed on the idea, we can talk it through.",
+    "No rush. Once we've agreed on the aim, we can discuss it.",
+])
+def test_conditional_consent_is_not_an_asserted_commitment(message,reply):
+    result=enforce_pragmatic_reply(message,reply,model_generated=True)
+    assert result.reason is None
+    assert result.text==reply
+
+
+@pytest.mark.parametrize("message,reason",[
+    ("Don't create a goal yet.","unconfirmed_commitment:no_goal"),
+    ("I haven't decided yet.","unconfirmed_commitment:undecided"),
+])
+@pytest.mark.parametrize("reply",[
+    "We've agreed on a goal.",
+    "Now that we've agreed on a goal, we can discuss details.",
+    "We have agreed on a goal.",
+    "Your approved goal is ready.",
+    "I have saved that as a goal.",
+    "Once we've agreed on an aim, we can talk. We've agreed on a goal.",
+    "If we've agreed on an aim, we can talk, but we've agreed on the goal.",
+    "I won't save anything until we've agreed on a goal; I've saved that as a goal.",
+    "I've saved that as a goal. Once we've agreed on an aim, we can discuss details.",
+])
+def test_condition_does_not_hide_a_separate_asserted_commitment(message,reason,reply):
+    result=enforce_pragmatic_reply(message,reply,model_generated=True)
+    assert result.reason==reason
+    assert result.text!=reply
+    assert result.policy_revision=="mvp04c.3"
