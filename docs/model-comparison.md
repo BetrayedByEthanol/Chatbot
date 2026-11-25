@@ -565,6 +565,47 @@ unconsolidated corrections/context fencing remain outstanding. The bounded
 candidate view can miss valid older evidence; never assert uniqueness.
 No acceptance promotion or frozen benchmark changes.
 
+### MVP-05B.3 — Immediate report precedence and historical response fencing
+
+Migration 0044 adds a source-linked explicit report projection, populated
+atomically with authenticated input by the existing positive-allowlist
+Memory grammar. A newer differing exact-slot report suppresses the old
+saved value before asynchronous consolidation, without admitting a
+candidate, amending the owner record, or granting authority. Both values
+remain withheld from authoritative recall until resolved by the existing
+owner workflow. Raw turn and episode recall also exclude superseded or
+disputed exact-slot projections; the original turns remain stored.
+Unowned, non-superseded reports can still be historical quotations.
+The projection is prospective: no automatic reinterpretation of legacy
+turns, expanded safe grammar, or general semantic correction matching.
+
+A scoped historical revision covers changes to Memory records, extraction
+candidates, explicit reports, episodes and summaries. Deferred constraint
+triggers advance it atomically at writer commit, after domain row locks
+and event writes. New persona instances initialize their revision row.
+Explicit recall/summary/focused history paths observe the revision before
+assembling context and retain the nearest future normal active expiry.
+The existing response commit rechecks the revision under a short shared
+lock and checks expiry against database time. No Memory row locks are
+acquired after this scope fence. No transaction or lock spans inference.
+A stale historical model reply is discarded; the wrapper retries once
+with fresh context, then leaves the input pending on further conflicts.
+Other stale-turn/selection/procedure errors and model failures are not
+automatically retried. Direct Relationship/personal-fact routes retain
+their existing owner-specific fencing/commit-time rendering.
+
+This is deliberately a coarse persona-scoped dependency: even an
+unrelated tracked slot change can invalidate an explicit recall. Routine
+conversation and direct tools do not read or acquire this fence. The
+tracked population does not cover every raw-transcript/intent change,
+ordinary summary compression, derived semantic lineage or all external
+delivery races; revision revalidation occurs at response commit, not
+after transport delivery. Existing persisted responses remain replayable.
+No new model classifier, scheduler, Memory mutation authority or general
+factual-output verifier. No acceptance promotion. PostgreSQL concurrency,
+expiry, rollback and retry tests plus real-host latency measurement are
+required; do not infer throughput improvement from the fence design.
+
 ## Tests
 
 ```bash

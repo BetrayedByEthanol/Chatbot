@@ -313,6 +313,8 @@ When an item is reviewed, update its disposition above and append a record below
 | GAP-09 | OPEN / 25 Nov 2026 | Memory / Conversation | 05B/D; P6-F2 | 05B.1 fixes read-path consistency and prioritizes eligible current Memory evidence over optional summaries/episodes; no retrieval feedback/learning policy adopted. |
 | GAP-08 | OPEN / 25 Nov 2026 | Conversation / Memory | 05B/C; P6-F2 | 05B.2 uses a bounded receipt-anchored historical date window and marks competing source turns; unresolved dates do not widen the retrieval. General temporal/semantic repair remains open. |
 | GAP-09 | OPEN / 25 Nov 2026 | Memory / Conversation | 05B/D; P6-F2 | 05B.2 constrains historical report retrieval by local calendar windows and source eligibility; no adaptive retrieval learning or as-of revision history. |
+| GAP-07 | OPEN / 25 Nov 2026 | Memory / Conversation | 05C/D; 07B; P6-F4 | 05B.3 suppresses newer exact-slot disputes before consolidation and fences tracked historical evidence at model response commit. Broader semantic corrections, derived lineage and delivery-time consistency remain open. |
+| GAP-09 | OPEN / 25 Nov 2026 | Memory / Conversation | 05D; P6-F2 | 05B.3 adds prospective report-source eligibility and a scoped optimistic historical dependency; coarse invalidation and retry overhead require measurement. |
 | — | Pending other initial reviews | — | See §9.2 | No new feature adopted, deferred or rejected through this register. |
 
 **Coverage:** 20 capability gap review items, independent of the existing 124 canonical stories and 32 proposed-only story decisions. Grouping and review timing are planning proposals. No runtime changes, implementation count changes, acceptance promotions or benchmark execution.
