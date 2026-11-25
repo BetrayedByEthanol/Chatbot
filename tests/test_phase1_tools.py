@@ -422,6 +422,15 @@ def test_new_user_turn_does_not_wait_for_running_readonly_tool(dsn):
                     ),
                 )
                 assert new.sequence==2
+                class ImmediateModel:
+                    def generate(self,messages):
+                        return ModelReply(model_id="tool-concurrent-test",
+                                          text="We can discuss the new topic.")
+                fresh=respond_to_text(conn,actor(user),new.turn_id,ImmediateModel())
+                assert acknowledge_text_delivery(
+                    conn,actor(user),fresh.response_id,
+                ).delivery_status=="DELIVERED"
+                assert not job.done()
         finally:
             release.set()
         lease=job.result(timeout=10)
@@ -887,4 +896,208 @@ def test_deterministic_tool_id_collision_is_rejected_without_primary_key_error(d
         assert conn.execute(
             "SELECT count(*) FROM conversation_tool_calls WHERE turn_id=%s",
             (distinct.turn_id,),
+        ).fetchone()[0]==0
+
+
+@pytest.mark.parametrize("budget",[-0.01,5.01,float("nan"),float("inf")])
+def test_invalid_wait_budget_never_stages_or_admits_work(dsn,budget):
+    user,instance=seed(dsn)
+    configure_tool_pool(dsn)
+    turn=incoming(dsn,user,instance)
+    with pytest.raises(ValueError,match="foreground wait budget"):
+        invoke(dsn,respond_to_text_analysis,actor(user),
+               SlowTextToolCommand(turn_id=turn.turn_id),await_seconds=budget)
+    assert invoke(dsn,lookup_response,actor(user),turn.turn_id) is None
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT count(*) FROM conversation_tool_calls WHERE turn_id=%s",
+            (turn.turn_id,),
+        ).fetchone()[0]==0
+        assert conn.execute(
+            "SELECT count(*) FROM operations WHERE user_id=%s",
+            (user,),
+        ).fetchone()[0]==0
+
+
+def test_registered_tool_responses_skip_unrelated_model_context(dsn,monkeypatch):
+    user,instance=seed(dsn)
+    configure_tool_pool(dsn)
+    conversation=uuid4()
+    def forbidden(*args,**kwargs):
+        raise AssertionError("independent tool reply must not assemble model context")
+    monkeypatch.setattr("persona_agent.memory.contextual_memory_block",forbidden)
+    monkeypatch.setattr("persona_agent.affect_context.persona_affect_context_block",forbidden)
+    clock=incoming(dsn,user,instance,"What time is it?",conversation=conversation)
+    result=invoke(dsn,respond_with_time,actor(user),clock.turn_id)
+    assert result.model_id=="clock.now.v1"
+    finish_initial(dsn,user,result.response_id)
+    analysis=incoming(dsn,user,instance,"Analyze this text: alpha beta beta",
+                      conversation=conversation)
+    result=invoke(dsn,respond_to_text_analysis,actor(user),
+                  SlowTextToolCommand(turn_id=analysis.turn_id),await_seconds=0)
+    assert result.model_id=="tool.initial.deferred.v1"
+    assert "submitted" in result.text
+
+
+def _exhaust_tool_retries(dsn,tool_id):
+    def broken(text,max_words):
+        raise RuntimeError("private provider diagnostics must not reach user")
+    for attempt in range(3):
+        # The scheduler owns retry timing. Advance only the disposable test
+        # fixture's eligibility clock to exercise real attempts without sleep.
+        with psycopg.connect(dsn,autocommit=True) as conn:
+            conn.execute(
+                "UPDATE operations SET eligible_at=clock_timestamp() WHERE operation_id=%s",
+                (tool_id,),
+            )
+        lease=invoke(dsn,run_one_text_tool,worker_id=f"broken-{attempt}",executor=broken)
+        assert lease.operation_id==tool_id
+        with psycopg.connect(dsn,autocommit=True) as conn:
+            status,count=conn.execute(
+                "SELECT status,attempt_count FROM operations WHERE operation_id=%s",
+                (tool_id,),
+            ).fetchone()
+        assert count==attempt+1
+        assert status==("FAILED" if attempt==2 else "RETRY_WAIT")
+
+
+def test_terminal_failure_is_delivered_once_after_initial_ack_and_restart(dsn):
+    user,instance=seed(dsn)
+    configure_tool_pool(dsn)
+    turn=incoming(dsn,user,instance)
+    command=SlowTextToolCommand(turn_id=turn.turn_id)
+    initial=invoke(dsn,respond_to_text_analysis,actor(user),command,await_seconds=0)
+    tool=invoke(dsn,schedule_text_analysis,actor(user),command)
+    _exhaust_tool_retries(dsn,tool.operation_id)
+    assert invoke(dsn,reconcile_tool_followup,actor(user),
+                  tool.tool_call_id).followup_state=="DEFERRED"
+    with pytest.raises(ToolResultNotReady):
+        invoke(dsn,prepare_tool_followup,actor(user),tool.tool_call_id)
+    finish_initial(dsn,user,initial.response_id)
+    # Every invocation opens a new connection, as after a host restart.
+    state=invoke(dsn,reconcile_tool_followup,actor(user),tool.tool_call_id)
+    assert state.followup_state=="READY"
+    result=invoke(dsn,prepare_tool_followup,actor(user),tool.tool_call_id)
+    assert result.text=="The text analysis failed; I don't have a result."
+    ack=invoke(dsn,acknowledge_tool_followup,actor(user),tool.tool_call_id)
+    replay=invoke(dsn,acknowledge_tool_followup,actor(user),tool.tool_call_id)
+    assert ack.text==result.text==replay.text and replay.replayed
+    assert invoke(dsn,read_tool_call,actor(user),tool.tool_call_id).followup_state=="DELIVERED"
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT count(*) FROM conversation_tool_results WHERE operation_id=%s",
+            (tool.operation_id,),
+        ).fetchone()[0]==0
+        assert conn.execute(
+            "SELECT count(*) FROM conversation_turns WHERE conversation_id=%s",
+            (turn.conversation_id,),
+        ).fetchone()[0]==1
+        assert conn.execute(
+            """SELECT response_text FROM conversation_assistant_followups
+               WHERE tool_call_id=%s""",(tool.tool_call_id,),
+        ).fetchone()==(result.text,)
+        assert conn.execute(
+            """SELECT payload->>'outcome' FROM events
+               WHERE event_type='conversation.tool.followup_delivered.v1'
+                 AND payload->>'tool_call_id'=%s""",(str(tool.tool_call_id),),
+        ).fetchall()==[("FAILED",)]
+
+
+def test_already_failed_work_returns_direct_outcome_without_another_wait(dsn):
+    user,instance=seed(dsn)
+    configure_tool_pool(dsn)
+    turn=incoming(dsn,user,instance)
+    command=SlowTextToolCommand(turn_id=turn.turn_id)
+    tool=invoke(dsn,schedule_text_analysis,actor(user),command)
+    _exhaust_tool_retries(dsn,tool.operation_id)
+    response=invoke(dsn,respond_to_text_analysis,actor(user),command,await_seconds=0)
+    assert response.model_id=="tool.initial.direct.v1"
+    assert "failed" in response.text
+    finish_initial(dsn,user,response.response_id)
+    assert invoke(dsn,reconcile_tool_followup,actor(user),
+                  tool.tool_call_id).followup_state=="SUPPRESSED"
+
+
+def _cancel_queued_tool(dsn,user,operation_id):
+    from persona_agent.operation_control import CancelOperationCommand,cancel_operation
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        version=conn.execute(
+            "SELECT version FROM operations WHERE operation_id=%s",
+            (operation_id,),
+        ).fetchone()[0]
+    return invoke(dsn,cancel_operation,actor(user),CancelOperationCommand(
+        operation_id=operation_id,expected_version=version,
+        idempotency_key=f"cancel-{operation_id}",
+    ))
+
+
+@pytest.mark.parametrize("transition,expected",[
+    ("NONE","READY"),("NEW_TOPIC","DEFERRED"),("SWITCH","SUPPRESSED"),
+])
+def test_cancelled_outcome_obeys_existing_relevance_and_authority(dsn,transition,expected):
+    user,instance,other=seed(dsn,two=True)
+    configure_tool_pool(dsn)
+    conversation=uuid4()
+    turn=incoming(dsn,user,instance,conversation=conversation)
+    command=SlowTextToolCommand(turn_id=turn.turn_id)
+    initial=invoke(dsn,respond_to_text_analysis,actor(user),command,await_seconds=0)
+    finish_initial(dsn,user,initial.response_id)
+    tool=invoke(dsn,schedule_text_analysis,actor(user),command)
+    assert _cancel_queued_tool(dsn,user,tool.operation_id)==Status.CANCELLED
+    if transition=="NEW_TOPIC":
+        incoming(dsn,user,instance,"Let's talk about nebulae instead.",conversation=conversation)
+    elif transition=="SWITCH":
+        invoke(dsn,switch_persona,actor(user),SwitchPersonaCommand(
+            expected_instance_id=instance,target_instance_id=other,
+            expected_generation=1,idempotency_key=str(uuid4()),
+        ))
+    assert invoke(dsn,reconcile_tool_followup,actor(user),
+                  tool.tool_call_id).followup_state==expected
+    if expected=="READY":
+        assert invoke(dsn,prepare_tool_followup,actor(user),
+                      tool.tool_call_id).text=="The text analysis was cancelled."
+        assert invoke(dsn,acknowledge_tool_followup,actor(user),
+                      tool.tool_call_id).text=="The text analysis was cancelled."
+    else:
+        with pytest.raises(ToolResultNotReady):
+            invoke(dsn,prepare_tool_followup,actor(user),tool.tool_call_id)
+
+
+def test_missing_completed_attempt_does_not_publish_success(dsn):
+    user,instance=seed(dsn)
+    configure_tool_pool(dsn)
+    turn=incoming(dsn,user,instance)
+    command=SlowTextToolCommand(turn_id=turn.turn_id)
+    initial=invoke(dsn,respond_to_text_analysis,actor(user),command,await_seconds=0)
+    finish_initial(dsn,user,initial.response_id)
+    tool=invoke(dsn,schedule_text_analysis,actor(user),command)
+    invoke(dsn,run_one_text_tool,worker_id="missing-result-fixture")
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        # Fault injection: a completed operation's confirmed attempt data is missing.
+        conn.execute(
+            "DELETE FROM conversation_tool_results WHERE operation_id=%s",
+            (tool.operation_id,),
+        )
+    assert invoke(dsn,prepare_tool_followup,actor(user),tool.tool_call_id).text==(
+        "I don't have a verified result for the text analysis."
+    )
+    assert invoke(dsn,acknowledge_tool_followup,actor(user),tool.tool_call_id).text==(
+        "I don't have a verified result for the text analysis."
+    )
+
+
+def test_whitespace_worker_output_is_not_a_successful_result(dsn):
+    user,instance=seed(dsn)
+    configure_tool_pool(dsn)
+    turn=incoming(dsn,user,instance)
+    tool=invoke(dsn,schedule_text_analysis,actor(user),SlowTextToolCommand(turn_id=turn.turn_id))
+    invoke(dsn,run_one_text_tool,worker_id="blank-result",executor=lambda text,limit:"   ")
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT status FROM operations WHERE operation_id=%s",
+            (tool.operation_id,),
+        ).fetchone()==("RETRY_WAIT",)
+        assert conn.execute(
+            "SELECT count(*) FROM conversation_tool_results WHERE operation_id=%s",
+            (tool.operation_id,),
         ).fetchone()[0]==0

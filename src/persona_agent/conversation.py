@@ -311,6 +311,69 @@ def lookup_response(connection: Connection, actor: TrustedActor,
     )
 
 
+def _pending_response_anchor(cursor, actor: TrustedActor, turn_id: UUID):
+    """Read the same selected, latest-turn fence for all response paths."""
+    cursor.execute(
+        """
+        SELECT t.conversation_id,t.instance_id,t.selection_generation,t.input_text,
+               t.status,t.sequence,t.created_at AS turn_at,
+               c.revision,c.last_input_turn_id,
+               c.focus_thread_id,c.summary_watermark,p.stable_key,i.label
+        FROM conversation_turns t
+        JOIN conversations c ON c.conversation_id=t.conversation_id
+        JOIN persona_instances i ON i.id=t.instance_id
+          AND i.user_id=t.user_id
+        JOIN persona_definitions p ON p.id=i.persona_id
+        WHERE t.turn_id=%s AND t.user_id=%s
+        """,
+        (turn_id,actor.user_id),
+    )
+    item=cursor.fetchone()
+    if item is None:
+        raise PermissionDenied("turn outside authenticated scope")
+    _selection(cursor,actor,item["instance_id"],item["selection_generation"])
+    if item["status"]!="PENDING" or item["last_input_turn_id"]!=turn_id:
+        raise StaleConversation("only the latest pending input may be answered")
+    return item
+
+
+def prepare_direct_tool_context(
+    connection: Connection, actor: TrustedActor, turn_id: UUID,
+) -> ResponseContext:
+    """Minimal response snapshot for registered deterministic tool replies.
+
+    No model uses this snapshot. Retain the current input and immediately
+    preceding user statement for the existing capability-claim guard.
+    Selection and conversation revision checks are identical to the full
+    context path; irrelevant Memory, affect, summaries and ProcedureRun
+    context cannot delay or fence an independent read-only tool.
+    """
+    require_idle(connection)
+    _require_actor(actor)
+    with connection.transaction():
+        with connection.cursor(row_factory=dict_row) as cursor:
+            item=_pending_response_anchor(cursor,actor,turn_id)
+            cursor.execute(
+                """SELECT input_text FROM conversation_turns
+                   WHERE conversation_id=%s AND user_id=%s AND instance_id=%s
+                     AND sequence<%s
+                   ORDER BY sequence DESC LIMIT 1""",
+                (item["conversation_id"],actor.user_id,item["instance_id"],
+                 item["sequence"]),
+            )
+            previous=cursor.fetchone()
+            messages=(
+                (ModelMessage("user",previous["input_text"]),)
+                if previous is not None else ()
+            )+(ModelMessage("user",item["input_text"]),)
+            return ResponseContext(
+                conversation_id=item["conversation_id"],turn_id=turn_id,
+                instance_id=item["instance_id"],
+                selection_generation=item["selection_generation"],
+                conversation_revision=item["revision"],messages=messages,
+            )
+
+
 def prepare_text_context(
     connection: Connection, actor: TrustedActor, turn_id: UUID,
     *, max_turns: int = 12, max_context_chars: int = 12000,
@@ -328,27 +391,7 @@ def prepare_text_context(
         raise ValueError("invalid recent-context budget")
     with connection.transaction():
         with connection.cursor(row_factory=dict_row) as cursor:
-            cursor.execute(
-                """
-                SELECT t.conversation_id,t.instance_id,t.selection_generation,
-                       t.status,t.sequence,t.created_at AS turn_at,
-                       c.revision,c.last_input_turn_id,
-                       c.focus_thread_id,c.summary_watermark,p.stable_key,i.label
-                FROM conversation_turns t
-                JOIN conversations c ON c.conversation_id=t.conversation_id
-                JOIN persona_instances i ON i.id=t.instance_id
-                  AND i.user_id=t.user_id
-                JOIN persona_definitions p ON p.id=i.persona_id
-                WHERE t.turn_id=%s AND t.user_id=%s
-                """,
-                (turn_id,actor.user_id),
-            )
-            item=cursor.fetchone()
-            if item is None:
-                raise PermissionDenied("turn outside authenticated scope")
-            _selection(cursor,actor,item["instance_id"],item["selection_generation"])
-            if item["status"]!="PENDING" or item["last_input_turn_id"]!=turn_id:
-                raise StaleConversation("only the latest pending input may be answered")
+            item=_pending_response_anchor(cursor,actor,turn_id)
             cursor.execute(
                 """
                 SELECT t.turn_id,t.sequence,t.input_text,r.response_text,r.delivery_status
