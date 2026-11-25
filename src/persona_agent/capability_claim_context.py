@@ -7,6 +7,7 @@ execution has separate Task/Run/Step permission and is not a generic shell.
 import re
 
 from .tool_contracts import CAPABILITIES
+from .response_decisions import is_direct_clock_question
 
 
 _EXECUTION_CLAIM = re.compile(
@@ -25,6 +26,16 @@ def capability_claim_context(text: str) -> str:
     The model still generates the natural reply; command admission continues
     exclusively through the existing trusted Tool Gateway.
     """
+    if is_direct_clock_question(text):
+        # The model path has no fresh clock result for this request. The
+        # separate deterministic clock route returns its own verified value.
+        return (
+            "Current-time grounding: a previous timestamp or assistant "
+            "answer is not a fresh clock reading. If no verified current "
+            "clock result for this request is supplied, do not give a "
+            "specific time or claim a check was performed. State the "
+            "limitation; if the location is unclear, ask for the timezone.\n"
+        )
     if not _EXECUTION_CLAIM.search(text):
         return ""
     descriptions=", ".join(

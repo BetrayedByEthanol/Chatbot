@@ -9,6 +9,7 @@ from typing import Sequence
 
 from .memory_retrieval import is_historical_recall_query
 from .intent_interpretation import explicit_unresolved_named_topic
+from .response_decisions import personal_fact_topic
 
 _SUMMARIZE = re.compile(
     r"\b(?:summari[sz]e|recap|summary of|sum up)\b",re.I,
@@ -27,6 +28,8 @@ def grounding_mode(text: str) -> str | None:
     value=text.strip()
     if not value or len(value)>500:
         return None
+    if personal_fact_topic(value) is not None:
+        return "PERSONAL_FACT"
     if _SUMMARIZE.search(value):
         return "SUMMARY"
     if is_historical_recall_query(value):
@@ -60,11 +63,14 @@ def grounding_context_block(
             "with the plan. A topic switch does not approve a Goal.\n"
         )
         return note if len(note)<=max_chars else ""
-    if mode=="RECALL":
-        keywords={
-            word for word in _WORDS.findall(latest_text.casefold())
-            if word not in _STOP
-        }
+    if mode in ("RECALL", "PERSONAL_FACT"):
+        if mode=="PERSONAL_FACT":
+            keywords=set(re.findall(r"[a-z]{3,}", personal_fact_topic(latest_text) or ""))
+        else:
+            keywords={
+                word for word in _WORDS.findall(latest_text.casefold())
+                if word not in _STOP
+            }
         matched=[
             t for t in prior_user_turns
             if keywords and any(
@@ -83,7 +89,15 @@ def grounding_context_block(
         "history. Never present guesses or assistant proposals as "
         "remembered user facts. "
     )
-    if mode=="RECALL":
+    if mode=="PERSONAL_FACT":
+        guidance+=(
+            "Answer a personal fact only from relevant first-party statements "
+            "or eligible source-linked records supplied in context. "
+            "A question is not evidence of its answer. Prefer the newest "
+            "correction; if unsupported, say you don't know. Do not guess "
+            "or claim that the user never told you. "
+        )
+    elif mode=="RECALL":
         guidance+=(
             "Claim recall only from the quoted user turns, source-linked "
             "prior-session user statements, or authenticated saved "
@@ -107,7 +121,9 @@ def grounding_context_block(
     # Keep the most recent evidence, respecting source order and budget.
     usable=[]
     for quote in reversed(relevant):
-        candidate=[quote[:240],*usable]
+        # For personal facts, never remove trailing qualifications from
+        # a source statement or fall back past an oversized newest report.
+        candidate=[quote if mode=="PERSONAL_FACT" else quote[:240],*usable]
         rendered=header+json.dumps(candidate,ensure_ascii=False)+"\n"
         if len(rendered)>max_chars:
             break

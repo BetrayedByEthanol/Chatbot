@@ -13,6 +13,7 @@ pytest.importorskip("psycopg")
 from persona_agent.behavioral_evaluation import run_scenario
 from persona_agent.conversation_contracts import ModelReply
 from persona_agent.preference_recall import ROUTE_ID
+from persona_agent.tool_contracts import TIME_TOOL
 
 
 SCENARIO=Path(__file__).resolve().parents[1]/"scenarios"/"persona_model_comparison_v1.json"
@@ -85,7 +86,10 @@ def test_wider_25_turn_auto_scenario_recalls_exact_persisted_preferences(isolate
     assert "one or two sentences" in recall["assistant"]
     assert "unless you request detailed instructions" in recall["assistant"]
     assert all(x["model_id"]!="wide-smoke.fake" for x in (recall,))
-    assert model.calls<25  # The real clock and preference routes avoid inference.
+    clock=next(x for x in messages if x["input"].startswith("What time is it right now?"))
+    assert clock["model_id"]==TIME_TOOL
+    assert clock["assistant"].startswith("Current time in ")
+    assert model.calls==23  # Clock and preference recall use existing trusted routes.
 
     after=next(
         x for x in report["snapshots"]

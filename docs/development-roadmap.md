@@ -296,6 +296,9 @@ When an item is reviewed, update its disposition above and append a record below
 | GAP-13 | OPEN / 24 Nov 2026 | Evaluation | 04B; P2-F1/F2 | MVP-04A review diagnostics preserve evidence; no learning or owner adaptation implemented. Reassess after real independent ratings and reproduced defects. |
 | GAP-18 | OPEN / 24 Nov 2026 | Model Gateway / Execution | 04D; DEC-02 | Bounded ModelUnavailable transport classifications and regression cases; old failure root cause not recoverable from generic evidence. No retry or fallback authority adopted. |
 | GAP-19 | OPEN / 24 Nov 2026 | Evaluation / Governance | 07B; P6-F4 | Create-only private operator status report verifies bundle/packet consistency and records legacy fingerprint limit; full dataset lifecycle policy remains open. |
+| GAP-03 | OPEN / 25 Nov 2026 | Conversation / Relationship | P2-F2; 06D; P6-F2 | MVP-04B reviews casual-chat and low-effort failures and adjusts bounded guidance; no personalized learning adopted. Real-model response evidence pending. |
+| GAP-07 | OPEN / 25 Nov 2026 | Conversation / Memory / Tool Gateway | 04C; 05D; P6-F4 | MVP-04B extends trusted clock routing and source-qualified personal-fact context. Guidance is not a general output verifier; unsupported claims still require behavioral tests. |
+| GAP-13 | OPEN / 25 Nov 2026 | Evaluation | 04B rerun; P2-F1/F2 | Reproduced archived examples inform focused routing and prompt tests. No automated learning or accepted review; verify recurrence on held-out cases. |
 | — | Pending other initial reviews | — | See §9.2 | No new feature adopted, deferred or rejected through this register. |
 
 **Coverage:** 20 capability gap review items, independent of the existing 124 canonical stories and 32 proposed-only story decisions. Grouping and review timing are planning proposals. No runtime changes, implementation count changes, acceptance promotions or benchmark execution.

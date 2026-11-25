@@ -271,3 +271,25 @@ def test_bounded_retrieval_and_context_preserves_latest_input(dsn):
              max_context_chars=512)
     assert sum(len(m.content) for m in ctx.messages)<=512
     assert ctx.messages[-1].content=="What do you remember about lunch?"
+
+def test_direct_personal_fact_retrieves_only_eligible_scoped_memory(dsn):
+    user,instance,_=seed(dsn)
+    other,other_instance,_=seed(dsn)
+    conv=uuid4()
+    source=turn(dsn,user,instance,conv,"I use a Fairphone.")
+    call(dsn,admit_memory,actor(user),
+         candidate(instance,conv,source,value="Fairphone",kind="FACT",
+                   predicate="phone",quote="I use a Fairphone."))
+    other_conv=uuid4()
+    other_source=turn(dsn,other,other_instance,other_conv,"I use a secret device.")
+    call(dsn,admit_memory,actor(other),
+         candidate(other_instance,other_conv,other_source,value="secret device",kind="FACT",
+                   predicate="phone",quote="I use a secret device."))
+    entered=turn(dsn,user,instance,uuid4(),"Which phone do I use?")
+    context=call(dsn,prepare_text_context,actor(user),entered.turn_id)
+    assert "phone: Fairphone" in context.messages[0].content
+    assert "secret device" not in context.messages[0].content
+    unknown=turn(dsn,user,instance,uuid4(),"What camera do I own?")
+    context=call(dsn,prepare_text_context,actor(user),unknown.turn_id)
+    assert "phone: Fairphone" not in context.messages[0].content
+    assert "if unsupported, say you don't know" in context.messages[0].content

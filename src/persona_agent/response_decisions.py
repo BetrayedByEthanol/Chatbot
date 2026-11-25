@@ -30,10 +30,38 @@ _TIME_QUERY = re.compile(
     r"^(?:what(?:'s| is) (?:the )?(?:current )?time"
     r"|what time is it|(?:tell|give) me (?:the )?(?:current )?time"
     r"|current time|time)"
-    r"(?:\s+(?:in|for)\s+(?P<place>[A-Za-z_/-]+(?:\s+[A-Za-z_/-]+){0,3}))?"
-    r"\s*[?.!]?$",
+    r"(?:\s+(?:right )?now)?"
+    r"(?:\s+(?:in|for)\s+(?P<place>[A-Za-z_/-]+(?:\s+[A-Za-z_/-]+){0,3}?))?"
+    r"(?:\s+(?:right )?now)?"
+    r"\s*[?.!]?"
+    r"(?:\s+please check(?: instead of guessing)?[.!]?)?$",
     re.I,
 )
+# A direct question for a personal fact is a recall need, not an instruction
+# to create a memory. Keep it bounded and exclude advice, hypothetical,
+# quoted and mixed requests. Topic terms are data, never query operators.
+_PERSONAL_FACT_QUERY = re.compile(
+    r"^(?:by the way,\s+)?(?:what|which)\s+"
+    r"(?P<topic>[a-z][a-z-]{1,30}(?:\s+[a-z][a-z-]{1,30}){0,2})"
+    r"\s+do i\s+(?:drive|own|use|wear|prefer|like)\s*\?$",
+    re.I,
+)
+
+
+def personal_fact_topic(text: str) -> str | None:
+    """Return the explicitly requested topic, not an inferred personal fact."""
+    if not isinstance(text, str) or not 1 <= len(text) <= 160:
+        return None
+    match = _PERSONAL_FACT_QUERY.fullmatch(text.strip())
+    return match["topic"].casefold() if match else None
+
+
+def is_direct_clock_question(text: str) -> bool:
+    """Recognize a direct clock query even if its timezone is unresolved."""
+    return (isinstance(text, str) and 1 <= len(text) <= 200
+            and _TIME_QUERY.fullmatch(text.strip().replace("’", "'")) is not None)
+
+
 # A delimited, nonempty input payload is necessary. Without one, interpreting
 # the entire command as the analysis subject produces misleading statistics.
 _ANALYSIS_QUERY = re.compile(
@@ -135,7 +163,7 @@ def decide_response(text: str, *, default_timezone: str = "UTC") -> ResponseDeci
     topics=preference_recall_topics(cleaned)
     if topics is not None:
         return ResponseDecision("PREFERENCE_RECALL",preference_topics=topics)
-    match = _TIME_QUERY.fullmatch(cleaned)
+    match = _TIME_QUERY.fullmatch(cleaned) if is_direct_clock_question(cleaned) else None
     if match:
         place = match.group("place")
         timezone_name = (

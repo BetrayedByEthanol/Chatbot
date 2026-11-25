@@ -378,9 +378,16 @@ def search_memories(connection: Connection, actor: TrustedActor, instance_id: UU
 def contextual_memory_block(cur, user_id: UUID, instance_id: UUID,
                             user_text: str, max_chars: int) -> str:
     """Optional recall only for explicit references; never query every turn."""
-    if max_chars<180 or not _RECALL_CUE.search(user_text):
+    if max_chars<180:
         return ""
-    words=[word for word in re.findall(r"\w+",user_text.casefold())
+    from .response_decisions import personal_fact_topic
+    topic=personal_fact_topic(user_text)
+    if topic is None and not _RECALL_CUE.search(user_text):
+        return ""
+    # Direct personal questions use only the named topic, rather than
+    # incidental query wording. Existing scoped normal-privacy and conflict
+    # eligibility checks remain authoritative.
+    words=[word for word in re.findall(r"\w+",(topic or user_text).casefold())
            if len(word)>=3 and word not in _STOP]
     if not words:
         return ""
