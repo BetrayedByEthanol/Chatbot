@@ -1217,7 +1217,10 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
                     },
                     correlation_id=scoped["source_input_event_id"],
                 )
-            if entity_answer is not None:
+            # An entity binding is usable only when the canonical text was
+            # actually persisted. Other response safeguards must not leave
+            # a binding behind for text they replaced.
+            if entity_answer is not None and text==entity_answer.text:
                 from .entity_recall import POLICY_REVISION as ENTITY_POLICY_REVISION
                 _event(
                     cursor,user_id=actor.user_id,instance_id=context.instance_id,
