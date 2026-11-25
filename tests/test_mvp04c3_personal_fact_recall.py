@@ -177,3 +177,94 @@ def test_owner_correction_and_retraction_change_later_answers(dsn,memory_setup):
     answer=call(dsn,respond_to_user_text,actor(user),question.turn_id,model)
     assert answer.text=="I don't have a reliable saved answer for that."
     assert model.calls==0
+
+
+@pytest.mark.parametrize("restriction",["SENSITIVE","EXPIRED"])
+def test_ineligible_record_is_not_revealed_even_by_model_output(dsn,memory_setup,restriction):
+    from test_phase2_memory import turn,call,actor
+    from persona_agent.conversation import respond_to_text
+    import psycopg
+    user,instance,_,_,saved=memory_setup
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        if restriction=="SENSITIVE":
+            conn.execute(
+                "UPDATE memory_records SET privacy_class='SENSITIVE' WHERE memory_id=%s",
+                (saved.memory_id,),
+            )
+        else:
+            conn.execute(
+                "UPDATE memory_records SET expires_at=clock_timestamp() WHERE memory_id=%s",
+                (saved.memory_id,),
+            )
+    question=turn(dsn,user,instance,uuid4(),"What car do I drive?")
+    response=call(dsn,respond_to_text,actor(user),question.turn_id,GuessingModel())
+    assert response.text=="I don't have a reliable saved answer for that."
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            """SELECT payload->>'status',payload->>'memory_id',payload->>'evidence_turn_id'
+               FROM events WHERE user_id=%s
+                 AND event_type='conversation.response.personal_fact_grounded.v1'
+                 AND payload->>'response_id'=%s""",
+            (user,str(response.response_id)),
+        ).fetchone()==("UNKNOWN",None,None)
+
+
+def test_newer_unresolved_conflict_suppresses_both_values(dsn,memory_setup):
+    """Seed the actual owner conflict shape; device/vehicle extraction is not enabled."""
+    from test_phase2_memory import turn,call,actor,correction
+    from persona_agent.memory import amend_memory
+    from persona_agent.response_orchestrator import respond_to_user_text
+    import psycopg
+    user,instance,conv,_,saved=memory_setup
+    newer=turn(dsn,user,instance,conv,"I now drive a Honda Civic.")
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        conn.execute(
+            """INSERT INTO memory_extraction_candidates(
+                 candidate_id,user_id,instance_id,conversation_id,source_turn_id,
+                 source_event_id,memory_kind,subject_key,predicate_key,value_text,
+                 source_quote,confidence,status,target_memory_id,target_version
+               ) VALUES (%s,%s,%s,%s,%s,%s,'FACT','user','car','Honda Civic',
+                         'I now drive a Honda Civic.',0.97,'CONFLICT',%s,1)""",
+            (uuid4(),user,instance,conv,newer.turn_id,newer.event_id,saved.memory_id),
+        )
+    question=turn(dsn,user,instance,uuid4(),"What car do I drive?")
+    model=GuessingModel()
+    reply=call(dsn,respond_to_user_text,actor(user),question.turn_id,model)
+    assert "disputed" in reply.text and "Toyota" not in reply.text and "Honda" not in reply.text
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            """SELECT payload->>'status',payload->>'memory_id'
+               FROM events WHERE user_id=%s
+                 AND event_type='conversation.response.personal_fact_grounded.v1'
+                 AND payload->>'response_id'=%s""",
+            (user,str(reply.response_id)),
+        ).fetchone()==("DISPUTED",None)
+    # An explicit owner correction makes the old candidate non-conflicting
+    # without treating the mere candidate itself as a validated new fact.
+    call(dsn,amend_memory,actor(user),correction(
+        instance,conv,newer,saved.memory_id,value="Honda Civic",
+        quote="I now drive a Honda Civic.",
+    ))
+    question=turn(dsn,user,instance,uuid4(),"What car do I drive?")
+    reply=call(dsn,respond_to_user_text,actor(user),question.turn_id,model)
+    assert "Honda Civic" in reply.text and model.calls==0
+
+
+def test_response_commit_reads_owner_revision_after_context_preparation(dsn,memory_setup):
+    from test_phase2_memory import turn,call,actor,correction
+    from persona_agent.memory import amend_memory
+    from persona_agent.conversation import prepare_text_context,commit_text_response
+    from persona_agent.conversation_contracts import ModelReply
+    user,instance,conv,_,saved=memory_setup
+    newer=turn(dsn,user,instance,conv,"Actually, I now drive a Honda Civic.")
+    question=turn(dsn,user,instance,uuid4(),"What car do I drive?")
+    context=call(dsn,prepare_text_context,actor(user),question.turn_id)
+    assert "Toyota Camry" in context.messages[0].content
+    call(dsn,amend_memory,actor(user),correction(
+        instance,conv,newer,saved.memory_id,value="Honda Civic",
+        quote="Actually, I now drive a Honda Civic.",
+    ))
+    reply=call(dsn,commit_text_response,actor(user),context,
+               ModelReply(model_id="old-snapshot-model",text="You drive a Toyota Camry."),
+               model_generated=True)
+    assert "Honda Civic" in reply.text and "Toyota" not in reply.text

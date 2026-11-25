@@ -18,12 +18,17 @@ ROUTE_ID = "conversation.personal_fact_recall.v1"
 POLICY_REVISION = "mvp04c3.1"
 Status = Literal["KNOWN", "UNKNOWN", "DISPUTED", "UNSUPPORTED_SOURCE"]
 _VERBS = {"car": "drive", "phone": "use", "camera": "own"}
+_REPORT_LABEL = {
+    "car": "the car you drive",
+    "phone": "the phone you use",
+    "camera": "the camera you own",
+}
 # Conservative presentation, not a new privacy admission policy. Only a
 # short model/name-like value of an already eligible NORMAL Memory slot.
 _VALUE = re.compile(r"[A-Za-z][A-Za-z0-9 -]{0,79}")
 _QUALIFIED = re.compile(
     r"\b(?:not|no|never|maybe|perhaps|probably|might|could|would|"
-    r"used to|sometimes|previously|borrowed|borrow|rented|rent|"
+    r"used to|sometimes|previously|only|usually|borrowed|borrow|rented|rent|"
     r"or|and|but|unless|if|password|secret|token|pin|number|account|"
     r"address|serial|license|registration|joke|example|hypothetical)\b", re.I,
 )
@@ -81,7 +86,7 @@ def render_saved_fact(topic: str, row: dict | None) -> PersonalFactAnswer:
         return PersonalFactAnswer(unknown, "UNSUPPORTED_SOURCE")
     # A saved user report is not proof of the current external state.
     return PersonalFactAnswer(
-        f"Your last saved report says you {_VERBS[topic]}: {value}.",
+        f"Your last saved report for {_REPORT_LABEL[topic]} is {value}.",
         "KNOWN",row["memory_id"],row["version"],row["source_turn_id"],
     )
 

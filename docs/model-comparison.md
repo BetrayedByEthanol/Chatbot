@@ -380,7 +380,10 @@ commit after selection/current-turn/revision checks. Existing slot revisions
 are share-locked before reading the source and conflict eligibility. Missing,
 expired, retracted, non-normal, future-source and unsupported-source records
 produce a bounded unknown answer. Newer unresolved extracted conflicts
-produce a disputed answer without either value. A supported source must be a
+produce a disputed answer without either value. The integration conflict
+fixture seeds the existing candidate schema directly because device/vehicle
+extraction is not enabled; it does not claim real extraction coverage.
+A supported source must be a
 complete first-person assertion of the requested relation and value, not a
 substring from a qualified, quoted or historical claim. A known answer is
 explicitly the last saved user report, not independent verification or a
