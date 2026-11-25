@@ -606,6 +606,51 @@ factual-output verifier. No acceptance promotion. PostgreSQL concurrency,
 expiry, rollback and retry tests plus real-host latency measurement are
 required; do not infer throughput improvement from the fence design.
 
+### MVP-05C.1 — Scoped entity identities and grounded reference recall
+
+Migration 0045 adds Memory-owned stable UUID identities and immutable
+revision snapshots for explicit user-to-entity relations. PERSON, PLACE
+and OBJECT identities have bounded relation types and exact normalized
+name/alias keys. Names are not unique; never auto-merge or resolve by
+recency. Explicit authenticated registration and amendment commands reuse
+Memory receipts, evidence scope, selection checks, event stream/outbox,
+optimistic versions and newer source chronology. Whole-source declarative
+grammar validates the selected relation/alias/retraction. A source turn
+may authorize only one entity revision. No automatic entity extraction
+or inference from a name; explicit registration must choose a distinct
+identity. Alias addition keeps the original relation evidence; correction
+preserves stable ID and aliases. Retraction excludes recall while retaining
+provenance. Initial names/aliases use a bounded Latin-script grammar;
+privacy-sensitive/expired rows are excluded. No new external graph.
+
+Exact private recall questions (e.g. "Do you remember who Alex is?",
+"Who is Alex to me?", "Do you remember my colleague Alex?", "Do you
+remember what Atlas is?") use canonical current owner data in the existing
+response commit, including forced model-only delivery. Unknown and
+multiple matches abstain/clarify; qualified questions and aliases can
+disambiguate, same-name/same-relation collisions remain ambiguous.
+Adjacent explicit pronoun questions ("How do I know them?", "Do you
+remember what it is?") resolve only a unique KNOWN binding in the
+immediately preceding delivered response in the same conversation. The
+existing scoped grounding event retains entity ID, revision and actual
+relation source; no extra conversational state owner. An intervening
+message, undelivered or ambiguous answer cannot bind a pronoun. The
+entity is re-read for every answer, not a cached name/relationship.
+
+The current lookup shares the 05B historical revision lock, and entity
+writes bump it atomically through the existing deferred trigger. No
+entity row lock is acquired after the shared revision lock; no model
+inference is under a lock. Registered exact entity source turns are
+conservatively omitted from generic raw/episode recall so superseded or
+ineligible relations cannot reappear through those paths. Recent dialogue
+and all derived-summary lineage are not rewritten or comprehensively
+fenced. No automatic command admission from ordinary user text, natural
+short clarification follow-up, arbitrary pronouns, entity-to-entity
+edges, name changes/alias removal, broad semantic/entity-conditioned
+historical retrieval, or general identity resolution. These are follow-up
+05C/05D/07B concerns. Explicit owner registration is an API contract,
+not a new UI. No acceptance promotion or frozen benchmark changes.
+
 ## Tests
 
 ```bash
