@@ -106,7 +106,7 @@ def _event(cur, actor: TrustedActor | TrustedPlatformActor, instance_id: UUID, m
            version: int, event_type: str, turn_id: UUID, receipt_id: UUID,
            *, trust_level: str = "AUTHENTICATED_USER",
            aggregate_key: str = "memory_id") -> UUID:
-    if aggregate_key not in ("memory_id","entity_id"):
+    if aggregate_key not in ("memory_id","entity_id","entity_evidence_id","entity_relationship_id"):
         raise ValueError("unsupported Memory event aggregate")
     stream_id=uuid5(NAMESPACE_URL,f"persona-agent/{instance_id}/memory")
     cur.execute(
