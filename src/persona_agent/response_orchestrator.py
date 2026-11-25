@@ -60,6 +60,9 @@ def respond_to_user_text(
     if decision.route=="PERSONAL_FACT_RECALL":
         from .personal_fact_recall import respond_with_personal_fact_recall
         return respond_with_personal_fact_recall(connection,actor,turn_id)
+    if decision.route=="ENTITY_RECALL":
+        from .entity_recall import respond_with_entity_recall
+        return respond_with_entity_recall(connection,actor,turn_id)
     if decision.route=="CLOCK":
         return respond_with_time(
             connection,actor,turn_id,timezone_name=decision.timezone_name,

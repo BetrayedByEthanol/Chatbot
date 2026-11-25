@@ -195,18 +195,21 @@ def _read_entities(cur,*,user_id: UUID,instance_id: UUID,reference: EntityRefere
     if entity_id is None and reference.name_key is None:
         return ()
     cur.execute(
-        """SELECT entity_id,entity_kind,name,relation,version,
-                  relation_source_turn_id,source_turn_at
-           FROM memory_entities
-           WHERE user_id=%s AND instance_id=%s
-             AND record_status='ACTIVE' AND privacy_class='NORMAL'
-             AND (expires_at IS NULL OR expires_at>clock_timestamp())
-             AND (%s::uuid IS NULL OR entity_id=%s)
-             AND (%s::text IS NULL OR name_keys @> ARRAY[%s]::text[])
-             AND (%s='ANY' OR (%s='PERSON' AND entity_kind='PERSON')
-                          OR (%s='NONPERSON' AND entity_kind IN ('PLACE','OBJECT')))
-             AND (%s::text IS NULL OR relation=%s)
-           ORDER BY entity_id LIMIT 3""",
+        """SELECT m.entity_id,m.entity_kind,m.name,m.relation,m.version,
+                  m.relation_source_turn_id,t.created_at AS source_turn_at
+           FROM memory_entities m
+           JOIN conversation_turns t ON t.turn_id=m.relation_source_turn_id
+             AND t.conversation_id=m.relation_source_conversation_id
+             AND t.user_id=m.user_id AND t.instance_id=m.instance_id
+           WHERE m.user_id=%s AND m.instance_id=%s
+             AND m.record_status='ACTIVE' AND m.privacy_class='NORMAL'
+             AND (m.expires_at IS NULL OR m.expires_at>clock_timestamp())
+             AND (%s::uuid IS NULL OR m.entity_id=%s)
+             AND (%s::text IS NULL OR m.name_keys @> ARRAY[%s]::text[])
+             AND (%s='ANY' OR (%s='PERSON' AND m.entity_kind='PERSON')
+                          OR (%s='NONPERSON' AND m.entity_kind IN ('PLACE','OBJECT')))
+             AND (%s::text IS NULL OR m.relation=%s)
+           ORDER BY m.entity_id LIMIT 3""",
         (user_id,instance_id,entity_id,entity_id,reference.name_key,reference.name_key,
          reference.kind,reference.kind,reference.kind,reference.relation,reference.relation),
     )

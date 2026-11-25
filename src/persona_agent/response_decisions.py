@@ -11,6 +11,8 @@ import re
 from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from .entity_reference import entity_reference
+
 # Explicit location names are intentionally bounded. Do not guess arbitrary
 # city names or infer a timezone from the user's location or profile.
 _LOCAL_ZONES = {
@@ -123,7 +125,7 @@ def is_historical_emoji_preference_query(text: str) -> bool:
 
 @dataclass(frozen=True)
 class ResponseDecision:
-    route: Literal["MODEL", "CLOCK", "TEXT_ANALYSIS", "PREFERENCE_RECALL", "PERSONAL_FACT_RECALL"]
+    route: Literal["MODEL", "CLOCK", "TEXT_ANALYSIS", "PREFERENCE_RECALL", "PERSONAL_FACT_RECALL", "ENTITY_RECALL"]
     timezone_name: str | None = None
     preference_topics: tuple[str, ...] = ()
     method_revision: str = "mvp01d.rules.1"
@@ -173,6 +175,8 @@ def decide_response(text: str, *, default_timezone: str = "UTC") -> ResponseDeci
         return ResponseDecision("PREFERENCE_RECALL",preference_topics=topics)
     if personal_fact_topic(cleaned) is not None:
         return ResponseDecision("PERSONAL_FACT_RECALL",method_revision="mvp04c3.rules.1")
+    if entity_reference(cleaned) is not None:
+        return ResponseDecision("ENTITY_RECALL",method_revision="mvp05c1.rules.1")
     match = _TIME_QUERY.fullmatch(cleaned) if is_direct_clock_question(cleaned) else None
     if match:
         place = match.group("place")

@@ -12,7 +12,7 @@ from datetime import datetime
 from uuid import UUID
 
 from .memory_retrieval import _terms, is_historical_recall_query
-from .memory_read_policy import eligible_report_source_sql
+from .memory_read_policy import eligible_report_source_sql, unmanaged_entity_source_sql
 from .intent_interpretation import explicit_topic_history_request
 
 # Raw conversation turns have no fine-grained privacy classification. Until
@@ -360,6 +360,7 @@ def _eligible_activity_types(
                        AND candidate.source_turn_id=t.turn_id
                  )
                  AND {eligible_report_source_sql("t")}
+                 AND {unmanaged_entity_source_sql("t")}
                  AND to_tsvector('english',t.input_text)
                      @@ websearch_to_tsquery('english', %s)""",
             (user_id, instance_id, conversation_id, before_at, query),
@@ -461,6 +462,7 @@ def focused_procedure_discussion_context_block(
                    AND candidate.source_turn_id=t.turn_id
              )
              AND {eligible_report_source_sql("t")}
+             AND {unmanaged_entity_source_sql("t")}
              AND to_tsvector('english',t.input_text)
                  @@ plainto_tsquery('english',%s)
            ORDER BY t.created_at DESC,t.turn_id DESC LIMIT 4""",
@@ -602,6 +604,7 @@ def historical_user_turn_context_block(
                        AND candidate.source_turn_id=t.turn_id
                  )
                  AND {eligible_report_source_sql("t")}
+                 AND {unmanaged_entity_source_sql("t")}
                  AND to_tsvector('english',t.input_text)
                      @@ websearch_to_tsquery('english', %s)
                ORDER BY relevance DESC, t.created_at DESC, t.turn_id
@@ -798,6 +801,7 @@ def dated_recall_context_block(cur, *, user_id: UUID, instance_id: UUID,
                    AND c.source_turn_id=t.turn_id
              )
              AND {eligible_report_source_sql("t")}
+             AND {unmanaged_entity_source_sql("t")}
              AND to_tsvector('english',t.input_text)
                  @@ websearch_to_tsquery('english',%s)
            ORDER BY t.created_at DESC,t.turn_id LIMIT 13""",

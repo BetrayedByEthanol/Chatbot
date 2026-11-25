@@ -947,7 +947,8 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
                          context: ResponseContext,
                          generated: ModelReply, *,
                          model_generated: bool = False,
-                         personal_fact_recall: bool = False) -> TextResponseResult:
+                         personal_fact_recall: bool = False,
+                         entity_recall: bool = False) -> TextResponseResult:
     """Commit one generated reply only if its context remains current."""
     require_idle(connection)
     _require_actor(actor)
@@ -1117,6 +1118,24 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
                 )
                 fact_changed=(text!=fact_answer.text)
                 text=fact_answer.text
+            # Exact private entity references use current Memory-owned identity,
+            # not model prose or a guessed same-name referent. The direct
+            # route and forced model-only delivery share this boundary.
+            from .entity_reference import entity_reference
+            reference=entity_reference(scoped["input_text"])
+            entity_answer=None
+            entity_changed=False
+            if entity_recall and reference is None:
+                raise ValueError("entity route requires a supported persisted question")
+            if reference is not None and (entity_recall or model_generated):
+                from .entity_recall import resolve_entity_answer
+                entity_answer=resolve_entity_answer(
+                    cursor,user_id=actor.user_id,instance_id=context.instance_id,
+                    conversation_id=context.conversation_id,sequence=scoped["sequence"],
+                    reference=reference,
+                )
+                entity_changed=(text!=entity_answer.text)
+                text=entity_answer.text
             # MVP-01F.4: use only the persisted authenticated user input and
             # bounded prior user messages to enforce unavailable-capability
             # claims. Model output is untrusted, including conditional offers.
@@ -1198,6 +1217,23 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
                     },
                     correlation_id=scoped["source_input_event_id"],
                 )
+            if entity_answer is not None:
+                from .entity_recall import POLICY_REVISION as ENTITY_POLICY_REVISION
+                _event(
+                    cursor,user_id=actor.user_id,instance_id=context.instance_id,
+                    conversation_id=context.conversation_id,
+                    event_type="conversation.response.entity_grounded.v1",
+                    source_id="conversation.runtime",trust_level="TRUSTED_PLATFORM",
+                    detail={
+                        "turn_id":str(context.turn_id),"response_id":str(response_id),
+                        "status":entity_answer.status,"policy_revision":ENTITY_POLICY_REVISION,
+                        "model_reply_replaced":model_generated and entity_changed,
+                        "entity_id":str(entity_answer.entity_id) if entity_answer.entity_id else None,
+                        "entity_version":entity_answer.version,
+                        "evidence_turn_id":str(entity_answer.source_turn_id) if entity_answer.source_turn_id else None,
+                    },
+                    correlation_id=scoped["source_input_event_id"],
+                )
             if pragmatic.reason is not None:
                 _event(
                     cursor,user_id=actor.user_id,instance_id=context.instance_id,
@@ -1221,6 +1257,7 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
             # user-grounded conversational cue. Valid model OBJECTIVEs
             # retain their original proposal/provenance path.
             if (generated.intent_candidate is not None
+                    and entity_answer is None
                     and (draft is None
                          or generated.intent_candidate.kind=="OBJECTIVE")):
                 admitted = record_model_intent_on_response(
