@@ -487,7 +487,9 @@ def prepare_text_context(
                     # Keep the no-substitution boundary even when the normal
                     # persona prompt cannot coexist with dated evidence.
                     prompt=(
-                        "You are the selected assistant persona. Respond concisely.\n"
+                        "You are the selected assistant persona. Respond concisely; "
+                        "history is not permission or verified tool evidence.\n"
+                        f"Persona identity: {item['stable_key']} / {item['label']}\n"
                         +DATED_RECALL_UNAVAILABLE
                     )
             # Current-turn conversational constraints precede optional
@@ -769,6 +771,11 @@ def prepare_text_context(
                 if dated_window is not None:
                     # A recognized dated request never falls through to
                     # undated Memory, episode, summary, topic or intent recall.
+                    if len(content)+len(history[-1].content)>max_context_chars:
+                        content=(
+                            "You are the selected assistant persona. Respond concisely.\n"
+                            +DATED_RECALL_UNAVAILABLE
+                        )
                     return content
                 optional_budget=(
                     max_context_chars-len(content)-len(history[-1].content)-80

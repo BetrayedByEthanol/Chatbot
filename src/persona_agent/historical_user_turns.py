@@ -804,8 +804,10 @@ def dated_recall_context_block(cur, *, user_id: UUID, instance_id: UUID,
     # independent corroboration. Suppressed sources stay suppressed.
     items=[]
     seen=set()
-    def add(source_id,at,kind,value):
-        if source_id in seen:
+    def add(source_id,at,kind,value,*,owner=False):
+        # Several independently owned slots may cite one turn. Keep them,
+        # but do not treat that turn as multiple independent observations.
+        if not owner and source_id in seen:
             return
         seen.add(source_id)
         line=(f"{kind} source turn {source_id} at {at.isoformat()}: "
@@ -816,7 +818,7 @@ def dated_recall_context_block(cur, *, user_id: UUID, instance_id: UUID,
         if row["source_type"]=="USER_MEMORY":
             add(row["source_turn_id"],row["source_turn_at"],
                 f"USER_REPORTED revision {row['record_version']}",
-                row["topic"]+": "+row["excerpt"])
+                row["topic"]+": "+row["excerpt"],owner=True)
     omitted=len(original)>12 or any(
         sum(r["source_type"]==kind for r in rows)>=12
         for kind in ("USER_MEMORY","EPISODE")
@@ -827,10 +829,29 @@ def dated_recall_context_block(cur, *, user_id: UUID, instance_id: UUID,
             omitted=True
             continue
         add(row["turn_id"],row["created_at"],"USER_REPORTED quotation",text)
-    for row in rows:
-        if row["source_type"]=="EPISODE":
-            add(row["source_turn_id"],row["source_turn_at"],
-                "MODEL_INTERPRETED episode",row["topic"]+": "+row["excerpt"])
+    # An interpreted episode may not bypass the privacy safeguard merely
+    # because its original raw source was not among the top 12 matches.
+    episode_ids=list(dict.fromkeys(
+        row["source_turn_id"] for row in rows
+        if row["source_type"]=="EPISODE" and row["source_turn_id"] not in seen
+    ))
+    if episode_ids:
+        cur.execute(
+            """SELECT turn_id,input_text FROM conversation_turns
+               WHERE user_id=%s AND instance_id=%s AND turn_id=ANY(%s::uuid[])
+                 AND created_at>=%s AND created_at<%s
+                 AND status='RESPONDED' AND source_input_event_id IS NOT NULL""",
+            (user_id,instance_id,episode_ids,start,end),
+        )
+        eligible_sources={
+            row["turn_id"] for row in cur.fetchall()
+            if not _SENSITIVE.search(row["input_text"])
+        }
+        for row in rows:
+            if (row["source_type"]=="EPISODE"
+                    and row["source_turn_id"] in eligible_sources):
+                add(row["source_turn_id"],row["source_turn_at"],
+                    "MODEL_INTERPRETED episode",row["topic"]+": "+row["excerpt"])
     if not items:
         return header+DATED_RECALL_UNAVAILABLE
     # Reserve ambiguity guidance before selecting excerpts. Several matches
@@ -838,7 +859,7 @@ def dated_recall_context_block(cur, *, user_id: UUID, instance_id: UUID,
     caution=(
         "Multiple matching source turns; if the intended event is unclear, "
         "ask which one rather than combining them. "
-        if len(items)>1 else ""
+        if len(seen)>1 else ""
     )+"Bounded search; absence or one match does not prove uniqueness.\n"
     if len(header)+len(caution)>max_chars:
         return DATED_RECALL_UNAVAILABLE

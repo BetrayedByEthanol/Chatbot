@@ -524,6 +524,45 @@ summary/derived-store lineage remain open. Explicit API date bounds are
 unchanged. This is a bounded read-contract increment, not a general factual
 output verifier.
 
+### MVP-05B.2 — Bounded dated historical retrieval
+
+Recognize standalone "What did I/we say/tell you/discuss/mention about
+TOPIC PERIOD?" questions with one supported calendar period. Resolve
+today/yesterday, ISO local date, last week/month, 1–99 days ago and 1–52
+weeks ago (English one–twelve or numeric) against the original trusted
+receipt and explicit IANA timezone. N weeks ago is the Monday–Sunday
+local calendar week containing the date N weeks before receipt. Label
+that interpretation, use half-open UTC boundaries (including 23/25-hour
+DST days), and cap at receipt. Missing timezone, multiple/unsupported
+periods or ambiguous local-midnight boundaries produce clarification
+guidance, not an undated substitute. Other question families are unchanged.
+
+Reuse the existing scoped hybrid candidate query with date constraints
+before ranking/limits, plus a bounded FTS query for original authenticated
+responded user turns across conversations, including the current one.
+Conjunctive topic terms are parameterized; current eligible owner revisions
+and original quotes outrank model-interpreted episodes. Exclude raw sources
+already governed by Memory revisions/candidates and apply existing raw
+privacy safeguards, including to original episode sources. Multiple
+projections of one source are not independent corroboration. Preserve
+whole quotations and owner values; bounded evidence is not proof of
+uniqueness, and competing matches require clarification if the referent
+remains unclear. The dates refer to the source report, not necessarily
+the event date or a current fact.
+
+Recognized dated requests skip undated Memory, summary, episode, focused
+topic and historical correction-context retrieval. Recent verbatim
+dialogue remains normal context, not evidence for the requested period.
+No new model call, owner, schema, general temporal parser or state mutation.
+The result is model-facing evidence, not an output verifier. Existing
+privacy, correction and retraction rules still apply: a corrected older
+revision is not exposed as historical fact, even for a dated request.
+This is not as-of revision reconstruction. Other date question forms,
+semantic retrieval, complex date ranges, full entity ambiguity, and
+unconsolidated corrections/context fencing remain outstanding. The bounded
+candidate view can miss valid older evidence; never assert uniqueness.
+No acceptance promotion or frozen benchmark changes.
+
 ## Tests
 
 ```bash

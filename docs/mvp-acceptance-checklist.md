@@ -221,6 +221,8 @@ Use existing ordered migration/test fixtures, record skips/reasons; a run withou
 
 ## 4. Q — Real-model conversational quality (MVP-04)
 
+MVP-05B.2 candidate evidence: [bounded dated historical retrieval](model-comparison.md#mvp-05b2--bounded-dated-historical-retrieval) uses trusted receipt and explicit timezone to constrain a small family of explicit topical recollection questions, distinguishes reports from event dates/current facts, and blocks undated fallback for unresolved periods. Broader temporal/semantic ambiguity and independent real-model verification remain pending.
+
 MVP-05B.1 candidate evidence: [shared historical eligibility and correction precedence](model-comparison.md#mvp-05b1--shared-historical-eligibility-and-correction-precedence) shares Memory dispute filtering and conservative exact-source episode exclusion before ranking. Complete owner values and known adjacent correction chains are budgeted atomically. Broader temporal queries, source ambiguity, lineage and independent model verification remain pending.
 
 MVP-05A candidate evidence: [trusted temporal context](model-comparison.md#mvp-05a--trusted-temporal-context) adds source-linked ingress snapshots and scoped relative-time resolution; PPA-US-091 remains partial pending general relative language, user timezone configuration and measured temporal behavior. No new acceptance promotion.
