@@ -269,7 +269,11 @@ _PAST_PERIOD = re.compile(
     r"wednesday|thursday|friday|saturday|sunday)|"
     r"(?:days?|weeks?|months?|years?|hours?|minutes?) ago|"
     r"\d{4}-\d{1,2}-\d{1,2}|a while ago|recently|"
-    r"earlier this (?:week|month|year))\b", re.I,
+    r"(?:earlier )?this (?:week|month|year)|"
+    r"on (?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)|"
+    r"on \d{1,2} (?:january|february|march|april|may|june|july|"
+    r"august|september|october|november|december)|"
+    r"(?:days?|weeks?|months?|years?) back)\b", re.I,
 )
 _PERIOD_SUFFIX = re.compile(
     r"(?P<topic>.+?)\s+(?P<period>yesterday|today|last week|last month|"

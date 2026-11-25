@@ -535,7 +535,9 @@ local calendar week containing the date N weeks before receipt. Label
 that interpretation, use half-open UTC boundaries (including 23/25-hour
 DST days), and cap at receipt. Missing timezone, multiple/unsupported
 periods or ambiguous local-midnight boundaries produce clarification
-guidance, not an undated substitute. Other question families are unchanged.
+guidance, not an undated substitute. Recognizable but unsupported weekday,
+named-date and other detected period expressions within this question
+family also abstain. Other question families are unchanged.
 
 Reuse the existing scoped hybrid candidate query with date constraints
 before ranking/limits, plus a bounded FTS query for original authenticated

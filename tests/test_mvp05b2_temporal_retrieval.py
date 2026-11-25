@@ -62,6 +62,10 @@ def test_windows_use_local_calendar_and_exclusive_utc_end(period,at,zone,start,e
     ("gardening on 2027-01-01","UTC","UNSUPPORTED_PERIOD"),
     ("gardening 99 weeks ago","UTC","UNSUPPORTED_PERIOD"),
     ("gardening yesterday at 15:00","UTC","UNSUPPORTED_PERIOD"),
+    ("gardening on Monday","UTC","UNSUPPORTED_PERIOD"),
+    ("gardening on 3 November","UTC","UNSUPPORTED_PERIOD"),
+    ("gardening this month","UTC","UNSUPPORTED_PERIOD"),
+    ("gardening two weeks back","UTC","UNSUPPORTED_PERIOD"),
 ])
 def test_missing_ambiguous_or_unsupported_period_never_becomes_undated(body,zone,status):
     result=historical_recall_window(
@@ -85,6 +89,7 @@ def test_ordinary_and_unsupported_question_families_do_not_activate_new_path(tex
 
 
 def test_unresolved_and_tight_budget_do_not_query():
+    pytest.importorskip("psycopg")
     from persona_agent.historical_user_turns import dated_recall_context_block
     class NoSQL:
         def execute(self,*args,**kwargs):
