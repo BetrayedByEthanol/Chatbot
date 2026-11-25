@@ -20,6 +20,7 @@ from .lifecycle import TrustedPlatformActor
 from .conversation import _event, _require_actor, _selection
 from .conversation_contracts import ModelMessage, TextModelGateway
 from .memory import _RECALL_CUE, _STOP
+from .memory_read_policy import eligible_episode_source_sql
 from .operation_contracts import (
     EffectClass, EnqueueOperation, OperationLease, Origin, Policy, Priority,
     require_claim, require_current_authority, require_idle,
@@ -632,11 +633,12 @@ def search_episodes(
             if cur.fetchone() is None:
                 raise PermissionDenied("episode instance outside authenticated scope")
             cur.execute(
-                """SELECT episode_id,conversation_id,source_turn_id,
+                f"""SELECT episode_id,conversation_id,source_turn_id,
                           source_sequence,source_turn_at,topic,description,
                           epistemic_status,confidence
                    FROM memory_episodes
                    WHERE user_id=%s AND instance_id=%s AND privacy_class='NORMAL'
+                     AND {eligible_episode_source_sql()}
                      AND (%s::timestamptz IS NULL OR source_turn_at >= %s::timestamptz)
                      AND (%s::timestamptz IS NULL OR source_turn_at <= %s::timestamptz)
                      AND to_tsvector('simple',topic || ' ' || description)
@@ -789,9 +791,10 @@ def episode_context_block(cur, user_id: UUID, instance_id: UUID,
     terms=" OR ".join(dict.fromkeys(words[:6]))
     head="Historical episodes (model interpretations, check original turns):\n"
     cur.execute(
-        """SELECT topic,description,source_turn_id,source_turn_at
+        f"""SELECT topic,description,source_turn_id,source_turn_at
            FROM memory_episodes WHERE user_id=%s AND instance_id=%s
              AND privacy_class='NORMAL'
+             AND {eligible_episode_source_sql()}
              AND to_tsvector('simple',topic || ' ' || description)
                  @@ websearch_to_tsquery('simple',%s)
            ORDER BY source_turn_at DESC,episode_id LIMIT 4""",
