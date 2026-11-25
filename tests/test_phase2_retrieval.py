@@ -344,3 +344,124 @@ def test_recall_signal_is_not_topic_or_memory_creation():
     assert is_historical_recall_query("Do you remember the garden?")
     assert is_historical_recall_query("What did I say about tea?")
     assert not is_historical_recall_query("Can you explain Docker networking?")
+
+
+def _change_memory(dsn,user,instance,source,saved,text,*,action="CORRECT",value=None):
+    from persona_agent.memory import amend_memory
+    from persona_agent.memory_contracts import AmendMemoryCommand
+    return call(dsn,amend_memory,actor(user),AmendMemoryCommand(
+        instance_id=instance,expected_generation=1,memory_id=saved.memory_id,
+        expected_version=saved.version,conversation_id=source.conversation_id,
+        evidence_turn_id=source.turn_id,evidence_quote=text,
+        action=action,new_value=value if action=="CORRECT" else None,
+        confidence=0.99 if action=="CORRECT" else None,idempotency_key=str(uuid4()),
+    ))
+
+
+def _conflict(dsn,user,instance,source,saved,*,kind,predicate,value,text):
+    """Seed the existing candidate shape, not a new extraction capability."""
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        conn.execute(
+            """INSERT INTO memory_extraction_candidates(
+                 candidate_id,user_id,instance_id,conversation_id,source_turn_id,
+                 source_event_id,memory_kind,subject_key,predicate_key,value_text,
+                 source_quote,confidence,status,target_memory_id,target_version
+               ) VALUES (%s,%s,%s,%s,%s,%s,%s,'user',%s,%s,%s,0.97,'CONFLICT',%s,%s)""",
+            (uuid4(),user,instance,source.conversation_id,source.turn_id,
+             source.event_id,kind,predicate,value,text,saved.memory_id,saved.version),
+        )
+
+
+def test_disputed_slot_is_excluded_from_hybrid_and_focused_recall(dsn):
+    from persona_agent.memory import search_memories
+    user,instance,_=seed(dsn)
+    old=uuid4()
+    original,saved=remember(dsn,user,instance,old,"My favorite drink is tea.")
+    text="My favorite drink is coffee."
+    newer=turn(dsn,user,instance,old,text)
+    _conflict(dsn,user,instance,newer,saved,kind="PREFERENCE",
+              predicate="favorite_drink",value="coffee",text=text)
+    query="favorite drink"
+    assert call(dsn,search_memories,actor(user),instance,query)==()
+    assert call(dsn,search_relevant_history,actor(user),instance,query)==()
+    current=uuid4()
+    entered=turn(dsn,user,instance,current,"Discuss favorite drinks.")
+    open_topic(dsn,user,instance,current,entered,query)
+    request=turn(dsn,user,instance,current,"What about that?")
+    context=call(dsn,prepare_text_context,actor(user),request.turn_id)
+    assert "unresolved. Do not assert the old value" in context.messages[0].content
+    assert "favorite_drink: tea" not in context.messages[0].content
+    assert "favorite_drink: coffee" not in context.messages[0].content
+    corrected=_change_memory(dsn,user,instance,newer,saved,text,value="coffee")
+    hits=call(dsn,search_relevant_history,actor(user),instance,query)
+    assert [(h.excerpt,h.record_version,h.source_turn_id) for h in hits]==[
+        ("coffee",corrected.version,newer.turn_id)
+    ]
+    context=call(dsn,prepare_text_context,actor(user),request.turn_id)
+    assert "favorite_drink: coffee" in context.messages[0].content
+    assert "favorite_drink: tea" not in context.messages[0].content
+    assert "unresolved. Do not assert the old value" not in context.messages[0].content
+
+
+@pytest.mark.parametrize("change",["CORRECT","RETRACT","SENSITIVE","EXPIRED","CONFLICT"])
+def test_episode_source_cannot_bypass_current_memory_eligibility(dsn,change):
+    from persona_agent.summary_memory import search_episodes
+    user,instance,_=seed(dsn)
+    source=episode(dsn,user,instance)
+    assert source is not None
+    saved=call(dsn,admit_memory,actor(user),AdmitMemoryCommand(
+        instance_id=instance,expected_generation=1,conversation_id=source.conversation_id,
+        evidence_turn_id=source.turn_id,evidence_quote="I adopted a rescue dog.",
+        memory_kind="FACT",subject_key="user",predicate_key="rescue_dog_adoption",
+        value_text="adopted",confidence=0.96,idempotency_key=str(uuid4()),
+    ))
+    assert call(dsn,search_episodes,actor(user),instance,"rescue dog")
+    if change in ("CORRECT","RETRACT","CONFLICT"):
+        text="Actually, I did not adopt a rescue dog."
+        newer=turn(dsn,user,instance,source.conversation_id,text)
+        if change=="CONFLICT":
+            _conflict(dsn,user,instance,newer,saved,kind="FACT",
+                      predicate="rescue_dog_adoption",value="not adopted",text=text)
+        else:
+            _change_memory(dsn,user,instance,newer,saved,text,
+                           action=change,value="not adopted")
+    else:
+        with psycopg.connect(dsn,autocommit=True) as conn:
+            if change=="SENSITIVE":
+                conn.execute("UPDATE memory_records SET privacy_class='SENSITIVE' WHERE memory_id=%s",
+                             (saved.memory_id,))
+            else:
+                conn.execute("UPDATE memory_records SET expires_at=clock_timestamp() WHERE memory_id=%s",
+                             (saved.memory_id,))
+    assert call(dsn,search_episodes,actor(user),instance,"rescue dog")==()
+    hits=call(dsn,search_relevant_history,actor(user),instance,"rescue dog")
+    assert all(h.source_type!="EPISODE" and h.source_turn_id!=source.turn_id for h in hits)
+    current=turn(dsn,user,instance,uuid4(),"Do you remember the rescue dog adoption?")
+    ctx=call(dsn,prepare_text_context,actor(user),current.turn_id)
+    assert "User reported adopting a rescue dog" not in ctx.messages[0].content
+    assert "rescue_dog_adoption: adopted" not in ctx.messages[0].content
+    if change=="CORRECT":
+        assert "rescue_dog_adoption: not adopted" in ctx.messages[0].content
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT count(*) FROM memory_episodes WHERE source_turn_id=%s",
+            (source.turn_id,),
+        ).fetchone()[0]==1
+
+
+def test_small_budget_never_abridges_a_current_memory_value(dsn):
+    user,instance,_=seed(dsn)
+    conv=uuid4()
+    value="Lavender "+("in the northern garden " * 18)+"except in winter"
+    remember(dsn,user,instance,conv,"My garden meaning is "+value,
+             kind="PERSONAL_MEANING",predicate="garden_meaning",value=value)
+    source,small=remember(dsn,user,instance,conv,"My favorite garden plant is sage.",
+                         predicate="garden_plant",value="sage")
+    hits=call(dsn,search_relevant_history,actor(user),instance,"garden",
+              max_chars=256,max_results=4)
+    assert any(h.source_id==small.memory_id for h in hits)
+    assert all(not h.abridged for h in hits if h.source_type=="USER_MEMORY")
+    assert all("Lavender" not in h.excerpt for h in hits)
+    all_hits=call(dsn,search_relevant_history,actor(user),instance,"garden",
+                  max_chars=2400,max_results=4)
+    assert any(h.excerpt==value and not h.abridged for h in all_hits)

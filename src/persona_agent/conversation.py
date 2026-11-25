@@ -743,6 +743,8 @@ def prepare_text_context(
             # redundant historical queries during one foreground turn.
             topic_recall_cache={}
             historical_turn_cache={}
+            memory_recall_cache={}
+            episode_recall_cache={}
             intent_context_cache={}
 
             def assemble_prompt(before_sequence: int) -> str:
@@ -750,6 +752,20 @@ def prepare_text_context(
                 optional_budget=(
                     max_context_chars-len(content)-len(history[-1].content)-80
                 )
+                # Eligible current owner records take priority over optional
+                # summaries/episodes. Ordinary non-recall turns still abstain
+                # inside contextual_memory_block before any historical query.
+                recall_budget=min(1000,max_context_chars//3,optional_budget)
+                memory=""
+                if recall_budget>=180:
+                    if recall_budget not in memory_recall_cache:
+                        memory_recall_cache[recall_budget]=contextual_memory_block(
+                            cursor,actor.user_id,item["instance_id"],
+                            history[-1].content,recall_budget,
+                        )
+                    memory=memory_recall_cache[recall_budget]
+                    content+=memory
+                    optional_budget-=len(memory)
                 if item["summary_watermark"] and optional_budget>=180:
                     compact=summary_context_block(
                         cursor,item["conversation_id"],actor.user_id,
@@ -760,26 +776,14 @@ def prepare_text_context(
                     optional_budget-=len(compact)
                 episode=""
                 if optional_budget>=220:
-                    episode=episode_context_block(
-                        cursor,actor.user_id,item["instance_id"],
-                        history[-1].content,min(1000,optional_budget),
-                    )
+                    episode_cap=min(1000,optional_budget)
+                    if episode_cap not in episode_recall_cache:
+                        episode_recall_cache[episode_cap]=episode_context_block(
+                            cursor,actor.user_id,item["instance_id"],
+                            history[-1].content,episode_cap,
+                        )
+                    episode=episode_recall_cache[episode_cap]
                     content+=episode
-                # P2-01 memory recall is optional, scoped, and untrusted.
-                recall_budget=min(
-                    1000,max_context_chars//3,
-                    max_context_chars-len(content)-min(
-                        len(history[-1].content),
-                        min(256,max_context_chars//4),
-                    ),
-                )
-                memory=""
-                if recall_budget>=180:
-                    memory=contextual_memory_block(
-                        cursor,actor.user_id,item["instance_id"],
-                        history[-1].content,recall_budget,
-                    )
-                    content+=memory
                 # MVP-02B.1: only when the existing Memory/episode routes
                 # supply no evidence, try bounded source-linked user turns
                 # from PREVIOUS conversations. This fallback cannot write

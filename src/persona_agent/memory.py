@@ -440,4 +440,10 @@ def contextual_memory_block(cur, user_id: UUID, instance_id: UUID,
         if len(block)+len(line)>max_chars:
             continue
         block+=line
-    return block if block!=head else ""
+    if block==head:
+        return ""
+    precedence=(
+        "Current eligible Memory revisions take precedence over older "
+        "quotations and summaries about the same claim.\n"
+    )
+    return block+precedence if len(block)+len(precedence)<=max_chars else block

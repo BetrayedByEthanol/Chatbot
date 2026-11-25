@@ -221,6 +221,8 @@ Use existing ordered migration/test fixtures, record skips/reasons; a run withou
 
 ## 4. Q — Real-model conversational quality (MVP-04)
 
+MVP-05B.1 candidate evidence: [shared historical eligibility and correction precedence](model-comparison.md#mvp-05b1--shared-historical-eligibility-and-correction-precedence) shares Memory dispute filtering and conservative exact-source episode exclusion before ranking. Complete owner values and known adjacent correction chains are budgeted atomically. Broader temporal queries, source ambiguity, lineage and independent model verification remain pending.
+
 MVP-05A candidate evidence: [trusted temporal context](model-comparison.md#mvp-05a--trusted-temporal-context) adds source-linked ingress snapshots and scoped relative-time resolution; PPA-US-091 remains partial pending general relative language, user timezone configuration and measured temporal behavior. No new acceptance promotion.
 
 MVP-04D candidate evidence: [responsive tool and terminal outcome paths](model-comparison.md#mvp-04d--responsive-tool-and-terminal-outcome-paths) extends existing P1 tool contracts with terminal failure/cancellation notices, direct tool context and persisted outcome delivery/replay. Existing P0 retries/authority unchanged. Q08 measured target-host latency and independent behavioral acceptance remain pending; no acceptance promotion.
