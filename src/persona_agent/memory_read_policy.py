@@ -186,7 +186,7 @@ def require_historical_read_fence(cur, user_id: UUID, instance_id: UUID, fence) 
     Deferred write triggers need this row exclusively before they commit.
     Do not acquire Memory record/candidate locks after this check.
     """
-    from .conversation_contracts import StaleConversation
+    from .conversation_contracts import StaleHistoricalContext
     cur.execute(
         """SELECT revision FROM historical_recall_revisions
            WHERE user_id=%s AND instance_id=%s FOR SHARE""",
@@ -194,8 +194,8 @@ def require_historical_read_fence(cur, user_id: UUID, instance_id: UUID, fence) 
     )
     row=cur.fetchone()
     if row is None or row["revision"]!=fence.revision:
-        raise StaleConversation("historical evidence changed during inference")
+        raise StaleHistoricalContext("historical evidence changed during inference")
     if fence.next_expiry is not None:
         cur.execute("SELECT clock_timestamp() AS now")
         if cur.fetchone()["now"]>=fence.next_expiry:
-            raise StaleConversation("historical evidence expired during inference")
+            raise StaleHistoricalContext("historical evidence expired during inference")

@@ -14,7 +14,7 @@ from psycopg.rows import dict_row
 from .contracts import TrustedActor
 from .conversation_contracts import (
     ModelMessage, ModelReply, ModelUnavailable, ResponseContext,
-    StaleConversation, TextInputCommand, TextInputResult, TextModelGateway,
+    StaleConversation, StaleHistoricalContext, TextInputCommand, TextInputResult, TextModelGateway,
     TextResponseResult,
 )
 from .multimodal_contracts import VoiceInputProvenance
@@ -1395,18 +1395,34 @@ def respond_to_text(connection: Connection, actor: TrustedActor, turn_id: UUID,
                             "undelivered reply superseded by a newer input"
                         )
         return prior
-    context=prepare_text_context(
-        connection,actor,turn_id,max_turns=max_turns,
-        max_context_chars=max_context_chars,
-    )
-    # MVP-01B: on narrow implicit-language cues, a capable gateway can
-    # enrich the *same* primary response pass. Ordinary text and all legacy
-    # gateways keep their exact existing single-call behavior.
-    from .intent_interpretation import should_interpret_with_model
-    enriched=getattr(gateway,"generate_interpreted",None)
-    if (callable(enriched) and context.messages[-1].role=="user"
-            and should_interpret_with_model(context.messages[-1].content)):
-        generated=enriched(context.messages)
-    else:
-        generated=gateway.generate(context.messages)
-    return commit_text_response(connection,actor,context,generated,model_generated=True)
+    # Retry exactly once for a changed historical dependency. Never retry a
+    # superseded turn, revoked selection, procedure fence, or model failure.
+    # Preparation and each response commit finish before another model call.
+    for attempt in range(2):
+        context=prepare_text_context(
+            connection,actor,turn_id,max_turns=max_turns,
+            max_context_chars=max_context_chars,
+        )
+        # MVP-01B: on narrow implicit-language cues, a capable gateway can
+        # enrich the *same* primary response pass. Ordinary text and all legacy
+        # gateways keep their exact existing single-call behavior.
+        from .intent_interpretation import should_interpret_with_model
+        enriched=getattr(gateway,"generate_interpreted",None)
+        if (callable(enriched) and context.messages[-1].role=="user"
+                and should_interpret_with_model(context.messages[-1].content)):
+            generated=enriched(context.messages)
+        else:
+            generated=gateway.generate(context.messages)
+        try:
+            return commit_text_response(connection,actor,context,generated,model_generated=True)
+        except StaleHistoricalContext:
+            if attempt:
+                raise
+            # A competing responder may have committed while this attempt
+            # was stale. Reuse its durable response through the replay path.
+            if lookup_response(connection,actor,turn_id) is not None:
+                return respond_to_text(
+                    connection,actor,turn_id,gateway,
+                    max_turns=max_turns,max_context_chars=max_context_chars,
+                )
+    raise AssertionError("unreachable historical response retry")

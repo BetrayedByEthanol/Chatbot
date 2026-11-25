@@ -125,5 +125,9 @@ class StaleConversation(Exception):
     """The reply context or persona authority was superseded."""
 
 
+class StaleHistoricalContext(StaleConversation):
+    """Optional historical evidence changed; the same input can be retried."""
+
+
 class ModelUnavailable(Exception):
     """A model failed; its already-committed user input is retained."""

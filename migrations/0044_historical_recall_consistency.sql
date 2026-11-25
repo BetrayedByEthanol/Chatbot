@@ -19,6 +19,9 @@ CREATE TABLE explicit_memory_reports (
 );
 CREATE INDEX explicit_memory_reports_slot_idx ON explicit_memory_reports
     (user_id,instance_id,memory_kind,subject_key,predicate_key);
+CREATE INDEX historical_recall_expiry_idx ON memory_records
+    (user_id,instance_id,expires_at)
+    WHERE record_status='ACTIVE' AND privacy_class='NORMAL' AND expires_at IS NOT NULL;
 
 -- Conservative per-persona read dependency, not a replacement for record
 -- versions or a lock held across inference.
@@ -58,10 +61,11 @@ BEGIN
     ELSE
         UPDATE historical_recall_revisions SET revision=revision+1
           WHERE user_id=NEW.user_id AND instance_id=NEW.instance_id;
-        IF TG_OP='UPDATE' AND
-           (OLD.user_id,OLD.instance_id) IS DISTINCT FROM (NEW.user_id,NEW.instance_id) THEN
-            UPDATE historical_recall_revisions SET revision=revision+1
-              WHERE user_id=OLD.user_id AND instance_id=OLD.instance_id;
+        IF TG_OP='UPDATE' THEN
+            IF (OLD.user_id,OLD.instance_id) IS DISTINCT FROM (NEW.user_id,NEW.instance_id) THEN
+                UPDATE historical_recall_revisions SET revision=revision+1
+                  WHERE user_id=OLD.user_id AND instance_id=OLD.instance_id;
+            END IF;
         END IF;
     END IF;
     RETURN NULL;
