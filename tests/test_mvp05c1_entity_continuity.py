@@ -14,6 +14,11 @@ from persona_agent.entity_recall import ROUTE_ID,render_entity_hits
 @pytest.mark.parametrize("text,key,kind,relation,adjacent",[
     ("Do you remember who Alex is?","alex","PERSON",None,False),
     ("Who is Alex to me?","alex","PERSON",None,False),
+    ("Do you remember who O’Neil is?","o'neil","PERSON",None,False),
+    ("Do you remember who O'Neil is?","o'neil","PERSON",None,False),
+    ("Who is O’Neil to me?","o'neil","PERSON",None,False),
+    ("Do you remember my colleague O’Neil?","o'neil","ANY","COLLEAGUE",False),
+    ("Do you remember what O’Neil is?","o'neil","NONPERSON",None,False),
     ("Do you remember my colleague Alex?","alex","ANY","COLLEAGUE",False),
     ("Do you remember what Atlas is?","atlas","NONPERSON",None,False),
     ("Do you remember my favorite place Harbor?","harbor","ANY","FAVORITE_PLACE",False),
@@ -40,6 +45,8 @@ def test_entity_reference_routes_are_exact(text,key,kind,relation,adjacent):
     "Remember that Alex is my friend.",
     "Do you remember who Alex or Sam is?",
     "Do you remember who my password is?",
+    "‘Do you remember who O’Neil is?’",
+    "Do you remember who O’Neil or Sam is?",
 ])
 def test_unrecognized_or_compound_questions_keep_existing_routes(text):
     assert entity_reference(text) is None
@@ -50,6 +57,16 @@ def test_unrecognized_or_compound_questions_keep_existing_routes(text):
 def test_bounded_name_grammar(name):
     with pytest.raises(ValueError):
         normalize_name(name)
+
+
+def test_apostrophe_normalization_preserves_display_name():
+    assert normalize_name("O’Neil")==normalize_name("O'Neil")=="o'neil"
+    command=RegisterEntityCommand(
+        instance_id=uuid4(),expected_generation=1,conversation_id=uuid4(),
+        evidence_turn_id=uuid4(),name="O’Neil",relation="COLLEAGUE",
+        idempotency_key="apostrophe-name",
+    )
+    assert command.name=="O’Neil"
 
 
 def _helpers():
@@ -105,6 +122,26 @@ def _ask(dsn,user,instance,text,gateway,*,conversation=None,forced=False,deliver
     if deliver:
         call(dsn,acknowledge_text_delivery,actor(user),reply.response_id)
     return request,reply
+
+
+@pytest.mark.parametrize("name",["O'Neil","O’Neil"])
+@pytest.mark.parametrize("forced",[False,True])
+def test_apostrophe_recall_matches_persisted_input_and_name_keys(dsn,name,forced):
+    from persona_agent.entity_memory import find_entities
+    actor,call,seed,_=_helpers()
+    user,instance,_=seed(dsn)
+    _,_,saved=_register(dsn,user,instance,name,"COLLEAGUE")
+    for spelling in ("O'Neil","O’Neil"):
+        hits=call(dsn,find_entities,actor(user),instance,spelling)
+        assert [hit.entity_id for hit in hits]==[saved.entity_id]
+    gateway=GuessingGateway()
+    for spelling in ("O'Neil","O’Neil"):
+        _,reply=_ask(dsn,user,instance,f"Do you remember who {spelling} is?",
+                     gateway,forced=forced)
+        assert f"{name} as your colleague" in reply.text
+        assert "dentist" not in reply.text
+        assert reply.model_id==("guessing-entity-model" if forced else ROUTE_ID)
+    assert gateway.calls==(2 if forced else 0)
 
 
 def test_registered_identity_alias_cross_session_and_revisioned_relation(dsn):

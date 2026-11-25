@@ -49,7 +49,9 @@ _PRONOUN={
 def normalize_name(value: str) -> str:
     if not isinstance(value,str):
         raise ValueError("entity name must be text")
-    value=value.strip()
+    # Match the punctuation accepted by the response dispatcher. Keep the
+    # original display name and source evidence intact; normalize lookup keys.
+    value=value.strip().replace("’", "'")
     if not 1<=len(value)<=64 or _NAME.fullmatch(value) is None or _BLOCK.search(value):
         raise ValueError("unsupported entity name")
     return value.casefold()

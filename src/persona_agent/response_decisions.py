@@ -175,7 +175,9 @@ def decide_response(text: str, *, default_timezone: str = "UTC") -> ResponseDeci
         return ResponseDecision("PREFERENCE_RECALL",preference_topics=topics)
     if personal_fact_topic(cleaned) is not None:
         return ResponseDecision("PERSONAL_FACT_RECALL",method_revision="mvp04c3.rules.1")
-    if entity_reference(cleaned) is not None:
+    # Entity parsing owns its normalization and bounds. Dispatch must use
+    # the same input as the persisted-turn revalidation and commit guard.
+    if entity_reference(text) is not None:
         return ResponseDecision("ENTITY_RECALL",method_revision="mvp05c1.rules.1")
     match = _TIME_QUERY.fullmatch(cleaned) if is_direct_clock_question(cleaned) else None
     if match:
