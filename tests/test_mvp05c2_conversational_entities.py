@@ -5,7 +5,9 @@ from uuid import uuid4
 
 import pytest
 
-from persona_agent.entity_reference import entity_report,entity_clarification_relation
+from persona_agent.entity_reference import (
+    entity_report,entity_clarification_relation,relation_source_matches,
+)
 from persona_agent.response_decisions import decide_response
 
 
@@ -17,11 +19,22 @@ from persona_agent.response_decisions import decide_response
     ("Actually, Alex is my colleague.","Alex","COLLEAGUE","CORRECT"),
     ("Atlas is my bicycle.","Atlas","BICYCLE","REPORT"),
     ("Harbor is my favorite place.","Harbor","FAVORITE_PLACE","REPORT"),
+    ("Remember that Alex  is my friend.","Alex","FRIEND","REPORT"),
+    ("Alex  is  my friend.","Alex","FRIEND","REPORT"),
+    ("Another Alex  is my colleague.","Alex","COLLEAGUE","DISTINCT"),
+    ("Actually, Alex  is my colleague.","Alex","COLLEAGUE","CORRECT"),
+    ("Remember  that  Alex  Smith  is  my  friend.","Alex Smith","FRIEND","REPORT"),
+    ("Remember\tthat\tAlex\tis\tmy\tfriend.","Alex","FRIEND","REPORT"),
+    ("Harbor is my favorite  place.","Harbor","FAVORITE_PLACE","REPORT"),
 ])
 def test_whole_entity_report_grammar(text,name,relation,action):
     report=entity_report(text)
     assert (report.name,report.relation,report.action)==(name,relation,action)
     assert decide_response(text).route=="ENTITY_REPORT"
+    # Every automatically accepted report must also be valid evidence
+    # for the corresponding typed owner command.
+    assert relation_source_matches(text,name,relation,correction=action=="CORRECT")
+    assert not relation_source_matches(text,name,relation,correction=action!="CORRECT")
 
 
 @pytest.mark.parametrize("text",[
@@ -32,10 +45,42 @@ def test_whole_entity_report_grammar(text,name,relation,action):
     "Alex is my friend. Just kidding.","No Alex is my friend.",
     "Remember that the password is my friend.","a bicycle is my object.",
     "My colleague","Please tell me who Alex is.","Actually Alex is my dentist.",
+    "Remember that Alex\nis my friend.",
+    "Remember that Alex\nSmith is my friend.",
+    "Remember that Alex  is my friend. Just kidding.",
+    '"Remember that Alex  is my friend."',
+    "Actually, Alex  is not my colleague.",
 ])
 def test_ambiguous_and_unsupported_reports_do_not_route_to_write(text):
     assert entity_report(text) is None
     assert decide_response(text).route!="ENTITY_REPORT"
+
+
+@pytest.mark.parametrize("text",[
+    "Remember that Alex\nis my friend.",
+    "Maybe Alex is my friend.",
+    '"Alex  is my friend."',
+    "Alex  is not my friend.",
+    "Alex  is my friend. Just kidding.",
+])
+def test_owner_relation_evidence_does_not_accept_nonmatching_source(text):
+    assert not relation_source_matches(text,"Alex","FRIEND",correction=False)
+
+
+def test_owner_relation_evidence_matches_normalized_name_and_action():
+    assert relation_source_matches(
+        "Actually, O’Neil  is  my colleague.","O'Neil","COLLEAGUE",correction=True,
+    )
+    assert not relation_source_matches(
+        "Actually, O’Neil  is my colleague.","Alex","COLLEAGUE",correction=True,
+    )
+    assert not relation_source_matches(
+        "Actually, O’Neil  is my colleague.","O'Neil","FRIEND",correction=True,
+    )
+    # Keep the explicit command's ability to name lowercase labels without
+    # widening automatic admission of ordinary lowercase statements.
+    assert entity_report("alex is my friend.") is None
+    assert relation_source_matches("alex is my friend.","alex","FRIEND",correction=False)
 
 
 def test_relation_phrase_is_not_a_standalone_route():
@@ -95,6 +140,44 @@ def test_natural_reports_distinguish_registration_recognition_and_correction(dsn
         ).fetchall()==[
             ("REGISTER",1,first.turn_id),("CORRECT_RELATION",2,correction.turn_id),
         ]
+
+
+@pytest.mark.parametrize("forced",[False,True])
+def test_horizontal_whitespace_reports_commit_with_original_evidence(dsn,forced):
+    import psycopg
+    from persona_agent.entity_memory import find_entities
+    from persona_agent.entity_conversation import REPORT_ROUTE_ID
+    actor,call,seed,_,ask,_,_,Gateway=_helpers()
+    user,instance,_=seed(dsn)
+    gateway=Gateway()
+    first_text="Remember that Alex  is my friend."
+    first,reply=ask(dsn,user,instance,first_text,gateway,forced=forced)
+    assert "Alex as your friend" in reply.text
+    saved=call(dsn,find_entities,actor(user),instance,"Alex")[0]
+    correction_text="Actually,\tAlex  is  my colleague."
+    corrected,reply=ask(dsn,user,instance,correction_text,gateway,forced=forced)
+    assert "Alex as your colleague" in reply.text
+    hit=call(dsn,find_entities,actor(user),instance,"Alex")[0]
+    assert (hit.entity_id,hit.version,hit.relation)==(saved.entity_id,2,"COLLEAGUE")
+    distinct_text="Another Alex  is my friend."
+    distinct,reply=ask(dsn,user,instance,distinct_text,gateway,forced=forced)
+    assert "Alex as your friend" in reply.text
+    assert reply.model_id==("guessing-entity-model" if forced else REPORT_ROUTE_ID)
+    hits=call(dsn,find_entities,actor(user),instance,"Alex")
+    assert len(hits)==2 and {h.version for h in hits}=={1,2}
+    assert gateway.calls==(3 if forced else 0)
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        for source,text,action in (
+            (first,first_text,"REGISTER"),
+            (corrected,correction_text,"CORRECT_RELATION"),
+            (distinct,distinct_text,"REGISTER"),
+        ):
+            assert conn.execute(
+                """SELECT t.input_text,r.action FROM conversation_turns t
+                   JOIN memory_entity_revisions r ON r.source_turn_id=t.turn_id
+                   WHERE t.turn_id=%s AND t.user_id=%s AND t.instance_id=%s""",
+                (source.turn_id,user,instance),
+            ).fetchone()==(text,action)
 
 
 def test_forced_model_only_report_uses_original_input_not_model_claim(dsn):

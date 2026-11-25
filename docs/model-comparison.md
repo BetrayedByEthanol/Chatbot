@@ -657,7 +657,11 @@ The bounded positive whole-source grammar recognizes name-like first-person
 relation reports, explicit remember requests, "Another NAME is my RELATION"
 as a distinct identity, and "Actually, NAME is my RELATION" as a correction.
 Unmarked names require capitalized name-like tokens; quoted, qualified,
-compound, hypothetical and unsupported relation inputs abstain. The report
+compound, hypothetical and unsupported relation inputs abstain. Dispatch and
+typed owner evidence checks share the same whole-source relation parser.
+Horizontal spaces/tabs are normalized for matching only (including names
+and multiword relation labels); stored source text is unchanged and
+internal line breaks remain unsupported. The report
 is a user assertion, not verified identity. First reports can register when
 the scoped name/alias is absent; matching eligible reports do not create
 another identity or revision. Differing plain reports and ambiguous,

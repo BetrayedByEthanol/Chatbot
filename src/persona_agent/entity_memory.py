@@ -17,7 +17,7 @@ from .entity_contracts import (
     AmendEntityCommand, EntityConflict, EntityHit, EntityWriteResult,
     RegisterEntityCommand,
 )
-from .entity_reference import EntityReference, RELATIONS, normalize_name
+from .entity_reference import EntityReference, RELATIONS, normalize_name, relation_source_matches
 from .memory import _receipt, _finish, _event
 from .operation_contracts import require_idle
 from .runtime import PermissionDenied, VersionConflict
@@ -53,17 +53,6 @@ def _source(cur,actor,command):
     if source is None:
         raise PermissionDenied("entity evidence outside authenticated input scope")
     return source
-
-
-def _relation_source(source: str,name: str,relation: str,*,correction: bool) -> bool:
-    # Complete assertion only; a quoted/negated/hypothetical substring is
-    # not evidence. The chosen entity ID comes from the explicit command.
-    prefix=r"actually,?\s+" if correction else r"(?:(?:remember that|another)\s+)?"
-    label=RELATIONS[relation][1]
-    return re.fullmatch(
-        prefix+re.escape(name.replace("’","'"))+r" is my "+re.escape(label)+r"\.?",
-        source.strip().replace("’","'"),re.I,
-    ) is not None
 
 
 def _record_revision(cur,actor,command,row,source,receipt,action):
@@ -122,7 +111,7 @@ def _register_entity_in_transaction(cur,actor,command: RegisterEntityCommand) ->
         return prior
     _selection(cur,actor,command.instance_id,command.expected_generation)
     source=_source(cur,actor,command)
-    if not _relation_source(source["input_text"],command.name,command.relation,correction=False):
+    if not relation_source_matches(source["input_text"],command.name,command.relation,correction=False):
         raise EntityConflict("source does not explicitly identify the requested relation")
     entity_id=uuid4()
     cur.execute(
@@ -189,7 +178,7 @@ def _amend_entity_in_transaction(cur,actor,command: AmendEntityCommand) -> Entit
     if command.action=="CORRECT_RELATION":
         if (command.relation==relation
             or RELATIONS[command.relation][0]!=row["entity_kind"]
-            or not any(_relation_source(text,name,command.relation,correction=True)
+            or not any(relation_source_matches(text,name,command.relation,correction=True)
                        for name in names)):
             raise EntityConflict("unsupported or unevidenced relation correction")
         relation=command.relation

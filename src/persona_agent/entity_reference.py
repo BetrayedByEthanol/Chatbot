@@ -122,27 +122,65 @@ class EntityReport:
     action: Literal["REPORT","DISTINCT","CORRECT"]
 
 
-def entity_report(text: str) -> EntityReport | None:
-    """Bounded explicit relationship reports; never quoted or qualified claims."""
-    if not isinstance(text,str) or not 1<=len(text)<=180:
+def _parse_relation_source(text: str) -> tuple[EntityReport,str] | None:
+    """Shared whole-source syntax for dispatch and owner evidence validation.
+
+    Collapse horizontal spaces/tabs for matching only, not the stored
+    evidence. Do not join lines or remove quotation/statement boundaries.
+    The display label keeps its original case and apostrophe spelling.
+    """
+    if not isinstance(text,str):
         return None
-    match=_REPORT.fullmatch(text.strip())
+    value=re.sub(r"[ \t]+"," ",text.strip())
+    match=_REPORT.fullmatch(value)
     if match is None:
         return None
-    name=match["name"]
+    name=match["name"].strip()
     marker=(match["marker"] or "").casefold().rstrip(",")
     try:
         normalize_name(name)
     except ValueError:
         return None
-    if _NON_NAME_WORDS.search(name):
+    action="CORRECT" if marker=="actually" else "DISTINCT" if marker=="another" else "REPORT"
+    return EntityReport(name,_LABEL_TO_RELATION[match["relation"].casefold()],action),marker
+
+
+def relation_source_matches(source: str,name: str,relation: str,*,correction: bool) -> bool:
+    """Validate a typed owner command against the same parsed source.
+
+    The explicit command chooses the identity. Automatic admission has
+    additional name-like and modality restrictions; those are not a
+    replacement for the owner's source, scope or revision checks.
+    """
+    parsed=_parse_relation_source(source)
+    if parsed is None:
+        return False
+    report,_=parsed
+    try:
+        return (
+            (report.action=="CORRECT")==correction
+            and report.relation==relation
+            and normalize_name(report.name)==normalize_name(name)
+        )
+    except ValueError:
+        return False
+
+
+def entity_report(text: str) -> EntityReport | None:
+    """Bounded explicit relationship reports; never quoted or qualified claims."""
+    if not isinstance(text,str) or not 1<=len(text)<=180:
+        return None
+    parsed=_parse_relation_source(text)
+    if parsed is None:
+        return None
+    report,marker=parsed
+    if _NON_NAME_WORDS.search(report.name):
         return None
     # For unmarked speech require a name-like label, not arbitrary nouns.
     # Explicit remember/correction/distinction can use lowercase labels.
-    if not marker and _PROPER_NAME.fullmatch(name) is None:
+    if not marker and _PROPER_NAME.fullmatch(report.name) is None:
         return None
-    action="CORRECT" if marker=="actually" else "DISTINCT" if marker=="another" else "REPORT"
-    return EntityReport(name,_LABEL_TO_RELATION[match["relation"].casefold()],action)
+    return report
 
 
 def entity_clarification_relation(text: str) -> EntityRelation | None:
