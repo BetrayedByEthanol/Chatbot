@@ -81,6 +81,10 @@ PPA-US-018 / 030 / 031 / 034 / 117: [immediate report precedence and historical 
 
 PPA-US-030 / 031 / 034 / 093 / 117: [scoped entity identities and grounded reference recall](model-comparison.md#mvp-05c1--scoped-entity-identities-and-grounded-reference-recall) adds stable scoped identity, alias and user-relation revisions with exact authenticated source/owner commands; canonical named/qualified lookup and delivered-adjacent pronoun references abstain on ambiguous or missing data. [Regression tests](../tests/test_mvp05c1_entity_continuity.py) cover duplicate names, revisions, collisions, scope, delivery and current read. Broad natural-language admission/repair and entity-conditioned historical retrieval remain open. No I/P/M promotion.
 
+## MVP-05C.2 evidence update (25 November 2026)
+
+PPA-US-017 / 030 / 034 / 093 / 117: [conversational entity reports and delivered clarification](model-comparison.md#mvp-05c2--conversational-entity-reports-and-delivered-clarification) uses bounded authenticated whole-source reports for new/distinct identities and uniquely identified corrections; preserves typed owner commands, atomic response/owner commits and serialized entity writes. Delivered two-choice snapshots constrain short relation replies and are revalidated at commit. [Regression tests](../tests/test_mvp05c2_conversational_entities.py) cover admission, duplicate prevention, ambiguity, rollback, restart and stale choices. General semantic reference/mutation repair, entity-conditioned history and full lineage remain open. No I/P/M promotion.
+
 ## Immediate follow-up
 
 1. PPA-US-016, 024, 090, 092, 088: evaluate real-model quality and adjudicate critical flags; fix grounded failure cases before adding infrastructure.

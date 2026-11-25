@@ -1,7 +1,8 @@
 """MVP-01D: bounded, explainable natural-language response decisions.
 
-These decisions are routing hints for the already registered read-only
-capabilities, not model-issued tool commands or permission grants.
+These decisions are routing hints for registered read-only capabilities
+and bounded user-evidenced entity reports, not model-issued commands or
+permission grants.
 Unrecognized, ambiguous, hypothetical and quoted requests abstain and
 take the existing conversational model path. No additional inference.
 """
@@ -11,7 +12,7 @@ import re
 from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from .entity_reference import entity_reference
+from .entity_reference import entity_reference, entity_report
 
 # Explicit location names are intentionally bounded. Do not guess arbitrary
 # city names or infer a timezone from the user's location or profile.
@@ -125,7 +126,7 @@ def is_historical_emoji_preference_query(text: str) -> bool:
 
 @dataclass(frozen=True)
 class ResponseDecision:
-    route: Literal["MODEL", "CLOCK", "TEXT_ANALYSIS", "PREFERENCE_RECALL", "PERSONAL_FACT_RECALL", "ENTITY_RECALL"]
+    route: Literal["MODEL", "CLOCK", "TEXT_ANALYSIS", "PREFERENCE_RECALL", "PERSONAL_FACT_RECALL", "ENTITY_RECALL", "ENTITY_REPORT"]
     timezone_name: str | None = None
     preference_topics: tuple[str, ...] = ()
     method_revision: str = "mvp01d.rules.1"
@@ -157,10 +158,10 @@ def _timezone_from_query(place: str) -> str | None:
 
 
 def decide_response(text: str, *, default_timezone: str = "UTC") -> ResponseDecision:
-    """Route only unambiguous requests to allowlisted read-only capabilities.
+    """Route bounded questions and explicit owner-admitted entity reports.
 
     All other inputs stay on the primary conversational inference path.
-    A decision alone does not execute a tool or establish authorization.
+    A decision alone does not execute a tool, mutate Memory or establish authority.
     """
     if not isinstance(text, str) or not 1 <= len(text) <= 12000:
         return ResponseDecision("MODEL")
@@ -179,6 +180,8 @@ def decide_response(text: str, *, default_timezone: str = "UTC") -> ResponseDeci
     # the same input as the persisted-turn revalidation and commit guard.
     if entity_reference(text) is not None:
         return ResponseDecision("ENTITY_RECALL",method_revision="mvp05c1.rules.1")
+    if entity_report(text) is not None:
+        return ResponseDecision("ENTITY_REPORT",method_revision="mvp05c2.rules.1")
     match = _TIME_QUERY.fullmatch(cleaned) if is_direct_clock_question(cleaned) else None
     if match:
         place = match.group("place")

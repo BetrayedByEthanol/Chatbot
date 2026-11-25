@@ -948,7 +948,8 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
                          generated: ModelReply, *,
                          model_generated: bool = False,
                          personal_fact_recall: bool = False,
-                         entity_recall: bool = False) -> TextResponseResult:
+                         entity_recall: bool = False,
+                         entity_report: bool = False) -> TextResponseResult:
     """Commit one generated reply only if its context remains current."""
     require_idle(connection)
     _require_actor(actor)
@@ -973,6 +974,17 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
             if scoped["instance_id"]!=context.instance_id:
                 raise PermissionDenied("response instance mismatch")
             _selection(cursor,actor,context.instance_id,context.selection_generation)
+            from .entity_reference import entity_report as parse_entity_report
+            report=parse_entity_report(scoped["input_text"])
+            if entity_report and report is None:
+                raise ValueError("entity report route requires a persisted explicit report")
+            writes_entity=report is not None and (entity_report or model_generated)
+            if writes_entity:
+                # Entity absence/collision and writes share one owner guard.
+                # Acquire BEFORE locking conversation/turn rows: a concurrent
+                # explicit owner command can reference the same source turn.
+                from .entity_memory import lock_entity_writes
+                lock_entity_writes(cursor,context.instance_id)
             # MVP-03B.2: Lock all implicated conversations in stable UUID
             # order. Two linked sessions can each be the other's prior
             # dialogue. Locking the current row first in both would create
@@ -986,9 +998,12 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
                 lock_ids.add(prior_id)
             conversation=prior_conversation=None
             for lock_id in sorted(lock_ids,key=lambda value:value.int):
+                # Entity writes also append Memory provenance with foreign
+                # keys to existing sources. Non-key locks still serialize
+                # revisions while permitting concurrent FK validation.
                 lock_mode=(
-                    "FOR UPDATE" if lock_id==context.conversation_id
-                    else "FOR SHARE"
+                    ("FOR NO KEY UPDATE" if writes_entity else "FOR UPDATE")
+                    if lock_id==context.conversation_id else "FOR SHARE"
                 )
                 cursor.execute(
                     """SELECT * FROM conversations
@@ -1004,7 +1019,8 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
             if conversation is None:
                 raise StaleConversation("response conversation no longer exists")
             cursor.execute(
-                "SELECT status FROM conversation_turns WHERE turn_id=%s FOR UPDATE",
+                "SELECT status FROM conversation_turns WHERE turn_id=%s "
+                +("FOR NO KEY UPDATE" if writes_entity else "FOR UPDATE"),
                 (context.turn_id,),
             )
             current_turn=cursor.fetchone()
@@ -1121,19 +1137,39 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
             # Exact private entity references use current Memory-owned identity,
             # not model prose or a guessed same-name referent. The direct
             # route and forced model-only delivery share this boundary.
-            from .entity_reference import entity_reference
+            from .entity_reference import entity_reference, entity_clarification_relation
             reference=entity_reference(scoped["input_text"])
+            clarification=entity_clarification_relation(scoped["input_text"])
             entity_answer=None
             entity_changed=False
-            if entity_recall and reference is None:
+            if entity_recall and reference is None and clarification is None:
                 raise ValueError("entity route requires a supported persisted question")
-            if reference is not None and (entity_recall or model_generated):
+            if report is not None and (entity_report or model_generated):
+                # A natural report may write the Memory owner, so it must
+                # never be combined with a historical shared-read fence.
+                if context.historical_fence is not None:
+                    raise StaleConversation("entity report requires current owner admission context")
+                from .entity_conversation import apply_entity_report
+                entity_answer=apply_entity_report(cursor,actor,context,scoped)
+            elif reference is not None and (entity_recall or model_generated):
                 from .entity_recall import resolve_entity_answer
                 entity_answer=resolve_entity_answer(
                     cursor,user_id=actor.user_id,instance_id=context.instance_id,
                     conversation_id=context.conversation_id,sequence=scoped["sequence"],
                     reference=reference,
                 )
+            elif clarification is not None and (entity_recall or model_generated):
+                from .entity_recall import resolve_entity_clarification, EntityAnswer
+                entity_answer=resolve_entity_clarification(
+                    cursor,user_id=actor.user_id,instance_id=context.instance_id,
+                    conversation_id=context.conversation_id,sequence=scoped["sequence"],
+                    relation=clarification,
+                )
+                if entity_answer is None and entity_recall:
+                    entity_answer=EntityAnswer(
+                        "Which saved entity do you mean? Please repeat its name.","AMBIGUOUS",
+                    )
+            if entity_answer is not None:
                 entity_changed=(text!=entity_answer.text)
                 text=entity_answer.text
             # MVP-01F.4: use only the persisted authenticated user input and
@@ -1234,6 +1270,7 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
                         "entity_id":str(entity_answer.entity_id) if entity_answer.entity_id else None,
                         "entity_version":entity_answer.version,
                         "evidence_turn_id":str(entity_answer.source_turn_id) if entity_answer.source_turn_id else None,
+                        "clarification_candidates":entity_answer.clarification_candidates,
                     },
                     correlation_id=scoped["source_input_event_id"],
                 )
