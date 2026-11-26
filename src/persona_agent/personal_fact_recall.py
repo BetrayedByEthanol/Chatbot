@@ -41,6 +41,7 @@ class PersonalFactAnswer:
     memory_id: UUID | None = None
     version: int | None = None
     source_turn_id: UUID | None = None
+    gap_reason: str | None = None
 
 
 def _normalized(value: str) -> str:
@@ -75,7 +76,8 @@ def render_saved_fact(topic: str, row: dict | None) -> PersonalFactAnswer:
         raise ValueError("unsupported personal-fact relation")
     unknown = "I don't have a reliable saved answer for that."
     if row is None or not row["eligible"]:
-        return PersonalFactAnswer(unknown, "UNKNOWN")
+        return PersonalFactAnswer(unknown, "UNKNOWN",
+                                  gap_reason="STALE" if row and row.get("stale") else None)
     if row["disputed"]:
         return PersonalFactAnswer(
             "My saved information on that is disputed, so I can't reliably answer yet.",

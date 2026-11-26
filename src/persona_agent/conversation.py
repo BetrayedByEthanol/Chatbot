@@ -1334,6 +1334,29 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
                     entity_answer=EntityAnswer(
                         "Which saved entity do you mean? Please repeat its name.","AMBIGUOUS",
                     )
+            from .metamemory import (
+                safe_query_key,entity_topic,prior_clarification,
+                adjacent_clarification_key,record_recall,
+            )
+            entity_key=safe_query_key("ENTITY",entity_topic(reference))
+            clarification_suppressed=False
+            if entity_answer is not None and report is None:
+                if reference is None and clarification is not None and entity_answer.status=="KNOWN":
+                    entity_key=adjacent_clarification_key(cursor,user_id=actor.user_id,
+                        instance_id=context.instance_id,conversation_id=context.conversation_id,
+                        sequence=scoped["sequence"],before_at=scoped["turn_at"])
+                if entity_answer.status=="AMBIGUOUS" and prior_clarification(
+                    cursor,user_id=actor.user_id,instance_id=context.instance_id,query_key=entity_key,
+                    candidates=entity_answer.clarification_candidates,before_at=scoped["turn_at"],
+                ):
+                    from dataclasses import replace
+                    # Keep the two actual choices visible for the existing
+                    # adjacent clarification contract, but do not ask again.
+                    choices=entity_answer.text.removeprefix("Do you mean ").removesuffix("?")
+                    entity_answer=replace(entity_answer,text=(
+                        f"The saved matches are {choices}. I still can't choose reliably."
+                    ))
+                    clarification_suppressed=True
             if entity_answer is not None:
                 entity_changed=(text!=entity_answer.text)
                 text=entity_answer.text
@@ -1495,6 +1518,50 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
                     },
                     correlation_id=scoped["source_input_event_id"],
                 )
+            # Record only the owner outcome associated with the persisted
+            # route. Model prose is neither a hit nor proof of correctness.
+            def observe(route,topic,status,refs=(),*,key=None,candidates=(),suppressed=False):
+                record_recall(cursor,user_id=actor.user_id,instance_id=context.instance_id,
+                    conversation_id=context.conversation_id,turn_id=context.turn_id,
+                    response_id=response_id,route=route,
+                    query_key=key if key is not None else safe_query_key(route,topic),
+                    status=status,evidence_refs=refs,candidates=candidates,suppressed=suppressed)
+            def owner_ref(kind,identifier,version,turn):
+                return ({"kind":kind,"id":str(identifier),"version":version,
+                         "source_turn_id":str(turn) if turn else None},) if identifier else ()
+            # Only canonical routes whose response survived output enforcement
+            # are eligible for feedback. For model context routes this is a
+            # statement about available context, not the accuracy of prose.
+            if knowledge_answered and text==canonical:
+                observe("KNOWLEDGE",knowledge_topic,"KNOWN" if knowledge_hits else "UNKNOWN",
+                        tuple({"kind":"DOCUMENT_PASSAGE","id":str(h.document_id),"version":h.version,
+                               "position":h.position,"start":h.start_offset,"end":h.end_offset,
+                               "content_sha256":h.content_sha256} for h in knowledge_hits))
+            elif meaning_answered and text==canonical:
+                observe("MEANING",definition_topic,"KNOWN" if meaning_view else "UNKNOWN",
+                        owner_ref("MEMORY",meaning_view.memory_id,meaning_view.version,meaning_view.source_turn_id)
+                        if meaning_view else ())
+            elif fact_answer is not None and text==fact_answer.text:
+                observe("FACT",fact_topic,fact_answer.gap_reason or fact_answer.status,
+                        owner_ref("MEMORY",fact_answer.memory_id,fact_answer.version,fact_answer.source_turn_id))
+            elif entity_answer is not None and report is None and entity_key is not None and text==entity_answer.text:
+                observe("ENTITY",None,entity_answer.status,
+                        owner_ref("ENTITY",entity_answer.entity_id,entity_answer.version,entity_answer.source_turn_id)+
+                        tuple({"kind":"ENTITY_CANDIDATE","id":cid,"version":version,"relation":relation}
+                              for cid,version,relation in entity_answer.clarification_candidates),
+                        key=entity_key,candidates=entity_answer.clarification_candidates,
+                        suppressed=clarification_suppressed)
+            elif pattern_topic is not None and model_generated:
+                read=context.pattern_history
+                observe("PATTERN",pattern_topic,read.status,
+                        tuple({"kind":"PATTERN","id":str(pid),"version":version}
+                              for pid,version in read.pattern_refs)+
+                        tuple({"kind":"TURN","id":str(sid)} for sid in read.source_turn_ids))
+            elif history_reference is not None and model_generated:
+                read=context.entity_history
+                observe("ENTITY_HISTORY",entity_topic(history_reference),read.status,
+                        owner_ref("ENTITY",read.entity_id,read.entity_version,None)+
+                        tuple({"kind":"TURN","id":str(sid)} for sid in read.source_turn_ids))
             if pragmatic.reason is not None:
                 _event(
                     cursor,user_id=actor.user_id,instance_id=context.instance_id,

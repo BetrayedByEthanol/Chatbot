@@ -106,7 +106,7 @@ def _event(cur, actor: TrustedActor | TrustedPlatformActor, instance_id: UUID, m
            version: int, event_type: str, turn_id: UUID, receipt_id: UUID,
            *, trust_level: str = "AUTHENTICATED_USER",
            aggregate_key: str = "memory_id") -> UUID:
-    if aggregate_key not in ("memory_id","entity_id","entity_evidence_id","entity_relationship_id","document_id"):
+    if aggregate_key not in ("memory_id","entity_id","entity_evidence_id","entity_relationship_id","document_id","feedback_id"):
         raise ValueError("unsupported Memory event aggregate")
     stream_id=uuid5(NAMESPACE_URL,f"persona-agent/{instance_id}/memory")
     cur.execute(
@@ -404,6 +404,9 @@ def read_personal_fact_slot(cur, *, user_id: UUID, instance_id: UUID,
                   t.input_text AS original_source_text,
                   ({visible_record_sql("m")}
                    AND m.source_turn_at<anchor.created_at) AS eligible,
+                  (m.record_status='ACTIVE' AND m.privacy_class='NORMAL'
+                   AND m.expires_at IS NOT NULL AND m.expires_at<=clock_timestamp()
+                   AND m.source_turn_at<anchor.created_at) AS stale,
                   {disputed_record_sql("m")} AS disputed
            FROM memory_records m
            JOIN conversation_turns t
