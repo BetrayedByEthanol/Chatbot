@@ -99,6 +99,8 @@ Primary IDs: 091, 113, 029, 030, 031, 034, 093, 027, 028, 032, 033, 092.
 
 05D.2 candidate implementation (26 Nov 2026): [meta-episodic memory](mvp-05d2-meta-episodic-memory.md) adds scoped model-interpreted pattern versions, explicit support/counterepisode links, bounded candidate discovery in existing cognition and fenced explicit recall. Exact-claim deduplication and read-time invalidation reuse historical revision/eligibility contracts. Semantic merging, full lineage and real-model evaluation remain open.
 
+05D.3 candidate implementation (26 Nov 2026): [semantic memory and personalized meanings](mvp-05d3-personal-meanings.md) extends existing PERSONAL_MEANING admission with bounded explicit definitions, revision-pinned constituent spans and separate rule-inferred concept links. Exact recall is canonical and fenced; bounded routine-use context preserves user definition precedence. General free-form definitions and cognitive associations remain open.
+
 Reuse [retrieval](phase2-05.md), [unified context](mvp-03b1-unified-context.md), [longitudinal context](mvp-03b3-longitudinal-context-evaluation.md), [memory eligibility](mvp-02c12-source-grounded-eligibility.md) and [Phase 2 integration](phase2-08.md). Use existing `prepare_text_context`, `memory_retrieval`, `historical_user_turns` and dialogue ownership; no second context builder. 05A is a Phase 1 requirement; 05B–D belong to Phase 2. The confirmed core of 113 is selective adequate retrieval; proposed stop-reason schemas/escalation policy are not automatically approved. For correction across derived stores, depend on MVP-07B.
 
 ### P2-F — Finish cognitive state before the Phase 2 exit

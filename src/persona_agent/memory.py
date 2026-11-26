@@ -145,7 +145,7 @@ def _event(cur, actor: TrustedActor | TrustedPlatformActor, instance_id: UUID, m
 
 def _revision(cur, actor: TrustedActor | TrustedPlatformActor, command, memory_id: UUID,
               version: int, action: str, value: str, status: str,
-              confidence: float, source, event_id: UUID):
+              confidence: float, source, event_id: UUID, *, meaning_slot: str | None = None):
     cur.execute(
         """INSERT INTO memory_revisions(
              memory_id,version,user_id,instance_id,action,value_text,
@@ -157,6 +157,16 @@ def _revision(cur, actor: TrustedActor | TrustedPlatformActor, command, memory_i
          command.evidence_turn_id,source["created_at"],command.evidence_quote,
          source["source_id"],event_id),
     )
+    # Every admission path shares this revision write, including the
+    # asynchronous explicit grammar and reviewed conflict approval.
+    if (getattr(command,"memory_kind",None)=="PERSONAL_MEANING"
+            and getattr(command,"subject_key",None)=="user"):
+        meaning_slot=command.predicate_key
+    if status=="ACTIVE" and meaning_slot is not None:
+        from .personal_meaning import record_meaning_projection
+        record_meaning_projection(cur,user_id=actor.user_id,instance_id=command.instance_id,
+            memory_id=memory_id,version=version,predicate=meaning_slot,value=value,
+            source_text=source["input_text"],source_quote=command.evidence_quote)
 
 
 def _admit_memory_in_transaction(cur, actor: TrustedActor,
@@ -291,7 +301,9 @@ def _amend_memory_in_transaction(cur, actor: TrustedActor,
         command.evidence_turn_id,receipt_id,
     )
     _revision(cur,actor,command,command.memory_id,version,command.action,
-              value,status,confidence,source,event_id)
+              value,status,confidence,source,event_id,
+              meaning_slot=record["predicate_key"] if record["memory_kind"]=="PERSONAL_MEANING"
+                  and record["subject_key"]=="user" else None)
     return _finish(cur,receipt_id,MemoryWriteResult(
         memory_id=command.memory_id,version=version,event_id=event_id,
     ))

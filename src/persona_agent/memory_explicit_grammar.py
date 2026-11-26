@@ -8,12 +8,15 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from .personal_meaning_grammar import (
+    parse_personal_definition,definition_components,SAFE_CONCEPTS as _SAFE_MEANINGS,
+)
+
 # Only complete, first-person, single-sentence assertions. Broader natural-
 # language extraction requires an independently validated model-candidate gate.
 _FAVORITE = re.compile(r"my favorite ([a-z][a-z -]{1,30}) is (.+)", re.I)
 _HOBBY = re.compile(r"my hobby is (.+)", re.I)
 _PET = re.compile(r"my (dog|cat)(?:'s name is| is named) (.+)", re.I)
-_MEANING = re.compile(r"for me,? ([a-z][a-z -]{1,30}) means (.+)", re.I)
 _PREFER = re.compile(r"i prefer (.+?) over ([a-z][a-z -]{1,30})", re.I)
 # High-precision conversational self-reports, not model-inferred hobbies or
 # episodic observations. Only exact positive-allowlisted activities qualify.
@@ -57,11 +60,6 @@ _SAFE_PET_NAMES = frozenset({
     "milo","luna","bella","max","charlie","buddy","daisy","coco",
     "rocky","lucy","oliver","leo","molly",
 })
-_SAFE_MEANINGS = {
-    "home": frozenset({"feeling safe","belonging","comfort"}),
-    "friendship": frozenset({"trust","support","companionship"}),
-    "learning": frozenset({"curiosity","growth","exploration"}),
-}
 _SAFE_PREFERENCES = frozenset().union(
     *tuple(_SAFE_FAVORITES.values()),_SAFE_HOBBIES,
 )
@@ -89,7 +87,7 @@ def _supported_safe_claim(kind: str, predicate: str, value: str) -> bool:
         return term in _SAFE_PET_NAMES
     if kind=="PERSONAL_MEANING" and predicate.startswith("meaning_"):
         topic=predicate.removeprefix("meaning_")
-        return term in _SAFE_MEANINGS.get(topic,())
+        return bool(definition_components(topic.replace("_"," "),value))
     return False
 
 
@@ -145,6 +143,10 @@ def parse_explicit_claim(text: str) -> ExplicitClaim | None:
     quote. Quotes, multiple sentences, questions, sensitive or speculative
     phrasing, and unsupported topics are deliberately left unextracted.
     """
+    definition=parse_personal_definition(text)
+    if definition is not None:
+        return ExplicitClaim("PERSONAL_MEANING","user",definition.predicate,
+                             definition.value,definition.source_quote)
     conversational=_conversational_activity_preference(text)
     if conversational is not None:
         return conversational
@@ -170,7 +172,6 @@ def parse_explicit_claim(text: str) -> ExplicitClaim | None:
         (_FAVORITE,"PREFERENCE","favorite_"),
         (_HOBBY,"FACT","hobby"),
         (_PET,"FACT","pet_"),
-        (_MEANING,"PERSONAL_MEANING","meaning_"),
         (_PREFER,"PREFERENCE","prefer_over_"),
     )
     for pattern,kind,stem in patterns:
@@ -185,9 +186,6 @@ def parse_explicit_claim(text: str) -> ExplicitClaim | None:
             value=match[1].strip()
         elif pattern is _PET:
             predicate=f"pet_{match[1].casefold()}_name"
-            value=match[2].strip()
-        elif pattern is _MEANING:
-            predicate=stem+_slug(match[1])
             value=match[2].strip()
         else:
             predicate=stem+_slug(match[2])
