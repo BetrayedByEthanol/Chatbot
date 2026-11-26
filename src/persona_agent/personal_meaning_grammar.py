@@ -124,6 +124,25 @@ def parse_personal_definition(text: str) -> Definition | None:
     return Definition(topic,value,source,components) if components else None
 
 
+def unresolved_meaning_topic(text: str) -> str | None:
+    """Recognize a complete explicit definition whose value cannot be admitted.
+
+    Reuse the same syntax and known-topic boundary, not broad correction
+    inference. Store only a notice, never the proposed value. Quoted whole
+    statements, external hypothetical frames and compound sentences are not
+    recognized. Uncertain values inside the explicit frame block conservatively.
+    """
+    if not isinstance(text,str) or not 8<=len(text.strip())<=320:
+        return None
+    source=text.strip()
+    if any(c in source for c in ("\r","\n","\t")):
+        return None
+    match=_REPORT.fullmatch(source.translate(_PUNCTUATION))
+    if match is None or parse_personal_definition(source) is not None:
+        return None
+    return normalize_topic(match["for"] or match["say"])
+
+
 def meaning_reference(text: str) -> str | None:
     """Explicit, standalone personal-definition recall, not dictionary lookup."""
     if not isinstance(text,str) or len(text)>180:

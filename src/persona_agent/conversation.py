@@ -461,6 +461,21 @@ def prepare_text_context(
                     temporal_context=temporal,historical_fence=historical_fence,
                 )
             routine_topic=meaning_use_reference(item["input_text"])
+            if routine_topic is not None:
+                from .personal_meaning import pending_meaning_change
+                if pending_meaning_change(cursor,user_id=actor.user_id,
+                        instance_id=item["instance_id"],topic=routine_topic):
+                    # Do not offer stale recent replies, summaries or raw
+                    # transcripts as a substitute for the unresolved owner slot.
+                    return ResponseContext(
+                        conversation_id=item["conversation_id"],turn_id=turn_id,
+                        instance_id=item["instance_id"],selection_generation=item["selection_generation"],
+                        conversation_revision=item["revision"],
+                        messages=(ModelMessage("system","The requested personal definition has an unresolved change. Ask for clarification."),
+                                  ModelMessage("user",item["input_text"])),
+                        temporal_context=_temporal_from_anchor(cursor,actor,item,turn_id),
+                        historical_fence=historical_fence,
+                    )
             from .meta_episodic_contracts import pattern_reference
             pattern_topic=pattern_reference(item["input_text"])
             if pattern_topic is not None:
@@ -1241,17 +1256,30 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
                 knowledge_replaced=model_generated and text!=canonical
                 text=canonical
                 knowledge_answered=True
-            from .personal_meaning_grammar import meaning_reference
+            from .personal_meaning_grammar import meaning_reference,meaning_use_reference
             definition_topic=meaning_reference(scoped["input_text"])
+            routine_topic=meaning_use_reference(scoped["input_text"])
+            routine_change_blocked=False
+            if routine_topic is not None and model_generated:
+                if context.historical_fence is None:
+                    raise StaleConversation("routine use requires a fenced context")
+                from .personal_meaning import pending_meaning_change,meaning_change_reply
+                if pending_meaning_change(cursor,user_id=actor.user_id,
+                        instance_id=context.instance_id,topic=routine_topic):
+                    text=meaning_change_reply(routine_topic)
+                    routine_change_blocked=True
             meaning_answered=False
             meaning_view=None
+            meaning_change_pending=False
             meaning_replaced=False
             if meaning_recall and definition_topic is None:
                 raise ValueError("meaning recall requires a supported persisted question")
             if definition_topic is not None and (meaning_recall or model_generated):
                 if context.historical_fence is None:
                     raise StaleConversation("meaning recall requires a fenced context")
-                from .personal_meaning import read_meaning,render_meaning
+                from .personal_meaning import read_meaning,render_meaning,pending_meaning_change
+                meaning_change_pending=pending_meaning_change(cursor,user_id=actor.user_id,
+                    instance_id=context.instance_id,topic=definition_topic)
                 meaning_view=read_meaning(cursor,user_id=actor.user_id,instance_id=context.instance_id,
                     topic=definition_topic,before_at=scoped["turn_at"])
                 canonical=render_meaning(meaning_view)
@@ -1538,9 +1566,12 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
                                "position":h.position,"start":h.start_offset,"end":h.end_offset,
                                "content_sha256":h.content_sha256} for h in knowledge_hits))
             elif meaning_answered and text==canonical:
-                observe("MEANING",definition_topic,"KNOWN" if meaning_view else "UNKNOWN",
+                observe("MEANING",definition_topic,
+                        "KNOWN" if meaning_view else ("DISPUTED" if meaning_change_pending else "UNKNOWN"),
                         owner_ref("MEMORY",meaning_view.memory_id,meaning_view.version,meaning_view.source_turn_id)
                         if meaning_view else ())
+            elif routine_change_blocked:
+                observe("MEANING",routine_topic,"DISPUTED")
             elif fact_answer is not None and text==fact_answer.text:
                 observe("FACT",fact_topic,fact_answer.gap_reason or fact_answer.status,
                         owner_ref("MEMORY",fact_answer.memory_id,fact_answer.version,fact_answer.source_turn_id))
@@ -1588,6 +1619,7 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
                     and entity_answer is None
                     and history_reference is None
                     and not knowledge_answered
+                    and not routine_change_blocked
                     and (draft is None
                          or generated.intent_candidate.kind=="OBJECTIVE")):
                 admitted = record_model_intent_on_response(
@@ -1605,7 +1637,7 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
             # only when no candidate was admitted. The same response commit
             # fences it; this never approves a Goal or adds another LLM pass.
             if admitted is None:
-                if draft is not None:
+                if draft is not None and not routine_change_blocked:
                     record_intent_on_ingress(
                         cursor,user_id=actor.user_id,
                         instance_id=context.instance_id,

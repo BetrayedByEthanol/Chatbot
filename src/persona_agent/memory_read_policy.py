@@ -47,11 +47,28 @@ def visible_record_sql(alias: RecordAlias) -> str:
     )"""
 
 
+def unresolved_meaning_record_sql(alias: RecordAlias) -> str:
+    a=_alias(alias)
+    return f"""(
+        {a}.memory_kind='PERSONAL_MEANING' AND {a}.subject_key='user'
+        AND EXISTS (
+            SELECT 1 FROM memory_meaning_change_notices notice
+            JOIN conversation_turns n ON n.turn_id=notice.source_turn_id
+              AND n.conversation_id=notice.conversation_id
+              AND n.user_id=notice.user_id AND n.instance_id=notice.instance_id
+            WHERE notice.user_id={a}.user_id AND notice.instance_id={a}.instance_id
+              AND notice.predicate_key={a}.predicate_key
+              AND n.created_at>={a}.source_turn_at
+        )
+    )"""
+
+
 def disputed_record_sql(alias: RecordAlias) -> str:
     """Compare unresolved candidates to the current revision, not target_version."""
     a = _alias(alias)
     return f"""(
-      EXISTS (
+      {unresolved_meaning_record_sql(a)}
+      OR EXISTS (
         SELECT 1 FROM memory_extraction_candidates unresolved
         JOIN conversation_turns newer_turn
           ON newer_turn.turn_id=unresolved.source_turn_id
@@ -93,7 +110,13 @@ def eligible_report_source_sql(alias: Literal["t","memory_episodes"]) -> str:
     if alias not in ("t","memory_episodes"):
         raise ValueError("invalid internal source alias")
     source_key="turn_id" if alias=="t" else "source_turn_id"
-    return f"""NOT EXISTS (
+    return f"""(
+      NOT EXISTS (
+        SELECT 1 FROM memory_meaning_change_notices notice
+        WHERE notice.user_id={alias}.user_id AND notice.instance_id={alias}.instance_id
+          AND notice.source_turn_id={alias}.{source_key}
+      )
+      AND NOT EXISTS (
         SELECT 1 FROM explicit_memory_reports report
         LEFT JOIN memory_records linked
           ON linked.user_id=report.user_id AND linked.instance_id=report.instance_id
@@ -109,6 +132,15 @@ def eligible_report_source_sql(alias: Literal["t","memory_episodes"]) -> str:
               (linked.memory_id IS NOT NULL AND (
                   NOT {eligible_record_sql("linked")} OR linked.value_text<>report.value_text
               ))
+              OR (report.memory_kind='PERSONAL_MEANING' AND EXISTS (
+                  SELECT 1 FROM memory_meaning_change_notices notice
+                  JOIN conversation_turns newer ON newer.turn_id=notice.source_turn_id
+                    AND newer.conversation_id=notice.conversation_id
+                    AND newer.user_id=notice.user_id AND newer.instance_id=notice.instance_id
+                  WHERE notice.user_id=report.user_id AND notice.instance_id=report.instance_id
+                    AND notice.predicate_key=report.predicate_key
+                    AND newer.created_at>=origin.created_at
+              ))
               OR EXISTS (
                   SELECT 1 FROM explicit_memory_reports later
                   JOIN conversation_turns newer
@@ -122,6 +154,7 @@ def eligible_report_source_sql(alias: Literal["t","memory_episodes"]) -> str:
                     AND later.value_text<>report.value_text
               )
           )
+      )
     )"""
 
 

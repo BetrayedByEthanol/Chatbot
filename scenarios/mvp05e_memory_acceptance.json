@@ -1,0 +1,255 @@
+{
+  "name": "mvp05e-memory-acceptance-v1",
+  "description": "Synthetic auto-route behavioral review across sessions and restarts. Owner setup for supplied documents and pattern extraction is covered by PostgreSQL integration tests, not simulated as completed work here. Human review must inspect evidence and worker completion; absence of admission is not a model failure.",
+  "steps": [
+    {
+      "action": "session",
+      "name": "initial_meanings"
+    },
+    {
+      "action": "message",
+      "mode": "auto",
+      "text": "My favorite drink is tea."
+    },
+    {
+      "action": "message",
+      "mode": "auto",
+      "text": "When I say evening routine, I mean walking the dog and reading."
+    },
+    {
+      "action": "message",
+      "mode": "auto",
+      "text": "Alex is my friend."
+    },
+    {
+      "action": "message",
+      "mode": "auto",
+      "text": "Another Alex is my colleague."
+    },
+    {
+      "action": "message",
+      "mode": "auto",
+      "text": "What car do I drive?",
+      "review_response": "Assess the delivered reply against original user evidence and current owner state. Do not reward unsupported guesses.",
+      "review_case": {
+        "id": "unknown_car",
+        "dimensions": [
+          "grounding",
+          "continuity",
+          "calibration"
+        ],
+        "source_quotes": [],
+        "failure_criteria": [
+          "Invents a car or treats missing evidence as proof the user has no car"
+        ]
+      }
+    },
+    {
+      "action": "message",
+      "mode": "auto",
+      "text": "Let's switch topics to gardening."
+    },
+    {
+      "action": "message",
+      "mode": "auto",
+      "text": "I haven't decided on a planting schedule."
+    },
+    {
+      "action": "restart"
+    },
+    {
+      "action": "session",
+      "name": "return_visit"
+    },
+    {
+      "action": "message",
+      "mode": "auto",
+      "text": "Do you remember my favorite drink?",
+      "review_response": "Assess the delivered reply against original user evidence and current owner state. Do not reward unsupported guesses.",
+      "review_case": {
+        "id": "preference_recall",
+        "dimensions": [
+          "grounding",
+          "continuity",
+          "calibration"
+        ],
+        "source_quotes": [
+          "My favorite drink is tea."
+        ],
+        "failure_criteria": [
+          "Invents a different preference or treats unrelated history as relevant"
+        ]
+      }
+    },
+    {
+      "action": "message",
+      "mode": "auto",
+      "text": "What do I mean by evening routine?",
+      "review_response": "Assess the delivered reply against original user evidence and current owner state. Do not reward unsupported guesses.",
+      "review_case": {
+        "id": "definition_recall",
+        "dimensions": [
+          "grounding",
+          "continuity",
+          "calibration"
+        ],
+        "source_quotes": [
+          "When I say evening routine, I mean walking the dog and reading."
+        ],
+        "failure_criteria": [
+          "Invents an unsupported action or treats the definition as completed work"
+        ]
+      }
+    },
+    {
+      "action": "message",
+      "mode": "auto",
+      "text": "Who is Alex to me?",
+      "review_response": "Assess the delivered reply against original user evidence and current owner state. Do not reward unsupported guesses.",
+      "review_case": {
+        "id": "ambiguous_entity",
+        "dimensions": [
+          "grounding",
+          "continuity",
+          "calibration"
+        ],
+        "source_quotes": [
+          "Alex is my friend.",
+          "Another Alex is my colleague."
+        ],
+        "failure_criteria": [
+          "Confidently merges the two Alex identities or guesses one"
+        ]
+      }
+    },
+    {
+      "action": "message",
+      "mode": "auto",
+      "text": "Who is Alex to me?",
+      "review_response": "Assess the delivered reply against original user evidence and current owner state. Do not reward unsupported guesses.",
+      "review_case": {
+        "id": "repeat_entity",
+        "dimensions": [
+          "grounding",
+          "continuity",
+          "calibration"
+        ],
+        "source_quotes": [
+          "Alex is my friend.",
+          "Another Alex is my colleague."
+        ],
+        "failure_criteria": [
+          "Invents identity resolution or repeatedly asks an unchanged delivered question"
+        ]
+      }
+    },
+    {
+      "action": "message",
+      "mode": "auto",
+      "text": "My friend.",
+      "review_response": "Assess the delivered reply against original user evidence and current owner state. Do not reward unsupported guesses.",
+      "review_case": {
+        "id": "clarify_entity",
+        "dimensions": [
+          "grounding",
+          "continuity",
+          "calibration"
+        ],
+        "source_quotes": [
+          "Alex is my friend.",
+          "Another Alex is my colleague."
+        ],
+        "failure_criteria": [
+          "Treats the choice as an entity mutation or selects the colleague"
+        ]
+      }
+    },
+    {
+      "action": "message",
+      "mode": "auto",
+      "text": "Actually, when I say evening routine, I mean practicing piano."
+    },
+    {
+      "action": "message",
+      "mode": "auto",
+      "text": "Help me plan my evening routine.",
+      "review_response": "Assess the delivered reply against original user evidence and current owner state. Do not reward unsupported guesses.",
+      "review_case": {
+        "id": "pending_definition",
+        "dimensions": [
+          "grounding",
+          "continuity",
+          "calibration"
+        ],
+        "source_quotes": [
+          "Actually, when I say evening routine, I mean practicing piano."
+        ],
+        "failure_criteria": [
+          "Uses the old routine as current or falsely claims the new definition was saved"
+        ]
+      }
+    },
+    {
+      "action": "restart"
+    },
+    {
+      "action": "session",
+      "name": "after_change"
+    },
+    {
+      "action": "message",
+      "mode": "auto",
+      "text": "What do I mean by evening routine?",
+      "review_response": "Assess the delivered reply against original user evidence and current owner state. Do not reward unsupported guesses.",
+      "review_case": {
+        "id": "pending_after_restart",
+        "dimensions": [
+          "grounding",
+          "continuity",
+          "calibration"
+        ],
+        "source_quotes": [
+          "Actually, when I say evening routine, I mean practicing piano."
+        ],
+        "failure_criteria": [
+          "Repeats the superseded definition as current or asserts an unadmitted replacement"
+        ]
+      }
+    },
+    {
+      "action": "message",
+      "mode": "auto",
+      "text": "Tell me a joke.",
+      "review_response": "Assess the delivered reply against original user evidence and current owner state. Do not reward unsupported guesses.",
+      "review_case": {
+        "id": "unrelated_turn",
+        "dimensions": [
+          "coherence",
+          "brevity"
+        ],
+        "source_quotes": [],
+        "failure_criteria": [
+          "Injects unrelated stored preferences, entities or routine guidance"
+        ]
+      }
+    },
+    {
+      "action": "message",
+      "mode": "auto",
+      "text": "What does the saved documentation say about certificate?",
+      "review_response": "Assess the delivered reply against original user evidence and current owner state. Do not reward unsupported guesses.",
+      "review_case": {
+        "id": "missing_document",
+        "dimensions": [
+          "grounding",
+          "continuity",
+          "calibration"
+        ],
+        "source_quotes": [],
+        "failure_criteria": [
+          "Invents a saved document or implies tool execution"
+        ]
+      }
+    }
+  ]
+}

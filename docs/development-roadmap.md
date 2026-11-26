@@ -2,7 +2,7 @@
 
 **Planning baseline:** 24 November 2026; `main` at `05d1f5a02510d4f7c720471f0031267876984dc3` (merged [PR #103](https://github.com/BetrayedByEthanol/Chatbot/pull/103)).  
 **Architecture authority:** Persistent Persona Agent Architecture v2.5.1 (12 November 2026), especially §14 and §14.1; reconciled master user-story backlog dated 22 November 2026.  
-**Traceability:** [User-story implementation matrix](user-story-implementation-matrix.md), assessed against code baseline `9c2ce5c47d7e6ba95192a45e146b1571fc591215`.  
+**Traceability:** [User-story implementation matrix](user-story-implementation-matrix.md), initial baseline `9c2ce5c47d7e6ba95192a45e146b1571fc591215`; scoped MVP-05 reassessment at merged PR #124.  
 **Status:** proposed implementation sequence for review; not an architecture amendment, a release certification or a schedule commitment.
 
 ## 1. Objective and constraints
@@ -15,13 +15,13 @@ The labels MVP-04–07 below are **continuation work-package identifiers**, not 
 
 ## 2. Baseline and release interpretation
 
-The matrix contains 45 implemented-core, 59 partial and 20 missing/not-located stories. Of 92 confirmed or mixed-authority stories, 42 have implemented core, 40 are partial and 10 missing/not located. The other 32 are proposed-only/deferred. These are provisional static classifications, not test results or release percentages. Proposed details within mixed stories also require adoption decisions.
+After the scoped 05E reassessment of the 12 MVP-05 stories, the matrix contains 48 implemented-core, 57 partial and 19 missing/not-located stories. Of 92 confirmed or mixed-authority stories, 45 have implemented core, 38 are partial and 9 missing/not located. Other tracks retain the historical static assessment. The other 32 are proposed-only/deferred. These are provisional static classifications, not test results or release percentages. Proposed details within mixed stories also require adoption decisions.
 
 | Architecture phase | Stories | I / P / M | Evidence and remaining gate |
 |---|---:|---|---|
 | 0 — Contracts & safety | 25 | 9 / 12 / 4 | Durable contracts and PostgreSQL tests exist; complete deployed identity/authorization and operational evidence. |
 | 1 — Responsive core | 18 | 5 / 13 / 0 | Local integrated transport and model/tool paths exist; real-model quality, intent and time grounding require verification. |
-| 2 — Persistent cognitive state | 25 | 9 / 14 / 2 | Compression, recall, reflection and affect slices exist; entities, correction lineage and natural use need completion. |
+| 2 — Persistent cognitive state | 25 | 12 / 12 / 1 | Scoped entities and distinct memory categories implemented; natural use, correction lineage and cognitive integration remain open. |
 | 3 — Goals & procedures | 20 | 10 / 6 / 4 | Owner contracts and guided runs exist; natural approval, decomposition, evidence and strategy discovery remain open. |
 | 4 — Background autonomy | 15 | 9 / 5 / 1 | Preparation, ALIGN-01, preemption, checkpoint and in-app notification contracts exist; real workload and reactivation coverage need completion. |
 | 5 — Multimodal & social | 11 | 2 / 5 / 4 | Local audio contracts and adapters exist; host/hardware, channels, participant isolation and avatar remain open. |
@@ -34,9 +34,9 @@ The matrix contains 45 implemented-core, 59 partial and 20 missing/not-located s
 | Track | Primary architecture phases | Dependencies | Entry status |
 |---|---|---|---|
 | BASE — Foundation regression | 0; cross-cutting | Existing implementation | Maintain continuously |
-| MVP-04 — Conversational quality | 0–1; early evaluation | BASE | **Next** |
-| MVP-05 — Time, recall and entities | 1–2 | MVP-04 evidence; existing memory | Time slice may proceed immediately after baseline; then memory |
-| MVP-06 — Goal and procedure dialogue | 3 | MVP-04; relevant MVP-05 grounding and owner gates | Focused early tests permitted; Phase 3 exit also requires Phase 2 exit |
+| MVP-04 — Conversational quality | 0–1; early evaluation | BASE | Implementation increments merged; independent quality review open |
+| MVP-05 — Time, recall and entities | 1–2 | MVP-04 evidence; existing memory | 05A–D merged; 05E consolidation candidate |
+| MVP-06 — Goal and procedure dialogue | 3 | MVP-04; relevant MVP-05 grounding and owner gates | Focused 06A next after 05E technical regression; Phase 3 exit also requires Phase 2 exit |
 | MVP-07A — Authenticated application | 0–1 | BASE | Can proceed independently; mandatory before remote/untrusted access |
 | MVP-07B — Data lifecycle and provenance | 0, 2, 6 | BASE; deployment scope decision; owner inventory | Start policy/lineage work early; full propagation is a later gate |
 | P2-F — Remaining cognitive state | 2 | MVP-05; relevant MVP-07B correction contracts | Required for Phase 2 exit |
@@ -45,7 +45,7 @@ The matrix contains 45 implemented-core, 59 partial and 20 missing/not-located s
 | P6-F — Evaluation and hardening | 6 | Relevant owner contracts and earlier phase evidence | Continuous regression now; final hardening later |
 | DEC-01–07 — Proposal decisions | Various | Explicit approval of individual proposal(s) | Not scheduled as mandatory implementation |
 
-Recommended order for the next reviewable PRs: MVP-04A benchmark integrity and failure evidence → MVP-04B reproduced response defects → MVP-04C contextual intent and corrections → MVP-05A trusted time. Start MVP-07A authentication contract and MVP-07B deployment/data inventory in parallel if there is capacity, but never make an untrusted deployment available before their applicable safety gates. Continue with MVP-05B/C memory and entities, P2-F cognitive state and MVP-06 goal/procedure slices according to their dependencies. No release dates or hardware assumptions are fixed. At each milestone review the linked [capability gaps (§9)](#9-capability-gap-review-register); a review checkpoint is not an implementation dependency or expanded MVP gate.
+Original recommended order (historical planning baseline): MVP-04A benchmark integrity and failure evidence → MVP-04B reproduced response defects → MVP-04C contextual intent and corrections → MVP-05A trusted time. Start MVP-07A authentication contract and MVP-07B deployment/data inventory in parallel if there is capacity, but never make an untrusted deployment available before their applicable safety gates. Continue with MVP-05B/C memory and entities, P2-F cognitive state and MVP-06 goal/procedure slices according to their dependencies. No release dates or hardware assumptions are fixed. At each milestone review the linked [capability gaps (§9)](#9-capability-gap-review-register); a review checkpoint is not an implementation dependency or expanded MVP gate.
 
 ## 4. Implementation increments and exit checks
 
@@ -104,6 +104,8 @@ Primary IDs: 091, 113, 029, 030, 031, 034, 093, 027, 028, 032, 033, 092.
 05D.4 candidate implementation (26 Nov 2026): [document and procedural knowledge](mvp-05d4-document-knowledge.md) adds explicitly approved private supplied-text versions, exact bounded passages and pinned private procedure references. Canonical source recall reuses the historical read fence; source text is not executable instruction or model evidence. External ingestion, semantic synthesis and full retention/revocation remain follow-ups.
 
 05D.5 candidate implementation (26 Nov 2026): [MetaMemory and retrieval feedback](mvp-05d5-metamemory.md) adds recall-driven gap history, delivered-choice suppression, evidence-bound user feedback and exact-query/document-version ranking demotion. GAP-04/09 partial evidence; cognitive proposals, broad feedback and held-out evaluation remain follow-ups.
+
+05E — [Integrated acceptance and consolidation](mvp-05e-memory-acceptance.md): 05A–D merged. Reuse source/owner fences for unsupported known-topic definitions, fix clarification cooldown from actual question delivery, add a cross-store 50-turn compression/restart regression and a real-model review scenario. Candidate tests NOT RUN. 7 I / 5 P / 0 M after scoped reassessment; no architectural phase exit or behavioral acceptance. Focused 06A may follow passing technical CI without waiting for deferred P2-F or remote deployment gates. Source-qualified document use is a targeted dependency for 06B/D when required, not a new knowledge architecture.
 
 Reuse [retrieval](phase2-05.md), [unified context](mvp-03b1-unified-context.md), [longitudinal context](mvp-03b3-longitudinal-context-evaluation.md), [memory eligibility](mvp-02c12-source-grounded-eligibility.md) and [Phase 2 integration](phase2-08.md). Use existing `prepare_text_context`, `memory_retrieval`, `historical_user_turns` and dialogue ownership; no second context builder. 05A is a Phase 1 requirement; 05B–D belong to Phase 2. The confirmed core of 113 is selective adequate retrieval; proposed stop-reason schemas/escalation policy are not automatically approved. For correction across derived stores, depend on MVP-07B.
 
@@ -233,7 +235,7 @@ I/P/M counts below are copied from the merged matrix; neither a story's primary 
 |---|---:|---|---|
 | BASE — Foundation regression | 9 | 9 / 0 / 0 | 001, 002, 003, 005, 006, 007, 008, 011, 111 |
 | MVP-04 — Conversational quality | 14 | 4 / 10 / 0 | 012, 104, 016, 017, 018, 019, 020, 021, 022, 023, 024, 090, 105, 088 |
-| MVP-05 — Time, recall and entities | 12 | 4 / 7 / 1 | 091, 113, 029, 030, 031, 034, 093, 027, 028, 032, 033, 092 |
+| MVP-05 — Time, recall and entities | 12 | 7 / 5 / 0 | 091, 113, 029, 030, 031, 034, 093, 027, 028, 032, 033, 092 |
 | MVP-06 — Goal and procedure dialogue | 16 | 10 / 5 / 1 | 046, 047, 048, 051, 100, 049, 050, 052, 053, 054, 055, 056, 057, 058, 098, 099 |
 | MVP-07A — Authenticated application | 3 | 0 / 3 / 0 | 004, 009, 010 |
 | MVP-07B — Data lifecycle and provenance | 3 | 0 / 2 / 1 | 117, 118, 085 |
@@ -334,3 +336,16 @@ When an item is reviewed, update its disposition above and append a record below
 | — | Pending other initial reviews | — | See §9.2 | No new feature adopted, deferred or rejected through this register. |
 
 **Coverage:** 20 capability gap review items, independent of the existing 124 canonical stories and 32 proposed-only story decisions. Grouping and review timing are planning proposals. No runtime changes, implementation count changes, acceptance promotions or benchmark execution.
+
+### MVP-05E gap review (26 November 2026)
+
+Partial means evidence of a useful slice; these gaps remain OPEN in the authoritative register. No new proposal authority or mandatory phase gate is implied.
+
+| Gap | Evidence disposition | Follow-up |
+|---|---|---|
+| GAP-04 | Partial: owner recall gap history and bounded delivered clarification suppression | P2-F1 proactive/cognitive gap discovery; 05E cooldown regression |
+| GAP-05 | Open: no composed subjective world model | P2-F1 |
+| GAP-07 | Partial: exact evidence checks and fenced current reads | P6-F4 verification evaluation; MVP-07B lineage |
+| GAP-08 | Partial: delivered entity clarification and 05E unsupported-definition barrier candidate | Broader natural reference and correction repair in P2-F/06 where needed |
+| GAP-09 | Partial: exact-query document relevance feedback | P6-F4 broad retrieval feedback and held-out evaluation |
+| GAP-12 | Partial: source-linked episodes and independently retained facts | P2-F1 significance; MVP-07B retention; P6-F4 evaluation |

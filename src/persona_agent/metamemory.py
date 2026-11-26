@@ -44,6 +44,7 @@ def prior_clarification(cur,*,user_id,instance_id,query_key,candidates,before_at
              AND r.user_id=o.user_id AND r.instance_id=o.instance_id
            WHERE o.user_id=%s AND o.instance_id=%s AND o.route='ENTITY'
              AND o.query_key=%s AND r.delivery_status='DELIVERED'
+             AND NOT o.clarification_suppressed
              AND r.delivered_at<=%s
            ORDER BY r.delivered_at DESC,o.response_id LIMIT 1""",
         (user_id,instance_id,query_key,before_at),
