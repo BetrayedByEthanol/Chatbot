@@ -136,6 +136,23 @@ US-047/057/058 stay partial; no story promotion or Phase 3 gate waiver. Focused 
 
 US-050 remains M until candidate CI/review; other statuses unchanged. Technical CI is not Phase 3 exit or full behavioral acceptance.
 
+## 2I. MVP-06D merged and 07A/07B1 candidate evidence
+
+- Final PR #130 head `2507af4aa0e2c3195c7ec2dc9c3b9e29d691f201`: [PostgreSQL CI](https://github.com/BetrayedByEthanol/Chatbot/actions/runs/45825422385) SUCCESS (2,261 passed, 3 skipped); standalone contracts 5 passed; without Psycopg 986 passed, 234 skipped. [Live integration](https://github.com/BetrayedByEthanol/Chatbot/actions/runs/45825422330) SUCCESS. Merged as `1cf551755e0478bff19bf2efde1199a490ecf634`. No separate merge-SHA CI or external research acceptance claimed.
+- [07A implementation](mvp-07a-authenticated-application.md); [candidate regression](../tests/test_mvp07a_application.py). All new gates remain NOT RUN.
+
+| Criterion | Candidate evidence | Status |
+|---|---|---|
+| A01 — Authentication and scope | Operator-issued random credential, digest only, expiry/revocation, fixed selected user/instance/conversation/generation; strict input allowlist | NOT RUN |
+| A02 — Reconnect and delivery | Scoped latest response/status; durable idempotency, exact offered response and explicit ACK, stale selection/turn denial | NOT RUN |
+| A03 — Authority | No client actor, platform/worker callback, provider choice, asynchronous admission or external effects; server model gateway | NOT RUN |
+| A04 — Revocation | Owner session checks under selection/session locks before text commit/ACK and presence; revoke during inference prevents stale response commit | NOT RUN |
+| A05 — Deployment | Remote transport, user account authentication/provisioning, permission lifecycle for asynchronous work, delivery-time source privacy, rate limits and provider policy | OPEN |
+| B01 — Data lifecycle inventory | [Initial owner/copy inventory](mvp-07b-data-lifecycle-inventory.md); actual deployment and policy decisions pending | INITIAL INVENTORY |
+| B02/B03 — Lineage and propagation | Owner-specific correction, deletion and late result fences, external copies/backup recovery | OPEN |
+
+US-004/009/010/117/118 remain P; US-085 remains M. No status promotion, remote/untrusted deployment approval or Phase 2/3 exit.
+
 ## 3. Confirmed Phase 0–1 acceptance items
 
 Each of the 28 stories below retains its canonical ID, authority, priority, owner and baseline implementation status. Confirmed criteria are reproduced from the master backlog; mixed criteria are scoped to their confirmed core with proposed details identified explicitly. Evidence links come from the matrix and are starting points, not proof of full coverage. Review applicable legacy verification candidates before acceptance; unapproved numerical parameters are not binding.

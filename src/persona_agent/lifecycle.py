@@ -122,6 +122,18 @@ def _execute(
 
     with connection.transaction():
         with connection.cursor(row_factory=dict_row) as cursor:
+            if type(actor) is TrustedActor and actor.application_session_id is not None:
+                if type(command) is not PrimaryActivityCommand:
+                    raise PermissionDenied("application session cannot change selected persona")
+                cursor.execute("SELECT instance_id,generation,mode FROM persona_selection "
+                               "WHERE user_id=%s FOR UPDATE",(actor.user_id,))
+                current=cursor.fetchone()
+                if (current is None or current["instance_id"]!=target_id
+                        or current["generation"]!=command.expected_generation
+                        or current["mode"]!="FOREGROUND"):
+                    raise StaleSelection("application presence requires selected Foreground persona")
+                from .application_auth import check_application_actor
+                check_application_actor(cursor,actor,target_id,command.expected_generation)
             _check_owner(cursor, actor.user_id, target_id)
             cursor.execute(
                 """

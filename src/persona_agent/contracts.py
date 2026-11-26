@@ -11,6 +11,8 @@ class TrustedActor(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     user_id: UUID
     source_id: str = Field(min_length=1, max_length=128)
+    # Server-only correlation. Never deserialize this actor from client JSON.
+    application_session_id: UUID | None = None
 
 
 class RenameInstanceCommand(BaseModel):
