@@ -34,3 +34,7 @@ python -m pytest -q tests/test_mvp06a_goal_conversation.py tests/test_phase3_goa
 ```
 
 Focused 06B — guided procedures after successful technical CI; Phase 3 gate still requires Phase 2 exit and subsequent 06C/D work. Target-model quality, remote deployment and applicable privacy lifecycle gates unchanged.
+
+## Subsequent verification (26 November 2026)
+
+PR #127 merged as `54ce3cb916398908b3cb7762330c167a58fabbca`; final head passed [PostgreSQL CI](https://github.com/BetrayedByEthanol/Chatbot/actions/runs/45806428624) (2,182 passed, 3 skipped) and [live integration](https://github.com/BetrayedByEthanol/Chatbot/actions/runs/45806428618). Candidate authoring-time NOT RUN above is superseded for technical CI only. Focused 06B proceeds. US-098 remains partial; independent real-model review and broader language, linked goals and evaluation windows remain open.

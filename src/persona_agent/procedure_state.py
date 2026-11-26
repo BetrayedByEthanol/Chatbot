@@ -78,55 +78,72 @@ def _approval(cur, actor: TrustedActor, command: ProcedureUserCommand, source: d
         raise PermissionDenied("procedure approval is not bound to the exact action")
 
 
+def _command_in_transaction(cur,actor: TrustedActor,command: ProcedureUserCommand,
+                            command_type: str,apply,*,result_type=ProcedureChangeResult,
+                            requires_approval: bool=True,approval_validator=None):
+    """Reuse the owner receipt and validation inside a short caller transaction.
+
+    The optional validator is an internal proof adapter, not an exposed
+    authorization flag on any public Procedure command.
+    """
+    _require_actor(actor)
+    receipt_id=uuid4()
+    fingerprint=_fingerprint(command)
+    cur.execute(
+        "SELECT 1 FROM persona_instances WHERE user_id=%s AND id=%s",
+        (actor.user_id,command.instance_id),
+    )
+    if cur.fetchone() is None:
+        raise PermissionDenied("procedure command outside user/persona scope")
+    cur.execute(
+        """INSERT INTO command_receipts(
+             receipt_id,user_id,instance_id,command_type,
+             idempotency_key,request_fingerprint
+           ) VALUES (%s,%s,%s,%s,%s,%s)
+           ON CONFLICT(user_id,instance_id,command_type,idempotency_key)
+           DO NOTHING RETURNING receipt_id""",
+        (receipt_id,actor.user_id,command.instance_id,command_type,
+         command.idempotency_key,fingerprint),
+    )
+    if cur.fetchone() is None:
+        cur.execute(
+            """SELECT request_fingerprint,result_json FROM command_receipts
+               WHERE user_id=%s AND instance_id=%s AND command_type=%s
+                 AND idempotency_key=%s""",
+            (actor.user_id,command.instance_id,command_type,command.idempotency_key),
+        )
+        prior=cur.fetchone()
+        if prior is None or prior["request_fingerprint"]!=fingerprint or prior["result_json"] is None:
+            raise IdempotencyConflict("procedure idempotency key reused differently")
+        return result_type.model_validate(prior["result_json"]).model_copy(
+            update={"replayed":True},
+        )
+    _selected(cur,actor,command)
+    source=_source(cur,actor,command)
+    if requires_approval:
+        if approval_validator is None:
+            _approval(cur,actor,command,source)
+        else:
+            approval_validator(cur,actor,command,source)
+    result=apply(cur,receipt_id)
+    cur.execute(
+        """UPDATE command_receipts SET event_id=%s,result_json=%s::jsonb
+           WHERE receipt_id=%s""",
+        (result.event_id,json.dumps(result.model_dump(mode="json")),receipt_id),
+    )
+    return result
+
+
+
 def _command(connection: Connection, actor: TrustedActor, command: ProcedureUserCommand,
              command_type: str, apply, *, result_type=ProcedureChangeResult,
              requires_approval: bool=True):
     require_idle(connection)
     _require_actor(actor)
-    receipt_id=uuid4()
-    fingerprint=_fingerprint(command)
     with connection.transaction():
         with connection.cursor(row_factory=dict_row) as cur:
-            cur.execute(
-                "SELECT 1 FROM persona_instances WHERE user_id=%s AND id=%s",
-                (actor.user_id,command.instance_id),
-            )
-            if cur.fetchone() is None:
-                raise PermissionDenied("procedure command outside user/persona scope")
-            cur.execute(
-                """INSERT INTO command_receipts(
-                     receipt_id,user_id,instance_id,command_type,
-                     idempotency_key,request_fingerprint
-                   ) VALUES (%s,%s,%s,%s,%s,%s)
-                   ON CONFLICT(user_id,instance_id,command_type,idempotency_key)
-                   DO NOTHING RETURNING receipt_id""",
-                (receipt_id,actor.user_id,command.instance_id,command_type,
-                 command.idempotency_key,fingerprint),
-            )
-            if cur.fetchone() is None:
-                cur.execute(
-                    """SELECT request_fingerprint,result_json FROM command_receipts
-                       WHERE user_id=%s AND instance_id=%s AND command_type=%s
-                         AND idempotency_key=%s""",
-                    (actor.user_id,command.instance_id,command_type,command.idempotency_key),
-                )
-                prior=cur.fetchone()
-                if prior is None or prior["request_fingerprint"]!=fingerprint or prior["result_json"] is None:
-                    raise IdempotencyConflict("procedure idempotency key reused differently")
-                return result_type.model_validate(prior["result_json"]).model_copy(
-                    update={"replayed":True},
-                )
-            _selected(cur,actor,command)
-            source=_source(cur,actor,command)
-            if requires_approval:
-                _approval(cur,actor,command,source)
-            result=apply(cur,receipt_id)
-            cur.execute(
-                """UPDATE command_receipts SET event_id=%s,result_json=%s::jsonb
-                   WHERE receipt_id=%s""",
-                (result.event_id,json.dumps(result.model_dump(mode="json")),receipt_id),
-            )
-            return result
+            return _command_in_transaction(cur,actor,command,command_type,apply,
+                result_type=result_type,requires_approval=requires_approval)
 
 
 def _current_persona(cur, actor: TrustedActor, instance_id: UUID) -> UUID:

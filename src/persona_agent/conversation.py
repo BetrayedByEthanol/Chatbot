@@ -448,6 +448,19 @@ def prepare_text_context(
                     temporal_context=_temporal_from_anchor(cursor,actor,item,turn_id),
                     goal_dialogue_action=True,
                 )
+            from .procedure_guidance import should_route_guidance
+            if should_route_guidance(cursor,user_id=actor.user_id,instance_id=item["instance_id"],
+                    conversation_id=item["conversation_id"],turn_id=turn_id,
+                    generation=item["selection_generation"],text=item["input_text"]):
+                return ResponseContext(
+                    conversation_id=item["conversation_id"],turn_id=turn_id,
+                    instance_id=item["instance_id"],selection_generation=item["selection_generation"],
+                    conversation_revision=item["revision"],
+                    messages=(ModelMessage("system","Guided procedure progress is owned by the host. Do not claim execution or verified completion."),
+                              ModelMessage("user",item["input_text"])),
+                    temporal_context=_temporal_from_anchor(cursor,actor,item,turn_id),
+                    procedure_guidance_action=True,
+                )
             from .knowledge_contracts import knowledge_reference
             if knowledge_reference(item["input_text"]) is not None:
                 # Canonical excerpts are read at commit, not injected into an
@@ -1109,7 +1122,8 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
                          meaning_recall: bool = False,
                          knowledge_recall: bool = False,
                          meaning_change_direct: bool = False,
-                         goal_dialogue_direct: bool = False) -> TextResponseResult:
+                         goal_dialogue_direct: bool = False,
+                         procedure_guidance_direct: bool = False) -> TextResponseResult:
     """Commit one generated reply only if its context remains current."""
     require_idle(connection)
     _require_actor(actor)
@@ -1144,6 +1158,11 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
             if goal_dialogue_direct and (goal_action is None or not context.goal_dialogue_action):
                 raise ValueError("goal dialogue requires a prepared authenticated input")
             writes_goal=goal_action is not None and (goal_dialogue_direct or model_generated)
+            from .procedure_guidance_contracts import parse_guidance
+            guidance_action=parse_guidance(scoped["input_text"]) if context.procedure_guidance_action else None
+            if procedure_guidance_direct and guidance_action is None:
+                raise ValueError("procedure guidance requires a prepared authenticated input")
+            writes_guidance=guidance_action is not None and (procedure_guidance_direct or model_generated)
             if writes_entity:
                 # Entity absence/collision and writes share one owner guard.
                 # Acquire BEFORE locking conversation/turn rows: a concurrent
@@ -1167,7 +1186,7 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
                 # keys to existing sources. Non-key locks still serialize
                 # revisions while permitting concurrent FK validation.
                 lock_mode=(
-                    ("FOR NO KEY UPDATE" if writes_entity or writes_goal else "FOR UPDATE")
+                    ("FOR NO KEY UPDATE" if writes_entity or writes_goal or writes_guidance else "FOR UPDATE")
                     if lock_id==context.conversation_id else "FOR SHARE"
                 )
                 cursor.execute(
@@ -1185,7 +1204,7 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
                 raise StaleConversation("response conversation no longer exists")
             cursor.execute(
                 "SELECT status FROM conversation_turns WHERE turn_id=%s "
-                +("FOR NO KEY UPDATE" if writes_entity or writes_goal else "FOR UPDATE"),
+                +("FOR NO KEY UPDATE" if writes_entity or writes_goal or writes_guidance else "FOR UPDATE"),
                 (context.turn_id,),
             )
             current_turn=cursor.fetchone()
@@ -1453,6 +1472,9 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
             if writes_goal:
                 from .goal_conversation import apply_goal_dialogue
                 text=apply_goal_dialogue(cursor,actor,context,scoped,response_id,goal_action)
+            if writes_guidance:
+                from .procedure_guidance import apply_guidance
+                text=apply_guidance(cursor,actor,context,scoped,response_id,guidance_action)
             # MVP-01F.4: use only the persisted authenticated user input and
             # bounded prior user messages to enforce unavailable-capability
             # claims. Model output is untrusted, including conditional offers.
@@ -1461,7 +1483,7 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
             # The exact read-only document route renders inert quotations,
             # not assistant promises. Do not rewrite the evidence or treat
             # instructions embedded in a source as agent capability claims.
-            enforcement=(CapabilityEnforcement(text) if knowledge_answered or writes_goal else
+            enforcement=(CapabilityEnforcement(text) if knowledge_answered or writes_goal or writes_guidance else
                 enforce_capability_claims(
                     scoped["input_text"],text,
                     recent_user_texts=tuple(
@@ -1475,7 +1497,7 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
             from .pragmatic_response import enforce_pragmatic_reply
             pragmatic=enforce_pragmatic_reply(
                 scoped["input_text"],text,
-                model_generated=model_generated and not knowledge_answered and not writes_goal and enforcement.reason is None,
+                model_generated=model_generated and not knowledge_answered and not writes_goal and not writes_guidance and enforcement.reason is None,
             )
             text=pragmatic.text
             cursor.execute(
@@ -1695,6 +1717,7 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
                     and not routine_change_blocked
                     and not meaning_change_acknowledged
                     and not writes_goal
+                    and not writes_guidance
                     and (draft is None
                          or generated.intent_candidate.kind=="OBJECTIVE")):
                 admitted = record_model_intent_on_response(
@@ -1712,7 +1735,7 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
             # only when no candidate was admitted. The same response commit
             # fences it; this never approves a Goal or adds another LLM pass.
             if admitted is None:
-                if draft is not None and not routine_change_blocked and not meaning_change_acknowledged and not writes_goal:
+                if draft is not None and not routine_change_blocked and not meaning_change_acknowledged and not writes_goal and not writes_guidance:
                     record_intent_on_ingress(
                         cursor,user_id=actor.user_id,
                         instance_id=context.instance_id,
@@ -1756,7 +1779,7 @@ def acknowledge_text_delivery(connection: Connection, actor: TrustedActor,
             _selection(cursor,actor,row["instance_id"],row["selection_generation"])
             cursor.execute(
                 "SELECT conversation_id FROM conversations "
-                "WHERE conversation_id=%s FOR UPDATE",
+                "WHERE conversation_id=%s FOR NO KEY UPDATE",
                 (row["conversation_id"],),
             )
             # Another callback can commit DELIVERED while this one waits for
@@ -1765,7 +1788,7 @@ def acknowledge_text_delivery(connection: Connection, actor: TrustedActor,
             cursor.execute(
                 """
                 SELECT delivery_status FROM conversation_responses
-                WHERE response_id=%s AND user_id=%s FOR UPDATE
+                WHERE response_id=%s AND user_id=%s FOR NO KEY UPDATE
                 """,
                 (response_id,actor.user_id),
             )
@@ -1802,6 +1825,8 @@ def acknowledge_text_delivery(connection: Connection, actor: TrustedActor,
                 source_id=actor.source_id,trust_level="AUTHENTICATED_USER",
                 detail={"response_id":str(response_id),"turn_id":str(row["turn_id"])},
             )
+            from .procedure_guidance import bind_delivered_guidance
+            bind_delivered_guidance(cursor,actor,row)
             # MVP-01C: adapt discussion state only after actual delivery.
             # The enclosing short transaction owns the conversation lock;
             # generated or stale output never creates pending questions.
@@ -1825,7 +1850,8 @@ def respond_to_text(connection: Connection, actor: TrustedActor, turn_id: UUID,
                     gateway: TextModelGateway,
                     *, max_turns: int = 12, max_context_chars: int = 12000,
                     adaptive_meaning_change: bool = False,
-                    adaptive_goal_dialogue: bool = False
+                    adaptive_goal_dialogue: bool = False,
+                    adaptive_procedure_guidance: bool = False
                     ) -> TextResponseResult:
     """Small synchronous orchestration wrapper; no DB transaction spans the LLM.
 
@@ -1883,7 +1909,11 @@ def respond_to_text(connection: Connection, actor: TrustedActor, turn_id: UUID,
         )
         direct=adaptive_meaning_change and context.meaning_change_action is not None
         goal_direct=adaptive_goal_dialogue and context.goal_dialogue_action
-        if goal_direct:
+        guidance_direct=adaptive_procedure_guidance and context.procedure_guidance_action
+        if guidance_direct:
+            from .procedure_guidance_contracts import ROUTE_ID
+            generated=ModelReply(model_id=ROUTE_ID,text="Procedure guidance response.")
+        elif goal_direct:
             from .goal_conversation_contracts import ROUTE_ID
             generated=ModelReply(model_id=ROUTE_ID,text="Goal dialogue response.")
         elif direct:
@@ -1900,8 +1930,9 @@ def respond_to_text(connection: Connection, actor: TrustedActor, turn_id: UUID,
                 generated=gateway.generate(context.messages)
         try:
             return commit_text_response(connection,actor,context,generated,
-                                        model_generated=not (direct or goal_direct),meaning_change_direct=direct,
-                                        goal_dialogue_direct=goal_direct)
+                                        model_generated=not (direct or goal_direct or guidance_direct),meaning_change_direct=direct,
+                                        goal_dialogue_direct=goal_direct,
+                                        procedure_guidance_direct=guidance_direct)
         except StaleHistoricalContext:
             if attempt:
                 raise
@@ -1913,5 +1944,6 @@ def respond_to_text(connection: Connection, actor: TrustedActor, turn_id: UUID,
                     max_turns=max_turns,max_context_chars=max_context_chars,
                     adaptive_meaning_change=adaptive_meaning_change,
                     adaptive_goal_dialogue=adaptive_goal_dialogue,
+                    adaptive_procedure_guidance=adaptive_procedure_guidance,
                 )
     raise AssertionError("unreachable historical response retry")
