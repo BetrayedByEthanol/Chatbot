@@ -521,3 +521,79 @@ def summarize_personal_procedure_experience(
         run_ids=tuple(row["run_id"] for row in rows),
         truncated=truncated,
     )
+
+
+def read_adaptation_guidance(connection: Connection, actor: TrustedActor,
+                             instance_id: UUID, run_id: UUID):
+    """Recommend the smallest justified *next review*, not a parameter value.
+
+    Use a single scoped snapshot of the latest assessment, pinned definition
+    and current variant. Existing adaptation commands remain authoritative.
+    """
+    from .procedure_learning_contracts import ProcedureAdaptationGuidance
+    from .procedure_contracts import ProcedureDefinition
+    require_idle(connection)
+    _require_actor(actor)
+    with connection.transaction():
+        with connection.cursor(row_factory=dict_row) as cur:
+            _read_selected(cur,actor,instance_id)
+            cur.execute(
+                """SELECT r.run_id,r.version AS run_version,r.variant_id,r.variant_revision,
+                          p.current_revision,t.definition,e.evaluation_id,e.run_version AS evaluated_version,
+                          e.outcome,e.failure_cause
+                   FROM procedure_runs r
+                   JOIN procedure_template_versions t ON t.template_id=r.template_id
+                     AND t.version=r.template_version
+                   LEFT JOIN personalized_procedures p ON p.variant_id=r.variant_id
+                     AND p.user_id=r.user_id AND p.instance_id=r.instance_id
+                   LEFT JOIN LATERAL (
+                       SELECT evaluation_id,run_version,outcome,failure_cause
+                       FROM procedure_run_evaluations e
+                       WHERE e.run_id=r.run_id AND e.user_id=r.user_id AND e.instance_id=r.instance_id
+                       ORDER BY evaluation_revision DESC LIMIT 1
+                   ) e ON true
+                   WHERE r.run_id=%s AND r.user_id=%s AND r.instance_id=%s""",
+                (run_id,actor.user_id,instance_id),
+            )
+            row=cur.fetchone()
+            if row is None:
+                raise PermissionDenied("procedure guidance outside authenticated scope")
+            definition=ProcedureDefinition.model_validate(row["definition"])
+            names=tuple(p.name for p in definition.parameters)
+            cause=row["failure_cause"]
+            if row["evaluation_id"] is None:
+                action="ASSESS_OUTCOME"
+            elif (row["evaluated_version"]!=row["run_version"]
+                  or (row["variant_id"] is not None
+                      and row["current_revision"]!=row["variant_revision"])):
+                action="REASSESS_STALE_EVIDENCE"
+            elif row["outcome"]=="USER_REPORTED_SUCCESS":
+                action="NO_CHANGE"
+            elif row["outcome"]=="UNKNOWN":
+                action="CLARIFY_CAUSE"
+            elif row["outcome"]=="INCOMPLETE" or cause=="INCOMPLETE_USER_ACTION":
+                action="COMPLETE_REQUIRED_ACTION"
+            elif cause=="INCORRECT_INPUT":
+                action="CHECK_INPUTS"
+            elif cause=="ENVIRONMENT":
+                action="CHECK_ENVIRONMENT"
+            elif cause=="INVALID_SUCCESS_CRITERIA":
+                action="REVIEW_SUCCESS_CRITERIA"
+            elif cause!="METHOD_MISMATCH":
+                action="CLARIFY_CAUSE"
+            elif definition.policy=="STABLE":
+                action="DIAGNOSE_STABLE_METHOD"
+            elif row["variant_id"] is None:
+                action="CONSIDER_ALTERNATIVE_METHOD"
+            elif names:
+                action="CONSIDER_PARAMETER_CHANGE"
+            elif definition.policy=="ADAPTIVE":
+                action="CONSIDER_PRIVATE_VARIANT"
+            else:
+                action="CONSIDER_ALTERNATIVE_METHOD"
+            return ProcedureAdaptationGuidance(
+                run_id=run_id,run_version=row["run_version"],evaluation_id=row["evaluation_id"],
+                variant_id=row["variant_id"],variant_revision=row["variant_revision"],
+                policy=definition.policy,outcome=row["outcome"],failure_cause=cause,
+                next_action=action,parameter_names=names,
+            )

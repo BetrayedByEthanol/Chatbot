@@ -120,6 +120,22 @@ No story promotion before verification; US-100 remains partial. Focused 06C may 
 
 US-047/057/058 stay partial; no story promotion or Phase 3 gate waiver. Focused 06D follows successful technical CI.
 
+## 2H. MVP-06C merged and 06D candidate evidence
+
+- Final PR #129 head `e84dfa1c7887369ba7ba2fc649cb5200ebc254e0`: [PostgreSQL CI](https://github.com/BetrayedByEthanol/Chatbot/actions/runs/45822820464) SUCCESS (2,253 passed, 3 skipped); standalone contracts 5 passed; without Psycopg 986 passed, 226 skipped. [Live integration](https://github.com/BetrayedByEthanol/Chatbot/actions/runs/45822820516) SUCCESS. Merged as `965c8ceaf9e583fa2733fbd8a30e25d402f12d94`. Includes the full ancestor evaluation-window correction. No separate merge-SHA CI or independent quality acceptance claimed.
+- [06D implementation](mvp-06d-strategy-research.md); [candidate regression](../tests/test_mvp06d_strategy_research.py). All new gates remain NOT RUN.
+
+| Criterion | Candidate evidence | Status |
+|---|---|---|
+| D01 — Authorized research | Exact separately approved goal/version/query, selected generation, current scoped saved-source retrieval, no external fetch | NOT RUN |
+| D02 — Sourced candidate and adoption | Pin current document version/digest/passage, exact user-approved candidate including limitations, separate selection and eligibility recheck; no goal mutation | NOT RUN |
+| D03 — Uncertainty/privacy | No eligible source abstention; restricted/foreign/versioned/withdrawn source excluded; no copied document excerpts in strategy metadata | NOT RUN |
+| D04 — Comparison and diagnosis | Current per-run assessments linked to strategy/variant revision; stale assessments distinguished; cause-specific next review, no verified effectiveness claim | NOT RUN |
+| D05 — Private adaptation | Existing owner validates pinned policy and current assessment, separate approval applies private revision only, prior run unchanged; STABLE diagnosis only | NOT RUN |
+| D06 — Broader research and learning | External registered research provider through Task/Operation, synthesis/suitability review, conversational flows, outcome-based ranking and shared promotion | OPEN |
+
+US-050 remains M until candidate CI/review; other statuses unchanged. Technical CI is not Phase 3 exit or full behavioral acceptance.
+
 ## 3. Confirmed Phase 0–1 acceptance items
 
 Each of the 28 stories below retains its canonical ID, authority, priority, owner and baseline implementation status. Confirmed criteria are reproduced from the master backlog; mixed criteria are scoped to their confirmed core with proposed details identified explicitly. Evidence links come from the matrix and are starting points, not proof of full coverage. Review applicable legacy verification candidates before acceptance; unapproved numerical parameters are not binding.
