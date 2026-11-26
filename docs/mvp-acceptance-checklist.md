@@ -491,6 +491,8 @@ For every criterion record ID, source criterion, candidate revision, actual test
 
 ## 8. Next development work
 
+**Continuation refinement (26 November 2026):** [PRED-ROADMAP-01](predictive-user-modeling-refinement.md) adopts scoped expectation/prediction and approach-learning criteria within existing P2-F1/F2/F3 and later integration/evaluation reviews. It does not add a Phase 0–1 acceptance item, change the existing execution sequence or deployment gates, or promote any acceptance result. Applicable 07B correction/lineage contracts gate durable personalized learning; no mandatory predictive prefetch or per-turn verification.
+
 Start MVP-04A benchmark and review integrity: diagnose actual gateway failure from available evidence, improve validation diagnostics if reproduced, preserve frozen scenario and independent review requirements. Then MVP-04B reproduced grounding fixes, MVP-04C pragmatic/correction checks, MVP-04D tool/late result checks, MVP-05A trusted time. Authentication and applicable data-lifecycle decisions precede untrusted deployment.
 
 **Coverage:** 43 unique Phase 0–1 stories: 28 confirmed/mixed (15 Phase 0; 13 Phase 1; I/P/M 13 / 15 / 0), 15 proposed-only (10 Phase 0; 5 Phase 1; I/P/M 1 / 10 / 4). All 43 canonical IDs appear exactly once as primary checklist/decision entries in §§3/6. This document does not execute tests, benchmarks, human review or deployment acceptance.
