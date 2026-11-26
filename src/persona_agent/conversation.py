@@ -427,6 +427,19 @@ def prepare_text_context(
                 capture_historical_read_fence(cursor,actor.user_id,item["instance_id"])
                 if needs_historical_read_fence(item["input_text"]) else None
             )
+            from .knowledge_contracts import knowledge_reference
+            if knowledge_reference(item["input_text"]) is not None:
+                # Canonical excerpts are read at commit, not injected into an
+                # LLM prompt. Even forced-model recall cannot see document data.
+                return ResponseContext(
+                    conversation_id=item["conversation_id"],turn_id=turn_id,
+                    instance_id=item["instance_id"],selection_generation=item["selection_generation"],
+                    conversation_revision=item["revision"],
+                    messages=(ModelMessage("system","Saved-document recall uses current owner evidence."),
+                              ModelMessage("user",item["input_text"])),
+                    temporal_context=_temporal_from_anchor(cursor,actor,item,turn_id),
+                    historical_fence=historical_fence,
+                )
             from .personal_meaning_grammar import meaning_reference,meaning_use_reference
             definition_topic=meaning_reference(item["input_text"])
             if definition_topic is not None:
@@ -510,7 +523,8 @@ def prepare_text_context(
                 )
             cursor.execute(
                 """
-                SELECT t.turn_id,t.sequence,t.input_text,r.response_text,r.delivery_status
+                SELECT t.turn_id,t.sequence,t.input_text,
+                       CASE WHEN r.knowledge_excerpt THEN '[Saved document excerpts omitted; request fresh recall.]' ELSE r.response_text END AS response_text,r.delivery_status
                 FROM conversation_turns t
                 LEFT JOIN conversation_responses r ON r.turn_id=t.turn_id
                 WHERE t.conversation_id=%s AND t.user_id=%s
@@ -1042,7 +1056,8 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
                          personal_fact_recall: bool = False,
                          entity_recall: bool = False,
                          entity_report: bool = False,
-                         meaning_recall: bool = False) -> TextResponseResult:
+                         meaning_recall: bool = False,
+                         knowledge_recall: bool = False) -> TextResponseResult:
     """Commit one generated reply only if its context remains current."""
     require_idle(connection)
     _require_actor(actor)
@@ -1209,6 +1224,23 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
                 require_historical_read_fence(
                     cursor,actor.user_id,context.instance_id,context.historical_fence,
                 )
+            from .knowledge_contracts import knowledge_reference
+            knowledge_topic=knowledge_reference(scoped["input_text"])
+            knowledge_answered=False
+            knowledge_hits=()
+            knowledge_replaced=False
+            if knowledge_recall and knowledge_topic is None:
+                raise ValueError("knowledge recall requires a supported persisted question")
+            if knowledge_topic is not None and (knowledge_recall or model_generated):
+                if context.historical_fence is None:
+                    raise StaleConversation("knowledge recall requires a fenced context")
+                from .knowledge_memory import select_knowledge,render_knowledge
+                knowledge_hits=select_knowledge(cursor,user_id=actor.user_id,
+                    instance_id=context.instance_id,query=knowledge_topic)
+                canonical=render_knowledge(knowledge_hits)
+                knowledge_replaced=model_generated and text!=canonical
+                text=canonical
+                knowledge_answered=True
             from .personal_meaning_grammar import meaning_reference
             definition_topic=meaning_reference(scoped["input_text"])
             meaning_answered=False
@@ -1309,13 +1341,17 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
             # bounded prior user messages to enforce unavailable-capability
             # claims. Model output is untrusted, including conditional offers.
             # Do not run another LLM or hold a lock during model inference.
-            from .capability_claim_enforcement import enforce_capability_claims
-            enforcement=enforce_capability_claims(
-                scoped["input_text"],text,
-                recent_user_texts=tuple(
-                    m.content for m in context.messages[:-1] if m.role=="user"
-                ),
-            )
+            from .capability_claim_enforcement import CapabilityEnforcement,enforce_capability_claims
+            # The exact read-only document route renders inert quotations,
+            # not assistant promises. Do not rewrite the evidence or treat
+            # instructions embedded in a source as agent capability claims.
+            enforcement=(CapabilityEnforcement(text) if knowledge_answered else
+                enforce_capability_claims(
+                    scoped["input_text"],text,
+                    recent_user_texts=tuple(
+                        m.content for m in context.messages[:-1] if m.role=="user"
+                    ),
+                ))
             text=enforcement.text
             # Apply current-turn safeguards only to the primary model path.
             # A caller-owned route supplies verified data separately. Never
@@ -1323,7 +1359,7 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
             from .pragmatic_response import enforce_pragmatic_reply
             pragmatic=enforce_pragmatic_reply(
                 scoped["input_text"],text,
-                model_generated=model_generated and enforcement.reason is None,
+                model_generated=model_generated and not knowledge_answered and enforcement.reason is None,
             )
             text=pragmatic.text
             response_id=uuid4()
@@ -1331,13 +1367,13 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
                 """
                 INSERT INTO conversation_responses(
                     response_id,conversation_id,turn_id,user_id,instance_id,
-                    selection_generation,context_revision,model_id,response_text
-                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    selection_generation,context_revision,model_id,response_text,knowledge_excerpt
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 """,
                 (response_id,context.conversation_id,context.turn_id,
                  actor.user_id,context.instance_id,
                  context.selection_generation,context.conversation_revision,
-                 generated.model_id,text),
+                 generated.model_id,text,knowledge_answered),
             )
             cursor.execute(
                 "UPDATE conversation_turns SET status='RESPONDED',"
@@ -1407,6 +1443,18 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
                     },
                     correlation_id=scoped["source_input_event_id"],
                 )
+            if knowledge_answered:
+                _event(cursor,user_id=actor.user_id,instance_id=context.instance_id,
+                       conversation_id=context.conversation_id,
+                       event_type="conversation.response.knowledge_grounded.v1",
+                       source_id="conversation.runtime",trust_level="TRUSTED_PLATFORM",
+                       detail={"turn_id":str(context.turn_id),"response_id":str(response_id),
+                               "status":"KNOWN" if knowledge_hits else "UNKNOWN",
+                               "passages":[{"document_id":str(hit.document_id),"version":hit.version,
+                                            "position":hit.position,"start":hit.start_offset,
+                                            "end":hit.end_offset} for hit in knowledge_hits],
+                               "model_reply_replaced":knowledge_replaced},
+                       correlation_id=scoped["source_input_event_id"])
             if meaning_answered:
                 _event(cursor,user_id=actor.user_id,instance_id=context.instance_id,
                        conversation_id=context.conversation_id,
@@ -1472,6 +1520,7 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
             if (generated.intent_candidate is not None
                     and entity_answer is None
                     and history_reference is None
+                    and not knowledge_answered
                     and (draft is None
                          or generated.intent_candidate.kind=="OBJECTIVE")):
                 admitted = record_model_intent_on_response(
@@ -1516,7 +1565,7 @@ def acknowledge_text_delivery(connection: Connection, actor: TrustedActor,
                 """
                 SELECT response_id,turn_id,conversation_id,instance_id,
                        selection_generation,context_revision,
-                       response_text,model_id,delivery_status
+                       response_text,model_id,delivery_status,knowledge_excerpt
                 FROM conversation_responses WHERE response_id=%s AND user_id=%s
                 """,
                 (response_id,actor.user_id),
@@ -1586,7 +1635,9 @@ def acknowledge_text_delivery(connection: Connection, actor: TrustedActor,
             advance_on_delivery(
                 cursor,user_id=actor.user_id,instance_id=row["instance_id"],
                 conversation_id=row["conversation_id"],turn_id=row["turn_id"],
-                response_id=response_id,response_text=row["response_text"],
+                response_id=response_id,response_text=(
+                    "[Saved document excerpts omitted; request fresh recall.]"
+                    if row["knowledge_excerpt"] else row["response_text"]),
                 context_revision=row["context_revision"],
             )
             return TextResponseResult(

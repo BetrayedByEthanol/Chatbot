@@ -217,7 +217,11 @@ def capture_historical_read_fence(cur, user_id: UUID, instance_id: UUID):
                (SELECT min(e.expires_at) FROM memory_entities e
                 WHERE e.user_id=r.user_id AND e.instance_id=r.instance_id
                   AND e.record_status='ACTIVE' AND e.privacy_class='NORMAL'
-                  AND e.expires_at>clock_timestamp())
+                  AND e.expires_at>clock_timestamp()),
+               (SELECT min(k.expires_at) FROM memory_knowledge_documents k
+                WHERE k.user_id=r.user_id AND k.instance_id=r.instance_id
+                  AND k.record_status='ACTIVE' AND k.privacy_class='NORMAL'
+                  AND k.expires_at>clock_timestamp())
            ) AS next_expiry
            FROM historical_recall_revisions r WHERE user_id=%s AND instance_id=%s""",
         (user_id,instance_id),
