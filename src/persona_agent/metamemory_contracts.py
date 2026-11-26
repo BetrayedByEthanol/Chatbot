@@ -83,3 +83,5 @@ class RecallObservation(BaseModel):
     observed_at: datetime
     delivered_at: datetime | None
     feedback: tuple[FeedbackOutcome,...]=()
+    # Original outcome is audit history; this flag is current eligibility.
+    source_current: bool = True

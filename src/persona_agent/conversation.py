@@ -950,6 +950,7 @@ def prepare_text_context(
             meaning_context_cache={}
 
             def assemble_prompt(before_sequence: int) -> str:
+                nonlocal historical_fence
                 content=base_prompt
                 if dated_window is not None:
                     # A recognized dated request never falls through to
@@ -988,11 +989,20 @@ def prepare_text_context(
                     content+=memory
                     optional_budget-=len(memory)
                 if item["summary_watermark"] and optional_budget>=180:
+                    # Even a routine continuation can depend on a compacted
+                    # historical range. Capture before reading it, not after
+                    # prompt assembly. Reuse the same fence through cutoff
+                    # convergence; do not make a new revision look like the
+                    # revision of an earlier cached projection.
+                    summary_fence=historical_fence or capture_historical_read_fence(
+                        cursor,actor.user_id,item["instance_id"])
                     compact=summary_context_block(
                         cursor,item["conversation_id"],actor.user_id,
                         item["instance_id"],before_sequence,
                         min(1100,optional_budget),
                     )
+                    if compact:
+                        historical_fence=summary_fence
                     content+=compact
                     optional_budget-=len(compact)
                 episode=""

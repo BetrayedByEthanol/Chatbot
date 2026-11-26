@@ -54,7 +54,9 @@ def _validate_refs(cur,actor,command):
     # variant revision can be referenced; no template publication or run.
     for ref in sorted(command.procedure_refs,key=lambda item:item.variant_id.int):
         cur.execute(
-            """SELECT p.current_revision FROM personalized_procedures p
+            """SELECT p.current_revision,
+                      workflow_variant_current(p.user_id,p.instance_id,p.variant_id,p.current_revision) AS evidence_current
+               FROM personalized_procedures p
                JOIN personalized_procedure_revisions v ON v.variant_id=p.variant_id
                  AND v.revision=p.current_revision AND v.user_id=p.user_id
                  AND v.instance_id=p.instance_id
@@ -67,6 +69,8 @@ def _validate_refs(cur,actor,command):
             raise PermissionDenied("procedure reference outside authenticated scope")
         if row["current_revision"]!=ref.revision:
             raise VersionConflict("procedure reference is no longer current")
+        if not row["evidence_current"]:
+            raise VersionConflict("procedure reference source evidence requires reassessment")
 
 
 def save_knowledge(connection: Connection,actor: TrustedActor,
@@ -147,6 +151,28 @@ def save_knowledge(connection: Connection,actor: TrustedActor,
                     [(command.document_id,version,actor.user_id,command.instance_id,
                       ref.variant_id,ref.revision) for ref in command.procedure_refs],
                 )
+            # This owner already publishes deferred revision bumps. Acquire
+            # the same exclusive scope lock after document/ref/event writes,
+            # then revalidate without acquiring new owner locks. Never
+            # upgrade a SHARE lock across these Memory writes.
+            cur.execute(
+                """SELECT revision FROM historical_recall_revisions
+                   WHERE user_id=%s AND instance_id=%s FOR UPDATE""",
+                (actor.user_id,command.instance_id),
+            )
+            if cur.fetchone() is None:
+                raise VersionConflict("knowledge evidence scope unavailable")
+            cur.execute(
+                "SELECT workflow_source_current(%s,%s,%s,%s,%s) AS eligible",
+                (actor.user_id,command.instance_id,command.conversation_id,
+                 command.evidence_turn_id,command.approval_turn_id),
+            )
+            if not cur.fetchone()["eligible"]:
+                raise VersionConflict("knowledge source evidence requires reassessment")
+            from .workflow_evidence import require_current
+            for ref in command.procedure_refs:
+                require_current(cur,actor.user_id,command.instance_id,
+                                "variant",ref.variant_id,ref.revision)
             return _finish(cur,receipt,KnowledgeWriteResult(
                 document_id=command.document_id,version=version,event_id=event,status="ACTIVE",
             ))
@@ -210,6 +236,8 @@ def select_knowledge(cur,*,user_id,instance_id,query,max_results=3,max_chars=240
              AND d.privacy_class='NORMAL' AND v.privacy_class='NORMAL'
              AND (d.expires_at IS NULL OR d.expires_at>clock_timestamp())
              AND (v.expires_at IS NULL OR v.expires_at>clock_timestamp())
+             AND workflow_source_current(v.user_id,v.instance_id,v.source_conversation_id,
+                                         v.evidence_turn_id,v.approval_turn_id)
              AND (%s::uuid IS NULL OR d.document_id=%s)
              AND (%s::bigint IS NULL OR v.version=%s)
              AND (%s::integer IS NULL OR p.position=%s)
@@ -220,12 +248,16 @@ def select_knowledge(cur,*,user_id,instance_id,query,max_results=3,max_chars=240
                     AND proc.current_revision=k.procedure_revision
                  WHERE k.document_id=d.document_id AND k.version=v.version
                    AND k.user_id=d.user_id AND k.instance_id=d.instance_id AND k.variant_id=%s
+                   AND workflow_variant_current(k.user_id,k.instance_id,k.variant_id,k.procedure_revision)
              ))
              AND to_tsvector('simple',p.passage_text) @@ plainto_tsquery('simple',%s)
              AND p.passage_text=substring(v.content FROM p.start_offset+1 FOR p.end_offset-p.start_offset)
              AND v.content_sha256=encode(sha256(convert_to(v.content,'UTF8')),'hex')
            ORDER BY COALESCE((
-                SELECT f.outcome='IRRELEVANT'
+                -- Keep exact document/passage pins. An invalidated latest
+                -- feedback is neutral, never fallback to an older ranking.
+                SELECT f.outcome='IRRELEVANT' AND workflow_source_current(
+                    f.user_id,f.instance_id,f.conversation_id,f.feedback_turn_id,NULL)
                 FROM memory_retrieval_feedback f
                 JOIN memory_recall_observations o ON o.response_id=f.response_id
                   AND o.user_id=f.user_id AND o.instance_id=f.instance_id

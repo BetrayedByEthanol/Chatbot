@@ -92,6 +92,14 @@ def test_gap_reopens_after_expiry_and_keeps_resolution_history(dsn):
     with psycopg.connect(dsn,autocommit=True) as conn:
         conn.execute("UPDATE memory_records SET expires_at=clock_timestamp() WHERE memory_id=%s",
                      (saved.memory_id,))
+    # The latest cached AVAILABLE observation becomes an open gap before
+    # another recall is attempted. Historical observations remain intact.
+    stale,=_read(dsn,user,instance,open_only=True)
+    assert stale.response_id==known.response_id and stale.outcome=="STALE"
+    assert not stale.source_current and stale.evidence_refs==()
+    historical=_read(dsn,user,instance)[0]
+    assert historical.outcome=="AVAILABLE" and not historical.source_current
+    assert historical.evidence_refs[0]["id"]==str(saved.memory_id)
     _,expired=_ask(dsn,user,instance,question)
     assert "Toyota" not in expired.text
     gap,=_read(dsn,user,instance,open_only=True)
@@ -284,3 +292,32 @@ def test_reported_incorrect_answer_flags_review_not_fact_mutation(dsn):
             "SELECT version,value_text,record_status,confidence FROM memory_records WHERE memory_id=%s",
             (saved.memory_id,),
         ).fetchone()==(1,"Toyota Camry","ACTIVE",Decimal("0.960"))
+
+
+def test_invalidated_latest_ranking_feedback_is_neutral_not_older_feedback(dsn):
+    from test_mvp05d4_document_knowledge import _save_command,QUESTION
+    from persona_agent.knowledge_memory import save_knowledge,search_knowledge
+    from persona_agent.metamemory import record_retrieval_feedback
+    from workflow_evidence_helpers import link_memory,invalidate
+    actor,call,seed,_=_helpers()
+    user,instance,_=seed(dsn)
+    a=call(dsn,save_knowledge,actor(user),_save_command(
+        dsn,user,instance,content="Certificate testing requires a local key.",locator="a.txt",
+    ))
+    b=call(dsn,save_knowledge,actor(user),_save_command(
+        dsn,user,instance,content="Certificate testing requires a local key.",locator="b.txt",
+    ))
+    req,answer=_ask(dsn,user,instance,QUESTION)
+    first=_feedback(dsn,user,instance,req,answer,outcome="IRRELEVANT",ordinal=1)
+    call(dsn,record_retrieval_feedback,actor(user),first)
+    assert call(dsn,search_knowledge,actor(user),instance,"certificate",max_results=1)[0].document_id==a.document_id
+    req,answer=_ask(dsn,user,instance,QUESTION)
+    assert answer.text.index("a.txt")<answer.text.index("b.txt")
+    latest=_feedback(dsn,user,instance,req,answer,outcome="IRRELEVANT",ordinal=2)
+    call(dsn,record_retrieval_feedback,actor(user),latest)
+    saved=link_memory(dsn,user,instance,latest.conversation_id,latest.feedback_turn_id)
+    invalidate(dsn,user,instance,saved,"EXPIRE")
+    # The invalidated latest result must not fall through to the older
+    # IRRELEVANT report for the same document version and passage.
+    assert call(dsn,search_knowledge,actor(user),instance,"certificate",max_results=1)[0].document_id==b.document_id
+    assert any("IRRELEVANT" in observation.feedback for observation in _read(dsn,user,instance))

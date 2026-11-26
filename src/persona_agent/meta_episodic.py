@@ -301,6 +301,26 @@ def pattern_count(cur,operation_id):
     return cur.fetchone()["n"]
 
 
+def _pattern_job_current_sql():
+    """Patterns inherit every supplied input, not just model-chosen citations.
+
+    The committed Cognitive job already stores the complete bounded source
+    set and episode snapshots. Legacy unknown sets cannot be reconstructed
+    from the citations; preserve them as history, not eligible hypotheses.
+    """
+    return f"""EXISTS (
+        SELECT 1 FROM cognitive_jobs j
+        WHERE j.operation_id=p.operation_id AND j.user_id=p.user_id
+          AND j.instance_id=p.instance_id AND j.committed_at IS NOT NULL
+          AND j.source_turn_ids IS NOT NULL
+          AND j.source_episode_ids IS NOT NULL AND j.source_episode_hashes IS NOT NULL
+          AND j.source_digest IS NOT NULL
+          AND raw_context_sources_current(j.user_id,j.instance_id,
+                                          j.conversation_id,j.source_turn_ids)
+          AND {episode_dependencies_current_sql()}
+    )"""
+
+
 def _read_patterns(cur,user_id,instance_id,topic,max_results,*,before_at=None):
     if not _safe(topic):
         return ()
@@ -318,6 +338,7 @@ def _read_patterns(cur,user_id,instance_id,topic,max_results,*,before_at=None):
                     WHERE newer.user_id=p.user_id AND newer.instance_id=p.instance_id
                       AND newer.claim_key=p.claim_key AND newer.version>p.version
                 )
+                AND {_pattern_job_current_sql()}
                 AND (SELECT count(*) FROM memory_episode_pattern_evidence pe
                      WHERE pe.pattern_id=p.pattern_id AND pe.user_id=p.user_id
                        AND pe.instance_id=p.instance_id AND pe.role='SUPPORT')>=2

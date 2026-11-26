@@ -38,7 +38,7 @@ After the scoped 05E reassessment of the 12 MVP-05 stories, the matrix contains 
 | MVP-05 — Time, recall and entities | 1–2 | MVP-04 evidence; existing memory | 05A–E.1 merged; technical CI and v2 automated benchmark passed; independent quality review open |
 | MVP-06 — Goal and procedure dialogue | 3 | MVP-04; relevant MVP-05 grounding and owner gates | 06A/B/C merged and technical CI passed; 06D research/adaptation candidate; Phase 3 exit also requires Phase 2 exit |
 | MVP-07A — Authenticated application | 0–1 | BASE | 07A local authenticated text boundary merged; mandatory remote/untrusted gate remains open |
-| MVP-07B — Data lifecycle and provenance | 0, 2, 6 | BASE; deployment scope decision; owner inventory | 07B1, response, summary, cognition and raw foreground lineage merged; workflow evidence candidate; broader policy and propagation open |
+| MVP-07B — Data lifecycle and provenance | 0, 2, 6 | BASE; deployment scope decision; owner inventory | 07B1 and five 07B2 increments merged; derived projection candidate; final lifecycle acceptance open |
 | P2-F — Remaining cognitive state | 2 | MVP-05; relevant MVP-07B correction contracts | Required for Phase 2 exit |
 | P4-F — Background autonomy | 4 | Phase 0–3 exit evidence; applicable permissions and resource budgets | Existing slices to harden |
 | P5-F — Voice and social | 5 | Phase 0–4 exit evidence; authenticated host; participant policy | Existing audio adapters to integrate |
@@ -185,7 +185,9 @@ Primary IDs: 117, 118, 085.
 
 07B2 fourth increment — [Raw foreground lineage](mvp-07b2-raw-foreground-lineage.md): preserve chronological omission markers, exact bounded response source sets, inherited raw-only assistant dependencies, last-boundary validation and range-safe async assistant projection. Merged in PR #136 (`27a950d`); final head `a58553c` passed [PostgreSQL contracts](https://github.com/BetrayedByEthanol/Chatbot/actions/runs/45882904720) (2,307 passed, 3 skipped) and [live integration](https://github.com/BetrayedByEthanol/Chatbot/actions/runs/45882904716).
 
-07B2 fifth increment — [Task and Procedure evidence lineage](mvp-07b2-workflow-evidence.md): exact Task report/confirmation eligibility, pinned private method/step/evaluation provenance, AGENT grant and prerequisite confirmation pins, workflow context and adaptation gates. Candidate CI pending. Broader dialogue/intent, derived-index and complete lifecycle propagation, performance and 07B3 remain open; deployment remains gated.
+07B2 fifth increment — [Task and Procedure evidence lineage](mvp-07b2-workflow-evidence.md): exact Task report/confirmation eligibility, pinned private method/step/evaluation provenance, AGENT grant and prerequisite confirmation pins, workflow context and adaptation gates. Merged in PR #137 (`66b888e`); final head `2e00d4a` passed [PostgreSQL contracts](https://github.com/BetrayedByEthanol/Chatbot/actions/runs/45889760151) (2,316 passed, 3 skipped) and [live integration](https://github.com/BetrayedByEthanol/Chatbot/actions/runs/45889760150).
+
+07B2 sixth increment — [Derived retrieval and projection eligibility](mvp-07b2-derived-projections.md): complete pattern input dependencies, ordinary compacted-summary response fence, current MetaMemory gaps, and document/association/feedback eligibility. Existing PostgreSQL FTS owner joins remain authoritative; no vector index or persistent retrieval cache introduced. Candidate CI pending. Dialogue/intent metadata and other lifecycle projections require further inventory before US-117/118 acceptance; 07B3 and deployment remain gated.
 
 ### P4-F — Bounded Background autonomy
 

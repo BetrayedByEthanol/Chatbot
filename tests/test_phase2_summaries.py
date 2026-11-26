@@ -1049,3 +1049,39 @@ def test_summary_tracks_followup_origin_outside_its_range(dsn):
     assert OMITTED_FOLLOWUP in [message.content for message in after.messages]
     assert source.turn_id not in after.raw_context_fence.source_turn_ids
     assert after.messages[-1].content=="Next question"
+
+
+def test_routine_compacted_summary_fences_response_after_source_change(dsn):
+    from persona_agent.conversation import commit_text_response,lookup_response
+    from persona_agent.conversation_contracts import StaleHistoricalContext
+    from persona_agent.memory import admit_memory,amend_memory
+    from test_phase2_memory import candidate,correction
+    user,instance,_=seed(dsn)
+    conv=uuid4()
+    source=add_turn(dsn,user,instance,conv,"My favorite drink is tea.")
+    saved=call(dsn,admit_memory,actor(user),candidate(instance,conv,source))
+    add_turn(dsn,user,instance,conv,"I adopted a rescue dog.")
+    for i in range(3):
+        add_turn(dsn,user,instance,conv,f"Later discussion {i}")
+    job=schedule(dsn,user,instance,conv,max_turns=2)
+    lease=claim(dsn)
+    assert lease.operation_id==job.operation_id
+    work=call(dsn,prepare_summary,lease)
+    call(dsn,commit_summary,lease,work,SummaryDraft.model_validate({
+        "summary":"User reported tea and adopting a rescue dog.","episodes":[],
+    }),"routine-summary-fence")
+    call(dsn,run_summary,lease,FixedSummary())
+    request=add_turn(dsn,user,instance,conv,"Explain basic garden care.")
+    context=call(dsn,prepare_text_context,actor(user),request.turn_id,max_turns=2)
+    assert "User reported tea" in context.messages[0].content
+    assert context.historical_fence is not None
+    assert source.turn_id not in context.raw_context_fence.source_turn_ids
+    newer=add_turn(dsn,user,instance,uuid4(),"Actually my favorite drink is coffee.")
+    call(dsn,amend_memory,actor(user),correction(instance,newer.conversation_id,newer,saved.memory_id))
+    with pytest.raises(StaleHistoricalContext):
+        call(dsn,commit_text_response,actor(user),context,
+             ModelReply(model_id="stale-summary",text="Tea again."),model_generated=True)
+    assert call(dsn,lookup_response,actor(user),request.turn_id) is None
+    fresh=call(dsn,prepare_text_context,actor(user),request.turn_id,max_turns=2)
+    assert "User reported tea" not in fresh.messages[0].content
+    assert fresh.messages[-1].content=="Explain basic garden care."

@@ -376,3 +376,41 @@ def test_reflection_depends_on_every_supplied_episode_snapshot(dsn,during_infere
             assert len(hashes)==3 and all(len(h)==64 for h in hashes)
         mutate()
         assert call(dsn,list_cognitive_proposals,actor(user),instance)==()
+
+
+@pytest.mark.parametrize("dependency",["UNCITED_EPISODE","RAW_TURN"])
+def test_pattern_recall_checks_complete_cognitive_input_set(dsn,dependency):
+    import psycopg
+    from persona_agent.cognitive_engine import prepare_cognition,commit_cognition,run_cognition
+    from persona_agent.cognitive_contracts import CognitiveDraft
+    from persona_agent.meta_episodic import search_episode_patterns
+    from workflow_evidence_helpers import link_memory,invalidate
+    actor,call,_,_,_,_=_helpers()
+    user,instance,_,evidence=_setup(dsn)
+    a,b,c=[eid for _,eid in evidence]
+    lease=_schedule(dsn,user,instance)
+    initial=call(dsn,prepare_cognition,lease)
+    assert {ep.episode_id for ep in initial.pattern_candidates}=={a,b,c}
+    saved=None
+    if dependency=="RAW_TURN":
+        # A source in the raw prompt need not appear in the pattern citations.
+        saved=link_memory(dsn,user,instance,initial.conversation_id,initial.turns[0]["turn_id"])
+    work=call(dsn,prepare_cognition,lease)
+    result=call(dsn,commit_cognition,lease,work,
+                CognitiveDraft(patterns=(_proposal((a,b)),)),"whole-pattern-input")
+    assert result.pattern_count==1
+    call(dsn,run_cognition,lease,PatternGateway(_proposal((a,b))))
+    hit,=call(dsn,search_episode_patterns,actor(user),instance,"exercise")
+    assert {ep.episode_id for ep in hit.supporting}=={a,b}
+    assert hit.counter==()
+    if dependency=="UNCITED_EPISODE":
+        with psycopg.connect(dsn,autocommit=True) as conn:
+            conn.execute("UPDATE memory_episodes SET description='Revised uncited input' WHERE episode_id=%s",(c,))
+    else:
+        invalidate(dsn,user,instance,saved,"EXPIRE")
+    assert call(dsn,search_episode_patterns,actor(user),instance,"exercise")==()
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute("SELECT count(*) FROM memory_episode_patterns WHERE operation_id=%s",
+                            (lease.operation_id,)).fetchone()==(1,)
+        assert conn.execute("SELECT count(*) FROM memory_episode_pattern_evidence WHERE pattern_id=%s",
+                            (hit.pattern_id,)).fetchone()==(2,)
