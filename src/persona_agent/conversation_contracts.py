@@ -102,6 +102,13 @@ class EntityHistoryRead:
 
 
 @dataclass(frozen=True)
+class RawContextFence:
+    """Exact raw source IDs actually supplied by a bounded foreground context."""
+    source_turn_ids: tuple[UUID,...]
+    reusable: bool=True
+
+
+@dataclass(frozen=True)
 class ResponseContext:
     conversation_id: UUID
     turn_id: UUID
@@ -118,6 +125,7 @@ class ResponseContext:
     meaning_change_action: Literal["REPORT","BLOCKED_ROUTINE"] | None = None
     goal_dialogue_action: bool = False
     procedure_guidance_action: bool = False
+    raw_context_fence: RawContextFence | None = None
 
 
 class TextModelGateway(Protocol):

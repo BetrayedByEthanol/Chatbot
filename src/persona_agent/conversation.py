@@ -13,7 +13,7 @@ from psycopg.rows import dict_row
 
 from .contracts import TrustedActor
 from .conversation_contracts import (
-    ModelMessage, ModelReply, ModelUnavailable, ResponseContext,
+    ModelMessage, ModelReply, ModelUnavailable, RawContextFence, ResponseContext,
     StaleConversation, StaleHistoricalContext, TextInputCommand, TextInputResult, TextModelGateway,
     TextResponseResult,
 )
@@ -401,7 +401,7 @@ def prepare_direct_tool_context(
         with connection.cursor(row_factory=dict_row) as cursor:
             item=_pending_response_anchor(cursor,actor,turn_id)
             cursor.execute(
-                """SELECT input_text FROM conversation_turns
+                """SELECT turn_id,input_text FROM conversation_turns
                    WHERE conversation_id=%s AND user_id=%s AND instance_id=%s
                      AND sequence<%s
                    ORDER BY sequence DESC LIMIT 1""",
@@ -409,9 +409,13 @@ def prepare_direct_tool_context(
                  item["sequence"]),
             )
             previous=cursor.fetchone()
+            from .raw_context import eligible_turn_ids
+            previous_eligible=(previous is not None and previous["turn_id"] in
+                eligible_turn_ids(cursor,actor.user_id,item["instance_id"],
+                                  item["conversation_id"],{previous["turn_id"]}))
             messages=(
                 (ModelMessage("user",previous["input_text"]),)
-                if previous is not None else ()
+                if previous_eligible else ()
             )+(ModelMessage("user",item["input_text"]),)
             return ResponseContext(
                 conversation_id=item["conversation_id"],turn_id=turn_id,
@@ -599,50 +603,25 @@ def prepare_text_context(
                     temporal_context=temporal,historical_fence=historical_fence,
                     entity_history=view.read,
                 )
-            cursor.execute(
-                """
-                SELECT t.turn_id,t.sequence,t.input_text,
-                       response_lineage_derived_text(r.response_id,r.user_id,r.instance_id,r.knowledge_excerpt,r.response_text) AS response_text,r.delivery_status
-                FROM conversation_turns t
-                LEFT JOIN conversation_responses r ON r.turn_id=t.turn_id
-                WHERE t.conversation_id=%s AND t.user_id=%s
-                  AND t.sequence<=%s
-                ORDER BY t.sequence DESC LIMIT %s
-                """,
-                (item["conversation_id"],actor.user_id,item["sequence"],max_turns),
+            # Owner-writing entity reports are canonical at commit and do
+            # not require historical raw text in a diagnostic model request.
+            # Do not combine their owner writes with a raw read fence.
+            from .entity_reference import entity_report
+            if entity_report(item["input_text"]) is not None:
+                return ResponseContext(
+                    conversation_id=item["conversation_id"],turn_id=turn_id,
+                    instance_id=item["instance_id"],selection_generation=item["selection_generation"],
+                    conversation_revision=item["revision"],
+                    messages=(ModelMessage("system","Acknowledge the reported identity tentatively; the host owns saved identity state."),
+                              ModelMessage("user",item["input_text"])),
+                    temporal_context=_temporal_from_anchor(cursor,actor,item,turn_id),
+                )
+            from .raw_context import project_recent_context
+            recent,history,history_sequences,history_dependencies,reusable=project_recent_context(
+                cursor,user_id=actor.user_id,instance_id=item["instance_id"],
+                conversation_id=item["conversation_id"],turn_id=turn_id,
+                sequence=item["sequence"],max_turns=max_turns,
             )
-            recent=list(reversed(cursor.fetchall()))
-            # Find delivered asynchronous outputs by their *delivery* turn,
-            # not the originating request turn. Avoid a join before LIMIT:
-            # multiple follow-ups attached to one turn must not reduce the
-            # number of user turns retained in context.
-            anchors=[turn["turn_id"] for turn in recent]
-            cursor.execute(
-                """
-                SELECT delivery_turn_id,response_text
-                FROM conversation_assistant_followups
-                WHERE conversation_id=%s AND user_id=%s AND instance_id=%s
-                  AND delivery_turn_id=ANY(%s::uuid[])
-                ORDER BY delivered_at,tool_call_id
-                """,
-                (item["conversation_id"],actor.user_id,item["instance_id"],anchors),
-            )
-            delivered_by_turn={}
-            for followup in cursor.fetchall():
-                delivered_by_turn.setdefault(
-                    followup["delivery_turn_id"],[]
-                ).append(followup["response_text"])
-            history=[]
-            history_sequences=[]
-            for turn in recent:
-                history.append(ModelMessage("user",turn["input_text"]))
-                history_sequences.append(turn["sequence"])
-                if turn["delivery_status"]=="DELIVERED":
-                    history.append(ModelMessage("assistant",turn["response_text"]))
-                    history_sequences.append(turn["sequence"])
-                for followup_text in delivered_by_turn.get(turn["turn_id"],()):
-                    history.append(ModelMessage("assistant",followup_text))
-                    history_sequences.append(turn["sequence"])
             prompt = (
                 f"{_SYSTEM_PROMPT}\nPersona identity key: {item['stable_key']}\n"
                 f"Selected persona label: {item['label']}\n"
@@ -703,12 +682,19 @@ def prepare_text_context(
                 1100,max_context_chars//3,
                 max_context_chars-len(prompt)-len(history[-1].content)-180,
             )
+            grounding_dependencies=set()
             if dated_window is None and grounding_room>=260:
-                prompt+=grounding_context_block(
+                grounding_rows=[row for row in recent[:-1] if row["source_eligible"]]
+                grounding=grounding_context_block(
                     history[-1].content,
-                    [row["input_text"] for row in recent[:-1]],
+                    [row["input_text"] for row in grounding_rows],
                     max_chars=grounding_room,
                 )
+                prompt+=grounding
+                if grounding:
+                    # Grounding may quote a turn subsequently trimmed from
+                    # the verbatim window. Keep this bounded candidate set.
+                    grounding_dependencies={row["turn_id"] for row in grounding_rows}
             # MVP-01F.2: the authenticated ingress already resolved a
             # named objective reference. Put its source and discussion
             # evidence into THIS response's context, before optionally
@@ -1097,26 +1083,28 @@ def prepare_text_context(
                         break
                     message=history[index]
                     if len(message.content)<=remaining:
-                        retained.append((history_sequences[index],message))
+                        retained.append((history_sequences[index],message,history_dependencies[index]))
                         remaining-=len(message.content)
                     elif not retained:
                         retained.append((
                             history_sequences[index],
                             ModelMessage(message.role,message.content[:remaining]),
+                            history_dependencies[index],
                         ))
                         break
                     else:
                         break
                 retained.reverse()
                 return (
-                    tuple(message for _,message in retained),
+                    tuple(message for _,message,_ in retained),
                     retained[0][0],
+                    set().union(*(ids for _,_,ids in retained)),
                 )
 
             cutoff=recent[0]["sequence"]
             for _ in range(len(recent)+1):
                 prompt=assemble_prompt(cutoff)
-                kept,actual_cutoff=budget_history(prompt,cutoff)
+                kept,actual_cutoff,raw_dependencies=budget_history(prompt,cutoff)
                 if actual_cutoff==cutoff:
                     break
                 cutoff=actual_cutoff
@@ -1131,6 +1119,9 @@ def prepare_text_context(
                 messages=(system,*kept),
                 procedure_fence=procedure_fence,temporal_context=temporal,
                 historical_fence=historical_fence,
+                raw_context_fence=RawContextFence(
+                    tuple(sorted(raw_dependencies | grounding_dependencies)),reusable,
+                ),
             )
 
 
@@ -1528,6 +1519,10 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
             persist_response_lineage(cursor,response_id=response_id,user_id=actor.user_id,
                 instance_id=context.instance_id,historical=historical,
                 preference=context.preference_fence)
+            from .raw_context import persist_raw_context_lineage,require_raw_context_fence
+            persist_raw_context_lineage(cursor,response_id=response_id,user_id=actor.user_id,
+                instance_id=context.instance_id,conversation_id=context.conversation_id,
+                fence=context.raw_context_fence)
             cursor.execute(
                 "UPDATE conversation_turns SET status='RESPONDED',"
                 "updated_at=clock_timestamp() WHERE turn_id=%s",
@@ -1761,6 +1756,12 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
                         source_event_id=scoped["source_input_event_id"],
                         text=scoped["input_text"],draft=draft,
                     )
+            # The exact raw fence is independent of unrelated Memory
+            # revisions. Check it after normal owner/event writes, under
+            # the shared revision lock, before any response becomes visible.
+            if context.raw_context_fence is not None:
+                require_raw_context_fence(cursor,actor.user_id,context.instance_id,
+                                          context.conversation_id,context.raw_context_fence)
             return TextResponseResult(
                 response_id=response_id,turn_id=context.turn_id,
                 text=text,model_id=generated.model_id,delivery_status="GENERATED",
@@ -1779,7 +1780,7 @@ def acknowledge_text_delivery(connection: Connection, actor: TrustedActor,
                 SELECT response_id,turn_id,conversation_id,instance_id,
                        selection_generation,context_revision,
                        response_text,model_id,delivery_status,knowledge_excerpt,
-                       response_lineage_derived_text(response_id,user_id,instance_id,
+                       response_lineage_foreground_text(response_id,user_id,instance_id,
                            knowledge_excerpt,response_text) AS derived_response_text
                 FROM conversation_responses WHERE response_id=%s AND user_id=%s
                 """,

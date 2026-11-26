@@ -1013,7 +1013,11 @@ def test_summary_tracks_followup_origin_outside_its_range(dsn):
     assert call(dsn,reconcile_tool_followup,actor(user),tool.tool_call_id).followup_state=="READY"
     published=call(dsn,prepare_tool_followup,actor(user),tool.tool_call_id)
     call(dsn,acknowledge_tool_followup,actor(user),tool.tool_call_id)
-    add_turn(dsn,user,instance,conv,"Next question")
+    pending=add_turn(dsn,user,instance,conv,"Next question")
+    from persona_agent.raw_context import OMITTED_FOLLOWUP
+    before=call(dsn,prepare_text_context,actor(user),pending.turn_id,max_turns=2)
+    assert published.text in [message.content for message in before.messages]
+    assert source.turn_id in before.raw_context_fence.source_turn_ids
 
     first=schedule(dsn,user,instance,conv,max_turns=2,retain_recent=1)
     first_lease=claim(dsn)
@@ -1040,3 +1044,8 @@ def test_summary_tracks_followup_origin_outside_its_range(dsn):
     with psycopg.connect(dsn,autocommit=True,row_factory=dict_row) as conn:
         with conn.cursor() as cur:
             assert "Late analysis result" not in summary_context_block(cur,conv,user,instance,5,1200)
+    after=call(dsn,prepare_text_context,actor(user),pending.turn_id,max_turns=2)
+    assert published.text not in [message.content for message in after.messages]
+    assert OMITTED_FOLLOWUP in [message.content for message in after.messages]
+    assert source.turn_id not in after.raw_context_fence.source_turn_ids
+    assert after.messages[-1].content=="Next question"

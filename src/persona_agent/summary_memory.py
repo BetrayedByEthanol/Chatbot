@@ -116,7 +116,8 @@ def _read_range(cur, job: dict) -> tuple[dict, ...]:
                   eligible.source_eligible,
                   CASE WHEN eligible.source_eligible THEN t.input_text ELSE '' END AS input_text,
                   CASE WHEN eligible.source_eligible THEN
-                    response_lineage_derived_text(r.response_id,r.user_id,r.instance_id,r.knowledge_excerpt,r.response_text)
+                    response_lineage_range_text(r.response_id,r.user_id,r.instance_id,
+                        r.knowledge_excerpt,r.response_text,%s,%s)
                   END AS response_text,
                   CASE WHEN r.delivery_status='GENERATED' AND NOT
                      response_lineage_current(r.response_id,r.user_id,r.instance_id)
@@ -128,7 +129,8 @@ def _read_range(cur, job: dict) -> tuple[dict, ...]:
            WHERE t.conversation_id=%s AND t.user_id=%s AND t.instance_id=%s
              AND t.sequence BETWEEN %s AND %s
            ORDER BY t.sequence""",
-        (job["conversation_id"],job["user_id"],job["instance_id"],
+        (job["start_sequence"],job["end_sequence"],
+         job["conversation_id"],job["user_id"],job["instance_id"],
          job["start_sequence"],job["end_sequence"]),
     )
     rows=[dict(row) for row in cur.fetchall()]
@@ -732,7 +734,8 @@ def episode_source_turn(
                        memory_episodes.source_turn_id,memory_episodes.conversation_id,
                        memory_episodes.source_turn_at,memory_episodes.source_quote,
                        memory_episodes.epistemic_status,s.model_id,
-                       t.input_text,response_lineage_derived_text(r.response_id,r.user_id,r.instance_id,r.knowledge_excerpt,r.response_text) AS response_text,r.delivery_status
+                       t.input_text,response_lineage_range_text(r.response_id,r.user_id,r.instance_id,
+                           r.knowledge_excerpt,r.response_text,t.sequence,t.sequence) AS response_text,r.delivery_status
                 FROM memory_episodes
                 JOIN conversation_summaries s
                   ON s.summary_id=memory_episodes.summary_id
