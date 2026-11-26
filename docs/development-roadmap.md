@@ -97,6 +97,8 @@ Primary IDs: 091, 113, 029, 030, 031, 034, 093, 027, 028, 032, 033, 092.
 
 05D.1 candidate implementation (26 Nov 2026): [episode evidence continuity](mvp-05d1-episode-evidence.md) reuses P2-02 extraction and 05B/C recall eligibility, validates exact model-visible quotations, supplies short verbatim evidence within context budgets and guards direct evidence dereference. No acceptance promotion; multi-source experiences, patterns, semantic definitions and document knowledge remain follow-ups.
 
+05D.2 candidate implementation (26 Nov 2026): [meta-episodic memory](mvp-05d2-meta-episodic-memory.md) adds scoped model-interpreted pattern versions, explicit support/counterepisode links, bounded candidate discovery in existing cognition and fenced explicit recall. Exact-claim deduplication and read-time invalidation reuse historical revision/eligibility contracts. Semantic merging, full lineage and real-model evaluation remain open.
+
 Reuse [retrieval](phase2-05.md), [unified context](mvp-03b1-unified-context.md), [longitudinal context](mvp-03b3-longitudinal-context-evaluation.md), [memory eligibility](mvp-02c12-source-grounded-eligibility.md) and [Phase 2 integration](phase2-08.md). Use existing `prepare_text_context`, `memory_retrieval`, `historical_user_turns` and dialogue ownership; no second context builder. 05A is a Phase 1 requirement; 05B–D belong to Phase 2. The confirmed core of 113 is selective adequate retrieval; proposed stop-reason schemas/escalation policy are not automatically approved. For correction across derived stores, depend on MVP-07B.
 
 ### P2-F — Finish cognitive state before the Phase 2 exit

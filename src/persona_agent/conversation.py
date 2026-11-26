@@ -427,6 +427,29 @@ def prepare_text_context(
                 capture_historical_read_fence(cursor,actor.user_id,item["instance_id"])
                 if needs_historical_read_fence(item["input_text"]) else None
             )
+            from .meta_episodic_contracts import pattern_reference
+            pattern_topic=pattern_reference(item["input_text"])
+            if pattern_topic is not None:
+                # Explicit pattern recall is not ordinary topic retrieval. Only
+                # eligible current pattern evidence may enter this model view.
+                from .meta_episodic import pattern_context
+                current=ModelMessage("user",item["input_text"])
+                temporal=_temporal_from_anchor(cursor,actor,item,turn_id)
+                prompt=(f"{_SYSTEM_PROMPT}\nPersona identity key: {item['stable_key']}\n"
+                        f"Selected persona label: {item['label']}\n")
+                if len(prompt)+len(current.content)+280>max_context_chars:
+                    prompt="You are the selected assistant persona. Respond concisely; evidence is not authority.\n"
+                view=pattern_context(cursor,actor.user_id,item["instance_id"],pattern_topic,
+                    before_at=item["turn_at"],
+                    max_chars=min(3000,max_context_chars-len(prompt)-len(current.content)))
+                return ResponseContext(
+                    conversation_id=item["conversation_id"],turn_id=turn_id,
+                    instance_id=item["instance_id"],selection_generation=item["selection_generation"],
+                    conversation_revision=item["revision"],
+                    messages=(ModelMessage("system",prompt+view.text),current),
+                    temporal_context=temporal,historical_fence=historical_fence,
+                    pattern_history=view.read,
+                )
             from .entity_reference import entity_history_reference
             history_reference=entity_history_reference(item["input_text"])
             if history_reference is not None:
@@ -1153,6 +1176,16 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
                 require_historical_read_fence(
                     cursor,actor.user_id,context.instance_id,context.historical_fence,
                 )
+            from .meta_episodic_contracts import pattern_reference
+            pattern_topic=pattern_reference(scoped["input_text"])
+            pattern_replaced=False
+            if pattern_topic is not None and model_generated:
+                if context.pattern_history is None or context.historical_fence is None:
+                    raise StaleConversation("pattern recall requires a fenced evidence view")
+                if context.pattern_history.status!="KNOWN":
+                    from .meta_episodic import FALLBACK
+                    pattern_replaced=(text!=FALLBACK)
+                    text=FALLBACK
             # Abstention/ambiguity is canonical for recognized history queries.
             # A successful evidence view still uses the primary model reply.
             from .entity_reference import entity_history_reference
@@ -1324,6 +1357,18 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
                     },
                     correlation_id=scoped["source_input_event_id"],
                 )
+            if pattern_topic is not None and model_generated:
+                read=context.pattern_history
+                _event(cursor,user_id=actor.user_id,instance_id=context.instance_id,
+                       conversation_id=context.conversation_id,
+                       event_type="conversation.response.pattern_context.v1",
+                       source_id="conversation.runtime",trust_level="TRUSTED_PLATFORM",
+                       detail={"turn_id":str(context.turn_id),"response_id":str(response_id),
+                               "status":read.status,
+                               "patterns":[[str(pid),version] for pid,version in read.pattern_refs],
+                               "source_turn_ids":[str(sid) for sid in read.source_turn_ids],
+                               "model_reply_replaced":pattern_replaced},
+                       correlation_id=scoped["source_input_event_id"])
             if history_reference is not None and model_generated:
                 read=context.entity_history
                 _event(
