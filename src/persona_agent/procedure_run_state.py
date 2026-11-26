@@ -266,7 +266,21 @@ def _record_step_apply(cur,actor,command,receipt):
     before=step["status"]
     after=command.outcome
     if before==after:
-        raise VersionConflict("procedure step progress unchanged")
+        if after not in ("FAILED","BLOCKED"):
+            raise VersionConflict("procedure step progress unchanged")
+        # A new obstacle report is new evidence even if the outcome does
+        # not change. The run lock in _step_admission serializes this
+        # check and append; a different receipt cannot reuse the same
+        # authenticated report to manufacture a second observation.
+        cur.execute(
+            """SELECT 1 FROM procedure_run_step_events
+               WHERE run_id=%s AND step_id=%s AND user_id=%s AND instance_id=%s
+                 AND source_turn_id=%s AND kind=%s LIMIT 1""",
+            (command.run_id,command.step_id,actor.user_id,command.instance_id,
+             command.evidence_turn_id,after),
+        )
+        if cur.fetchone() is not None:
+            raise VersionConflict("obstacle evidence already recorded")
     if before=="USER_CONFIRMED":
         raise VersionConflict("correct confirmed step before new evidence")
     if after=="USER_CONFIRMED" and before!="USER_REPORTED_DONE":

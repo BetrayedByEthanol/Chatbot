@@ -354,3 +354,88 @@ def test_persona_switch_invalidates_old_step_confirmation(dsn):
     assert "can't identify" in stale.text
     assert statuses(dsn,user,instance,run)[0]=="USER_REPORTED_DONE"
     assert view(dsn,user,instance,run).next_step_id=="generate"
+
+
+@pytest.mark.parametrize("kind,prefix",[
+    ("FAILED","This step failed: "),
+    ("BLOCKED","This step is blocked: "),
+])
+def test_same_status_obstacle_reports_append_distinct_evidence(dsn,kind,prefix):
+    import psycopg
+    from persona_agent.response_orchestrator import respond_to_user_text
+    from persona_agent.conversation import acknowledge_text_delivery
+    from persona_agent.procedure_run_contracts import RecordProcedureStepCommand
+    from persona_agent.procedure_run_state import record_procedure_step
+    from persona_agent.runtime import VersionConflict
+    actor,call,_,_=helpers()
+    user,_,instance,conv,_,run=setup(dsn)
+    answer(dsn,user,instance,conv,START)
+    first_detail="The certificate directory does not exist."
+    second_detail="The destination file cannot be opened."
+    first,first_reply=answer(dsn,user,instance,conv,prefix+first_detail)
+    before=view(dsn,user,instance,run)
+    second,second_reply=answer(dsn,user,instance,conv,prefix+second_detail)
+    after=view(dsn,user,instance,run)
+    assert first_reply.text.startswith("Obstacle recorded;")
+    assert second_reply.text.startswith("Obstacle recorded;")
+    assert after.status==before.status=="ACTIVE"
+    assert after.next_step_id==before.next_step_id=="generate"
+    assert after.steps[0].status==before.steps[0].status==kind
+    assert after.version==before.version+1
+    assert after.steps[0].version==before.steps[0].version+1
+    assert after.steps[0].last_step_event_id!=before.steps[0].last_step_event_id
+    assert after.steps[1:]==before.steps[1:]
+    # Replaying the same response or acknowledgment does not append evidence.
+    replay=call(dsn,respond_to_user_text,actor(user),second.turn_id,NoModel())
+    assert replay.replayed and replay.response_id==second_reply.response_id
+    assert call(dsn,acknowledge_text_delivery,actor(user),second_reply.response_id).replayed
+    # A new owner receipt with a reused report cannot fabricate a second
+    # observation even when it supplies the latest versions.
+    duplicate=RecordProcedureStepCommand(
+        instance_id=instance,expected_generation=1,idempotency_key=uuid4().hex,
+        conversation_id=conv,evidence_turn_id=second.turn_id,
+        evidence_quote=prefix+second_detail,run_id=run,
+        expected_run_version=after.version,step_id="generate",
+        expected_step_version=after.steps[0].version,outcome=kind,detail=second_detail,
+    )
+    with pytest.raises(VersionConflict,match="obstacle evidence already recorded"):
+        call(dsn,record_procedure_step,actor(user),duplicate)
+    assert view(dsn,user,instance,run)==after
+    # Identical wording on another authenticated turn is still fresh evidence.
+    third,third_reply=answer(dsn,user,instance,conv,prefix+second_detail)
+    assert third_reply.text.startswith("Obstacle recorded;")
+    final=view(dsn,user,instance,run)
+    assert final.version==after.version+1
+    assert final.next_step_id=="generate"
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            """SELECT old_status,new_status,detail,source_turn_id,source_quote
+               FROM procedure_run_step_events WHERE run_id=%s AND step_id='generate'
+                 AND kind=%s ORDER BY step_version""",
+            (run,kind),
+        ).fetchall()==[
+            ("INSTRUCTED",kind,first_detail,first.turn_id,prefix+first_detail),
+            (kind,kind,second_detail,second.turn_id,prefix+second_detail),
+            (kind,kind,second_detail,third.turn_id,prefix+second_detail),
+        ]
+        assert conn.execute(
+            """SELECT count(*) FROM procedure_run_step_events s
+               JOIN outbox o ON o.event_id=s.event_id
+               WHERE s.run_id=%s AND s.step_id='generate' AND s.kind=%s""",
+            (run,kind),
+        ).fetchone()==(3,)
+        assert conn.execute(
+            "SELECT count(*) FROM operations WHERE user_id=%s AND instance_id=%s",
+            (user,instance),
+        ).fetchone()==(0,)
+
+
+def test_repeated_attempt_does_not_claim_new_evidence(dsn):
+    _,_,_,_=helpers()
+    user,_,instance,conv,_,run=setup(dsn)
+    answer(dsn,user,instance,conv,START)
+    answer(dsn,user,instance,conv,"I tried this step.")
+    before=view(dsn,user,instance,run)
+    _,reply=answer(dsn,user,instance,conv,"I tried this step.")
+    assert reply.text.startswith("An attempt is already recorded;")
+    assert view(dsn,user,instance,run)==before

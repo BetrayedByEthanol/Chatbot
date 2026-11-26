@@ -381,7 +381,8 @@ def apply_guidance(cur,actor,context,scoped,response_id,action):
                 return "First request the current unresolved step; a review is not a completion report."
             if current["status"]=="USER_REPORTED_DONE":
                 return "The prior completion report requires an explicit evidence correction before a different outcome."
-            if current["status"]!=kind:
+            recorded=current["status"]!=kind or kind in ("FAILED","BLOCKED")
+            if recorded:
                 cmd=RecordProcedureStepCommand(**_base_command(context,scoped,run),
                     step_id=current["step_id"],expected_step_version=current["version"],
                     outcome=kind,detail=action.detail)
@@ -395,7 +396,8 @@ def apply_guidance(cur,actor,context,scoped,response_id,action):
             if kind in ("FAILED","BLOCKED"):
                 return ("Obstacle recorded; the step remains unresolved.\n"
                         + _guide_text(outstanding))
-            return "Attempt recorded; the step remains unresolved.\n"+_guide_text(outstanding)
+            return ("Attempt recorded; the step remains unresolved.\n" if recorded
+                    else "An attempt is already recorded; the step remains unresolved.\n")+_guide_text(outstanding)
 
     if kind=="BACK" or (kind in ("REPEAT","CLARIFY") and prior
                          and prior["run_id"]==run_id and prior["kind"]=="REVIEW"):
