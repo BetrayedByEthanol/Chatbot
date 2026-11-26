@@ -312,3 +312,57 @@ def test_document_excerpts_do_not_enter_summary_or_cognitive_evidence(dsn):
     assert cognitive.turns[0]["response_text"]=="[Saved document excerpts omitted; request fresh recall.]"
     call(dsn,commit_cognition,lease,cognitive,CognitiveDraft(),"test-model")
     call(dsn,complete_operation,lease,result_ref=f"cognition:{lease.operation_id}")
+
+
+@pytest.mark.parametrize("source_field",["evidence_turn_id","approval_turn_id"])
+def test_document_index_revalidates_approval_and_evidence_sources(dsn,source_field):
+    import psycopg
+    from persona_agent.knowledge_memory import save_knowledge,search_knowledge
+    from persona_agent.conversation import prepare_text_context,commit_text_response
+    from persona_agent.conversation_contracts import ModelReply,StaleHistoricalContext
+    from workflow_evidence_helpers import link_memory,invalidate
+    actor,call,seed,turn=_helpers()
+    user,instance,_=seed(dsn)
+    command=_save_command(dsn,user,instance)
+    saved=call(dsn,save_knowledge,actor(user),command)
+    memory=link_memory(dsn,user,instance,command.conversation_id,getattr(command,source_field))
+    assert call(dsn,search_knowledge,actor(user),instance,"certificate")
+    question=turn(dsn,user,instance,uuid4(),QUESTION)
+    ctx=call(dsn,prepare_text_context,actor(user),question.turn_id)
+    invalidate(dsn,user,instance,memory,"EXPIRE")
+    assert call(dsn,search_knowledge,actor(user),instance,"certificate")==()
+    with pytest.raises(StaleHistoricalContext):
+        call(dsn,commit_text_response,actor(user),ctx,
+             ModelReply(model_id="stale-document",text="Stale passage."),knowledge_recall=True)
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute("SELECT record_status FROM memory_knowledge_documents WHERE document_id=%s",
+                            (saved.document_id,)).fetchone()==("ACTIVE",)
+        assert conn.execute("SELECT count(*) FROM memory_knowledge_passages WHERE document_id=%s",
+                            (saved.document_id,)).fetchone()[0]>0
+
+
+def test_private_procedure_association_requires_current_evidence_not_only_revision(dsn):
+    from persona_agent.knowledge_memory import save_knowledge,search_knowledge
+    from persona_agent.procedure_state import publish_shared_procedure,create_personalized_approach
+    from persona_agent.runtime import VersionConflict
+    from test_phase3_procedures import seed as proc_seed,publication,definition,variant_command
+    from workflow_evidence_helpers import link_memory,invalidate
+    actor,call,_,_=_helpers()
+    user,persona,instance=proc_seed(dsn,grant=True)
+    conv,template=uuid4(),uuid4()
+    call(dsn,publish_shared_procedure,actor(user),
+         publication(dsn,user,persona,instance,conv,template,0,definition("PARAMETERIZED")))
+    command=variant_command(dsn,user,instance,conv,template,1,
+                            params={"hostname":"localhost","days":10})
+    variant=call(dsn,create_personalized_approach,actor(user),command)
+    ref=ProcedureKnowledgeReference(variant_id=variant.entity_id,revision=1)
+    saved=call(dsn,save_knowledge,actor(user),_save_command(dsn,user,instance,refs=(ref,)))
+    memory=link_memory(dsn,user,instance,conv,command.evidence_turn_id)
+    assert call(dsn,search_knowledge,actor(user),instance,"certificate",variant_id=variant.entity_id)
+    invalidate(dsn,user,instance,memory,"EXPIRE")
+    assert call(dsn,search_knowledge,actor(user),instance,"certificate",variant_id=variant.entity_id)==()
+    # The document itself has independent approval; do not erase it merely
+    # because the derived association is no longer usable.
+    assert call(dsn,search_knowledge,actor(user),instance,"certificate",document_id=saved.document_id)
+    with pytest.raises(VersionConflict,match="source evidence"):
+        call(dsn,save_knowledge,actor(user),_save_command(dsn,user,instance,refs=(ref,)))

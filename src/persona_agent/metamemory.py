@@ -38,7 +38,8 @@ def prior_clarification(cur,*,user_id,instance_id,query_key,candidates,before_at
     if query_key is None or len(candidates)!=2:
         return False
     cur.execute(
-        """SELECT o.outcome,o.clarification_key,r.delivered_at
+        """SELECT o.outcome,o.clarification_key,r.delivered_at,
+                  response_lineage_current(r.response_id,r.user_id,r.instance_id) AS source_current
            FROM memory_recall_observations o
            JOIN conversation_responses r ON r.response_id=o.response_id
              AND r.user_id=o.user_id AND r.instance_id=o.instance_id
@@ -53,7 +54,7 @@ def prior_clarification(cur,*,user_id,instance_id,query_key,candidates,before_at
     if row is None:
         return False
     from datetime import timedelta
-    return (row["outcome"]=="AMBIGUOUS"
+    return (row["source_current"] and row["outcome"]=="AMBIGUOUS"
             and row["clarification_key"]==candidate_key(candidates)
             and row["delivered_at"]>before_at-timedelta(hours=24))
 
@@ -69,6 +70,7 @@ def adjacent_clarification_key(cur,*,user_id,instance_id,conversation_id,sequenc
            WHERE o.user_id=%s AND o.instance_id=%s AND o.conversation_id=%s
              AND t.sequence=%s AND o.route='ENTITY' AND o.outcome='AMBIGUOUS'
              AND o.clarification_key IS NOT NULL AND r.delivery_status='DELIVERED'
+             AND response_lineage_current(r.response_id,r.user_id,r.instance_id)
              AND r.delivered_at<=%s""",
         (user_id,instance_id,conversation_id,sequence-1,before_at),
     )
@@ -106,10 +108,11 @@ def _scope(cur,actor,instance_id):
 
 def list_recall_observations(connection: Connection,actor: TrustedActor,instance_id: UUID,
                              *,route=None,topic=None,open_only=False,limit=30):
-    """History, or last observed unresolved gap per exact topic.
+    """History, or current eligibility of the latest observed topic gap.
 
-    A gap can resolve on a subsequent successful owner read and reopen on a
-    later miss. No extra inference or assertion that a record still exists.
+    History retains original outcomes/feedback. An invalidated AVAILABLE
+    observation reopens a gap without waiting for another user query.
+    A scope fence is conservative, not proof that the original claim is false.
     """
     require_idle(connection)
     _require_actor(actor)
@@ -127,10 +130,20 @@ def list_recall_observations(connection: Connection,actor: TrustedActor,instance
                 """WITH observed AS (
                        SELECT o.response_id,o.conversation_id,o.turn_id,o.route,o.query_key,o.outcome,
                               o.evidence_refs,o.clarification_suppressed,o.observed_at,r.delivered_at,
+                              (response_lineage_current(r.response_id,r.user_id,r.instance_id)
+                               AND workflow_source_current(o.user_id,o.instance_id,o.conversation_id,o.turn_id,NULL)
+                               AND NOT EXISTS (
+                                   SELECT 1 FROM conversation_response_raw_lineage raw
+                                   WHERE raw.response_id=r.response_id AND raw.user_id=r.user_id
+                                     AND raw.instance_id=r.instance_id AND NOT raw.reusable
+                               )) AS source_current,
                               COALESCE((SELECT jsonb_agg(f.outcome ORDER BY f.recorded_at,f.feedback_id)
                                   FROM memory_retrieval_feedback f
                                   WHERE f.response_id=o.response_id AND f.user_id=o.user_id
-                                    AND f.instance_id=o.instance_id),'[]'::jsonb) AS feedback,
+                                    AND f.instance_id=o.instance_id
+                                    AND (NOT %s OR workflow_source_current(
+                                        f.user_id,f.instance_id,f.conversation_id,f.feedback_turn_id,NULL))
+                                  ),'[]'::jsonb) AS feedback,
                               row_number() OVER(PARTITION BY o.route,o.query_key
                                   ORDER BY o.observed_at DESC,o.response_id DESC) AS rn
                        FROM memory_recall_observations o
@@ -142,13 +155,21 @@ def list_recall_observations(connection: Connection,actor: TrustedActor,instance
                          -- A budget omission is not a resolved knowledge gap.
                          AND (NOT %s OR o.outcome<>'BUDGET')
                    )
-                   SELECT response_id,conversation_id,turn_id,route,query_key,outcome,evidence_refs,
-                          clarification_suppressed,observed_at,delivered_at,feedback
+                   SELECT response_id,conversation_id,turn_id,route,query_key,
+                          CASE WHEN %s AND outcome='AVAILABLE' AND NOT source_current
+                               THEN 'STALE' ELSE outcome END AS outcome,
+                          CASE WHEN %s AND NOT source_current THEN '[]'::jsonb
+                               ELSE evidence_refs END AS evidence_refs,
+                          CASE WHEN %s AND NOT source_current THEN false
+                               ELSE clarification_suppressed END AS clarification_suppressed,
+                          observed_at,delivered_at,feedback,source_current
                    FROM observed WHERE NOT %s OR (rn=1 AND (
-                       outcome<>'AVAILABLE' OR feedback ? 'INCORRECT' OR feedback ? 'MISSED'
+                       outcome<>'AVAILABLE' OR NOT source_current
+                       OR feedback ? 'INCORRECT' OR feedback ? 'MISSED'
                    ))
                    ORDER BY observed_at DESC,response_id DESC LIMIT %s""",
-                (actor.user_id,instance_id,route,route,key,key,open_only,open_only,limit),
+                (open_only,actor.user_id,instance_id,route,route,key,key,open_only,
+                 open_only,open_only,open_only,open_only,limit),
             )
             return tuple(RecallObservation.model_validate(row) for row in cur.fetchall())
 

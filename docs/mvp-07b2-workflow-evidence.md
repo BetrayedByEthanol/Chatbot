@@ -17,4 +17,4 @@ The exact owner-linked Memory policy is not general semantic correction detectio
 
 ## Verification
 
-PostgreSQL and live gates pending. Regression cases cover task evidence invalidation, private pin invalidation, step correction/recovery, adaptation and AGENT authorization/result fences. No local PostgreSQL execution available. US-117/118 remain partial.
+Merged in PR #137 (`66b888e`); final PR head `2e00d4a` passed PostgreSQL contracts (2,316 passed, 3 skipped) and live integration. Separate merge-commit CI not verified. Regression cases cover task evidence invalidation, private pin invalidation, step correction/recovery, adaptation and AGENT authorization/result fences. No local PostgreSQL execution available. US-117/118 remain partial.

@@ -1049,3 +1049,126 @@ def test_summary_tracks_followup_origin_outside_its_range(dsn):
     assert OMITTED_FOLLOWUP in [message.content for message in after.messages]
     assert source.turn_id not in after.raw_context_fence.source_turn_ids
     assert after.messages[-1].content=="Next question"
+
+
+def test_routine_compacted_summary_fences_response_after_source_change(dsn):
+    from persona_agent.conversation import commit_text_response,lookup_response
+    from persona_agent.conversation_contracts import StaleHistoricalContext
+    from persona_agent.memory import admit_memory,amend_memory
+    from test_phase2_memory import candidate,correction
+    user,instance,_=seed(dsn)
+    conv=uuid4()
+    source=add_turn(dsn,user,instance,conv,"My favorite drink is tea.")
+    saved=call(dsn,admit_memory,actor(user),candidate(instance,conv,source))
+    add_turn(dsn,user,instance,conv,"I adopted a rescue dog.")
+    for i in range(3):
+        add_turn(dsn,user,instance,conv,f"Later discussion {i}")
+    job=schedule(dsn,user,instance,conv,max_turns=2)
+    lease=claim(dsn)
+    assert lease.operation_id==job.operation_id
+    work=call(dsn,prepare_summary,lease)
+    call(dsn,commit_summary,lease,work,SummaryDraft.model_validate({
+        "summary":"User reported tea and adopting a rescue dog.","episodes":[],
+    }),"routine-summary-fence")
+    call(dsn,run_summary,lease,FixedSummary())
+    request=add_turn(dsn,user,instance,conv,"Explain basic garden care.")
+    context=call(dsn,prepare_text_context,actor(user),request.turn_id,max_turns=2)
+    assert "User reported tea" in context.messages[0].content
+    assert context.historical_fence is not None
+    assert source.turn_id not in context.raw_context_fence.source_turn_ids
+    newer=add_turn(dsn,user,instance,uuid4(),"Actually my favorite drink is coffee.")
+    call(dsn,amend_memory,actor(user),correction(instance,newer.conversation_id,newer,saved.memory_id))
+    with pytest.raises(StaleHistoricalContext):
+        call(dsn,commit_text_response,actor(user),context,
+             ModelReply(model_id="stale-summary",text="Tea again."),model_generated=True)
+    assert call(dsn,lookup_response,actor(user),request.turn_id) is None
+    fresh=call(dsn,prepare_text_context,actor(user),request.turn_id,max_turns=2)
+    assert "User reported tea" not in fresh.messages[0].content
+    assert fresh.messages[-1].content=="Explain basic garden care."
+
+
+@pytest.mark.parametrize("model_generated",[False,True])
+@pytest.mark.parametrize("invalidate_during_read",[False,True])
+def test_summary_fact_route_locks_owner_before_scope(dsn,monkeypatch,model_generated,invalidate_during_read):
+    from persona_agent.conversation import commit_text_response,lookup_response
+    from persona_agent.conversation_contracts import StaleHistoricalContext
+    from persona_agent import memory
+    from test_phase2_memory import candidate
+
+    user,instance,_=seed(dsn)
+    source=add_turn(dsn,user,instance,uuid4(),"I drive a Toyota Camry.")
+    saved=call(dsn,memory.admit_memory,actor(user),candidate(
+        instance,source.conversation_id,source,kind="FACT",predicate="car",
+        value="Toyota Camry",quote="I drive a Toyota Camry.",
+    ))
+    conv=uuid4()
+    for i in range(5):
+        add_turn(dsn,user,instance,conv,f"Garden discussion {i}.")
+    job=schedule(dsn,user,instance,conv,max_turns=2)
+    lease=claim(dsn)
+    assert lease.operation_id==job.operation_id
+    work=call(dsn,prepare_summary,lease)
+    call(dsn,commit_summary,lease,work,SummaryDraft.model_validate({
+        "summary":"User discussed garden planning and planting flowers.",
+        "episodes":[],
+    }),"fact-summary-lock-order")
+    call(dsn,run_summary,lease,FixedSummary())
+    request=add_turn(dsn,user,instance,conv,"What car do I drive?")
+    context=call(dsn,prepare_text_context,actor(user),request.turn_id,max_turns=2)
+    assert "User discussed garden planning" in context.messages[0].content
+    assert context.historical_fence is not None
+
+    read_slot=memory.read_personal_fact_slot
+    checks=[]
+    def checked_read(cur,**kwargs):
+        # A separate transaction must still be able to lock the revision
+        # row before the owner's read. NOWAIT catches the original inversion
+        # without requiring a timing-sensitive two-thread deadlock.
+        with psycopg.connect(dsn,autocommit=True) as probe:
+            with probe.transaction():
+                assert probe.execute(
+                    """SELECT revision FROM historical_recall_revisions
+                       WHERE user_id=%s AND instance_id=%s FOR UPDATE NOWAIT""",
+                    (user,instance),
+                ).fetchone()==(context.historical_fence.revision,)
+            if invalidate_during_read:
+                # An actual owner-row update with the existing deferred
+                # historical revision trigger, before the fact SHARE lock.
+                probe.execute(
+                    "UPDATE memory_records SET expires_at=clock_timestamp() WHERE memory_id=%s",
+                    (saved.memory_id,),
+                )
+        result=read_slot(cur,**kwargs)
+        # The real slot read must hold its owner SHARE lock, but not yet
+        # the historical revision lock.
+        with psycopg.connect(dsn,autocommit=True) as probe:
+            with pytest.raises(psycopg.errors.LockNotAvailable):
+                probe.execute(
+                    "SELECT memory_id FROM memory_records WHERE memory_id=%s FOR UPDATE NOWAIT",
+                    (saved.memory_id,),
+                )
+            with probe.transaction():
+                assert probe.execute(
+                    """SELECT revision FROM historical_recall_revisions
+                       WHERE user_id=%s AND instance_id=%s FOR UPDATE NOWAIT""",
+                    (user,instance),
+                ).fetchone() is not None
+        checks.append(True)
+        return result
+
+    monkeypatch.setattr(memory,"read_personal_fact_slot",checked_read)
+    flags=dict(personal_fact_recall=not model_generated,model_generated=model_generated)
+    generated=ModelReply(model_id="fact-lock-test",text="A guessed car.")
+    if invalidate_during_read:
+        with pytest.raises(StaleHistoricalContext):
+            call(dsn,commit_text_response,actor(user),context,generated,**flags)
+        assert call(dsn,lookup_response,actor(user),request.turn_id) is None
+    else:
+        response=call(dsn,commit_text_response,actor(user),context,generated,**flags)
+        assert "Toyota Camry" in response.text
+        with psycopg.connect(dsn,autocommit=True) as conn:
+            assert conn.execute(
+                """SELECT historical_revision,next_expiry FROM conversation_response_lineage
+                   WHERE response_id=%s""",(response.response_id,),
+            ).fetchone()==(context.historical_fence.revision,context.historical_fence.next_expiry)
+    assert checks==[True]
