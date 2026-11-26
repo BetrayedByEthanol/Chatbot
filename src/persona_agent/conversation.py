@@ -1296,9 +1296,16 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
             from .response_lineage import require_preference_fence,persist_response_lineage
             from .memory_read_policy import capture_historical_read_fence,require_historical_read_fence
             historical=context.historical_fence
+            from .response_decisions import personal_fact_topic
+            fact_topic=personal_fact_topic(scoped["input_text"])
+            reads_fact_owner=fact_topic is not None and (personal_fact_recall or model_generated)
             if context.preference_fence is not None:
                 require_preference_fence(cursor,actor.user_id,context.instance_id,context.preference_fence)
-            if historical is not None:
+            # A compacted summary can supply a historical fence even for a
+            # canonical fact route. Keep that original revision, but lock
+            # Memory's fact slot before the historical scope row, matching
+            # amend_memory's owner-before-scope order.
+            if historical is not None and not reads_fact_owner:
                 require_historical_read_fence(cursor,actor.user_id,context.instance_id,historical)
             from .knowledge_contracts import knowledge_reference
             knowledge_topic=knowledge_reference(scoped["input_text"])
@@ -1393,13 +1400,11 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
             # owner snapshot inside the existing fenced commit. A forced
             # model-only benchmark still calls its model but cannot deliver
             # an invented value for these standalone questions.
-            from .response_decisions import personal_fact_topic
-            fact_topic=personal_fact_topic(scoped["input_text"])
             fact_answer=None
             fact_changed=False
             if personal_fact_recall and fact_topic is None:
                 raise ValueError("personal-fact route requires a supported persisted question")
-            if fact_topic is not None and (personal_fact_recall or model_generated):
+            if reads_fact_owner:
                 from .personal_fact_recall import resolve_saved_fact
                 # Capture before reading the slot, but acquire the scope
                 # fence AFTER the owner's existing record SHARE lock.
