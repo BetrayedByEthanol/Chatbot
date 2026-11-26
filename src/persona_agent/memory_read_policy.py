@@ -59,6 +59,29 @@ def unresolved_meaning_record_sql(alias: RecordAlias) -> str:
             WHERE notice.user_id={a}.user_id AND notice.instance_id={a}.instance_id
               AND notice.predicate_key={a}.predicate_key
               AND n.created_at>={a}.source_turn_at
+              -- An identical, owner-validated reconfirmation may resolve
+              -- this notice without rewriting the original revision.
+              AND NOT EXISTS (
+                  SELECT 1 FROM memory_claim_support support
+                  JOIN memory_extraction_candidates c
+                    ON c.target_memory_id=support.memory_id
+                   AND c.target_version=support.version
+                   AND c.user_id=support.user_id AND c.instance_id=support.instance_id
+                   AND c.conversation_id=support.conversation_id
+                   AND c.source_turn_id=support.source_turn_id
+                   AND c.source_quote=support.source_quote
+                  JOIN conversation_turns confirmed
+                    ON confirmed.turn_id=support.source_turn_id
+                   AND confirmed.conversation_id=support.conversation_id
+                   AND confirmed.user_id=support.user_id AND confirmed.instance_id=support.instance_id
+                   AND confirmed.source_input_event_id=c.source_event_id
+                  WHERE support.memory_id={a}.memory_id AND support.version={a}.version
+                    AND support.user_id={a}.user_id AND support.instance_id={a}.instance_id
+                    AND c.status='CORROBORATED' AND c.memory_kind={a}.memory_kind
+                    AND c.subject_key={a}.subject_key AND c.predicate_key={a}.predicate_key
+                    AND c.value_text={a}.value_text
+                    AND confirmed.created_at>n.created_at
+              )
         )
     )"""
 

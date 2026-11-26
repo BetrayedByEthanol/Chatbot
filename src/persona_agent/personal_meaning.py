@@ -162,10 +162,11 @@ def pending_meaning_change(cur,*,user_id,instance_id,topic):
     latest=cur.fetchone()["latest"]
     if latest is None:
         return False
-    # A newer unvalidated typed value cannot clear a read barrier for
-    # routine planning. Only an eligible source-backed definition can.
-    view=read_meaning(cur,user_id=user_id,instance_id=instance_id,topic=normalized)
-    return view is None or view.source_turn_at<=latest
+    # read_meaning applies the shared notice/reconfirmation predicate and
+    # independently validates the current definition's original source.
+    # Do not compare only the original revision timestamp: corroboration
+    # retains that timestamp and may provide newer validated evidence.
+    return read_meaning(cur,user_id=user_id,instance_id=instance_id,topic=normalized) is None
 
 
 def meaning_change_reply(topic):

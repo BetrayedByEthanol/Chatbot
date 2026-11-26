@@ -266,3 +266,83 @@ with psycopg.connect(dsn,autocommit=True) as conn:
                             (conv,)).fetchone()==(48,)
         assert conn.execute("SELECT count(*) FROM conversation_turns WHERE conversation_id=%s",
                             (conv,)).fetchone()==(50,)
+
+
+def test_validated_reconfirmation_resolves_meaning_notice_without_new_revision(dsn):
+    import psycopg
+    from persona_agent.conversation import prepare_text_context,commit_text_response
+    from persona_agent.conversation_contracts import ModelReply,StaleHistoricalContext
+    from persona_agent.memory import search_memories
+    from persona_agent.memory_extraction import list_extraction_conflicts
+    from persona_agent.personal_meaning import get_personal_meaning,UNKNOWN,meaning_change_reply
+    from persona_agent.metamemory import list_recall_observations
+    from test_phase2_extraction import bootstrap,tick,seed,actor,call,turn
+
+    consumer=bootstrap(dsn)
+    user,instance,_=seed(dsn)
+    conv=uuid4()
+    original=turn(dsn,user,instance,conv,DEFINITION)
+    assert tick(dsn,consumer).admitted==1
+    first=call(dsn,get_personal_meaning,actor(user),instance,"evening routine")
+    assert first.source_turn_id==original.turn_id
+
+    # Corroboration from before a notice cannot clear it.
+    turn(dsn,user,instance,conv,DEFINITION)
+    assert tick(dsn,consumer).corroborated==1
+    turn(dsn,user,instance,conv,UNSUPPORTED)
+    assert call(dsn,get_personal_meaning,actor(user),instance,"evening routine") is None
+    _,blocked=_answer(dsn,user,instance,PLAN,conv=conv,model=OldRoutineModel())
+    assert blocked.text==meaning_change_reply("evening routine")
+
+    # Ingress alone is not owner validation. It must remain blocked until
+    # the asynchronous extraction worker records exact revision support.
+    reconfirmed=turn(dsn,user,instance,conv,DEFINITION)
+    assert call(dsn,get_personal_meaning,actor(user),instance,"evening routine") is None
+    assert _answer(dsn,user,instance,QUESTION)[1].text==UNKNOWN
+    pending=turn(dsn,user,instance,uuid4(),PLAN)
+    stale_context=call(dsn,prepare_text_context,actor(user),pending.turn_id)
+    assert all(VALUE not in message.content for message in stale_context.messages)
+
+    decision=tick(dsn,consumer)
+    assert decision.corroborated==1 and decision.admitted==0 and decision.conflicts==0
+    with pytest.raises(StaleHistoricalContext):
+        call(dsn,commit_text_response,actor(user),stale_context,
+             ModelReply("stale","What should your routine mean?"),model_generated=True)
+
+    latest=call(dsn,get_personal_meaning,actor(user),instance,"evening routine")
+    assert latest==first
+    assert call(dsn,search_memories,actor(user),instance,"evening routine")
+    assert call(dsn,list_extraction_conflicts,actor(user),instance)==()
+    _,restored=_answer(dsn,user,instance,QUESTION)
+    assert restored.text==f"You defined evening routine as: {VALUE}."
+    assert call(dsn,list_recall_observations,actor(user),instance,
+                route="MEANING",topic="evening routine",open_only=True)==()
+
+    class PlanningModel:
+        def generate(self,messages):
+            assert VALUE in messages[0].content
+            return ModelReply("planning-test","Start with walking the dog, then read.")
+
+    _,plan=_answer(dsn,user,instance,PLAN,model=PlanningModel())
+    assert plan.text=="Start with walking the dog, then read."
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            """SELECT c.status,c.target_version,s.source_turn_id
+               FROM memory_extraction_candidates c JOIN memory_claim_support s
+                 ON s.memory_id=c.target_memory_id AND s.version=c.target_version
+                AND s.source_turn_id=c.source_turn_id
+               WHERE c.source_turn_id=%s""",(reconfirmed.turn_id,),
+        ).fetchone()==("CORROBORATED",first.version,reconfirmed.turn_id)
+        assert conn.execute(
+            "SELECT version,source_turn_id FROM memory_records WHERE memory_id=%s",
+            (first.memory_id,),
+        ).fetchone()==(first.version,original.turn_id)
+
+    # A later unsupported change reopens the gap. A later different,
+    # supported value is still a normal conflict, not a reconfirmation.
+    turn(dsn,user,instance,conv,UNSUPPORTED)
+    assert call(dsn,get_personal_meaning,actor(user),instance,"evening routine") is None
+    turn(dsn,user,instance,conv,REPLACEMENT)
+    assert tick(dsn,consumer).conflicts==1
+    assert call(dsn,get_personal_meaning,actor(user),instance,"evening routine") is None
+    assert len(call(dsn,list_extraction_conflicts,actor(user),instance))==1
