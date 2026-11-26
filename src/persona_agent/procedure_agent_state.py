@@ -27,7 +27,9 @@ from .procedure_agent_contracts import (
     AuthorizeAgentStepCommand, AuthorizeBackgroundAgentStepCommand,
     RenewBackgroundAgentStepCommand,
 )
-from .procedure_agent_gate import require_procedure_agent_gate
+from .procedure_agent_gate import (
+    require_procedure_agent_gate,require_agent_evidence_current,prerequisite_snapshot,
+)
 from .procedure_run_state import _run, _step
 from .procedure_state import _command, _publish
 from .runtime import PermissionDenied, StaleSelection, VersionConflict
@@ -138,6 +140,7 @@ def authorize_agent_step(connection: Connection, actor: TrustedActor,
         )
         if cur.fetchone() is not None:
             raise VersionConflict("operation identifier already allocated")
+        prerequisite_pins=prerequisite_snapshot(cur,actor,command.instance_id,run["task_id"])
         event=_publish(cur,actor,command.instance_id,
                        ("procedure.agent.background_resumption_authorized.v1" if renewal
                         else "procedure.agent.background_authorized.v1" if background
@@ -167,9 +170,9 @@ def authorize_agent_step(connection: Connection, actor: TrustedActor,
                  run_version,step_version,task_version,selection_generation,
                  capability,max_words,source_conversation_id,source_turn_id,
                  source_quote,approval_turn_id,authorization_event_id,
-                 approved_background_epoch
+                 approved_background_epoch,task_prerequisite_confirmations
                ) VALUES(
-                 %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s
+                 %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb
                )""",
             (command.operation_id,actor.user_id,command.instance_id,
              command.run_id,command.step_id,run["task_id"],
@@ -178,7 +181,7 @@ def authorize_agent_step(connection: Connection, actor: TrustedActor,
              SLOW_TOOL,command.max_words,command.conversation_id,
              command.evidence_turn_id,command.evidence_quote,
              command.approval_turn_id,event,
-             command.expected_background_epoch if background else None),
+             command.expected_background_epoch if background else None,json.dumps(prerequisite_pins)),
         )
         if renewal:
             cur.execute(
@@ -193,7 +196,7 @@ def authorize_agent_step(connection: Connection, actor: TrustedActor,
             )
         # Use the identical P0 fence before accepting this stage. A failed
         # gate rolls back its approval journal, receipt and staging row.
-        require_procedure_agent_gate(cur,{
+        stage=require_procedure_agent_gate(cur,{
             "operation_id":command.operation_id,
             "user_id":actor.user_id,
             "instance_id":command.instance_id,
@@ -206,6 +209,7 @@ def authorize_agent_step(connection: Connection, actor: TrustedActor,
                 "procedure_step":command.expected_step_version,
             },
         },stage_only=True)
+        require_agent_evidence_current(cur,stage,serialize=True)
         return AgentStepAuthorizationResult(
             operation_id=command.operation_id,run_id=command.run_id,
             task_id=run["task_id"],event_id=event,
@@ -286,6 +290,7 @@ def _read_authorized_execution(cur, lease):
     # the P0 lease or the Task deadline. Recheck BOTH against PostgreSQL's
     # live clock after those waits, immediately before dispatch admission.
     # operations.deadline is intentionally NULL for this registered tool.
+    require_agent_evidence_current(cur,stage,serialize=True)
     require_claim(cur,lease)
     cur.execute(
         """SELECT (deadline IS NULL OR deadline>clock_timestamp()) AS eligible
@@ -587,6 +592,9 @@ def reconcile_agent_step(connection: Connection, actor: TrustedPlatformActor,
                    SET state='RECONCILED',result_event_id=%s WHERE operation_id=%s""",
                 (event,operation_id),
             )
+            # If Memory invalidates the grant during these writes, roll back
+            # progress; a subsequent reconciliation records INVALIDATED.
+            require_agent_evidence_current(cur,stage,serialize=True)
             return AgentStepReconcileResult(
                 operation_id=operation_id,run_id=stage["run_id"],
                 resolution=after,step_event_id=step_event_id,

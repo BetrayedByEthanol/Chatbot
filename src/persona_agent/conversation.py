@@ -899,6 +899,7 @@ def prepare_text_context(
                 )
                 prompt+=procedure_view.text
                 procedure_fence=procedure_view.fence
+                historical_fence=historical_fence or procedure_view.historical_fence
             # Informal, untracked step-by-step help is not a ProcedureRun.
             # When a user asks "What's the next step?" for the currently
             # focused discussion, recover *only* their prior sourced
@@ -1477,8 +1478,16 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
                 from .goal_conversation import apply_goal_dialogue
                 text=apply_goal_dialogue(cursor,actor,context,scoped,response_id,goal_action)
             if writes_guidance:
+                # Canonical guidance is read/rendered at commit. A broad
+                # evidence fence guards bound instructions across delivery;
+                # no Memory owner writes occur in the guidance route.
+                guidance_fence=capture_historical_read_fence(cursor,actor.user_id,context.instance_id)
                 from .procedure_guidance import apply_guidance
                 text=apply_guidance(cursor,actor,context,scoped,response_id,guidance_action)
+                cursor.execute("SELECT 1 FROM procedure_guidance_responses WHERE response_id=%s",
+                               (response_id,))
+                if cursor.fetchone() is not None:
+                    historical=guidance_fence
             # MVP-01F.4: use only the persisted authenticated user input and
             # bounded prior user messages to enforce unavailable-capability
             # claims. Model output is untrusted, including conditional offers.
@@ -1762,6 +1771,8 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
             if context.raw_context_fence is not None:
                 require_raw_context_fence(cursor,actor.user_id,context.instance_id,
                                           context.conversation_id,context.raw_context_fence)
+            if writes_guidance and historical is not None:
+                require_historical_read_fence(cursor,actor.user_id,context.instance_id,historical)
             return TextResponseResult(
                 response_id=response_id,turn_id=context.turn_id,
                 text=text,model_id=generated.model_id,delivery_status="GENERATED",
@@ -1822,6 +1833,17 @@ def acknowledge_text_delivery(connection: Connection, actor: TrustedActor,
             current=cursor.fetchone()
             if current is None:
                 raise PermissionDenied("response outside authenticated scope")
+            # Delivery may append Procedure-owned evidence. Lock its run
+            # before the historical revision lock, not the other way round.
+            cursor.execute(
+                """SELECT r.run_id FROM procedure_guidance_responses g
+                   JOIN procedure_runs r ON r.run_id=g.run_id AND r.user_id=g.user_id
+                     AND r.instance_id=g.instance_id
+                   WHERE g.response_id=%s AND g.user_id=%s AND g.instance_id=%s
+                   FOR UPDATE OF r""",
+                (response_id,actor.user_id,row["instance_id"]),
+            )
+            cursor.fetchone()
             require_response_lineage(cursor,actor.user_id,row["instance_id"],response_id)
             if current["delivery_status"]=="DELIVERED":
                 return TextResponseResult(

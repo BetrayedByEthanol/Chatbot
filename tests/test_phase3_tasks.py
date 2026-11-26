@@ -766,3 +766,45 @@ def test_concurrent_confirmation_vs_correction_is_one_serialized_commit(dsn):
                                   'goal.task.outcome.correct.v1')""",
             (uid,instance),
         ).fetchone()[0]==1
+
+
+@pytest.mark.parametrize("when",["BEFORE_CONFIRM","AFTER_CONFIRM"])
+def test_memory_correction_revokes_task_evidence_without_rewriting_history(dsn,when):
+    from workflow_evidence_helpers import link_memory,invalidate
+    uid,instance,_=seed(dsn)
+    conv=uuid4()
+    goal=make_goal(dsn,uid,instance,conv)
+    first,_,_=make_task(dsn,uid,instance,conv,goal,1)
+    second,_,_=make_task(dsn,uid,instance,conv,goal,2)
+    edge(dsn,uid,instance,conv,second,first,3)
+    report=report_done(dsn,uid,instance,conv,first,1)
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        source=conn.execute("SELECT source_turn_id FROM task_outcome_reports WHERE report_id=%s",
+                            (report.report_id,)).fetchone()[0]
+    saved=link_memory(dsn,uid,instance,conv,source)
+    confirmed=None
+    if when=="AFTER_CONFIRM":
+        confirmed=confirm_done(dsn,uid,instance,conv,first,report.version,report.report_id)
+        assert {x.task_id:x for x in call(dsn,list_tasks,actor(uid),instance,goal)}[second].actionable
+    invalidate(dsn,uid,instance,saved)
+    if confirmed is None:
+        with pytest.raises(VersionConflict,match="source evidence"):
+            confirm_done(dsn,uid,instance,conv,first,report.version,report.report_id)
+    views={x.task_id:x for x in call(dsn,list_tasks,actor(uid),instance,goal)}
+    assert views[first].status==("USER_CONFIRMED" if confirmed else "USER_REPORTED_DONE")
+    assert views[first].needs_reassessment and not views[first].effective_completion
+    assert not views[second].actionable
+    cmd=correction_command(dsn,uid,instance,conv,first,
+        confirmed.version if confirmed else report.version,
+        confirmation_id=confirmed.confirmation_id if confirmed else None,
+        report_id=None if confirmed else report.report_id)
+    fixed=call(dsn,correct_task_outcome,actor(uid),cmd)
+    fresh=report_done(dsn,uid,instance,conv,first,fixed.version)
+    confirm_done(dsn,uid,instance,conv,first,fresh.version,fresh.report_id)
+    views={x.task_id:x for x in call(dsn,list_tasks,actor(uid),instance,goal)}
+    assert views[first].effective_completion and views[second].actionable
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute("SELECT count(*) FROM task_outcome_reports WHERE task_id=%s",
+                            (first,)).fetchone()[0]==2
+        assert conn.execute("SELECT status FROM goal_records WHERE goal_id=%s",
+                            (goal,)).fetchone()[0]=="ACTIVE"

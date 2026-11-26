@@ -17,4 +17,4 @@ This is bounded raw-message lineage, not a complete provenance graph. Pre-0060 r
 
 ## Verification
 
-Regression tests cover source correction/retraction/expiry, chronology and current input, stale commit and replay/ACK, transitive raw dependencies outside the current window, unrelated record isolation, range-safe assistant projection, legacy omission, follow-up origin eligibility and SQL policy parity. Prior broad response tests remain mandatory. Static inspection only; CI pending. US-117/118 remain partial; deployment remains gated.
+Regression tests cover source correction/retraction/expiry, chronology and current input, stale commit and replay/ACK, transitive raw dependencies outside the current window, unrelated record isolation, range-safe assistant projection, legacy omission, follow-up origin eligibility and SQL policy parity. Prior broad response tests remain mandatory. Merged in PR #136 (`27a950d`); final PR head `a58553c` passed PostgreSQL contracts (2,307 passed, 3 skipped) and live integration. No separate merge-commit CI verified. US-117/118 remain partial; deployment remains gated.

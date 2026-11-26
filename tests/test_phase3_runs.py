@@ -498,3 +498,62 @@ def test_task_deadline_blocks_new_guided_run_but_not_late_evidence(dsn):
     assert call(dsn,list_tasks,actor(user),instance,goal)[0].status==(
         "USER_REPORTED_DONE"
     )
+
+
+def test_step_confirmation_inherits_report_source_and_allows_explicit_recovery(dsn):
+    from workflow_evidence_helpers import link_memory,invalidate
+    user,_,instance,conv,template=published(dsn)
+    start=start_command(dsn,user,instance,conv,template)
+    call(dsn,start_procedure_run,actor(user),start)
+    report=record(dsn,user,instance,conv,start.run_id,1,"generate",1,"USER_REPORTED_DONE")
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        source=conn.execute("SELECT source_turn_id FROM procedure_run_step_events WHERE step_event_id=%s",
+                            (report.step_event_id,)).fetchone()[0]
+    saved=link_memory(dsn,user,instance,conv,source)
+    confirmed=record(dsn,user,instance,conv,start.run_id,2,"generate",2,"USER_CONFIRMED")
+    invalidate(dsn,user,instance,saved,"EXPIRE")
+    view=call(dsn,read_procedure_run,actor(user),instance,start.run_id)
+    assert view.steps[0].status=="USER_CONFIRMED"
+    assert not view.steps[0].evidence_current and not view.evidence_current
+    assert view.next_step_id is None
+    with pytest.raises(VersionConflict,match="source evidence"):
+        record(dsn,user,instance,conv,start.run_id,3,"check",1,"ATTEMPTED")
+    fixed=call(dsn,correct_procedure_step,actor(user),correction(
+        dsn,user,instance,conv,start.run_id,3,"generate",3,confirmed.step_event_id))
+    fresh=record(dsn,user,instance,conv,start.run_id,fixed.version,"generate",
+                 fixed.step_version,"USER_REPORTED_DONE")
+    record(dsn,user,instance,conv,start.run_id,fresh.version,"generate",
+           fresh.step_version,"USER_CONFIRMED")
+    view=call(dsn,read_procedure_run,actor(user),instance,start.run_id)
+    assert view.evidence_current and view.next_step_id=="check"
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute("SELECT count(*) FROM procedure_run_step_events WHERE run_id=%s",
+                            (start.run_id,)).fetchone()[0]==5
+
+
+def test_private_revision_source_invalidation_does_not_repin_existing_run(dsn):
+    from workflow_evidence_helpers import link_memory,invalidate
+    from persona_agent.procedure_state import read_personalized_approach
+    user,_,instance,conv,template=published(dsn,"PARAMETERIZED")
+    personal=variant_command(dsn,user,instance,conv,template,1,
+                             params={"hostname":"localhost","days":30})
+    call(dsn,create_personalized_approach,actor(user),personal)
+    saved=link_memory(dsn,user,instance,conv,personal.evidence_turn_id)
+    start=start_command(dsn,user,instance,conv,template,variant=personal.variant_id,revision=1)
+    call(dsn,start_procedure_run,actor(user),start)
+    invalidate(dsn,user,instance,saved)
+    assert not call(dsn,read_personalized_approach,actor(user),instance,personal.variant_id).evidence_current
+    old=call(dsn,read_procedure_run,actor(user),instance,start.run_id)
+    assert not old.evidence_current and old.variant_revision==1
+    rejected=start_command(dsn,user,instance,conv,template,variant=personal.variant_id,revision=1)
+    with pytest.raises(VersionConflict,match="source evidence"):
+        call(dsn,start_procedure_run,actor(user),rejected)
+    revised=revise_command(dsn,user,instance,conv,personal.variant_id,1,1,
+                           params={"hostname":"localhost","days":60})
+    call(dsn,revise_personalized_approach,actor(user),revised)
+    fresh=start_command(dsn,user,instance,conv,template,variant=personal.variant_id,revision=2)
+    call(dsn,start_procedure_run,actor(user),fresh)
+    assert call(dsn,read_procedure_run,actor(user),instance,fresh.run_id).evidence_current
+    old=call(dsn,read_procedure_run,actor(user),instance,start.run_id)
+    assert old.variant_revision==1 and not old.evidence_current
+    assert old.steps[0].step.instruction.endswith("30 days")

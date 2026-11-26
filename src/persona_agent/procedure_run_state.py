@@ -26,6 +26,7 @@ from .procedure_run_contracts import (
     SetProcedureRunStatusCommand, StartProcedureRunCommand,
 )
 from .runtime import PermissionDenied, VersionConflict
+from .workflow_evidence import current as evidence_current,lock_scope,require_current,require_command_source
 from .task_state import (
     _active_goal_chain, _confirmation_state, _graph_read_lock, _task,
 )
@@ -123,6 +124,11 @@ def _evidence_step_event(cur, actor: TrustedActor, cmd, run: dict,
              updated_at=clock_timestamp() WHERE run_id=%s""",
         (next_run,status,run["run_id"]),
     )
+    # A corrective owner action always remains available. New progress
+    # must still have eligible sources at the transaction boundary.
+    if kind!="CORRECTED":
+        lock_scope(cur,actor.user_id,cmd.instance_id)
+        require_current(cur,actor.user_id,cmd.instance_id,"run",run["run_id"])
     action=("STEP_CORRECTED" if kind=="CORRECTED"
             else "INSTRUCTION_DELIVERED" if kind=="INSTRUCTION_DELIVERED"
             else "STEP_RECORDED")
@@ -252,6 +258,12 @@ def start_procedure_run(connection: Connection, actor: TrustedActor,
                  step.step_id,index,step.instruction,step.success_test,
                  step.executor,step.capability),
             )
+        lock_scope(cur,actor.user_id,command.instance_id)
+        require_current(cur,actor.user_id,command.instance_id,"run",command.run_id)
+        if command.task_id is not None:
+            unmet,_,_,_=_confirmation_state(cur,actor,command.instance_id,[command.task_id])
+            if unmet.get(command.task_id):
+                raise VersionConflict("task dependency source evidence changed before run start")
         return ProcedureRunResult(
             run_id=command.run_id,version=1,event_id=event,action="RUN_STARTED",
         )
@@ -263,6 +275,7 @@ def _record_step_apply(cur,actor,command,receipt):
     run,step=_step_admission(cur,actor,command)
     if step["executor"]!="USER":
         raise PermissionDenied("agent steps require future operation-result gate")
+    require_current(cur,actor.user_id,command.instance_id,"run",run["run_id"])
     before=step["status"]
     after=command.outcome
     if before==after:
@@ -320,15 +333,25 @@ def _instruction_apply(cur,actor,command,receipt):
     if (response is None or response["turn_id"]!=command.evidence_turn_id
         or response["delivery_status"]!="DELIVERED"):
         raise VersionConflict("instruction response was not acknowledged as delivered")
+    cur.execute("SELECT response_lineage_current(%s,%s,%s) AS eligible",
+                (command.response_id,actor.user_id,command.instance_id))
+    if not cur.fetchone()["eligible"]:
+        raise VersionConflict("instruction response source evidence requires reassessment")
     if step["instruction"] not in response["response_text"]:
         raise PermissionDenied("delivered response did not contain pinned instruction")
     if step["status"] in ("USER_CONFIRMED","NEEDS_REVIEW"):
         raise VersionConflict("cannot rewrite confirmed or corrected step delivery")
     after=("INSTRUCTED" if step["status"]=="NOT_STARTED" else step["status"])
-    return _evidence_step_event(
+    result=_evidence_step_event(
         cur,actor,command,run,step,receipt,kind="INSTRUCTION_DELIVERED",
         after=after,response_id=command.response_id,
     )
+    # The event writer holds the historical scope fence at this boundary.
+    cur.execute("SELECT response_lineage_current(%s,%s,%s) AS eligible",
+                (command.response_id,actor.user_id,command.instance_id))
+    if not cur.fetchone()["eligible"]:
+        raise VersionConflict("instruction response source evidence requires reassessment")
+    return result
 
 
 def acknowledge_procedure_instruction(connection: Connection, actor: TrustedActor,
@@ -431,6 +454,7 @@ def _status_apply(cur,actor,command,receipt):
     if old not in eligible:
         raise VersionConflict("invalid procedure run status transition")
     if command.action in ("FINISH","RESUME"):
+        require_current(cur,actor.user_id,command.instance_id,"run",run["run_id"])
         cur.execute(
             """SELECT status,executor FROM procedure_run_steps WHERE run_id=%s""",
             (command.run_id,),
@@ -459,6 +483,10 @@ def _status_apply(cur,actor,command,receipt):
              updated_at=clock_timestamp() WHERE run_id=%s""",
         (new,version,command.run_id),
     )
+    if command.action in ("FINISH","RESUME"):
+        lock_scope(cur,actor.user_id,command.instance_id)
+        require_command_source(cur,actor,command)
+        require_current(cur,actor.user_id,command.instance_id,"run",run["run_id"])
     action={
         "PAUSE":"RUN_PAUSED","RESUME":"RUN_RESUMED",
         "CANCEL":"RUN_CANCELLED","FINISH":"RUN_USER_CONFIRMED",
@@ -486,8 +514,10 @@ def read_procedure_run(connection: Connection, actor: TrustedActor,
             _read_selected(cur,actor,instance_id)
             run=_run(cur,actor,instance_id,run_id,lock=False)
             cur.execute(
-                """SELECT * FROM procedure_run_steps WHERE run_id=%s
-                   ORDER BY position""",(run_id,),
+                """SELECT s.*,
+                          (s.status IN ('NOT_STARTED','NEEDS_REVIEW') OR
+                           workflow_step_event_current(s.user_id,s.instance_id,s.last_step_event_id)) AS evidence_current
+                   FROM procedure_run_steps s WHERE run_id=%s ORDER BY position""",(run_id,),
             )
             rows=cur.fetchall()
             steps=tuple(ProcedureRunStepView(
@@ -497,7 +527,7 @@ def read_procedure_run(connection: Connection, actor: TrustedActor,
                     executor=row["executor"],success_test=row["success_test"],
                     capability=row["capability"],
                 ),status=row["status"],version=row["version"],
-                last_step_event_id=row["last_step_event_id"],
+                last_step_event_id=row["last_step_event_id"],evidence_current=row["evidence_current"],
             ) for row in rows)
             cur.execute(
                 """SELECT conversation_id,thread_id FROM procedure_run_thread_links
@@ -509,12 +539,14 @@ def read_procedure_run(connection: Connection, actor: TrustedActor,
                 (x.step_id for x in steps if x.status not in
                  ("USER_CONFIRMED","VERIFIED")),None,
             )
+            eligible=evidence_current(cur,actor.user_id,instance_id,"run",run_id)
             return ProcedureRunView(
                 run_id=run_id,template_id=run["template_id"],
                 template_version=run["template_version"],
                 variant_id=run["variant_id"],variant_revision=run["variant_revision"],
                 task_id=run["task_id"],status=run["status"],version=run["version"],
-                steps=steps,thread_links=links,next_step_id=next_step,
+                steps=steps,thread_links=links,next_step_id=next_step if eligible else None,
+                evidence_current=eligible,
             )
 
 

@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from .contracts import TrustedActor
 from .lifecycle import TrustedPlatformActor
 from .tool_contracts import PROCEDURE_AGENT_OPERATION
-from .procedure_agent_gate import require_procedure_agent_gate
+from .procedure_agent_gate import require_procedure_agent_gate,require_agent_evidence_current
 from .operation_contracts import (
     EffectClass, InvalidOperation, OperationLease, Policy, StaleOperation,
     Status, event_for, lock_operation, release_resources,
@@ -230,14 +230,17 @@ def complete_operation(
         with connection.cursor(row_factory=dict_row) as cursor:
             row=require_claim(cursor,lease)
             require_current_authority(cursor,row)
+            procedure_stage=None
             if row["operation_type"]==PROCEDURE_AGENT_OPERATION:
                 # A claimed operation cannot accept a result after Task,
                 # ProcedureRun or Step authority has been revoked.
-                require_procedure_agent_gate(cursor,row)
+                procedure_stage=require_procedure_agent_gate(cursor,row)
             if (row["effect_class"]=="EXTERNAL"
                 and row["effect_status"]!="DISPATCHED"):
                 raise InvalidOperation("external effects require a prior dispatch record")
             release_resources(cursor,row)
+            if procedure_stage is not None:
+                require_agent_evidence_current(cursor,procedure_stage,serialize=True)
             # Selection, goal and pool locks can outlive a lease or a
             # Task-domain deadline. Revalidate the lease, then fence the
             # Task deadline against PostgreSQL's live clock in the final

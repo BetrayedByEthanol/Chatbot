@@ -13,6 +13,8 @@ from .procedure_run_contracts import (
     SetProcedureRunStatusCommand,ProcedureRunResult,
 )
 from .runtime import PermissionDenied
+from .workflow_evidence import current as evidence_current
+from .task_state import _graph_read_lock,_confirmation_state
 
 _FINISHED={"USER_CONFIRMED","VERIFIED"}
 _TERMINAL={"USER_CONFIRMED","CANCELLED"}
@@ -41,6 +43,7 @@ def _previous(cur,*,user_id,instance_id,conversation_id,turn_id,generation):
              AND t.conversation_id=%s AND t.selection_generation=%s AND t.status='PENDING'
              AND r.selection_generation=t.selection_generation
              AND r.delivery_status='DELIVERED' AND g.bound_at IS NOT NULL
+             AND response_lineage_current(r.response_id,r.user_id,r.instance_id)
              AND r.delivered_at<=t.created_at AND g.bound_at<=t.created_at
              AND NOT EXISTS (
                  SELECT 1 FROM conversation_assistant_followups f
@@ -277,7 +280,16 @@ def apply_guidance(cur,actor,context,scoped,response_id,action):
                             conversation_id=context.conversation_id)
     if run_id is None:
         return _UNBOUND
+    # Graph before run: match the existing Task/AGENT lock order.
+    _graph_read_lock(cur,actor,context.instance_id)
     run=_run(cur,actor,context.instance_id,run_id)
+    if action.kind not in ("PAUSE","CANCEL","CONFIRM_PAUSE","CONFIRM_CANCEL"):
+        if not evidence_current(cur,actor.user_id,context.instance_id,"run",run_id):
+            return "The recorded procedure evidence requires reassessment. No step was changed."
+        if run["task_id"] is not None:
+            unmet,_,_,_=_confirmation_state(cur,actor,context.instance_id,[run["task_id"]])
+            if unmet.get(run["task_id"]):
+                return "A task prerequisite requires reassessment. No step was changed."
     title=_title(cur,run)
     steps=_steps(cur,run)
     outstanding=_outstanding(steps)
@@ -444,6 +456,9 @@ def bind_delivered_guidance(cur,actor,row):
         return
     run=_run(cur,actor,row["instance_id"],binding["run_id"])
     if run["version"]!=binding["run_version"]:
+        return
+    if (binding["kind"] not in ("PAUSE","CANCEL","STATUS")
+            and not evidence_current(cur,actor.user_id,row["instance_id"],"run",run["run_id"])):
         return
     step=None
     if binding["step_id"] is not None:

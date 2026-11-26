@@ -120,6 +120,7 @@ class ProcedureRunStepView(BaseModel):
     status: StepStatus
     version: int
     last_step_event_id: UUID | None
+    evidence_current: bool = True
     # Neither an instruction nor a user report is verified external execution.
     independently_verified: Literal[False] = False
 
@@ -143,6 +144,7 @@ class ProcedureRunView(BaseModel):
     steps: tuple[ProcedureRunStepView, ...]
     thread_links: tuple[ProcedureRunThreadLink, ...]
     next_step_id: str | None
+    evidence_current: bool = True
     # A user-confirmed run never mutates task completion on its own.
     task_completion_changed: Literal[False] = False
     operation_dispatch_authorized: Literal[False] = False

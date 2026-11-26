@@ -27,6 +27,7 @@ from .procedure_learning_contracts import (
 )
 from .procedure_run_state import _run
 from .runtime import PermissionDenied, VersionConflict
+from .workflow_evidence import current as evidence_current,lock_scope,require_current
 
 
 def _latest_evaluation(cur, actor: TrustedActor, instance_id: UUID,
@@ -142,6 +143,9 @@ def evaluate_procedure_run(connection: Connection, actor: TrustedActor,
                  command.instance_id,position,
                  definition.success_tests[position-1],state),
             )
+        lock_scope(cur,actor.user_id,command.instance_id)
+        require_current(cur,actor.user_id,command.instance_id,"run",run["run_id"])
+        require_current(cur,actor.user_id,command.instance_id,"evaluation",command.evaluation_id)
         return ProcedureLearningResult(
             entity_id=command.evaluation_id,event_id=event,
             action="RUN_EVALUATED",revision=revision,
@@ -230,6 +234,9 @@ def propose_procedure_adaptation(connection: Connection, actor: TrustedActor,
              command.conversation_id,command.evidence_turn_id,
              command.evidence_quote,event),
         )
+        lock_scope(cur,actor.user_id,command.instance_id)
+        require_current(cur,actor.user_id,command.instance_id,"run",run["run_id"])
+        require_current(cur,actor.user_id,command.instance_id,"proposal",command.proposal_id)
         return ProcedureLearningResult(
             entity_id=command.proposal_id,event_id=event,
             action="ADAPTATION_PROPOSED",revision=command.expected_revision,
@@ -334,6 +341,10 @@ def decide_procedure_adaptation(connection: Connection, actor: TrustedActor,
              command.conversation_id,command.evidence_turn_id,
              command.evidence_quote,command.approval_turn_id,event),
         )
+        if command.decision=="APPLY":
+            lock_scope(cur,actor.user_id,command.instance_id)
+            require_current(cur,actor.user_id,command.instance_id,"run",run["run_id"])
+            require_current(cur,actor.user_id,command.instance_id,"variant",proposal["variant_id"],applied_revision)
         return ProcedureLearningResult(
             entity_id=command.proposal_id,event_id=event,
             action=("ADAPTATION_APPLIED" if command.decision=="APPLY"
@@ -358,7 +369,8 @@ def read_procedure_evaluations(connection: Connection, actor: TrustedActor,
             _read_selected(cur,actor,instance_id)
             _run(cur,actor,instance_id,run_id,lock=False)
             cur.execute(
-                """SELECT * FROM procedure_run_evaluations
+                """SELECT e.*,workflow_evaluation_current(e.user_id,e.instance_id,e.evaluation_id) AS evidence_current
+                   FROM procedure_run_evaluations e
                    WHERE run_id=%s AND user_id=%s AND instance_id=%s
                    ORDER BY evaluation_revision DESC LIMIT 50""",
                 (run_id,actor.user_id,instance_id),
@@ -399,6 +411,7 @@ def read_procedure_evaluations(connection: Connection, actor: TrustedActor,
                 rationale=e["rationale"],confidence=e["confidence"],
                 supporting_step_event_ids=tuple(evidence.get(e["evaluation_id"],())),
                 criteria=tuple(criteria.get(e["evaluation_id"],())),
+                evidence_current=e["evidence_current"],
             ) for e in evaluations)
 
 
@@ -423,6 +436,10 @@ def read_procedure_adaptation(connection: Connection, actor: TrustedActor,
                 raise PermissionDenied("private adaptation unavailable")
             status=("APPLIED" if p["decision"]=="APPLY" else
                     "REJECTED" if p["decision"]=="REJECT" else "PROPOSED")
+            eligible=evidence_current(cur,actor.user_id,instance_id,"proposal",proposal_id)
+            if p["decision"]=="APPLY":
+                eligible=eligible and evidence_current(cur,actor.user_id,instance_id,"variant",
+                                                     p["variant_id"],p["applied_revision"])
             if p["decision"] is None:
                 # Effective readiness is derived, not written over immutable
                 # proposal history: the private revision, run and latest
@@ -435,7 +452,7 @@ def read_procedure_adaptation(connection: Connection, actor: TrustedActor,
                 current=cur.fetchone()
                 run=_run(cur,actor,instance_id,p["run_id"],lock=False)
                 latest=_latest_evaluation(cur,actor,instance_id,p["run_id"])
-                if (current is None
+                if (not eligible or current is None
                     or current["current_revision"]!=p["expected_revision"]
                     or latest is None
                     or latest["evaluation_id"]!=p["evaluation_id"]
@@ -449,7 +466,7 @@ def read_procedure_adaptation(connection: Connection, actor: TrustedActor,
                 policy=p["policy"],parameters=p["parameters"],
                 step_text_overrides=p["step_text_overrides"],
                 reason=p["reason"],
-                status=status,applied_revision=p["applied_revision"],
+                status=status,applied_revision=p["applied_revision"],evidence_current=eligible,
             )
 
 
@@ -480,12 +497,18 @@ def summarize_personal_procedure_experience(
             cur.execute(
                 """WITH latest AS (
                      SELECT DISTINCT ON (run_id)
-                         run_id,outcome,failure_cause
+                         run_id,evaluation_id,outcome,failure_cause
                      FROM procedure_run_evaluations
                      WHERE user_id=%s AND instance_id=%s
                      ORDER BY run_id,evaluation_revision DESC
                    )
-                   SELECT run.run_id,latest.outcome,latest.failure_cause
+                   SELECT run.run_id,
+                          CASE WHEN workflow_evaluation_current(run.user_id,run.instance_id,latest.evaluation_id)
+                            AND workflow_run_current(run.user_id,run.instance_id,run.run_id)
+                            THEN latest.outcome END AS outcome,
+                          CASE WHEN workflow_evaluation_current(run.user_id,run.instance_id,latest.evaluation_id)
+                            AND workflow_run_current(run.user_id,run.instance_id,run.run_id)
+                            THEN latest.failure_cause END AS failure_cause
                    FROM procedure_runs run
                    LEFT JOIN latest ON latest.run_id=run.run_id
                    WHERE run.user_id=%s AND run.instance_id=%s
@@ -561,7 +584,13 @@ def read_adaptation_guidance(connection: Connection, actor: TrustedActor,
             definition=ProcedureDefinition.model_validate(row["definition"])
             names=tuple(p.name for p in definition.parameters)
             cause=row["failure_cause"]
-            if row["evaluation_id"] is None:
+            source_stale=(row["evaluation_id"] is not None and not evidence_current(
+                cur,actor.user_id,instance_id,"evaluation",row["evaluation_id"]))
+            run_stale=not evidence_current(cur,actor.user_id,instance_id,"run",run_id)
+            if source_stale or run_stale:
+                action="REASSESS_STALE_EVIDENCE"
+                cause=None
+            elif row["evaluation_id"] is None:
                 action="ASSESS_OUTCOME"
             elif (row["evaluated_version"]!=row["run_version"]
                   or (row["variant_id"] is not None
@@ -594,6 +623,6 @@ def read_adaptation_guidance(connection: Connection, actor: TrustedActor,
             return ProcedureAdaptationGuidance(
                 run_id=run_id,run_version=row["run_version"],evaluation_id=row["evaluation_id"],
                 variant_id=row["variant_id"],variant_revision=row["variant_revision"],
-                policy=definition.policy,outcome=row["outcome"],failure_cause=cause,
+                policy=definition.policy,outcome=None if source_stale or run_stale else row["outcome"],failure_cause=cause,
                 next_action=action,parameter_names=names,
             )

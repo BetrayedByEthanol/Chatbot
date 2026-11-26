@@ -238,9 +238,14 @@ def _observations(cur,actor,instance_id,goal_id,strategy_id):
         """SELECT r.run_id,r.variant_id,r.variant_revision,r.template_id,r.template_version,
                   e.evaluation_id,
                   CASE WHEN e.evaluation_id IS NULL THEN 'UNEVALUATED'
-                       WHEN e.run_version<>r.version THEN 'STALE'
+                       WHEN e.run_version<>r.version
+                         OR NOT workflow_evaluation_current(r.user_id,r.instance_id,e.evaluation_id)
+                         OR NOT workflow_run_current(r.user_id,r.instance_id,r.run_id) THEN 'STALE'
                        ELSE e.outcome END AS outcome,
-                  CASE WHEN e.run_version=r.version THEN e.failure_cause ELSE NULL END AS failure_cause
+                  CASE WHEN e.run_version=r.version
+                       AND workflow_evaluation_current(r.user_id,r.instance_id,e.evaluation_id)
+                       AND workflow_run_current(r.user_id,r.instance_id,r.run_id)
+                       THEN e.failure_cause ELSE NULL END AS failure_cause
            FROM personalized_procedures p
            JOIN procedure_runs r ON r.variant_id=p.variant_id
              AND r.user_id=p.user_id AND r.instance_id=p.instance_id
