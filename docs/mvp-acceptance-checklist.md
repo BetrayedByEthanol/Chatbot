@@ -2,7 +2,7 @@
 
 **Baseline:** 24 November 2026, `main` at `d5d1c8eb06c7f73e8e32a0714eb34eaa22c36586` ([PR #104](https://github.com/BetrayedByEthanol/Chatbot/pull/104) merged).  
 **Authority:** Architecture v2.5.1, §§14, 14.1, 14.2, 18, 24.1; reconciled master user-story backlog, 22 November 2026.  
-**Companions:** [Implementation matrix](user-story-implementation-matrix.md), assessed at runtime baseline `9c2ce5c47d7e6ba95192a45e146b1571fc591215`; [Development roadmap](development-roadmap.md).  
+**Companions:** [Implementation matrix](user-story-implementation-matrix.md), initial runtime baseline `9c2ce5c47d7e6ba95192a45e146b1571fc591215`, scoped MVP-05 reassessment at PR #124; [Development roadmap](development-roadmap.md).  
 **Disposition:** initial checklist for review, not evidence of release acceptance or an architecture amendment.
 
 ## 1. Scope and acceptance decisions
@@ -33,6 +33,32 @@ Q is a practical quality acceptance procedure from roadmap MVP-04 and confirmed 
 | `43fa8aa369c08eaefb0a428562537abf2be28c5b` (PR #104 head) | [Phase 0 contracts 45463809480](https://github.com/BetrayedByEthanol/Chatbot/actions/runs/45463809480) | SUCCESS; documentation PR, not a new Phase 1 live run |
 
 Verified workflow metadata on 24 November 2026. Phase 1 CI is path-filtered. These runs are evidence for the tested revisions, not a newly executed merge-SHA suite. No new tests or benchmark runs were performed for this document. The previous local 25-turn comparison had an incomplete gateway run and review disagreements, as reported in prior operator work and the roadmap; no final accepted model-quality decision is established here. Private artifacts were not re-reviewed for this checklist.
+
+## 2A. MVP-05 verified technical evidence (26 November 2026)
+
+| Tested revision | CI run | Outcome / limit |
+|---|---|---|
+| `e67636a497fec179fab7f9e6aadd0fe916319076` (PR #124 final head) | [Phase 0 contracts 45784981485](https://github.com/BetrayedByEthanol/Chatbot/actions/runs/45784981485) | SUCCESS: 2,136 passed, 3 skipped, 0 failed; standalone contracts 5 passed; without Psycopg 915 passed, 181 skipped |
+| Same PR #124 head | [Phase 1 live integration 45784981414](https://github.com/BetrayedByEthanol/Chatbot/actions/runs/45784981414) | SUCCESS: qwen2.5:0.5b, four-turn live transport/tool/restart; observational baselines and Phase 4 drills; not independent target-model quality |
+
+Baseline merged as `58fcc015c5ffd3e9b465ac248be2dcdf9b4e0439`; no separate execution on merge SHA was located. The historical 05D candidate paragraphs below remain records of their original implementation-time disposition. 05E regression and independent review are still NOT RUN.
+
+## 2B. MVP-05E integrated continuation gate (not a new Phase 0–1 MVP requirement)
+
+See [MVP-05E evidence and limitations](mvp-05e-memory-acceptance.md). Do not check a criterion from test presence or static implementation status alone.
+
+| Criterion | Evidence entry point | Candidate disposition |
+|---|---|---|
+| A01 — Compression and independent state | [Phase 2 integration](../tests/test_phase2_acceptance.py), [05E cross-store](../tests/test_mvp05e_memory_acceptance.py) | Prior baseline technical CI passed; 05E NOT RUN |
+| A02 — Cross-session/restart | 05E new interpreter and source-qualified recall | NOT RUN |
+| A03 — Correction precedence | 05E unsupported-meaning notice, historical fence and approved revision | NOT RUN |
+| A04 — Entity ambiguity | 05C identity/clarification regressions; 05E fixed cooldown | NOT RUN on 05E |
+| A05 — Knowledge | 05D.4 scoped exact excerpts/procedure references; 05E recall; source-qualified model synthesis deferred | Baseline CI passed; 05E NOT RUN; synthesis open |
+| A06 — MetaMemory | 05D.5 gap lifecycle; 05E correction gap and resolution | NOT RUN on 05E |
+| A07 — Selectivity | Phase 2 foreground tests; 05E unrelated turn | NOT RUN on 05E |
+| A08 — Real-model behavior | [05E scenario](../scenarios/mvp05e_memory_acceptance.json), existing comparison/independent review tools | NOT RUN; operator target model, hardware, reviewers and adjudication needed |
+
+Technical regression supports focused MVP-06A after passing on the candidate. Full behavioral acceptance, P2-F and applicable MVP-07B remain open. Remote deployment remains blocked. Do not mark Phase 2 accepted on this evidence alone.
 
 ## 3. Confirmed Phase 0–1 acceptance items
 

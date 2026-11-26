@@ -146,6 +146,33 @@ def get_personal_meaning(connection: Connection,actor: TrustedActor,instance_id:
             return read_meaning(cur,user_id=actor.user_id,instance_id=instance_id,topic=topic)
 
 
+def pending_meaning_change(cur,*,user_id,instance_id,topic):
+    """Latest unresolved notice, independent of admission of its replacement."""
+    normalized=normalize_topic(topic)
+    if normalized is None:
+        return False
+    cur.execute(
+        """SELECT max(n.created_at) AS latest FROM memory_meaning_change_notices notice
+           JOIN conversation_turns n ON n.turn_id=notice.source_turn_id
+             AND n.conversation_id=notice.conversation_id
+             AND n.user_id=notice.user_id AND n.instance_id=notice.instance_id
+           WHERE notice.user_id=%s AND notice.instance_id=%s AND notice.predicate_key=%s""",
+        (user_id,instance_id,"meaning_"+normalized.replace(" ","_")),
+    )
+    latest=cur.fetchone()["latest"]
+    if latest is None:
+        return False
+    # read_meaning applies the shared notice/reconfirmation predicate and
+    # independently validates the current definition's original source.
+    # Do not compare only the original revision timestamp: corroboration
+    # retains that timestamp and may provide newer validated evidence.
+    return read_meaning(cur,user_id=user_id,instance_id=instance_id,topic=normalized) is None
+
+
+def meaning_change_reply(topic):
+    return f"You've indicated a change to your {topic}. What should it mean now?"
+
+
 def meaning_context(cur,*,user_id,instance_id,topic,before_at,max_chars):
     if max_chars<180:
         return ""

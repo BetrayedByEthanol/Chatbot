@@ -10,12 +10,24 @@ def record_explicit_memory_report(
 ) -> None:
     """Called in authenticated ingress, after recording its source event.
 
-    Only the existing safe grammar is projected. No new category, inference,
-    operation, candidate, Memory revision, approval or effect authority.
+    Safe reports retain their existing projection. A recognized unsupported
+    personal definition records a value-free read barrier only. No inference,
+    candidate, Memory revision, approval or effect authority is granted.
     The asynchronous owner still consumes the original input event.
     """
     claim=parse_explicit_claim(text)
     if claim is None:
+        from .personal_meaning_grammar import unresolved_meaning_topic
+        topic=unresolved_meaning_topic(text)
+        if topic is not None:
+            cur.execute(
+                """INSERT INTO memory_meaning_change_notices(
+                       source_turn_id,user_id,instance_id,conversation_id,source_event_id,predicate_key
+                   ) VALUES (%s,%s,%s,%s,%s,%s)
+                   ON CONFLICT(source_turn_id) DO NOTHING""",
+                (turn_id,user_id,instance_id,conversation_id,source_event_id,
+                 "meaning_"+topic.replace(" ","_")),
+            )
         return
     cur.execute(
         """INSERT INTO explicit_memory_reports(
