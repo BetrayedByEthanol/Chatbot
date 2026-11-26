@@ -201,6 +201,68 @@ def unmanaged_entity_source_sql(alias: Literal["t","memory_episodes"]) -> str:
     )"""
 
 
+def eligible_summary_turn_sql() -> str:
+    """Known Memory-owned invalidation of the exact turn aliased as t.
+
+    This is not a general transcript privacy classifier. Ordinary unowned
+    reports remain evidence of speech; exact superseded or ineligible
+    Memory revisions and disputed explicit reports cannot be reused.
+    """
+    return f"""(
+        {eligible_report_source_sql("t")}
+        AND NOT EXISTS (
+            SELECT 1 FROM memory_revisions mr
+            JOIN memory_records linked ON linked.memory_id=mr.memory_id
+              AND linked.user_id=mr.user_id AND linked.instance_id=mr.instance_id
+            WHERE mr.user_id=t.user_id AND mr.instance_id=t.instance_id
+              AND mr.source_conversation_id=t.conversation_id
+              AND mr.source_turn_id=t.turn_id
+              AND (mr.version<>linked.version OR NOT {eligible_record_sql("linked")})
+        )
+    )"""
+
+
+def summary_range_current_sql(alias: Literal["conversation_summaries", "s"]) -> str:
+    """Check all admitted summary inputs, not merely an episode citation.
+
+    Legacy rows have no exact input set; conservatively check their whole
+    original range and follow-up origins delivered before summary commit.
+    Do not guess historical eligibility or promote derived verification.
+    """
+    if alias not in ("conversation_summaries","s"):
+        raise ValueError("invalid internal summary alias")
+    a=alias
+    scope=f"""t.user_id={a}.user_id AND t.instance_id={a}.instance_id
+              AND t.conversation_id={a}.conversation_id"""
+    return f"""(
+        CASE WHEN {a}.source_turn_ids IS NOT NULL THEN
+            (SELECT count(*) FROM conversation_turns t
+             WHERE {scope} AND t.turn_id=ANY({a}.source_turn_ids)
+               AND {eligible_summary_turn_sql()})=cardinality({a}.source_turn_ids)
+        ELSE
+            (SELECT count(*) FROM conversation_turns t
+             WHERE {scope} AND t.sequence BETWEEN {a}.start_sequence AND {a}.end_sequence)
+             =({a}.end_sequence-{a}.start_sequence+1)
+            AND NOT EXISTS (
+                SELECT 1 FROM conversation_turns t
+                WHERE {scope}
+                  AND (t.sequence BETWEEN {a}.start_sequence AND {a}.end_sequence
+                       OR EXISTS (
+                           SELECT 1 FROM conversation_assistant_followups f
+                           JOIN conversation_turns d ON d.turn_id=f.delivery_turn_id
+                             AND d.conversation_id=f.conversation_id
+                             AND d.user_id=f.user_id AND d.instance_id=f.instance_id
+                           WHERE f.user_id=t.user_id AND f.instance_id=t.instance_id
+                             AND f.conversation_id=t.conversation_id AND f.turn_id=t.turn_id
+                             AND d.sequence BETWEEN {a}.start_sequence AND {a}.end_sequence
+                             AND f.delivered_at<={a}.created_at
+                       ))
+                  AND NOT {eligible_summary_turn_sql()}
+            )
+        END
+    )"""
+
+
 def eligible_episode_source_sql() -> str:
     """Conservative exact-turn lineage, not semantic claim matching.
 
@@ -210,6 +272,14 @@ def eligible_episode_source_sql() -> str:
     return f"""(
         {eligible_report_source_sql("memory_episodes")}
         AND {unmanaged_entity_source_sql("memory_episodes")}
+        AND EXISTS (
+            SELECT 1 FROM conversation_summaries s
+            WHERE s.summary_id=memory_episodes.summary_id
+              AND s.conversation_id=memory_episodes.conversation_id
+              AND s.user_id=memory_episodes.user_id
+              AND s.instance_id=memory_episodes.instance_id
+              AND {summary_range_current_sql("s")}
+        )
         AND NOT EXISTS (
             SELECT 1 FROM memory_revisions mr
             JOIN memory_records linked ON linked.memory_id=mr.memory_id
