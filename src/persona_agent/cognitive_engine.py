@@ -50,7 +50,8 @@ def _range(cur,job:dict,*,project:bool=True) -> tuple[dict,...]:
                   eligible.source_eligible,
                   CASE WHEN eligible.source_eligible THEN t.input_text ELSE '' END AS input_text,
                   CASE WHEN eligible.source_eligible THEN
-                    response_lineage_derived_text(r.response_id,r.user_id,r.instance_id,r.knowledge_excerpt,r.response_text)
+                    response_lineage_range_text(r.response_id,r.user_id,r.instance_id,
+                        r.knowledge_excerpt,r.response_text,%s,%s)
                   END AS response_text,
                   CASE WHEN r.delivery_status='GENERATED' AND NOT
                      response_lineage_current(r.response_id,r.user_id,r.instance_id)
@@ -64,7 +65,8 @@ def _range(cur,job:dict,*,project:bool=True) -> tuple[dict,...]:
            WHERE t.conversation_id=%s AND t.user_id=%s
              AND t.instance_id=%s AND t.sequence BETWEEN %s AND %s
            ORDER BY t.sequence""",
-        (job["conversation_id"],job["user_id"],job["instance_id"],
+        (job["start_sequence"],job["end_sequence"],
+         job["conversation_id"],job["user_id"],job["instance_id"],
          job["start_sequence"],job["end_sequence"]),
     )
     rows=tuple(dict(x) for x in cur.fetchall())

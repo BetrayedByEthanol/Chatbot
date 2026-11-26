@@ -1,14 +1,14 @@
 """Conversation-owned durable read fences; source authority stays with owners.
 
-A scope revision is deliberately conservative, not a per-record dependency
-graph. Exact recall references and epistemic status remain in existing
-Memory recall observations/events, joined by response_id.
+Broad historical scope revisions remain conservative. Raw-context lineage
+separately carries exact bounded turn IDs; owner policy is unchanged.
+Recall references and epistemic status remain in Memory observations/events.
 """
 import json
 
 from .conversation_contracts import (
     HistoricalReadFence,PreferenceReadFence,StaleConversation,StaleHistoricalContext,
-    InvalidatedResponse,
+    InvalidatedResponse,RawContextFence,
 )
 from .memory_read_policy import require_historical_read_fence
 
@@ -65,20 +65,31 @@ def require_response_lineage(cur,user_id,instance_id,response_id):
         (response_id,user_id,instance_id),
     )
     row=cur.fetchone()
-    if row is None:
-        return
-    if row["legacy_unbound"]:
+    if row is not None and row["legacy_unbound"]:
         raise InvalidatedResponse("response has no recorded source fence")
+    cur.execute(
+        """SELECT conversation_id,source_turn_ids,reusable,legacy_unbound
+           FROM conversation_response_raw_lineage
+           WHERE response_id=%s AND user_id=%s AND instance_id=%s""",
+        (response_id,user_id,instance_id),
+    )
+    raw=cur.fetchone()
+    if raw is not None and raw["legacy_unbound"]:
+        raise InvalidatedResponse("response has no recorded raw source fence")
     try:
         # Same lock order as response commit: Relationship then historical.
-        if row["preference_keys"]:
+        if row is not None and row["preference_keys"]:
             require_preference_fence(cur,user_id,instance_id,PreferenceReadFence(
                 tuple(row["preference_keys"]),
                 tuple(tuple(v) for v in row["preference_revisions"]),
             ))
-        if row["historical_revision"] is not None:
+        if row is not None and row["historical_revision"] is not None:
             require_historical_read_fence(cur,user_id,instance_id,HistoricalReadFence(
                 row["historical_revision"],row["next_expiry"],
             ))
+        if raw is not None:
+            from .raw_context import require_raw_context_fence
+            require_raw_context_fence(cur,user_id,instance_id,raw["conversation_id"],
+                RawContextFence(tuple(raw["source_turn_ids"]),raw["reusable"]))
     except (StaleHistoricalContext,StaleConversation) as exc:
         raise InvalidatedResponse("response evidence no longer current") from exc

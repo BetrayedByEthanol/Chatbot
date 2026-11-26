@@ -91,9 +91,9 @@ def test_source_withdrawal_invalidates_generated_and_delivered_replay(dsn):
             call(dsn,respond_to_text,actor(user),reply["turn_id"],NoModel())
         with pytest.raises(InvalidatedResponse):
             call(dsn,acknowledge_text_delivery,actor(user),reply["response_id"])
-    # The untracked ordinary reply is not indiscriminately invalidated.
+    # An ordinary reply now has exact raw lineage, not a broad historical fence.
     assert invoke(recovered,ordinary,"ack",response_id=plain["response_id"])["type"]=="ack"
-    assert invoke(recovered,ordinary,"status")["latest"]["source_status"]=="UNTRACKED"
+    assert invoke(recovered,ordinary,"status")["latest"]["source_status"]=="CURRENT"
     with psycopg.connect(dsn,autocommit=True) as conn:
         assert conn.execute(
             "SELECT delivery_status FROM conversation_responses WHERE response_id=%s",
