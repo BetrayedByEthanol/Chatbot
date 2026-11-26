@@ -144,5 +144,9 @@ class StaleHistoricalContext(StaleConversation):
     """Optional historical evidence changed; the same input can be retried."""
 
 
+class InvalidatedResponse(StaleConversation):
+    """A committed response cannot be offered or replayed from stale evidence."""
+
+
 class ModelUnavailable(Exception):
     """A model failed; its already-committed user input is retained."""

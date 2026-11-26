@@ -14,7 +14,7 @@ from pydantic import ValidationError
 from .application_auth import authenticate_application
 from .application_contracts import ApplicationEnvelope
 from .conversation import _selection,ingest_text,acknowledge_text_delivery
-from .conversation_contracts import TextInputCommand,StaleConversation,ModelUnavailable
+from .conversation_contracts import TextInputCommand,StaleConversation,ModelUnavailable,InvalidatedResponse
 from .lifecycle import PrimaryActivityCommand,record_primary_activity
 from .response_decisions import decide_response
 from .response_orchestrator import respond_to_user_text
@@ -75,6 +75,8 @@ def _offer(connection,identity,reply):
                 raise PermissionDenied("response unavailable")
             if row["delivery_status"]=="GENERATED" and conversation["last_input_turn_id"]!=row["turn_id"]:
                 raise StaleConversation("generated response superseded")
+            from .response_lineage import require_response_lineage
+            require_response_lineage(cur,identity.user_id,identity.instance_id,row["response_id"])
             cur.execute(
                 """INSERT INTO application_delivery_offers(session_id,response_id,user_id,instance_id,
                        conversation_id,selection_generation) VALUES (%s,%s,%s,%s,%s,%s)
@@ -93,7 +95,13 @@ def _status(connection,identity):
         with connection.cursor(row_factory=dict_row) as cur:
             _scope(cur,identity)
             cur.execute(
-                """SELECT t.turn_id,t.status,r.response_id,r.delivery_status
+                """SELECT t.turn_id,t.status,r.response_id,r.delivery_status,
+                          CASE WHEN r.response_id IS NULL THEN NULL
+                               WHEN NOT EXISTS (SELECT 1 FROM conversation_response_lineage l
+                                   WHERE l.response_id=r.response_id AND l.user_id=r.user_id
+                                     AND l.instance_id=r.instance_id) THEN 'UNTRACKED'
+                               WHEN response_lineage_current(r.response_id,r.user_id,r.instance_id)
+                               THEN 'CURRENT' ELSE 'INVALIDATED' END AS source_status
                    FROM conversations c JOIN conversation_turns t ON t.turn_id=c.last_input_turn_id
                    LEFT JOIN conversation_responses r ON r.turn_id=t.turn_id
                      AND r.user_id=t.user_id AND r.instance_id=t.instance_id
@@ -171,6 +179,8 @@ class AuthenticatedTextApplication:
                 return _offer(conn,identity,reply)
         except (PermissionDenied,StaleSelection):
             return {"type":"error","code":"NOT_AUTHORIZED"}
+        except InvalidatedResponse:
+            return {"type":"error","code":"STALE_EVIDENCE"}
         except StaleConversation:
             return {"type":"error","code":"STALE"}
         except IdempotencyConflict:

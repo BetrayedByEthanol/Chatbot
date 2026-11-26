@@ -38,4 +38,4 @@ This grouping is a starting point for the per-table/per-field owner inventory, i
 3. Define authenticated scoped correction/revocation commands and durable invalidation/outbox behavior. Prove late worker/response results cannot reintroduce revoked evidence; rebuild or invalidate indexes/caches. Plan end-to-end erasure separately for append-only history, FK graph, receipts, backups and exports. Audit without retaining erased private content.
 4. Test tenant isolation, correction/expiry, superseded responses, provider copies, restoration and replay. No destructive changes to authoritative records until policy and owner contracts are reviewed.
 
-07B1 initial inventory only. 07B2/3 remain open. Remote/untrusted deployment blocked by 07A and applicable 07B gates.
+07B1 initial inventory merged with PR #131. [07B2 first response-lineage increment](mvp-07b2-response-lineage.md) now addresses tracked cached/generated response eligibility and new derived assistant copies. Other owner-specific source invalidation, raw-turn and existing derived copies, policy and 07B3 remain open. Remote/untrusted deployment blocked by applicable 07A/07B gates.

@@ -153,6 +153,22 @@ US-050 remains M until candidate CI/review; other statuses unchanged. Technical 
 
 US-004/009/010/117/118 remain P; US-085 remains M. No status promotion, remote/untrusted deployment approval or Phase 2/3 exit.
 
+## 2J. MVP-07A merged and 07B2 first candidate evidence
+
+- Final PR #131 head `013844252529c8d64824edf6fe3e5f115d400dbd`: [PostgreSQL CI](https://github.com/BetrayedByEthanol/Chatbot/actions/runs/45829385892) SUCCESS (2,278 passed, 3 skipped); standalone contracts 5 passed; without Psycopg 996 passed, 241 skipped. [Live integration](https://github.com/BetrayedByEthanol/Chatbot/actions/runs/45829385876) SUCCESS. Merged as `62f54a8945a9d57e559214c137c5ae1fc90ed84a`. Initial 07B1 inventory merged. No separate merge-SHA CI or remote deployment acceptance claimed.
+- [07B2 response-lineage implementation](mvp-07b2-response-lineage.md); [candidate regression](../tests/test_mvp07b2_response_lineage.py). New tests NOT RUN at authoring.
+
+| Criterion | Candidate evidence | Status |
+|---|---|---|
+| B2.1 — Durable dependency | Scoped immutable response metadata, existing recall evidence references and source trust, no new verification claim | NOT RUN |
+| B2.2 — Revision and expiry | Historical scope revision/time fence and exact Relationship keys; direct canonical fact/entity capture; no stale cached content on replay or ACK | NOT RUN |
+| B2.3 — Output authority | Offer-time recheck, stale metadata-only status, speech clip/start/late ACK gate, legacy unbound replay denial | NOT RUN |
+| B2.4 — Derived assistant copies | Shared omission of tracked assistant text in model/summary/cognition/dialogue projections; invalidated GENERATED no longer blocks range readiness | NOT RUN |
+| B2.5 — Other lineage | Raw user source revocation, complete summary/reflection/index dependency graph, existing derived copies and all late-worker commits | OPEN |
+| B3 — Deletion policy | Physical erasure, restore/backup/provider copies, exports and audit retention | OPEN |
+
+US-117/118 remain P; US-085 remains M. No complete 07B2 acceptance or untrusted deployment approval.
+
 ## 3. Confirmed Phase 0–1 acceptance items
 
 Each of the 28 stories below retains its canonical ID, authority, priority, owner and baseline implementation status. Confirmed criteria are reproduced from the master backlog; mixed criteria are scoped to their confirmed core with proposed details identified explicitly. Evidence links come from the matrix and are starting points, not proof of full coverage. Review applicable legacy verification candidates before acceptance; unapproved numerical parameters are not binding.
