@@ -276,12 +276,16 @@ def test_document_excerpts_do_not_enter_summary_or_cognitive_evidence(dsn):
     from persona_agent.knowledge_memory import save_knowledge
     from persona_agent.conversation import acknowledge_text_delivery
     from persona_agent.response_orchestrator import respond_to_user_text
-    from persona_agent.summary_memory import prepare_summary
-    from persona_agent.cognitive_engine import schedule_cognition,prepare_cognition
+    from persona_agent.summary_memory import prepare_summary,commit_summary
+    from persona_agent.summary_contracts import SummaryDraft
+    from persona_agent.cognitive_engine import schedule_cognition,prepare_cognition,commit_cognition
+    from persona_agent.cognitive_contracts import CognitiveDraft
+    from persona_agent.operation_control import complete_operation
     from test_phase2_summaries import schedule as schedule_summary,claim as claim_summary
-    from test_phase2_cognition import platform,claim as claim_cognition
-    actor,call,seed,turn=_helpers()
-    user,instance,_=seed(dsn)
+    from test_phase2_cognition import platform,claim as claim_cognition,seed as seed_cognition
+    actor,call,_,turn=_helpers()
+    # Configure the shared cognition.llm pool even when this test runs alone.
+    user,instance,_=seed_cognition(dsn)
     call(dsn,save_knowledge,actor(user),_save_command(dsn,user,instance))
     conv=uuid4()
     question=turn(dsn,user,instance,conv,QUESTION)
@@ -294,8 +298,17 @@ def test_document_excerpts_do_not_enter_summary_or_cognitive_evidence(dsn):
     assert lease.operation_id==summary.operation_id
     snapshot=call(dsn,prepare_summary,lease)
     assert snapshot.turns[0]["response_text"]=="[Saved document excerpts omitted; request fresh recall.]"
+    # Both jobs reserve cognition.llm. Finish the summary through its owner
+    # and P0 completion contracts before claiming the cognitive operation.
+    committed=call(dsn,commit_summary,lease,snapshot,SummaryDraft(
+        summary="The user requested a saved reference.",episodes=(),
+    ),"test-model")
+    call(dsn,complete_operation,lease,result_ref=f"summary:{committed.summary_id}")
     planned=call(dsn,schedule_cognition,platform(user),conv,instance,1)
+    assert planned is not None
     lease=claim_cognition(dsn)
     assert planned.operation_id==lease.operation_id
     cognitive=call(dsn,prepare_cognition,lease)
     assert cognitive.turns[0]["response_text"]=="[Saved document excerpts omitted; request fresh recall.]"
+    call(dsn,commit_cognition,lease,cognitive,CognitiveDraft(),"test-model")
+    call(dsn,complete_operation,lease,result_ref=f"cognition:{lease.operation_id}")
