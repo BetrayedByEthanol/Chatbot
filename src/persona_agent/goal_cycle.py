@@ -35,13 +35,14 @@ def _occurrences(cur,actor,goal,start,end):
     """Read current reports and effective confirmations under Task graph lock."""
     cur.execute(
         """SELECT s.ordinal,t.task_id,t.version AS task_version,t.status AS task_status,
-                  t.created_at AS task_created_at,r.report_id,r.report,r.source_turn_id,
+                  t.created_at AS task_created_at,r.report_id,r.report,r.source_turn_id,r.source_current,
                   source.created_at AS source_at, c.confirmation_id,c.report_id AS confirmed_report_id
            FROM goal_recurring_task_slots s
            JOIN goal_tasks t ON t.task_id=s.task_id AND t.goal_id=s.goal_id
              AND t.user_id=s.user_id AND t.instance_id=s.instance_id
            LEFT JOIN LATERAL (
-               SELECT r.report_id,r.report,r.source_turn_id,r.source_conversation_id
+               SELECT r.report_id,r.report,r.source_turn_id,r.source_conversation_id,
+                      workflow_task_report_current(r.user_id,r.instance_id,r.report_id) AS source_current
                FROM task_outcome_reports r JOIN events e ON e.event_id=r.event_id
                WHERE r.task_id=t.task_id AND r.goal_id=t.goal_id
                  AND r.user_id=t.user_id AND r.instance_id=t.instance_id
@@ -71,7 +72,7 @@ def _occurrences(cur,actor,goal,start,end):
             state="REQUIRES_REASSESSMENT"
         elif status not in ("USER_REPORTED_DONE","USER_CONFIRMED"):
             state="NONE"
-        elif row["report"]!="DONE" or row["source_at"] is None:
+        elif row["report"]!="DONE" or row["source_at"] is None or not row["source_current"]:
             state="REQUIRES_REASSESSMENT"
         elif not (_instant(start)<=row["source_at"]<_instant(end)
                   and row["source_at"]>=row["task_created_at"]):

@@ -209,6 +209,7 @@ class PersonalizedApproachHandle(BaseModel):
     goal_id: UUID | None
     strategy_id: UUID | None
     title: str
+    evidence_current: bool = True
 
 
 class PersonalizedApproachView(BaseModel):
@@ -226,6 +227,7 @@ class PersonalizedApproachView(BaseModel):
     rendered_steps: tuple[ProcedureStep, ...]
     adaptation_reason: str | None
     definition_policy: ProcedurePolicy
+    evidence_current: bool = True
 
 
 def procedure_approval_phrase(command: ProcedureUserCommand) -> str:

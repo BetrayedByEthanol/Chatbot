@@ -438,3 +438,36 @@ def test_personal_experience_counts_latest_per_run_without_global_inference(dsn)
         actor(outsider),other_instance,template,
     )
     assert empty.observed_run_count==0
+
+
+@pytest.mark.parametrize("applied",[False,True])
+def test_invalidated_evaluation_cannot_justify_private_adaptation(dsn,applied):
+    from workflow_evidence_helpers import link_memory,invalidate
+    from persona_agent.procedure_learning_state import read_adaptation_guidance
+    user,instance,conv,template,variant,run=prepared_variant_run(dsn,"PARAMETERIZED")
+    assessed=evaluation_command(dsn,user,instance,conv,run,1,
+        outcome="USER_REPORTED_FAILURE",cause="ENVIRONMENT")
+    call(dsn,evaluate_procedure_run,actor(user),assessed)
+    saved=link_memory(dsn,user,instance,conv,assessed.evidence_turn_id)
+    proposed=proposal_command(dsn,user,instance,conv,assessed.evaluation_id,variant,1,
+        params={"hostname":"localhost","days":60})
+    call(dsn,propose_procedure_adaptation,actor(user),proposed)
+    if applied:
+        call(dsn,decide_procedure_adaptation,actor(user),
+             decide_command(dsn,user,instance,conv,proposed.proposal_id,1,"APPLY"))
+    invalidate(dsn,user,instance,saved)
+    assessment=call(dsn,read_procedure_evaluations,actor(user),instance,run)[0]
+    assert assessment.outcome=="USER_REPORTED_FAILURE" and not assessment.evidence_current
+    summary=call(dsn,summarize_personal_procedure_experience,actor(user),instance,
+                 template,variant_id=variant)
+    assert summary.reported_failure_count==0 and summary.unevaluated_run_count==1
+    assert call(dsn,read_adaptation_guidance,actor(user),instance,run).next_action=="REASSESS_STALE_EVIDENCE"
+    if applied:
+        assert not call(dsn,read_personalized_approach,actor(user),instance,variant).evidence_current
+    else:
+        assert call(dsn,read_procedure_adaptation,actor(user),instance,proposed.proposal_id).status=="STALE"
+        with pytest.raises(VersionConflict,match="source evidence"):
+            call(dsn,decide_procedure_adaptation,actor(user),
+                 decide_command(dsn,user,instance,conv,proposed.proposal_id,1,"APPLY"))
+        call(dsn,decide_procedure_adaptation,actor(user),
+             decide_command(dsn,user,instance,conv,proposed.proposal_id,1,"REJECT"))

@@ -126,6 +126,10 @@ def _command_in_transaction(cur,actor: TrustedActor,command: ProcedureUserComman
         else:
             approval_validator(cur,actor,command,source)
     result=apply(cur,receipt_id)
+    if command_type in ("procedure.variant.create.v1","procedure.variant.revise.v1"):
+        from .workflow_evidence import lock_scope,require_current
+        lock_scope(cur,actor.user_id,command.instance_id)
+        require_current(cur,actor.user_id,command.instance_id,"variant",result.entity_id,result.revision)
     cur.execute(
         """UPDATE command_receipts SET event_id=%s,result_json=%s::jsonb
            WHERE receipt_id=%s""",
@@ -432,6 +436,11 @@ def read_shared_procedure(connection: Connection, actor: TrustedActor, instance_
                                        content_hash=procedure_content_hash(definition))
 
 
+def _variant_evidence_current(cur,actor,instance_id,variant_id,revision):
+    from .workflow_evidence import current
+    return current(cur,actor.user_id,instance_id,"variant",variant_id,revision)
+
+
 def read_personalized_approach(connection: Connection, actor: TrustedActor,
                                instance_id: UUID, variant_id: UUID,
                                revision: int | None = None) -> PersonalizedApproachView:
@@ -467,6 +476,7 @@ def read_personalized_approach(connection: Connection, actor: TrustedActor,
                 rendered_steps=rendered,
                 adaptation_reason=record["adaptation_reason"],
                 definition_policy=definition.policy,
+                evidence_current=_variant_evidence_current(cur,actor,instance_id,variant_id,pinned),
             )
 
 
@@ -521,7 +531,8 @@ def list_personalized_approaches(connection: Connection, actor: TrustedActor,
             cur.execute(
                 """SELECT p.variant_id,p.template_id,p.current_revision,
                           p.goal_id,p.strategy_id,r.template_version,
-                          v.definition->>'title' AS title
+                          v.definition->>'title' AS title,
+                          workflow_variant_current(p.user_id,p.instance_id,p.variant_id,p.current_revision) AS evidence_current
                    FROM personalized_procedures p
                    JOIN personalized_procedure_revisions r
                      ON r.variant_id=p.variant_id
@@ -537,5 +548,5 @@ def list_personalized_approaches(connection: Connection, actor: TrustedActor,
                 variant_id=row["variant_id"],template_id=row["template_id"],
                 template_version=row["template_version"],
                 revision=row["current_revision"],goal_id=row["goal_id"],
-                strategy_id=row["strategy_id"],title=row["title"],
+                strategy_id=row["strategy_id"],title=row["title"],evidence_current=row["evidence_current"],
             ) for row in cur.fetchall())

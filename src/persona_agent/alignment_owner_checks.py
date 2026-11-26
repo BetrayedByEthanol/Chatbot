@@ -10,6 +10,7 @@ from uuid import UUID
 from .contracts import TrustedActor
 from .task_state import _confirmation_state, _graph_read_lock
 from .runtime import VersionConflict
+from .workflow_evidence import current as evidence_current
 
 
 def _outcome(decision,reason,task,goal_versions=None,run=None,priority=1):
@@ -73,6 +74,8 @@ def validate_task_alignment(cur,user_id:UUID,instance_id:UUID,task:dict)->dict:
     if (created is None or created["trust_level"]!="AUTHENTICATED_USER"
         or created["claimed_task"]!=str(task["task_id"])):
         return _outcome("BLOCKED","SOURCE_UNVERIFIED",task,versions,priority=priority)
+    if not evidence_current(cur,user_id,instance_id,"task_plan",task["task_id"]):
+        return _outcome("REVIEW","SOURCE_UNVERIFIED",task,versions,priority=priority)
     if task["status"]!="PLANNED":
         return _outcome("BLOCKED","TASK_INACTIVE",task,versions,priority=priority)
     if task["suspended"]:
@@ -109,6 +112,8 @@ def validate_task_alignment(cur,user_id:UUID,instance_id:UUID,task:dict)->dict:
         return _outcome("REVIEW","MISSING_APPROVED_RUN",task,versions,priority=priority)
     if run["status"]!="ACTIVE":
         return _outcome("BLOCKED","RUN_INACTIVE",task,versions,run,priority)
+    if not evidence_current(cur,user_id,instance_id,"run",run["run_id"]):
+        return _outcome("REVIEW","SOURCE_UNVERIFIED",task,versions,run,priority)
     cur.execute(
         """SELECT i.persona_id FROM persona_instances i
            WHERE i.user_id=%s AND i.id=%s""",(user_id,instance_id),

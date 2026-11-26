@@ -26,6 +26,8 @@ from .task_contracts import (
     task_approval_phrase,
 )
 
+from .workflow_evidence import lock_scope,require_command_source
+
 MAX_TASKS_PER_GOAL = 64
 MAX_DEPENDENCIES_PER_TASK = 16
 
@@ -138,7 +140,9 @@ def _latest_report(cur, actor: TrustedActor, instance_id: UUID,
     The goal journal's stream_sequence is unique and increasing for reports.
     """
     cur.execute(
-        """SELECT r.report_id,r.report FROM task_outcome_reports r
+        """SELECT r.report_id,r.report,
+                  workflow_task_report_current(r.user_id,r.instance_id,r.report_id) AS source_current
+           FROM task_outcome_reports r
            JOIN events e ON e.event_id=r.event_id
            WHERE r.task_id=%s AND r.user_id=%s AND r.instance_id=%s
            ORDER BY e.stream_sequence DESC LIMIT 1""",
@@ -202,13 +206,16 @@ def _confirmation_state(cur, actor: TrustedActor, instance_id: UUID,
     for row in cur.fetchall():
         direct.setdefault(row["task_id"],set()).add(row["prerequisite_task_id"])
     cur.execute(
-        """SELECT DISTINCT ON (task_id) task_id,confirmation_id
+        """SELECT DISTINCT ON (task_id) task_id,confirmation_id,
+                  workflow_task_confirmation_current(user_id,instance_id,confirmation_id) AS source_current
            FROM task_user_confirmations
            WHERE task_id=ANY(%s) AND user_id=%s AND instance_id=%s
            ORDER BY task_id,task_version DESC""",
         (node_ids,actor.user_id,instance_id),
     )
-    confirmations={row["task_id"]:row["confirmation_id"] for row in cur.fetchall()}
+    confirmation_rows=cur.fetchall()
+    confirmations={row["task_id"]:row["confirmation_id"] for row in confirmation_rows}
+    eligible_confirmations={row["task_id"] for row in confirmation_rows if row["source_current"]}
     snapshots: dict[UUID,dict[UUID,UUID]]={}
     if confirmations:
         cur.execute(
@@ -236,7 +243,7 @@ def _confirmation_state(cur, actor: TrustedActor, instance_id: UUID,
         visiting.add(node_id)
         confirmation_id=confirmations.get(node_id)
         pinned=snapshots.get(confirmation_id,{})
-        ok=confirmation_id is not None
+        ok=confirmation_id is not None and node_id in eligible_confirmations
         for predecessor in direct.get(node_id,()):
             if (not valid(predecessor)
                 or pinned.get(predecessor)!=confirmations.get(predecessor)):
@@ -308,6 +315,15 @@ def _command(connection: Connection, actor: TrustedActor,
             source=_source(cur,actor,command)
             _approval(cur,actor,command,source)
             result=apply(cur,receipt_id)
+            # Do not gate corrections, cancellation or priority decisions on
+            # old evidence. Only admissions of a plan/report/confirmation.
+            if isinstance(command,(CreateTaskCommand,ReportTaskOutcomeCommand,ConfirmUserTaskCommand)):
+                lock_scope(cur,actor.user_id,command.instance_id)
+                require_command_source(cur,actor,command)
+                if isinstance(command,ConfirmUserTaskCommand):
+                    _,effective,_,_=_confirmation_state(cur,actor,command.instance_id,[command.task_id])
+                    if not effective.get(command.task_id):
+                        raise VersionConflict("task confirmation source or prerequisite evidence changed")
             cur.execute(
                 """UPDATE command_receipts SET event_id=%s,result_json=%s::jsonb
                    WHERE receipt_id=%s""",
@@ -624,6 +640,8 @@ def confirm_user_task(connection: Connection, actor: TrustedActor,
         if (latest is None or latest["report_id"]!=command.report_id
             or latest["report"]!="DONE"):
             raise VersionConflict("DONE report was superseded by newer task evidence")
+        if not latest["source_current"]:
+            raise VersionConflict("DONE report source evidence requires reassessment")
         _active_goal_chain(cur,actor,command.instance_id,task["goal_id"])
         if task["suspended"]:
             raise VersionConflict("user-suspended task cannot be confirmed actionable")
@@ -881,7 +899,8 @@ def list_tasks(connection: Connection, actor: TrustedActor, instance_id: UUID,
             )
             active=all(row["status"]=="ACTIVE" for row in cur.fetchall())
             cur.execute(
-                """SELECT t.*,s.window_start AS recurring_start,s.window_end AS recurring_end
+                """SELECT t.*,s.window_start AS recurring_start,s.window_end AS recurring_end,
+                          workflow_task_plan_current(t.user_id,t.instance_id,t.task_id) AS plan_current
                    FROM goal_tasks t LEFT JOIN goal_recurring_task_slots s
                      ON s.task_id=t.task_id AND s.goal_id=t.goal_id
                      AND s.user_id=t.user_id AND s.instance_id=t.instance_id
@@ -926,6 +945,12 @@ def list_tasks(connection: Connection, actor: TrustedActor, instance_id: UUID,
                     blockers.append("AWAITING_USER_CONFIRMATION")
                 elif task["status"]=="NEEDS_REVIEW":
                     blockers.append("NEEDS_REVIEW")
+                report_stale=False
+                if task["status"]=="USER_REPORTED_DONE":
+                    report=_latest_report(cur,actor,instance_id,task["task_id"])
+                    report_stale=report is None or not report["source_current"]
+                if task["status"]!="CANCELLED" and (not task["plan_current"] or report_stale):
+                    blockers.append("SOURCE_EVIDENCE_REQUIRES_REASSESSMENT")
                 if not active:
                     blockers.append("GOAL_OR_ANCESTOR_INACTIVE")
                 if task["suspended"]:
@@ -935,8 +960,8 @@ def list_tasks(connection: Connection, actor: TrustedActor, instance_id: UUID,
                 unmet=unmet_by_task.get(task["task_id"],())
                 if unmet:
                     blockers.append("PREREQUISITE_NOT_CONFIRMED")
-                    if task["status"]=="USER_CONFIRMED":
-                        blockers.append("CONFIRMATION_REQUIRES_REASSESSMENT")
+                if task["status"]=="USER_CONFIRMED" and not effective_by_task.get(task["task_id"],False):
+                    blockers.append("CONFIRMATION_REQUIRES_REASSESSMENT")
                 if task["deadline"] is not None and task["deadline"]<=now:
                     blockers.append("DEADLINE_EXPIRED")
                 if (task["recurring_start"] is not None
@@ -966,6 +991,7 @@ def list_tasks(connection: Connection, actor: TrustedActor, instance_id: UUID,
                     ),
                     needs_reassessment=(
                         task["status"]=="NEEDS_REVIEW"
+                        or (task["status"]!="CANCELLED" and (not task["plan_current"] or report_stale))
                         or (task["status"]=="USER_CONFIRMED"
                             and not effective_by_task.get(task["task_id"],False))
                     ),

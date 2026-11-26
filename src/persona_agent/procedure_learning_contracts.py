@@ -99,6 +99,7 @@ class ProcedureEvaluationView(BaseModel):
     confidence: float
     supporting_step_event_ids: tuple[UUID, ...]
     criteria: tuple[ProcedureCriterionReport, ...]
+    evidence_current: bool = True
     # Outcome is user testimony or a tentative observation, not verified.
     independently_verified: Literal[False] = False
     task_or_goal_completed: Literal[False] = False
@@ -118,6 +119,7 @@ class ProcedureAdaptationView(BaseModel):
     reason: str
     status: Literal["PROPOSED", "STALE", "APPLIED", "REJECTED"]
     applied_revision: int | None
+    evidence_current: bool = True
 
 class ProcedureExperienceView(BaseModel):
     """Bounded personal observations, never a population-wide success rate."""

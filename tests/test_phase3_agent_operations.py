@@ -777,3 +777,67 @@ def test_parallel_completed_agent_steps_reconcile_serially_without_deadlock(dsn)
         call(dsn,reconcile_agent_step,platform(user),cmd.operation_id).replayed
         for cmd in (first,second)
     )
+
+
+@pytest.mark.parametrize("when",["DURING","AFTER_COMPLETION"])
+def test_memory_invalidates_agent_grant_without_erasing_actual_result(dsn,when):
+    from workflow_evidence_helpers import link_memory,invalidate
+    user,instance,conv,goal,task,run=staged(dsn)
+    cmd=authorization(dsn,user,instance,conv,run)
+    saved=link_memory(dsn,user,instance,conv,cmd.evidence_turn_id)
+    call(dsn,schedule_agent_step,actor(user),cmd)
+    invoked=[]
+    def executor(instruction,max_words):
+        invoked.append(instruction)
+        if when=="DURING":
+            invalidate(dsn,user,instance,saved)
+        return "Text analysis: actual read-only result."
+    lease=call(dsn,run_one_agent_step,worker_id="source-fence",executor=executor)
+    assert lease.operation_id==cmd.operation_id and len(invoked)==1
+    row=operation_row(dsn,cmd.operation_id)
+    if when=="DURING":
+        assert row[0]=="RUNNING" and row[4] is None
+        call(dsn,cancel_operation,actor(user),CancelOperationCommand(
+            operation_id=cmd.operation_id,expected_version=row[5],idempotency_key=uuid4().hex))
+        call(dsn,acknowledge_cancel,lease)
+    else:
+        assert row[0]=="COMPLETED" and row[4]
+        invalidate(dsn,user,instance,saved)
+    assert call(dsn,reconcile_agent_step,platform(user),cmd.operation_id).resolution=="INVALIDATED"
+    assert call(dsn,read_procedure_run,actor(user),instance,run).steps[0].status=="NOT_STARTED"
+    assert operation_row(dsn,cmd.operation_id)[0]==("CANCELLED" if when=="DURING" else "COMPLETED")
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute("SELECT count(*) FROM procedure_agent_operation_results WHERE operation_id=%s",
+                            (cmd.operation_id,)).fetchone()[0]==1
+
+
+def test_reconfirmed_prerequisite_does_not_revive_old_agent_grant(dsn):
+    from test_phase3_tasks import edge,report_done,confirm_done,correction_command
+    from persona_agent.task_state import correct_task_outcome
+    user,instance,conv,goal,task,run=staged(dsn)
+    prerequisite,_,_=make_task(dsn,user,instance,conv,goal,2,title="Prerequisite")
+    linked=edge(dsn,user,instance,conv,task,prerequisite,3)
+    report=report_done(dsn,user,instance,conv,prerequisite,1)
+    first=confirm_done(dsn,user,instance,conv,prerequisite,report.version,report.report_id)
+    cmd=authorization(dsn,user,instance,conv,run,task_version=linked.version)
+    call(dsn,schedule_agent_step,actor(user),cmd)
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute("SELECT task_prerequisite_confirmations FROM procedure_agent_operation_authorizations WHERE operation_id=%s",
+                            (cmd.operation_id,)).fetchone()[0]=={str(prerequisite):str(first.confirmation_id)}
+    corrected=call(dsn,correct_task_outcome,actor(user),correction_command(
+        dsn,user,instance,conv,prerequisite,first.version,confirmation_id=first.confirmation_id))
+    fresh=report_done(dsn,user,instance,conv,prerequisite,corrected.version)
+    second=confirm_done(dsn,user,instance,conv,prerequisite,fresh.version,fresh.report_id)
+    assert second.confirmation_id!=first.confirmation_id
+    assert call(dsn,claim_operation,worker_id="old-pinned-grant",capabilities=(SLOW_TOOL,),
+                operation_types=(PROCEDURE_AGENT_OPERATION,)) is None
+    row=operation_row(dsn,cmd.operation_id)
+    assert row[0]=="QUEUED"
+    call(dsn,cancel_operation,actor(user),CancelOperationCommand(
+        operation_id=cmd.operation_id,expected_version=row[5],idempotency_key=uuid4().hex))
+    assert call(dsn,reconcile_agent_step,platform(user),cmd.operation_id).resolution=="INVALIDATED"
+    renewed=authorization(dsn,user,instance,conv,run,task_version=linked.version)
+    call(dsn,schedule_agent_step,actor(user),renewed)
+    lease=call(dsn,run_one_agent_step,worker_id="new-pinned-grant")
+    assert lease.operation_id==renewed.operation_id
+    assert call(dsn,reconcile_agent_step,platform(user),renewed.operation_id).resolution=="VERIFIED"

@@ -10,6 +10,39 @@ from .contracts import TrustedActor
 from .runtime import PermissionDenied, VersionConflict
 from .task_state import _active_goal_chain, _confirmation_state, _graph_read_lock
 from .tool_contracts import SLOW_TOOL, PROCEDURE_AGENT_OPERATION
+from .workflow_evidence import lock_scope,require_current
+
+
+def prerequisite_snapshot(cur,actor,instance_id,task_id):
+    unmet,effective,direct,confirmations=_confirmation_state(cur,actor,instance_id,[task_id])
+    if unmet.get(task_id):
+        raise VersionConflict("AGENT task dependency no longer effective")
+    predecessors=direct.get(task_id,())
+    if any(not effective.get(t) or t not in confirmations for t in predecessors):
+        raise VersionConflict("AGENT task prerequisite confirmation unavailable")
+    return {str(t):str(confirmations[t]) for t in sorted(predecessors,key=str)}
+
+
+def require_agent_evidence_current(cur,stage,*,serialize=False):
+    """Recheck exact approval, pinned procedure and the approved DAG heads.
+
+    Stage/graph/run/task locks are already held by the caller. Claim scans
+    use read-only checks; actual dispatch/completion/reconciliation also
+    serialize with Memory changes at their last controlled boundary.
+    """
+    uid,iid=stage["user_id"],stage["instance_id"]
+    if serialize:
+        lock_scope(cur,uid,iid)
+    require_current(cur,uid,iid,"agent_grant",stage["operation_id"])
+    require_current(cur,uid,iid,"run",stage["run_id"])
+    observed=prerequisite_snapshot(cur,TrustedActor(user_id=uid,source_id="procedure.gate"),
+                                   iid,stage["task_id"])
+    pinned=stage["task_prerequisite_confirmations"]
+    if pinned is None:
+        if observed:
+            raise VersionConflict("legacy AGENT grant has unknown prerequisite lineage")
+    elif pinned!=observed:
+        raise VersionConflict("AGENT task prerequisite confirmation changed")
 
 
 def require_procedure_agent_gate(cur, operation: dict, *,
@@ -129,9 +162,7 @@ def require_procedure_agent_gate(cur, operation: dict, *,
     )
     if cur.fetchone() is not None:
         raise VersionConflict("another task has exclusive priority")
-    unmet,_,_,_=_confirmation_state(cur,actor,instance_id,[stage["task_id"]])
-    if unmet.get(stage["task_id"]):
-        raise VersionConflict("AGENT task dependency no longer effective")
+    require_agent_evidence_current(cur,stage)
     if not stage_only and operation.get("execution_policy")=="BACKGROUND_RESUMABLE":
         # The new grant must carry valid source lineage at EVERY P0 fence;
         # the predecessor's old epoch is never an execution permission.
