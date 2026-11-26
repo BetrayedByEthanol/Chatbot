@@ -581,11 +581,16 @@ def test_resumed_followup_is_positioned_at_delivery_even_when_source_outside_win
             "WHERE tool_call_id=%s",(tool.tool_call_id,),
         ).fetchone()==(source.turn_id,resumed.turn_id)
 
+    # Named topic recall carries a historical read fence. MVP-07B2 omits
+    # tracked assistant bodies from derived context, even while current.
+    # The placeholder must retain the resume reply position before the follow-up.
+    assert resumed_reply.text=="The analysis is ready."
+    projected_resume="[Evidence-bearing assistant text omitted; request fresh recall.]"
     next_turn=incoming(dsn,user,instance,conv,"What did beta count?")
     window=call(dsn,prepare_text_context,actor(user),next_turn.turn_id,max_turns=2)
     assert [(m.role,m.content) for m in window.messages[1:]]==[
         ("user","Back to the text analysis"),
-        ("assistant",resumed_reply.text),
+        ("assistant",projected_resume),
         ("assistant",published.text),
         ("user","What did beta count?"),
     ]
@@ -598,7 +603,7 @@ def test_resumed_followup_is_positioned_at_delivery_even_when_source_outside_win
         ("user","Unrelated trip planning"),
         ("assistant",unrelated_reply.text),
         ("user","Back to the text analysis"),
-        ("assistant",resumed_reply.text),
+        ("assistant",projected_resume),
         ("assistant",published.text),
         ("user","What did beta count?"),
     ]

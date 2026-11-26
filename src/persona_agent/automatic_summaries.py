@@ -304,7 +304,8 @@ def _reconcile_active(connection: Connection, policy: AutoSummaryPolicy,
                        AND (
                            t.status='PENDING'
                            OR (r.delivery_status='GENERATED'
-                               AND r.selection_generation=p.generation)
+                               AND r.selection_generation=p.generation
+                               AND response_lineage_current(r.response_id,r.user_id,r.instance_id))
                        )
                  )
                ORDER BY c.updated_at,c.conversation_id LIMIT %s""",

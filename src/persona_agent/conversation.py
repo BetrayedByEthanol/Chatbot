@@ -341,17 +341,16 @@ def lookup_response(connection: Connection, actor: TrustedActor,
             return None
         if actor.application_session_id is not None:
             _selection(cursor,actor,row["instance_id"],row["selection_generation"],row["conversation_id"])
+        from .response_lineage import require_response_lineage
+        require_response_lineage(cursor,actor.user_id,row["instance_id"],row["response_id"])
         return TextResponseResult(
             response_id=row["response_id"],turn_id=row["turn_id"],
             text=row["response_text"],model_id=row["model_id"],
             delivery_status=row["delivery_status"],replayed=True,
         )
-    if actor.application_session_id is not None:
-        with connection.transaction():
-            with connection.cursor(row_factory=dict_row) as cursor:
-                return read(cursor)
-    with connection.cursor(row_factory=dict_row) as cursor:
-        return read(cursor)
+    with connection.transaction():
+        with connection.cursor(row_factory=dict_row) as cursor:
+            return read(cursor)
 
 
 def _pending_response_anchor(cursor, actor: TrustedActor, turn_id: UUID):
@@ -603,7 +602,7 @@ def prepare_text_context(
             cursor.execute(
                 """
                 SELECT t.turn_id,t.sequence,t.input_text,
-                       CASE WHEN r.knowledge_excerpt THEN '[Saved document excerpts omitted; request fresh recall.]' ELSE r.response_text END AS response_text,r.delivery_status
+                       response_lineage_derived_text(r.response_id,r.user_id,r.instance_id,r.knowledge_excerpt,r.response_text) AS response_text,r.delivery_status
                 FROM conversation_turns t
                 LEFT JOIN conversation_responses r ON r.turn_id=t.turn_id
                 WHERE t.conversation_id=%s AND t.user_id=%s
@@ -1247,6 +1246,8 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
                     raise StaleConversation(
                         "undelivered reply superseded by a newer input"
                     )
+                from .response_lineage import require_response_lineage
+                require_response_lineage(cursor,actor.user_id,context.instance_id,saved["response_id"])
                 return TextResponseResult(
                     response_id=saved["response_id"],turn_id=saved["turn_id"],
                     text=saved["response_text"],model_id=saved["model_id"],
@@ -1283,39 +1284,13 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
                         raise StaleConversation(
                             "linked dialogue context changed during inference"
                         )
+            from .response_lineage import require_preference_fence,persist_response_lineage
+            from .memory_read_policy import capture_historical_read_fence,require_historical_read_fence
+            historical=context.historical_fence
             if context.preference_fence is not None:
-                # Preference recall is a read of Relationship-owned state.
-                # A correction/removal after rendering but before this short
-                # commit must not result in a stale authoritative answer.
-                # The Relationship owner serializes writes on its state row.
-                cursor.execute(
-                    """SELECT 1 FROM relationship_state
-                       WHERE user_id=%s AND instance_id=%s FOR SHARE""",
-                    (actor.user_id,context.instance_id),
-                )
-                cursor.fetchone()
-                fence=context.preference_fence
-                cursor.execute(
-                    """SELECT preference_key,status,version
-                       FROM relationship_preferences
-                       WHERE user_id=%s AND instance_id=%s AND scope_key=''
-                         AND preference_key=ANY(%s::text[])
-                       ORDER BY preference_key FOR SHARE""",
-                    (actor.user_id,context.instance_id,list(fence.keys)),
-                )
-                observed=tuple(
-                    (row["preference_key"],row["status"],row["version"])
-                    for row in cursor.fetchall()
-                )
-                if observed!=fence.revisions:
-                    raise StaleConversation(
-                        "Relationship preference changed during recall"
-                    )
-            if context.historical_fence is not None:
-                from .memory_read_policy import require_historical_read_fence
-                require_historical_read_fence(
-                    cursor,actor.user_id,context.instance_id,context.historical_fence,
-                )
+                require_preference_fence(cursor,actor.user_id,context.instance_id,context.preference_fence)
+            if historical is not None:
+                require_historical_read_fence(cursor,actor.user_id,context.instance_id,historical)
             from .knowledge_contracts import knowledge_reference
             knowledge_topic=knowledge_reference(scoped["input_text"])
             knowledge_answered=False
@@ -1417,10 +1392,16 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
                 raise ValueError("personal-fact route requires a supported persisted question")
             if fact_topic is not None and (personal_fact_recall or model_generated):
                 from .personal_fact_recall import resolve_saved_fact
+                # Capture before reading the slot, but acquire the scope
+                # fence AFTER the owner's existing record SHARE lock.
+                fact_fence=historical or capture_historical_read_fence(
+                    cursor,actor.user_id,context.instance_id)
                 fact_answer=resolve_saved_fact(
                     cursor,user_id=actor.user_id,instance_id=context.instance_id,
                     topic=fact_topic,before_turn_id=context.turn_id,
                 )
+                require_historical_read_fence(cursor,actor.user_id,context.instance_id,fact_fence)
+                historical=fact_fence
                 fact_changed=(text!=fact_answer.text)
                 text=fact_answer.text
             # Exact private entity references use current Memory-owned identity,
@@ -1441,13 +1422,19 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
                 from .entity_conversation import apply_entity_report
                 entity_answer=apply_entity_report(cursor,actor,context,scoped)
             elif reference is not None and (entity_recall or model_generated):
+                entity_fence=historical or capture_historical_read_fence(
+                    cursor,actor.user_id,context.instance_id)
                 from .entity_recall import resolve_entity_answer
                 entity_answer=resolve_entity_answer(
                     cursor,user_id=actor.user_id,instance_id=context.instance_id,
                     conversation_id=context.conversation_id,sequence=scoped["sequence"],
                     reference=reference,
                 )
+                require_historical_read_fence(cursor,actor.user_id,context.instance_id,entity_fence)
+                historical=entity_fence
             elif clarification is not None and (entity_recall or model_generated):
+                entity_fence=historical or capture_historical_read_fence(
+                    cursor,actor.user_id,context.instance_id)
                 from .entity_recall import resolve_entity_clarification, EntityAnswer
                 entity_answer=resolve_entity_clarification(
                     cursor,user_id=actor.user_id,instance_id=context.instance_id,
@@ -1458,6 +1445,9 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
                     entity_answer=EntityAnswer(
                         "Which saved entity do you mean? Please repeat its name.","AMBIGUOUS",
                     )
+                if entity_answer is not None:
+                    require_historical_read_fence(cursor,actor.user_id,context.instance_id,entity_fence)
+                    historical=entity_fence
             from .metamemory import (
                 safe_query_key,entity_topic,prior_clarification,
                 adjacent_clarification_key,record_recall,
@@ -1528,6 +1518,9 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
                  context.selection_generation,context.conversation_revision,
                  generated.model_id,text,knowledge_answered),
             )
+            persist_response_lineage(cursor,response_id=response_id,user_id=actor.user_id,
+                instance_id=context.instance_id,historical=historical,
+                preference=context.preference_fence)
             cursor.execute(
                 "UPDATE conversation_turns SET status='RESPONDED',"
                 "updated_at=clock_timestamp() WHERE turn_id=%s",
@@ -1778,7 +1771,9 @@ def acknowledge_text_delivery(connection: Connection, actor: TrustedActor,
                 """
                 SELECT response_id,turn_id,conversation_id,instance_id,
                        selection_generation,context_revision,
-                       response_text,model_id,delivery_status,knowledge_excerpt
+                       response_text,model_id,delivery_status,knowledge_excerpt,
+                       response_lineage_derived_text(response_id,user_id,instance_id,
+                           knowledge_excerpt,response_text) AS derived_response_text
                 FROM conversation_responses WHERE response_id=%s AND user_id=%s
                 """,
                 (response_id,actor.user_id),
@@ -1791,7 +1786,9 @@ def acknowledge_text_delivery(connection: Connection, actor: TrustedActor,
                            row["conversation_id"])
                 from .application_auth import require_delivery_offer
                 require_delivery_offer(cursor,actor,row["response_id"])
+            from .response_lineage import require_response_lineage
             if row["delivery_status"]=="DELIVERED":
+                require_response_lineage(cursor,actor.user_id,row["instance_id"],response_id)
                 return TextResponseResult(
                     response_id=row["response_id"],turn_id=row["turn_id"],
                     text=row["response_text"],model_id=row["model_id"],
@@ -1817,6 +1814,7 @@ def acknowledge_text_delivery(connection: Connection, actor: TrustedActor,
             current=cursor.fetchone()
             if current is None:
                 raise PermissionDenied("response outside authenticated scope")
+            require_response_lineage(cursor,actor.user_id,row["instance_id"],response_id)
             if current["delivery_status"]=="DELIVERED":
                 return TextResponseResult(
                     response_id=row["response_id"],turn_id=row["turn_id"],
@@ -1859,9 +1857,7 @@ def acknowledge_text_delivery(connection: Connection, actor: TrustedActor,
             advance_on_delivery(
                 cursor,user_id=actor.user_id,instance_id=row["instance_id"],
                 conversation_id=row["conversation_id"],turn_id=row["turn_id"],
-                response_id=response_id,response_text=(
-                    "[Saved document excerpts omitted; request fresh recall.]"
-                    if row["knowledge_excerpt"] else row["response_text"]),
+                response_id=response_id,response_text=row["derived_response_text"],
                 context_revision=row["context_revision"],
             )
             return TextResponseResult(
@@ -1924,6 +1920,8 @@ def respond_to_text(connection: Connection, actor: TrustedActor, turn_id: UUID,
                         raise StaleConversation(
                             "undelivered reply superseded by a newer input"
                         )
+                    from .response_lineage import require_response_lineage
+                    require_response_lineage(cursor,actor.user_id,response["instance_id"],prior.response_id)
         return prior
     # Retry exactly once for a changed historical dependency. Never retry a
     # superseded turn, revoked selection, procedure fence, or model failure.

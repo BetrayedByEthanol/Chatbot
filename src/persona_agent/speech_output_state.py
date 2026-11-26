@@ -108,6 +108,8 @@ def prepare_speech_clip(
             )
             if not _latest_response(cur,response):
                 raise StaleSelection("speech response was superseded by newer input")
+            from .response_lineage import require_response_lineage
+            require_response_lineage(cur,actor.user_id,response["instance_id"],command.response_id)
             cur.execute(
                 "SELECT delivery_status FROM conversation_responses "
                 "WHERE response_id=%s FOR UPDATE",
@@ -194,6 +196,8 @@ def stream_response_speech(
                 raise StaleSelection("cannot synthesize a superseded response")
             if response["delivery_status"] != "GENERATED":
                 raise SpeechDeliveryConflict("response already delivered")
+            from .response_lineage import require_response_lineage
+            require_response_lineage(cur,actor.user_id,response["instance_id"],response_id)
             text = response["response_text"]
     segments = split_speech_text(text)
     for index, segment in enumerate(segments):
@@ -266,6 +270,18 @@ def acknowledge_speech_clip(
             cur.execute("SELECT * FROM speech_clips WHERE clip_id=%s FOR UPDATE",
                         (ack.clip_id,))
             clip=cur.fetchone()
+            from .conversation_contracts import InvalidatedResponse
+            from .response_lineage import require_response_lineage
+            evidence_current=True
+            if ack.status in ("QUEUED","STARTED","PLAYED"):
+                try:
+                    require_response_lineage(cur,actor.user_id,response["instance_id"],ack.response_id)
+                except InvalidatedResponse:
+                    if ack.status!="PLAYED":
+                        raise
+                    # A late callback is historical playback evidence only.
+                    # Never mark the stale response delivered by this callback.
+                    evidence_current=False
             if clip["status"]==ack.status:
                 return _clip_result(
                     clip,delivered=(response_delivery=="DELIVERED"),replayed=True,
@@ -297,7 +313,7 @@ def acknowledge_speech_clip(
                         source_id=actor.source_id,trust="AUTHENTICATED_USER")
             delivered=response_delivery=="DELIVERED"
             if (ack.status=="PLAYED" and not delivered and current_selection
-                    and current_dialogue):
+                    and current_dialogue and evidence_current):
                 cur.execute(
                     "SELECT count(*) AS total,"
                     "count(*) FILTER (WHERE status='PLAYED') AS played,"

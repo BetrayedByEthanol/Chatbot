@@ -44,7 +44,10 @@ def _range(cur,job:dict) -> tuple[dict,...]:
     """Read a frozen contiguous source range with delivery-state validation."""
     cur.execute(
         """SELECT t.turn_id,t.sequence,t.input_text,t.status,t.created_at,
-                  CASE WHEN r.knowledge_excerpt THEN '[Saved document excerpts omitted; request fresh recall.]' ELSE r.response_text END AS response_text,r.delivery_status,
+                  response_lineage_derived_text(r.response_id,r.user_id,r.instance_id,r.knowledge_excerpt,r.response_text) AS response_text,
+                  CASE WHEN r.delivery_status='GENERATED' AND NOT
+                     response_lineage_current(r.response_id,r.user_id,r.instance_id)
+                     THEN 'INVALIDATED' ELSE r.delivery_status END AS delivery_status,
                   r.selection_generation AS response_generation
            FROM conversation_turns t
            LEFT JOIN conversation_responses r ON r.turn_id=t.turn_id

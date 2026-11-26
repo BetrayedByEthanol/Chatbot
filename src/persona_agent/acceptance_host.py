@@ -27,7 +27,7 @@ from .contracts import TrustedActor
 from .conversation import (
     acknowledge_text_delivery, ingest_text, respond_to_text,
 )
-from .conversation_contracts import ModelMessage, ModelReply, TextInputCommand
+from .conversation_contracts import ModelMessage, ModelReply, TextInputCommand, InvalidatedResponse
 from .model_gateway import OllamaChatGateway
 from .observability import get_conversation_metrics
 from .response_orchestrator import respond_to_user_text
@@ -158,9 +158,14 @@ class LocalAcceptanceSession:
                 pending=[r["turn_id"] for r in cur.fetchall()]
         count=0
         for turn_id in pending:
-            with self._connection() as conn:
-                approved=respond_to_text(conn,self.actor,turn_id,_ReplayOnly())
-            self._deliver_response(turn_id,approved)
+            try:
+                with self._connection() as conn:
+                    approved=respond_to_text(conn,self.actor,turn_id,_ReplayOnly())
+                self._deliver_response(turn_id,approved)
+            except InvalidatedResponse:
+                # A retained stale response is historical, not recoverable
+                # output. Never synthesize a replacement from the old receipt.
+                continue
             count+=1
         return count
 
@@ -407,6 +412,8 @@ def serve_jsonl(session: LocalAcceptanceSession, lines) -> None:
                 break
             else:
                 raise ValueError("unknown action")
+        except InvalidatedResponse:
+            _emit_json({"type":"error","kind":"InvalidatedResponse"})
         except (KeyError,ValueError,TypeError) as exc:
             _emit_json({"type":"error","kind":type(exc).__name__})
         # Operational errors intentionally propagate (fail closed). A local

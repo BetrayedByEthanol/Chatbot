@@ -37,8 +37,8 @@ After the scoped 05E reassessment of the 12 MVP-05 stories, the matrix contains 
 | MVP-04 — Conversational quality | 0–1; early evaluation | BASE | Implementation increments merged; independent quality review open |
 | MVP-05 — Time, recall and entities | 1–2 | MVP-04 evidence; existing memory | 05A–E.1 merged; technical CI and v2 automated benchmark passed; independent quality review open |
 | MVP-06 — Goal and procedure dialogue | 3 | MVP-04; relevant MVP-05 grounding and owner gates | 06A/B/C merged and technical CI passed; 06D research/adaptation candidate; Phase 3 exit also requires Phase 2 exit |
-| MVP-07A — Authenticated application | 0–1 | BASE | 07A local authenticated text boundary candidate; mandatory remote/untrusted gate remains open |
-| MVP-07B — Data lifecycle and provenance | 0, 2, 6 | BASE; deployment scope decision; owner inventory | 07B1 initial owner/data inventory; policy and propagation open |
+| MVP-07A — Authenticated application | 0–1 | BASE | 07A local authenticated text boundary merged; mandatory remote/untrusted gate remains open |
+| MVP-07B — Data lifecycle and provenance | 0, 2, 6 | BASE; deployment scope decision; owner inventory | 07B1 initial inventory merged; 07B2 response-lineage candidate; broader policy and propagation open |
 | P2-F — Remaining cognitive state | 2 | MVP-05; relevant MVP-07B correction contracts | Required for Phase 2 exit |
 | P4-F — Background autonomy | 4 | Phase 0–3 exit evidence; applicable permissions and resource budgets | Existing slices to harden |
 | P5-F — Voice and social | 5 | Phase 0–4 exit evidence; authenticated host; participant policy | Existing audio adapters to integrate |
@@ -158,7 +158,7 @@ The existing [acceptance host](../src/persona_agent/acceptance_host.py) is a tru
 - 07A3: validate provider-neutral adapter contracts for the actual chosen deployment (confirmed portion of 010). Keep optional model-selection descriptors, native tool calling and token streaming behind DEC-02. Existing Ollama requests are nonstreaming; do not claim token streaming exists. If explicitly approved, a follow-up text-streaming slice must distinguish provisional display from committed state, prevent premature work claims, discard stale streams, handle backpressure/cancellation and ACK only actual accepted delivery.
 - Exit: two authenticated users cannot read or mutate one another; forged source identity and stale selection denied; replay deduplicated; reconnect restores authorized response/operation status; explicit revocation during work prevents new dispatch or stale commits. No external exposure before this gate and applicable MVP-07B controls. The initial architecture MVP's local responsive-core gate is distinct from deployment readiness.
 
-07A candidate — [Authenticated local text application](mvp-07a-authenticated-application.md): operator-provisioned expiring/revocable scoped credentials, strict JSONL message/resume/status/ACK/presence allowlist, current selection/session commit fences and offered-response correlation. Registered immediate reads only; asynchronous operation admission, worker callbacks, remote networking and arbitrary provider configuration denied. Candidate CI NOT RUN; US-004/009/010 remain P. Real external deployment and generalized authorization/revocation remain gated by applicable 07B and additional 07A work.
+07A merged — [Authenticated local text application](mvp-07a-authenticated-application.md): operator-provisioned expiring/revocable scoped credentials, strict JSONL message/resume/status/ACK/presence allowlist, current selection/session commit fences and offered-response correlation. Registered immediate reads only; asynchronous operation admission, worker callbacks, remote networking and arbitrary provider configuration denied. PR #131 merged; [technical CI](https://github.com/BetrayedByEthanol/Chatbot/actions/runs/45829385892) passed (2,278 passed, 3 skipped) and [live integration](https://github.com/BetrayedByEthanol/Chatbot/actions/runs/45829385876) passed. US-004/009/010 remain P. Real external deployment and generalized authorization/revocation remain gated by applicable 07B and additional 07A work.
 
 ### MVP-07B — Data lifecycle and evidence provenance
 
@@ -172,7 +172,9 @@ Primary IDs: 117, 118, 085.
 - Exit: correction or revocation does not reappear via a stale derived context or in-flight worker; cross-scope deletion denied; agreed retention/deletion and recovery procedures evidenced. Baseline safeguards and deployment requirements precede deployment; complete end-to-end privacy propagation remains Phase 6 acceptance work, with Phase 2 dependencies handled early.
 
 
-07B1 — [Initial deployment/data inventory](mvp-07b-data-lifecycle-inventory.md) records owner groups, derived copies, local provider/artifact routes, open operator policy and priority invalidation work. This is inventory preparation, not correction propagation, erasure or compliance. 07B2/3 remain open.
+07B1 — [Initial deployment/data inventory](mvp-07b-data-lifecycle-inventory.md) records owner groups, derived copies, local provider/artifact routes, open operator policy and priority invalidation work. This initial inventory merged with PR #131; actual policy decisions and per-field inventory remain open. No erasure or compliance claim.
+
+07B2 first increment — [Persistent response lineage](mvp-07b2-response-lineage.md): immutable response read-fence metadata, historical revision/expiry and exact preference dependency checks at replay, text offers/ACK and speech admission. Guarded assistant text is not copied into new derived conversation, summary or cognition inputs; invalidated generated replies are not a worker readiness barrier. Candidate CI NOT RUN. This is a conservative first vertical slice; 07B2 remains partial until owner-specific raw-turn, summary/reflection, procedure and derived-index lineage and late-result invalidation are addressed. 07B3 and deployment remain gated.
 
 ### P4-F — Bounded Background autonomy
 
