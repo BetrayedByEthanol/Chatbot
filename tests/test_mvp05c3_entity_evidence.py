@@ -337,10 +337,10 @@ def test_entity_history_responses_anchor_adjacent_followups(dsn,initial_lookup,i
     user,instance,_=seed(dsn)
     _,_,friend=register(dsn,user,instance,"Alex","FRIEND")
     _,_,colleague=register(dsn,user,instance,"Alex","COLLEAGUE")
-    source,memory=_memory(dsn,user,instance,"I went hiking with my friend Alex.","activity","hiking")
+    source,memory=_memory(dsn,user,instance,"I went hiking with my friend Alex.","friend_activity","hiking")
     _link(dsn,user,instance,friend.entity_id,source,memory.memory_id)
     other_source,other_memory=_memory(
-        dsn,user,instance,"I went bowling with my colleague Alex.","activity","bowling",
+        dsn,user,instance,"I went bowling with my colleague Alex.","colleague_activity","bowling",
     )
     _link(dsn,user,instance,colleague.entity_id,other_source,other_memory.memory_id)
 
