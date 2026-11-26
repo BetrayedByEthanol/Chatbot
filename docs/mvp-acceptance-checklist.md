@@ -66,6 +66,27 @@ Technical regression supports focused MVP-06A after passing on the candidate. Fu
 - A08 v1 real-model scenario: operator-provided comparison archive reviewed; 4/4 completed, 68 delivered, no runtime errors or goals created. Automated evaluation checked delivery/no unapproved goal, not all memory behavior. All independent scorecards remain unfilled. No acceptance or latency threshold met by assertion.
 - 05E.1 [correction routing and calibration](mvp-05e1-correction-routing.md) adds direct-route and exact-output regressions, revised acknowledgment and [v2 scenario](../scenarios/mvp05e1_memory_acceptance.json). Candidate CI and v2 real-model evidence NOT RUN; private review artifacts remain outside repository. No story status promotion or Phase 2 gate waiver.
 
+## 2D. MVP-05E.1 verified technical and v2 benchmark evidence
+
+- Final PR #126 head `e9f9cc346888c9e57a25ccc06bbc02cc56105244`: [PostgreSQL CI](https://github.com/BetrayedByEthanol/Chatbot/actions/runs/45801307151) SUCCESS (2,154 passed, 3 skipped); [live integration](https://github.com/BetrayedByEthanol/Chatbot/actions/runs/45801307420) SUCCESS. Merged as `ad221c403918857cb0252cdb56c34420bab6378a`. No separate merge-SHA CI execution claimed.
+- Operator v2 real-model archive on merge SHA: 4/4 completed; 80/80 delivered, 220/220 automated checks (80 delivery, 80 no unapproved goal, 40 exact replies, 20 auto-route), zero reported runtime errors. Reconfirmation restores original revision. Direct correction clarification approximately 124–130 ms in full mode. Independent ratings remain unfilled; not full Phase 2 or model-quality acceptance. [Evidence notes](mvp-05e1-correction-routing.md).
+
+## 2E. MVP-06A — Approval-pending goal continuation gate
+
+[Implementation and scope](mvp-06a-goal-conversation.md); [candidate regression](../tests/test_mvp06a_goal_conversation.py). Existing direct owner approval tests remain required.
+
+| Criterion | Candidate evidence | Status |
+|---|---|---|
+| G01 — Explicit request vs casual desire | Bounded whole-input parser; no authority from model output | NOT RUN |
+| G02 — Persistent candidate, no active goal | Source-linked version, response and success criterion; no operation before approval | NOT RUN |
+| G03 — Clarification and refinement | Missing criterion and exact revised outcome; superseded history preserved | NOT RUN |
+| G04 — Separate explicit approval | Same selected generation and conversation, current adjacent delivered exact proposal, complete criterion, expiry and Goal command receipt | NOT RUN |
+| G05 — Rejection and stale/duplicate handling | Scope, missing criterion, undelivered/superseded, switch, expiry, repeated/concurrent confirmation and typed bypass | NOT RUN |
+| G06 — Recovery | Fresh connections and persisted response replay; integrated independent real-model review deferred | NOT RUN |
+| G07 — Broader goals and related goals | General free-form proposals, independently linked goals, explicit evaluation-window dialogue | OPEN |
+
+No story promotion based solely on a candidate; 098 remains P. Passing technical CI supports focused 06B, not Phase 3 exit or deployment.
+
 ## 3. Confirmed Phase 0–1 acceptance items
 
 Each of the 28 stories below retains its canonical ID, authority, priority, owner and baseline implementation status. Confirmed criteria are reproduced from the master backlog; mixed criteria are scoped to their confirmed core with proposed details identified explicitly. Evidence links come from the matrix and are starting points, not proof of full coverage. Review applicable legacy verification candidates before acceptance; unapproved numerical parameters are not binding.
