@@ -116,7 +116,28 @@ def _plan_locked(cur,actor,goal,window_start=None):
         raise ValueError("window_start must be the canonical UTC cycle start")
     base.update(period=measure[2],unit=measure[1],target=measure[3],
                 window_start=start,window_end=end)
-    if not _within_goal_window(goal,start,end):
+    # Delegation does not copy dates onto children. Their effective
+    # evaluation window is the intersection of every approved ancestor's
+    # constraints and their own. Read the authoritative chain rather than
+    # denormalizing dates or relying on ACTIVE status alone. Both callers
+    # validate lineage; task admission also locks the full ancestry.
+    cur.execute(
+        """WITH RECURSIVE chain AS (
+               SELECT goal_id,parent_goal_id,status,created_at,
+                      evaluation_start_at,evaluation_end_at,target_at
+               FROM goal_records
+               WHERE goal_id=%s AND user_id=%s AND instance_id=%s
+               UNION ALL
+               SELECT g.goal_id,g.parent_goal_id,g.status,g.created_at,
+                      g.evaluation_start_at,g.evaluation_end_at,g.target_at
+               FROM goal_records g
+               JOIN chain c ON g.goal_id=c.parent_goal_id
+               WHERE g.user_id=%s AND g.instance_id=%s
+           ) SELECT * FROM chain""",
+        (goal["goal_id"],actor.user_id,goal["instance_id"],actor.user_id,goal["instance_id"]),
+    )
+    chain=cur.fetchall()
+    if not chain or any(not _within_goal_window(row,start,end) for row in chain):
         return RecurringGoalView(**base,decision="OUTSIDE_APPROVED_WINDOW")
     rows=_occurrences(cur,actor,goal,start,end)
     confirmed=sum(r.evidence_state=="USER_CONFIRMED" for r in rows)
@@ -128,18 +149,7 @@ def _plan_locked(cur,actor,goal,window_start=None):
         return RecurringGoalView(**base,decision="USER_CONFIRMED_TARGET_REPORTED_MET")
     if not start<=now.date()<end:
         return RecurringGoalView(**base,decision="WINDOW_CLOSED")
-    cur.execute(
-        """WITH RECURSIVE chain AS (
-               SELECT goal_id,parent_goal_id,status FROM goal_records
-               WHERE goal_id=%s AND user_id=%s AND instance_id=%s
-               UNION ALL
-               SELECT g.goal_id,g.parent_goal_id,g.status FROM goal_records g
-               JOIN chain c ON g.goal_id=c.parent_goal_id
-               WHERE g.user_id=%s AND g.instance_id=%s
-           ) SELECT status FROM chain""",
-        (goal["goal_id"],actor.user_id,goal["instance_id"],actor.user_id,goal["instance_id"]),
-    )
-    if any(row["status"]!="ACTIVE" for row in cur.fetchall()):
+    if any(row["status"]!="ACTIVE" for row in chain):
         return RecurringGoalView(**base,decision="INACTIVE")
     cur.execute(
         """SELECT EXISTS(SELECT 1 FROM goal_records

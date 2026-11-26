@@ -328,3 +328,153 @@ def test_explicit_goal_dates_are_not_silently_extended(dsn):
     call(dsn,create_goal,actor(user),cmd.model_copy(update={"approval_turn_id":approval.turn_id}))
     current=plan(dsn,user,instance,cmd.goal_id)
     assert current.decision=="OUTSIDE_APPROVED_WINDOW" and current.next_task is None
+
+
+def _date_bounded_root(dsn,user,instance,conv,*,outcome,criterion,dates):
+    """Approve actual root dates; do not mutate authoritative rows in tests."""
+    from persona_agent.goal_contracts import CreateGoalCommand,goal_action_approval_phrase
+    from persona_agent.goal_state import create_goal
+    actor,call,_,turn,_=helpers()
+    text="Track this outcome only within these agreed dates."
+    source=turn(dsn,user,instance,conv,text)
+    cmd=CreateGoalCommand(
+        instance_id=instance,expected_generation=1,idempotency_key=uuid4().hex,
+        conversation_id=conv,evidence_turn_id=source.turn_id,evidence_quote=text,
+        goal_id=uuid4(),title=outcome,desired_outcome=outcome,
+        success_criterion=criterion,horizon="SHORT",**dates,
+    )
+    approval=turn(dsn,user,instance,conv,goal_action_approval_phrase(cmd))
+    call(dsn,create_goal,actor(user),cmd.model_copy(update={"approval_turn_id":approval.turn_id}))
+    return cmd.goal_id
+
+
+def _current_utc_cycle(dsn,period):
+    from datetime import timezone
+    import psycopg
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        now=conn.execute("SELECT clock_timestamp()").fetchone()[0].astimezone(timezone.utc)
+    return cycle_bounds(period,now.date())
+
+
+def _assert_window_blocks_admission(dsn,user,instance,conv,goal,start,end):
+    import psycopg
+    from persona_agent.goal_cycle_contracts import task_draft
+    from persona_agent.runtime import VersionConflict
+    from persona_agent.task_state import list_tasks
+    actor,call,_,_,_=helpers()
+    blocked=plan(dsn,user,instance,goal,window_start=start)
+    assert blocked.decision=="OUTSIDE_APPROVED_WINDOW"
+    assert blocked.goal_status=="ACTIVE" and blocked.next_task is None
+    assert blocked.reported_count==blocked.confirmed_count==0
+    # Even a separately approved exact-shaped draft cannot extend an
+    # ancestor's authority. Exercise the write gate, not just the read API.
+    draft=task_draft(goal,blocked.goal_version,
+        recurring_count(blocked.desired_outcome,blocked.success_criterion),start,end,1)
+    command=command_for(dsn,user,instance,conv,draft)
+    with pytest.raises(VersionConflict,match="OUTSIDE_APPROVED_WINDOW"):
+        create(dsn,user,command)
+    assert call(dsn,list_tasks,actor(user),instance,goal)==()
+    assert plan(dsn,user,instance,goal,window_start=start).goal_version==blocked.goal_version
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT count(*) FROM goal_recurring_task_slots WHERE goal_id=%s",(goal,)
+        ).fetchone()==(0,)
+        assert conn.execute(
+            """SELECT count(*) FROM events WHERE instance_id=%s
+               AND event_type='goal.task.created.v1' AND payload->>'goal_id'=%s""",
+            (instance,str(goal)),
+        ).fetchone()==(0,)
+
+
+@pytest.mark.parametrize("bound,offset,nested",[
+    ("evaluation_start_at","next",False),
+    ("evaluation_start_at","inside",False),
+    ("evaluation_end_at","past",True),
+    ("evaluation_end_at","inside",False),
+    ("target_at","past",False),
+    ("target_at","inside",True),
+])
+def test_delegated_recurring_leaf_inherits_all_ancestor_windows(dsn,bound,offset,nested):
+    from datetime import datetime,time,timezone
+    import psycopg
+    from test_phase3_goals import generalized_command,goal_evaluator
+    from persona_agent.goal_decomposition import propose_derived_subgoal
+    _,call,seed,_,_=helpers()
+    user,instance,_=seed(dsn)
+    conv=uuid4()
+    start,end=_current_utc_cycle(dsn,"week")
+    boundary={"next":end,"inside":start+timedelta(days=3),"past":start}[offset]
+    root=_date_bounded_root(dsn,user,instance,conv,
+        outcome="Complete 3 exercise sessions per week",
+        criterion="Complete at least 3 exercise sessions per week",
+        dates={bound:datetime.combine(boundary,time.min,tzinfo=timezone.utc)})
+    child=generalized_command(dsn,instance,root,
+        outcome="Complete 2 exercise sessions per week",
+        criterion="Complete at least 2 exercise sessions per week")
+    assert call(dsn,propose_derived_subgoal,goal_evaluator(user),child).status=="ACCEPTED"
+    leaf=child.proposed_goal_id
+    if nested:
+        grandchild=generalized_command(dsn,instance,leaf,
+            outcome="Complete 1 exercise session per week",
+            criterion="Complete at least 1 exercise session per week")
+        assert call(dsn,propose_derived_subgoal,goal_evaluator(user),grandchild).status=="ACCEPTED"
+        leaf=grandchild.proposed_goal_id
+    # Delegated definitions themselves intentionally carry no copied dates.
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            """SELECT evaluation_start_at,evaluation_end_at,target_at
+               FROM goal_records WHERE goal_id=%s""",(leaf,)
+        ).fetchone()==(None,None,None)
+    _assert_window_blocks_admission(dsn,user,instance,conv,leaf,start,end)
+
+
+def test_semantically_reviewed_recurring_leaf_inherits_parent_window(dsn):
+    from datetime import datetime,time,timezone
+    from test_phase3_goals import (
+        generalized_command,goal_evaluator,semantic_reviewer,semantic_command,
+        semantic_finding,FakeSemanticGateway,
+    )
+    from persona_agent.goal_decomposition import propose_derived_subgoal
+    from persona_agent.goal_semantic_review import review_pending_subgoal
+    _,call,seed,_,_=helpers()
+    user,instance,_=seed(dsn)
+    conv=uuid4()
+    start,end=_current_utc_cycle(dsn,"day")
+    root=_date_bounded_root(dsn,user,instance,conv,
+        outcome="Read 3 books per month",criterion="Read at least 3 books per month",
+        dates={"evaluation_start_at":datetime.combine(end,time.min,tzinfo=timezone.utc)})
+    child=generalized_command(dsn,instance,root,
+        title="Daily reading",outcome="Read 2 pages per day",
+        criterion="Read at least 2 pages per day")
+    assert call(dsn,propose_derived_subgoal,goal_evaluator(user),child).status=="PENDING_REVIEW"
+    gateway=FakeSemanticGateway(semantic_finding(child_quote="Read 2 pages per day"))
+    reviewed=call(dsn,review_pending_subgoal,semantic_reviewer(user),
+        semantic_command(instance,child.proposal_id),gateway)
+    assert reviewed.decision=="ACCEPTED"
+    _assert_window_blocks_admission(dsn,user,instance,conv,child.proposed_goal_id,start,end)
+
+
+def test_ancestor_window_exact_boundaries_allow_recurring_child(dsn):
+    from datetime import datetime,time,timezone
+    from test_phase3_goals import generalized_command,goal_evaluator
+    from persona_agent.goal_decomposition import propose_derived_subgoal
+    _,call,seed,_,_=helpers()
+    user,instance,_=seed(dsn)
+    conv=uuid4()
+    start,end=_current_utc_cycle(dsn,"week")
+    left=datetime.combine(start,time.min,tzinfo=timezone.utc)
+    right=datetime.combine(end,time.min,tzinfo=timezone.utc)
+    root=_date_bounded_root(dsn,user,instance,conv,
+        outcome="Complete 3 exercise sessions per week",
+        criterion="Complete at least 3 exercise sessions per week",
+        dates={"evaluation_start_at":left,"evaluation_end_at":right,"target_at":right})
+    child=generalized_command(dsn,instance,root,
+        outcome="Complete 1 exercise session per week",
+        criterion="Complete at least 1 exercise session per week")
+    assert call(dsn,propose_derived_subgoal,goal_evaluator(user),child).status=="ACCEPTED"
+    current=plan(dsn,user,instance,child.proposed_goal_id,window_start=start)
+    assert current.decision=="PROPOSE_ONE_TASK"
+    assert current.next_task.window_end==end
+    create(dsn,user,command_for(dsn,user,instance,conv,current.next_task))
+    assert plan(dsn,user,instance,child.proposed_goal_id,window_start=start).decision=="WAIT_FOR_EVIDENCE"
+    assert plan(dsn,user,instance,child.proposed_goal_id,window_start=end).decision=="OUTSIDE_APPROVED_WINDOW"
