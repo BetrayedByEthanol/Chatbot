@@ -114,6 +114,12 @@ def _persist_claim(cur,event,conversation_id,turn_id,source,claim: ExplicitClaim
             claim.memory_kind,claim.predicate_key,claim.value_text
         )):
         return None
+    if claim.memory_kind=="PERSONAL_MEANING":
+        from .personal_meaning_grammar import parse_personal_definition
+        definition=parse_personal_definition(source["input_text"])
+        if (definition is None or definition.predicate!=claim.predicate_key
+                or definition.value!=claim.value_text or definition.source_quote!=claim.source_quote):
+            return None
     candidate_id=uuid5(
         NAMESPACE_URL,
         f"persona-agent/memory-extract/{turn_id}/{claim.memory_kind}/"

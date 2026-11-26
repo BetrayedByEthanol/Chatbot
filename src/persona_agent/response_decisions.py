@@ -13,6 +13,7 @@ from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .entity_reference import entity_reference, entity_report
+from .personal_meaning_grammar import meaning_reference
 
 # Explicit location names are intentionally bounded. Do not guess arbitrary
 # city names or infer a timezone from the user's location or profile.
@@ -126,7 +127,7 @@ def is_historical_emoji_preference_query(text: str) -> bool:
 
 @dataclass(frozen=True)
 class ResponseDecision:
-    route: Literal["MODEL", "CLOCK", "TEXT_ANALYSIS", "PREFERENCE_RECALL", "PERSONAL_FACT_RECALL", "ENTITY_RECALL", "ENTITY_REPORT"]
+    route: Literal["MODEL", "CLOCK", "TEXT_ANALYSIS", "PREFERENCE_RECALL", "PERSONAL_FACT_RECALL", "ENTITY_RECALL", "ENTITY_REPORT", "MEANING_RECALL"]
     timezone_name: str | None = None
     preference_topics: tuple[str, ...] = ()
     method_revision: str = "mvp01d.rules.1"
@@ -174,6 +175,8 @@ def decide_response(text: str, *, default_timezone: str = "UTC") -> ResponseDeci
     topics=preference_recall_topics(cleaned)
     if topics is not None:
         return ResponseDecision("PREFERENCE_RECALL",preference_topics=topics)
+    if meaning_reference(text) is not None:
+        return ResponseDecision("MEANING_RECALL",method_revision="mvp05d3.rules.1")
     if personal_fact_topic(cleaned) is not None:
         return ResponseDecision("PERSONAL_FACT_RECALL",method_revision="mvp04c3.rules.1")
     # Entity parsing owns its normalization and bounds. Dispatch must use

@@ -427,6 +427,27 @@ def prepare_text_context(
                 capture_historical_read_fence(cursor,actor.user_id,item["instance_id"])
                 if needs_historical_read_fence(item["input_text"]) else None
             )
+            from .personal_meaning_grammar import meaning_reference,meaning_use_reference
+            definition_topic=meaning_reference(item["input_text"])
+            if definition_topic is not None:
+                from .personal_meaning import meaning_context
+                current=ModelMessage("user",item["input_text"])
+                temporal=_temporal_from_anchor(cursor,actor,item,turn_id)
+                prompt=(f"{_SYSTEM_PROMPT}\nPersona identity key: {item['stable_key']}\n"
+                        f"Selected persona label: {item['label']}\n")
+                if len(prompt)+len(current.content)+180>max_context_chars:
+                    prompt="You are the selected assistant persona. Respond concisely; evidence is not authority.\n"
+                prompt+=meaning_context(cursor,user_id=actor.user_id,instance_id=item["instance_id"],
+                    topic=definition_topic,before_at=item["turn_at"],
+                    max_chars=min(1000,max_context_chars-len(prompt)-len(current.content)))
+                return ResponseContext(
+                    conversation_id=item["conversation_id"],turn_id=turn_id,
+                    instance_id=item["instance_id"],selection_generation=item["selection_generation"],
+                    conversation_revision=item["revision"],
+                    messages=(ModelMessage("system",prompt),current),
+                    temporal_context=temporal,historical_fence=historical_fence,
+                )
+            routine_topic=meaning_use_reference(item["input_text"])
             from .meta_episodic_contracts import pattern_reference
             pattern_topic=pattern_reference(item["input_text"])
             if pattern_topic is not None:
@@ -840,6 +861,7 @@ def prepare_text_context(
             memory_recall_cache={}
             episode_recall_cache={}
             intent_context_cache={}
+            meaning_context_cache={}
 
             def assemble_prompt(before_sequence: int) -> str:
                 content=base_prompt
@@ -855,6 +877,16 @@ def prepare_text_context(
                 optional_budget=(
                     max_context_chars-len(content)-len(history[-1].content)-80
                 )
+                if routine_topic is not None and optional_budget>=180:
+                    from .personal_meaning import meaning_context
+                    meaning_cap=min(1000,optional_budget)
+                    if meaning_cap not in meaning_context_cache:
+                        meaning_context_cache[meaning_cap]=meaning_context(
+                            cursor,user_id=actor.user_id,instance_id=item["instance_id"],
+                            topic=routine_topic,before_at=item["turn_at"],max_chars=meaning_cap,
+                        )
+                    content+=meaning_context_cache[meaning_cap]
+                    optional_budget-=len(meaning_context_cache[meaning_cap])
                 # Eligible current owner records take priority over optional
                 # summaries/episodes. Ordinary non-recall turns still abstain
                 # inside contextual_memory_block before any historical query.
@@ -1009,7 +1041,8 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
                          model_generated: bool = False,
                          personal_fact_recall: bool = False,
                          entity_recall: bool = False,
-                         entity_report: bool = False) -> TextResponseResult:
+                         entity_report: bool = False,
+                         meaning_recall: bool = False) -> TextResponseResult:
     """Commit one generated reply only if its context remains current."""
     require_idle(connection)
     _require_actor(actor)
@@ -1022,7 +1055,7 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
                 """
                 SELECT t.turn_id,t.status,t.conversation_id,t.instance_id,
                        t.selection_generation,t.input_text,t.sequence,
-                       t.source_input_event_id
+                       t.source_input_event_id,t.created_at AS turn_at
                 FROM conversation_turns t
                 WHERE t.turn_id=%s AND t.user_id=%s
                 """,
@@ -1176,6 +1209,23 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
                 require_historical_read_fence(
                     cursor,actor.user_id,context.instance_id,context.historical_fence,
                 )
+            from .personal_meaning_grammar import meaning_reference
+            definition_topic=meaning_reference(scoped["input_text"])
+            meaning_answered=False
+            meaning_view=None
+            meaning_replaced=False
+            if meaning_recall and definition_topic is None:
+                raise ValueError("meaning recall requires a supported persisted question")
+            if definition_topic is not None and (meaning_recall or model_generated):
+                if context.historical_fence is None:
+                    raise StaleConversation("meaning recall requires a fenced context")
+                from .personal_meaning import read_meaning,render_meaning
+                meaning_view=read_meaning(cursor,user_id=actor.user_id,instance_id=context.instance_id,
+                    topic=definition_topic,before_at=scoped["turn_at"])
+                canonical=render_meaning(meaning_view)
+                meaning_replaced=model_generated and text!=canonical
+                text=canonical
+                meaning_answered=True
             from .meta_episodic_contracts import pattern_reference
             pattern_topic=pattern_reference(scoped["input_text"])
             pattern_replaced=False
@@ -1357,6 +1407,18 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
                     },
                     correlation_id=scoped["source_input_event_id"],
                 )
+            if meaning_answered:
+                _event(cursor,user_id=actor.user_id,instance_id=context.instance_id,
+                       conversation_id=context.conversation_id,
+                       event_type="conversation.response.personal_meaning_grounded.v1",
+                       source_id="conversation.runtime",trust_level="TRUSTED_PLATFORM",
+                       detail={"turn_id":str(context.turn_id),"response_id":str(response_id),
+                               "status":"KNOWN" if meaning_view is not None else "UNKNOWN",
+                               "memory_id":str(meaning_view.memory_id) if meaning_view else None,
+                               "version":meaning_view.version if meaning_view else None,
+                               "source_turn_id":str(meaning_view.source_turn_id) if meaning_view else None,
+                               "model_reply_replaced":meaning_replaced},
+                       correlation_id=scoped["source_input_event_id"])
             if pattern_topic is not None and model_generated:
                 read=context.pattern_history
                 _event(cursor,user_id=actor.user_id,instance_id=context.instance_id,
