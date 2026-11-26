@@ -191,6 +191,8 @@ def withdraw_knowledge(connection: Connection,actor: TrustedActor,
 def select_knowledge(cur,*,user_id,instance_id,query,max_results=3,max_chars=2400,
                      document_id=None,variant_id=None):
     """Single-statement current-snapshot read; no raw conversation fallback."""
+    from .metamemory import safe_query_key
+    feedback_key=safe_query_key("KNOWLEDGE",query)
     cur.execute(
         """SELECT d.document_id,v.version,v.title,v.source_kind,v.source_locator,
                   v.source_revision,v.content_sha256,p.position,p.start_offset,p.end_offset,
@@ -216,10 +218,25 @@ def select_knowledge(cur,*,user_id,instance_id,query,max_results=3,max_chars=240
              AND to_tsvector('simple',p.passage_text) @@ plainto_tsquery('simple',%s)
              AND p.passage_text=substring(v.content FROM p.start_offset+1 FOR p.end_offset-p.start_offset)
              AND v.content_sha256=encode(sha256(convert_to(v.content,'UTF8')),'hex')
-           ORDER BY ts_rank_cd(to_tsvector('simple',p.passage_text),plainto_tsquery('simple',%s)) DESC,
+           ORDER BY COALESCE((
+                SELECT f.outcome='IRRELEVANT'
+                FROM memory_retrieval_feedback f
+                JOIN memory_recall_observations o ON o.response_id=f.response_id
+                  AND o.user_id=f.user_id AND o.instance_id=f.instance_id
+                WHERE f.user_id=d.user_id AND f.instance_id=d.instance_id
+                  AND o.route='KNOWLEDGE' AND o.query_key=%s
+                  AND f.passage_ordinal IS NOT NULL
+                  AND f.outcome IN ('RELEVANT','IRRELEVANT')
+                  AND (o.evidence_refs->(f.passage_ordinal-1)->>'id')=d.document_id::text
+                  AND (o.evidence_refs->(f.passage_ordinal-1)->>'version')=v.version::text
+                  AND (o.evidence_refs->(f.passage_ordinal-1)->>'position')=p.position::text
+                  AND (o.evidence_refs->(f.passage_ordinal-1)->>'content_sha256')=v.content_sha256
+                ORDER BY f.recorded_at DESC,f.feedback_id DESC LIMIT 1
+           ),false) ASC,
+                    ts_rank_cd(to_tsvector('simple',p.passage_text),plainto_tsquery('simple',%s)) DESC,
                     v.recorded_at DESC,d.document_id,p.position
            LIMIT %s""",
-        (user_id,instance_id,document_id,document_id,variant_id,variant_id,query,query,max_results),
+        (user_id,instance_id,document_id,document_id,variant_id,variant_id,query,feedback_key,query,max_results),
     )
     result=[]
     remaining=max_chars
@@ -258,10 +275,10 @@ def render_knowledge(hits):
     if not hits:
         return UNKNOWN
     parts=["From your saved sources (supplied text, not independently verified):"]
-    for hit in hits:
+    for ordinal,hit in enumerate(hits,1):
         revision=f", source revision {hit.source_revision}" if hit.source_revision else ""
         parts.append(
-            f"{hit.title} — source: {hit.source_locator} "
+            f"Saved passage {ordinal}: {hit.title} — source: {hit.source_locator} "
             f"(saved version {hit.version}{revision}, character offsets "
             f"[{hit.start_offset}, {hit.end_offset})):\n"
             f"“{hit.passage_text}”"
