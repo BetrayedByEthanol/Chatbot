@@ -50,11 +50,14 @@ def render_entity_hits(hits) -> EntityAnswer:
     )
 
 
-def _adjacent_grounding(cur,*,user_id,instance_id,conversation_id,sequence):
+def _adjacent_grounding(cur,*,user_id,instance_id,conversation_id,sequence,
+                        include_history=False):
     """The previous response must have been delivered before this input.
 
     Bind only within one conversation and selection generation. The trusted
-    response event records what was actually said; it is not a model guess.
+    response event records a host-resolved identity, not a model guess.
+    History context can anchor a known identity, but cannot supply choices
+    for the canonical identity-clarification path.
     """
     cur.execute(
         """SELECT e.payload,t.input_text
@@ -66,7 +69,9 @@ def _adjacent_grounding(cur,*,user_id,instance_id,conversation_id,sequence):
              AND r.conversation_id=t.conversation_id
              AND r.user_id=t.user_id AND r.instance_id=t.instance_id
            JOIN events e ON e.user_id=t.user_id AND e.instance_id=t.instance_id
-             AND e.event_type='conversation.response.entity_grounded.v1'
+             AND (e.event_type='conversation.response.entity_grounded.v1'
+                  OR (%s AND e.event_type='conversation.response.entity_history_context.v1'
+                      AND e.payload->>'status'='KNOWN'))
              AND e.trust_level='TRUSTED_PLATFORM'
              AND e.payload->>'response_id'=r.response_id::text
            WHERE anchor.user_id=%s AND anchor.instance_id=%s AND anchor.conversation_id=%s
@@ -80,14 +85,14 @@ def _adjacent_grounding(cur,*,user_id,instance_id,conversation_id,sequence):
                    AND f.delivered_at>r.delivered_at AND f.delivered_at<=anchor.created_at
              )
            LIMIT 2""",
-        (user_id,instance_id,conversation_id,sequence),
+        (include_history,user_id,instance_id,conversation_id,sequence),
     )
     rows=cur.fetchall()
     return rows[0] if len(rows)==1 else None
 
 
 def _adjacent_entity(cur,**scope):
-    row=_adjacent_grounding(cur,**scope)
+    row=_adjacent_grounding(cur,include_history=True,**scope)
     if row is None or row["payload"].get("status")!="KNOWN":
         return None
     try:

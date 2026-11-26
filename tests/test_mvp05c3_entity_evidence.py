@@ -328,6 +328,70 @@ def test_delivered_entity_binding_can_select_adjacent_history(dsn):
     assert "hiking" in ctx.messages[0].content
 
 
+@pytest.mark.parametrize("initial_lookup",[False,True])
+@pytest.mark.parametrize("interruption",["NONE","UNDELIVERED","OTHER_TURN"])
+def test_entity_history_responses_anchor_adjacent_followups(dsn,initial_lookup,interruption):
+    from persona_agent.conversation import prepare_text_context
+    from persona_agent.conversation_contracts import ModelReply
+    actor,call,seed,turn,register,_,ask,Gateway=_helpers()
+    user,instance,_=seed(dsn)
+    _,_,friend=register(dsn,user,instance,"Alex","FRIEND")
+    _,_,colleague=register(dsn,user,instance,"Alex","COLLEAGUE")
+    source,memory=_memory(dsn,user,instance,"I went hiking with my friend Alex.","activity","hiking")
+    _link(dsn,user,instance,friend.entity_id,source,memory.memory_id)
+    other_source,other_memory=_memory(
+        dsn,user,instance,"I went bowling with my colleague Alex.","activity","bowling",
+    )
+    _link(dsn,user,instance,colleague.entity_id,other_source,other_memory.memory_id)
+
+    class HistoryGateway:
+        def generate(self,messages):
+            return ModelReply(model_id="entity-history-test",text="You mentioned hiking together.")
+
+    conv=uuid4()
+    followup="What else do you remember about them?"
+    if initial_lookup:
+        ask(dsn,user,instance,"Do you remember my friend Alex?",Gateway(),conversation=conv)
+    first=followup if initial_lookup else "What do you remember about my friend Alex?"
+    _,reply=ask(dsn,user,instance,first,HistoryGateway(),conversation=conv,
+                deliver=interruption!="UNDELIVERED")
+    assert "hiking" in reply.text
+    if interruption=="OTHER_TURN":
+        ask(dsn,user,instance,"Explain TCP sockets.",Gateway(),conversation=conv)
+    if interruption=="NONE":
+        # Commit and deliver a second history reply: the next pronoun must
+        # anchor to that reply's own context event, not the original lookup.
+        _,reply=ask(dsn,user,instance,followup,HistoryGateway(),conversation=conv)
+        assert "hiking" in reply.text
+    request=turn(dsn,user,instance,conv,followup)
+    ctx=call(dsn,prepare_text_context,actor(user),request.turn_id)
+    if interruption=="NONE":
+        assert ctx.entity_history.status=="KNOWN"
+        assert ctx.entity_history.entity_id==friend.entity_id
+        assert ctx.entity_history.source_turn_ids==(source.turn_id,)
+        assert "hiking" in ctx.messages[0].content
+        assert "bowling" not in ctx.messages[0].content
+    else:
+        assert ctx.entity_history.status=="AMBIGUOUS"
+        assert ctx.entity_history.entity_id is None
+
+
+def test_unavailable_entity_history_does_not_anchor_adjacent_followup(dsn):
+    from persona_agent.conversation import prepare_text_context
+    from persona_agent.entity_history import FALLBACKS
+    actor,call,seed,turn,register,_,ask,Gateway=_helpers()
+    user,instance,_=seed(dsn)
+    register(dsn,user,instance,"Alex","FRIEND")
+    conv=uuid4()
+    _,reply=ask(dsn,user,instance,"What do you remember about my friend Alex?",
+                Gateway(),conversation=conv)
+    assert reply.text==FALLBACKS["NO_EVIDENCE"]
+    request=turn(dsn,user,instance,conv,"What else do you remember about them?")
+    ctx=call(dsn,prepare_text_context,actor(user),request.turn_id)
+    assert ctx.entity_history.status=="AMBIGUOUS"
+    assert ctx.entity_history.entity_id is None
+
+
 @pytest.mark.parametrize("change",["EDGE","LINK","ENDPOINT_PRIVACY","ENTITY_EXPIRY"])
 def test_entity_history_fence_rejects_changed_evidence(dsn,change):
     import psycopg
