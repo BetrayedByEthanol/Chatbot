@@ -37,6 +37,7 @@ from .summary_contracts import (
 
 _MAX_MODEL_SOURCE_BYTES = 32000
 _MAX_PROJECTED_FOLLOWUPS = 2
+_SOURCE_OMISSION_MARKER = " ... [middle of source omitted] ... "
 
 
 def _utf8_excerpt(value: str, limit: int) -> str:
@@ -48,7 +49,7 @@ def _utf8_excerpt(value: str, limit: int) -> str:
     encoded=value.encode("utf-8")
     if len(encoded)<=limit:
         return value
-    marker=" ... [middle of source omitted] ... "
+    marker=_SOURCE_OMISSION_MARKER
     room=limit-len(marker.encode("utf-8"))
     if room<8:
         raise ValueError("source excerpt budget is too small")
@@ -464,6 +465,24 @@ def _prompt(work: SummaryWork) -> tuple[ModelMessage,...]:
     )
 
 
+def _validate_episode_citations(rows: tuple[dict, ...], draft: SummaryDraft) -> None:
+    """Require exact original evidence actually available to the inference."""
+    if not draft.episodes:
+        return
+    original={row["turn_id"]:row["input_text"] for row in rows}
+    visible={UUID(row["turn_id"]):row["user"] for row in json.loads(_model_source(rows))}
+    for episode in draft.episodes:
+        source=original.get(episode.source_turn_id)
+        projected=visible.get(episode.source_turn_id)
+        quote=episode.evidence_quote
+        if source is None or projected is None or quote not in source:
+            raise InvalidSummary("episode citation is not an exact user-turn span")
+        # Do not accept evidence spanning an artificial omission marker.
+        segments=(projected,) if projected==source else projected.split(_SOURCE_OMISSION_MARKER)
+        if not any(quote in segment for segment in segments):
+            raise InvalidSummary("episode citation is outside model-visible user evidence")
+
+
 def commit_summary(
     connection: Connection, lease: OperationLease, work: SummaryWork,
     draft: SummaryDraft, model_id: str,
@@ -511,12 +530,7 @@ def commit_summary(
                 raise StaleSummary("conversation source or delivered output changed")
             by_id={row["turn_id"]:row for row in rows}
             # Validate *all* derived episode evidence before any inserts.
-            for ep in draft.episodes:
-                source=by_id.get(ep.source_turn_id)
-                if source is None or ep.evidence_quote.casefold() not in (
-                    source["input_text"].casefold()
-                ):
-                    raise InvalidSummary("episode citation is not an exact user-turn span")
+            _validate_episode_citations(rows,draft)
             summary_id=uuid4()
             cur.execute(
                 """INSERT INTO conversation_summaries(
@@ -667,26 +681,43 @@ def episode_source_turn(
     connection: Connection, actor: TrustedActor,
     instance_id: UUID, episode_id: UUID,
 ) -> dict:
-    """Restore original user turn + *delivered* assistant reply for a hit."""
+    """Restore eligible evidence and derivation provenance, not archive export."""
     require_idle(connection)
     _require_actor(actor)
     with connection.cursor(row_factory=dict_row) as cur:
         cur.execute(
-            """SELECT e.source_turn_id,e.conversation_id,e.source_turn_at,
-                      t.input_text,r.response_text,r.delivery_status
-               FROM memory_episodes e
-               JOIN conversation_turns t
-                 ON t.turn_id=e.source_turn_id
-                AND t.conversation_id=e.conversation_id
-                AND t.user_id=e.user_id AND t.instance_id=e.instance_id
-               LEFT JOIN conversation_responses r ON r.turn_id=t.turn_id
-               WHERE e.episode_id=%s AND e.user_id=%s AND e.instance_id=%s""",
+            f"""SELECT memory_episodes.episode_id,memory_episodes.summary_id,
+                       memory_episodes.source_turn_id,memory_episodes.conversation_id,
+                       memory_episodes.source_turn_at,memory_episodes.source_quote,
+                       memory_episodes.epistemic_status,s.model_id,
+                       t.input_text,r.response_text,r.delivery_status
+                FROM memory_episodes
+                JOIN conversation_summaries s
+                  ON s.summary_id=memory_episodes.summary_id
+                 AND s.conversation_id=memory_episodes.conversation_id
+                 AND s.user_id=memory_episodes.user_id AND s.instance_id=memory_episodes.instance_id
+                JOIN conversation_turns t
+                  ON t.turn_id=memory_episodes.source_turn_id
+                 AND t.conversation_id=memory_episodes.conversation_id
+                 AND t.user_id=memory_episodes.user_id AND t.instance_id=memory_episodes.instance_id
+                LEFT JOIN conversation_responses r ON r.turn_id=t.turn_id
+                  AND r.conversation_id=t.conversation_id
+                  AND r.user_id=t.user_id AND r.instance_id=t.instance_id
+                WHERE memory_episodes.episode_id=%s AND memory_episodes.user_id=%s
+                  AND memory_episodes.instance_id=%s AND memory_episodes.privacy_class='NORMAL'
+                  AND {eligible_episode_source_sql()}""",
             (episode_id,actor.user_id,instance_id),
         )
         hit=cur.fetchone()
         if hit is None:
-            raise PermissionDenied("episode source outside authenticated scope")
+            raise PermissionDenied("episode source unavailable in authenticated scope")
         return {
+            "episode_id":hit["episode_id"],
+            "summary_id":hit["summary_id"],
+            "model_id":hit["model_id"],
+            "epistemic_status":hit["epistemic_status"],
+            "evidence_quote":hit["source_quote"],
+            "evidence_quote_matches_source":hit["source_quote"] in hit["input_text"],
             "turn_id":hit["source_turn_id"],
             "conversation_id":hit["conversation_id"],
             "source_turn_at":hit["source_turn_at"],
@@ -791,7 +822,15 @@ def episode_context_block(cur, user_id: UUID, instance_id: UUID,
     terms=" OR ".join(dict.fromkeys(words[:6]))
     head="Historical episodes (model interpretations, check original turns):\n"
     cur.execute(
-        f"""SELECT topic,description,source_turn_id,source_turn_at
+        f"""SELECT topic,description,source_turn_id,source_turn_at,
+                  CASE WHEN EXISTS (
+                      SELECT 1 FROM conversation_turns origin
+                      WHERE origin.turn_id=memory_episodes.source_turn_id
+                        AND origin.conversation_id=memory_episodes.conversation_id
+                        AND origin.user_id=memory_episodes.user_id
+                        AND origin.instance_id=memory_episodes.instance_id
+                        AND strpos(origin.input_text,memory_episodes.source_quote)>0
+                  ) THEN source_quote END AS source_quote
            FROM memory_episodes WHERE user_id=%s AND instance_id=%s
              AND privacy_class='NORMAL'
              AND {eligible_episode_source_sql()}
@@ -821,6 +860,16 @@ def episode_context_block(cur, user_id: UUID, instance_id: UUID,
     remaining=max_chars-len(head)-sum(
         len(prefix)+len(suffix) for prefix,suffix in specs
     )
+    # Include complete short quotes only when all selected descriptions
+    # retain their minimum allocation. Historical quotes are data, not commands.
+    for i,row in enumerate(rows):
+        if row["source_quote"] is None:
+            continue
+        quote=" (historical user quote: "+json.dumps(row["source_quote"],ensure_ascii=False)+")"
+        if len(quote)<=180 and remaining-len(quote)>=48*len(rows):
+            prefix,suffix=specs[i]
+            specs[i]=(prefix,quote+suffix)
+            remaining-=len(quote)
     allocations=[0]*len(rows)
     pending=set(range(len(rows)))
     while pending and remaining:
