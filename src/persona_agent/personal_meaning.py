@@ -169,8 +169,25 @@ def pending_meaning_change(cur,*,user_id,instance_id,topic):
     return read_meaning(cur,user_id=user_id,instance_id=instance_id,topic=normalized) is None
 
 
+def has_meaning_change_notice(cur,*,user_id,instance_id,turn_id,topic):
+    """Match the actual ingress notice, not just a syntactic parse."""
+    cur.execute(
+        """SELECT 1 FROM memory_meaning_change_notices
+           WHERE user_id=%s AND instance_id=%s AND source_turn_id=%s
+             AND predicate_key=%s""",
+        (user_id,instance_id,turn_id,"meaning_"+topic.replace(" ","_")),
+    )
+    return cur.fetchone() is not None
+
+
+def meaning_change_acknowledgment(topic):
+    return (f"I see you're describing a new meaning for {topic}. "
+            "That definition hasn't been accepted into memory; we can discuss it without saving it.")
+
+
 def meaning_change_reply(topic):
-    return f"You've indicated a change to your {topic}. What should it mean now?"
+    return (f"Your changed definition of {topic} isn't confirmed in memory. "
+            "We can discuss a one-off plan without saving it; which activities should I use?")
 
 
 def meaning_context(cur,*,user_id,instance_id,topic,before_at,max_chars):

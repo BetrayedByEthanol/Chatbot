@@ -440,7 +440,21 @@ def prepare_text_context(
                     temporal_context=_temporal_from_anchor(cursor,actor,item,turn_id),
                     historical_fence=historical_fence,
                 )
-            from .personal_meaning_grammar import meaning_reference,meaning_use_reference
+            from .personal_meaning_grammar import meaning_reference,meaning_use_reference,unresolved_meaning_topic
+            changed_topic=unresolved_meaning_topic(item["input_text"])
+            if changed_topic is not None:
+                from .personal_meaning import has_meaning_change_notice
+                if has_meaning_change_notice(cursor,user_id=actor.user_id,
+                        instance_id=item["instance_id"],turn_id=turn_id,topic=changed_topic):
+                    return ResponseContext(
+                        conversation_id=item["conversation_id"],turn_id=turn_id,
+                        instance_id=item["instance_id"],selection_generation=item["selection_generation"],
+                        conversation_revision=item["revision"],
+                        messages=(ModelMessage("system","Acknowledge this definition as conversational input, not an accepted saved definition."),
+                                  ModelMessage("user",item["input_text"])),
+                        temporal_context=_temporal_from_anchor(cursor,actor,item,turn_id),
+                        historical_fence=historical_fence,meaning_change_action="REPORT",
+                    )
             definition_topic=meaning_reference(item["input_text"])
             if definition_topic is not None:
                 from .personal_meaning import meaning_context
@@ -474,7 +488,7 @@ def prepare_text_context(
                         messages=(ModelMessage("system","The requested personal definition has an unresolved change. Ask for clarification."),
                                   ModelMessage("user",item["input_text"])),
                         temporal_context=_temporal_from_anchor(cursor,actor,item,turn_id),
-                        historical_fence=historical_fence,
+                        historical_fence=historical_fence,meaning_change_action="BLOCKED_ROUTINE",
                     )
             from .meta_episodic_contracts import pattern_reference
             pattern_topic=pattern_reference(item["input_text"])
@@ -1072,7 +1086,8 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
                          entity_recall: bool = False,
                          entity_report: bool = False,
                          meaning_recall: bool = False,
-                         knowledge_recall: bool = False) -> TextResponseResult:
+                         knowledge_recall: bool = False,
+                         meaning_change_direct: bool = False) -> TextResponseResult:
     """Commit one generated reply only if its context remains current."""
     require_idle(connection)
     _require_actor(actor)
@@ -1256,11 +1271,23 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
                 knowledge_replaced=model_generated and text!=canonical
                 text=canonical
                 knowledge_answered=True
-            from .personal_meaning_grammar import meaning_reference,meaning_use_reference
+            from .personal_meaning_grammar import meaning_reference,meaning_use_reference,unresolved_meaning_topic
             definition_topic=meaning_reference(scoped["input_text"])
             routine_topic=meaning_use_reference(scoped["input_text"])
+            changed_topic=unresolved_meaning_topic(scoped["input_text"])
             routine_change_blocked=False
-            if routine_topic is not None and model_generated:
+            meaning_change_acknowledged=False
+            if meaning_change_direct and context.meaning_change_action is None:
+                raise ValueError("direct meaning change requires a prepared change context")
+            if changed_topic is not None and (model_generated or meaning_change_direct):
+                from .personal_meaning import has_meaning_change_notice,meaning_change_acknowledgment
+                if context.historical_fence is None:
+                    raise StaleConversation("meaning report requires a fenced context")
+                if has_meaning_change_notice(cursor,user_id=actor.user_id,
+                        instance_id=context.instance_id,turn_id=context.turn_id,topic=changed_topic):
+                    text=meaning_change_acknowledgment(changed_topic)
+                    meaning_change_acknowledged=True
+            if routine_topic is not None and (model_generated or meaning_change_direct):
                 if context.historical_fence is None:
                     raise StaleConversation("routine use requires a fenced context")
                 from .personal_meaning import pending_meaning_change,meaning_change_reply
@@ -1268,6 +1295,13 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
                         instance_id=context.instance_id,topic=routine_topic):
                     text=meaning_change_reply(routine_topic)
                     routine_change_blocked=True
+            if meaning_change_direct and not (
+                (context.meaning_change_action=="REPORT" and meaning_change_acknowledged)
+                or (context.meaning_change_action=="BLOCKED_ROUTINE" and routine_change_blocked)
+            ):
+                # A stale direct route must never commit a placeholder or
+                # override a newly eligible meaning. Reprepare and route.
+                raise StaleHistoricalContext("meaning change route no longer applicable")
             meaning_answered=False
             meaning_view=None
             meaning_change_pending=False
@@ -1506,6 +1540,15 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
                                             "end":hit.end_offset} for hit in knowledge_hits],
                                "model_reply_replaced":knowledge_replaced},
                        correlation_id=scoped["source_input_event_id"])
+            if meaning_change_acknowledged or routine_change_blocked:
+                _event(cursor,user_id=actor.user_id,instance_id=context.instance_id,
+                       conversation_id=context.conversation_id,
+                       event_type="conversation.response.meaning_change_grounded.v1",
+                       source_id="conversation.runtime",trust_level="TRUSTED_PLATFORM",
+                       detail={"turn_id":str(context.turn_id),"response_id":str(response_id),
+                               "status":"UNADMITTED_REPORT" if meaning_change_acknowledged else "BLOCKED_ROUTINE",
+                               "model_generated":model_generated},
+                       correlation_id=scoped["source_input_event_id"])
             if meaning_answered:
                 _event(cursor,user_id=actor.user_id,instance_id=context.instance_id,
                        conversation_id=context.conversation_id,
@@ -1620,6 +1663,7 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
                     and history_reference is None
                     and not knowledge_answered
                     and not routine_change_blocked
+                    and not meaning_change_acknowledged
                     and (draft is None
                          or generated.intent_candidate.kind=="OBJECTIVE")):
                 admitted = record_model_intent_on_response(
@@ -1637,7 +1681,7 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
             # only when no candidate was admitted. The same response commit
             # fences it; this never approves a Goal or adds another LLM pass.
             if admitted is None:
-                if draft is not None and not routine_change_blocked:
+                if draft is not None and not routine_change_blocked and not meaning_change_acknowledged:
                     record_intent_on_ingress(
                         cursor,user_id=actor.user_id,
                         instance_id=context.instance_id,
@@ -1748,7 +1792,8 @@ def acknowledge_text_delivery(connection: Connection, actor: TrustedActor,
 
 def respond_to_text(connection: Connection, actor: TrustedActor, turn_id: UUID,
                     gateway: TextModelGateway,
-                    *, max_turns: int = 12, max_context_chars: int = 12000
+                    *, max_turns: int = 12, max_context_chars: int = 12000,
+                    adaptive_meaning_change: bool = False
                     ) -> TextResponseResult:
     """Small synchronous orchestration wrapper; no DB transaction spans the LLM.
 
@@ -1804,18 +1849,22 @@ def respond_to_text(connection: Connection, actor: TrustedActor, turn_id: UUID,
             connection,actor,turn_id,max_turns=max_turns,
             max_context_chars=max_context_chars,
         )
-        # MVP-01B: on narrow implicit-language cues, a capable gateway can
-        # enrich the *same* primary response pass. Ordinary text and all legacy
-        # gateways keep their exact existing single-call behavior.
-        from .intent_interpretation import should_interpret_with_model
-        enriched=getattr(gateway,"generate_interpreted",None)
-        if (callable(enriched) and context.messages[-1].role=="user"
-                and should_interpret_with_model(context.messages[-1].content)):
-            generated=enriched(context.messages)
+        direct=adaptive_meaning_change and context.meaning_change_action is not None
+        if direct:
+            generated=ModelReply(model_id="conversation.meaning_change.v1",
+                                 text="Meaning change response.")
         else:
-            generated=gateway.generate(context.messages)
+            # MVP-01B: optional enrichment in the same primary response pass.
+            from .intent_interpretation import should_interpret_with_model
+            enriched=getattr(gateway,"generate_interpreted",None)
+            if (callable(enriched) and context.messages[-1].role=="user"
+                    and should_interpret_with_model(context.messages[-1].content)):
+                generated=enriched(context.messages)
+            else:
+                generated=gateway.generate(context.messages)
         try:
-            return commit_text_response(connection,actor,context,generated,model_generated=True)
+            return commit_text_response(connection,actor,context,generated,
+                                        model_generated=not direct,meaning_change_direct=direct)
         except StaleHistoricalContext:
             if attempt:
                 raise
@@ -1825,5 +1874,6 @@ def respond_to_text(connection: Connection, actor: TrustedActor, turn_id: UUID,
                 return respond_to_text(
                     connection,actor,turn_id,gateway,
                     max_turns=max_turns,max_context_chars=max_context_chars,
+                    adaptive_meaning_change=adaptive_meaning_change,
                 )
     raise AssertionError("unreachable historical response retry")

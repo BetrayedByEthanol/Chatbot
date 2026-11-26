@@ -346,3 +346,126 @@ def test_validated_reconfirmation_resolves_meaning_notice_without_new_revision(d
     assert tick(dsn,consumer).conflicts==1
     assert call(dsn,get_personal_meaning,actor(user),instance,"evening routine") is None
     assert len(call(dsn,list_extraction_conflicts,actor(user),instance))==1
+
+
+def test_auto_meaning_change_ack_and_blocked_planning_need_no_model(dsn):
+    import psycopg
+    from persona_agent.conversation import respond_to_text
+    from persona_agent.conversation_contracts import ModelReply
+    from persona_agent.personal_meaning import (
+        get_personal_meaning,meaning_change_acknowledgment,meaning_change_reply,
+    )
+    from test_phase2_extraction import bootstrap,tick,seed,actor,call,turn
+    consumer=bootstrap(dsn)
+    user,instance,_=seed(dsn)
+    conv=uuid4()
+    turn(dsn,user,instance,conv,DEFINITION)
+    assert tick(dsn,consumer).admitted==1
+
+    source,ack=_answer(dsn,user,instance,UNSUPPORTED,conv=conv)
+    assert ack.model_id=="conversation.meaning_change.v1"
+    assert ack.text==meaning_change_acknowledgment("evening routine")
+    assert "practicing piano" not in ack.text
+    from persona_agent.response_orchestrator import respond_to_user_text
+    replay=call(dsn,respond_to_user_text,actor(user),source.turn_id,NoModel())
+    assert replay.replayed and replay.response_id==ack.response_id
+    _,blocked=_answer(dsn,user,instance,PLAN,conv=conv)
+    assert blocked.model_id=="conversation.meaning_change.v1"
+    assert blocked.text==meaning_change_reply("evening routine")
+    assert call(dsn,get_personal_meaning,actor(user),instance,"evening routine") is None
+
+    # Forced model diagnostics still invoke the model but cannot claim
+    # admission or deliver a stale plan.
+    class Misleading:
+        calls=0
+        def generate(self,messages):
+            self.calls+=1
+            return ModelReply("forced-test","I've saved the new definition and created a goal.")
+    gateway=Misleading()
+    forced=turn(dsn,user,instance,uuid4(),UNSUPPORTED)
+    result=call(dsn,respond_to_text,actor(user),forced.turn_id,gateway)
+    assert gateway.calls==1 and result.model_id=="forced-test"
+    assert result.text==ack.text
+    forced_plan=turn(dsn,user,instance,uuid4(),PLAN)
+    result=call(dsn,respond_to_text,actor(user),forced_plan.turn_id,gateway)
+    assert gateway.calls==2 and result.text==blocked.text
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            """SELECT version,value_text FROM memory_records
+               WHERE user_id=%s AND instance_id=%s AND predicate_key='meaning_evening_routine'""",
+            (user,instance),
+        ).fetchone()==(1,VALUE)
+        assert conn.execute(
+            """SELECT count(*) FROM events
+               WHERE user_id=%s AND instance_id=%s
+               AND event_type='conversation.response.meaning_change_grounded.v1'""",
+            (user,instance),
+        ).fetchone()==(4,)
+
+
+def test_auto_meaning_route_retries_into_normal_planning_after_reconfirmation(dsn,monkeypatch):
+    from persona_agent.conversation import commit_text_response
+    from persona_agent.conversation_contracts import ModelReply
+    from persona_agent.response_orchestrator import respond_to_user_text
+    import persona_agent.conversation as conversation_module
+    from test_phase2_extraction import bootstrap,tick,seed,actor,call,turn
+    consumer=bootstrap(dsn)
+    user,instance,_=seed(dsn)
+    conv=uuid4()
+    turn(dsn,user,instance,conv,DEFINITION)
+    assert tick(dsn,consumer).admitted==1
+    turn(dsn,user,instance,conv,UNSUPPORTED)
+    turn(dsn,user,instance,conv,DEFINITION)
+    request=turn(dsn,user,instance,uuid4(),PLAN)
+    attempts=[]
+    def racing_commit(connection,who,context,reply,**kwargs):
+        attempts.append(context.meaning_change_action)
+        if len(attempts)==1:
+            assert kwargs["meaning_change_direct"] is True
+            assert tick(dsn,consumer).corroborated==1
+        return commit_text_response(connection,who,context,reply,**kwargs)
+    monkeypatch.setattr(conversation_module,"commit_text_response",racing_commit)
+    class Planner:
+        calls=0
+        def generate(self,messages):
+            self.calls+=1
+            assert VALUE in messages[0].content
+            return ModelReply("planning-test","Start with walking the dog, then read.")
+    gateway=Planner()
+    result=call(dsn,respond_to_user_text,actor(user),request.turn_id,gateway)
+    assert attempts==["BLOCKED_ROUTINE",None] and gateway.calls==1
+    assert result.model_id=="planning-test"
+    assert result.text=="Start with walking the dog, then read."
+
+
+def test_05e1_scenario_preserves_baseline_and_adds_exact_assertions():
+    path=Path(__file__).resolve().parents[1]/"scenarios/mvp05e1_memory_acceptance.json"
+    scenario=validate_scenario(json.loads(path.read_text(encoding="utf-8")))
+    cases={step["review_case"]["id"]:step for step in scenario["steps"] if "review_case" in step}
+    assert cases["unsupported_change_ack"]["expect_auto_model_id"]=="conversation.meaning_change.v1"
+    assert cases["pending_definition"]["expect_auto_model_id"]=="conversation.meaning_change.v1"
+    assert cases["reconfirmed_definition"]["expect_canonical_reply"]==cases["definition_recall"]["expect_canonical_reply"]
+    assert "expect_canonical_reply" not in cases["reconfirmed_planning"]
+    for field,value in (("expect_auto_model_id",[]),("expect_canonical_reply",None)):
+        with pytest.raises(ValueError):
+            validate_scenario({"name":"bad","steps":[{"action":"session","name":"s"},
+                {"action":"message","text":"Hello",field:value}]})
+
+
+def test_exact_reply_check_and_auto_route_check_are_separate():
+    pytest.importorskip("psycopg")
+    from persona_agent.behavioral_evaluation import _check_turn
+    step={"expect_canonical_reply":"Owner answer.","expect_auto_model_id":"conversation.test.v1"}
+    snapshot={"application":{"turn_trace":{"response_status":"DELIVERED"},"counts":{"goals":0}},
+              "database":{"conversation_intent_signals":{"rows":[]}}}
+    turn={"turn_id":str(uuid4()),"assistant":"Owner answer.","model_id":"conversation.test.v1"}
+    checks={c["check"]:c for c in _check_turn(step,turn,snapshot)}
+    assert checks["canonical_reply"]["pass"] and checks["auto_route"]["pass"]
+    turn["model_id"]="diagnostic-model"
+    turn["assistant"]="Wrong answer."
+    checks={c["check"]:c for c in _check_turn({**step,"mode":"model"},turn,snapshot)}
+    assert "auto_route" not in checks and not checks["canonical_reply"]["pass"]
+    step["expect_canonical_reply"]=["Owner answer.","Other valid ordering."]
+    turn["assistant"]="Other valid ordering."
+    checks={c["check"]:c for c in _check_turn({**step,"mode":"model"},turn,snapshot)}
+    assert checks["canonical_reply"]["pass"]

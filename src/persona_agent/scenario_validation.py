@@ -101,6 +101,19 @@ def validate_scenario(value: Any) -> dict:
                 step["expect_model_id"], str
             ):
                 raise ValueError("expect_model_id must be a string")
+            if "expect_auto_model_id" in step and (
+                not isinstance(step["expect_auto_model_id"],str)
+                or not 1<=len(step["expect_auto_model_id"])<=128
+                or step.get("mode","auto") not in ("auto","model")
+            ):
+                raise ValueError("expect_auto_model_id requires a bounded identifier on a text route")
+            if "expect_canonical_reply" in step:
+                expected=step["expect_canonical_reply"]
+                choices=[expected] if isinstance(expected,str) else expected
+                if (not isinstance(choices,list) or not 1<=len(choices)<=4
+                        or any(not isinstance(x,str) or not 1<=len(x)<=12000 for x in choices)
+                        or len(set(choices))!=len(choices)):
+                    raise ValueError("expect_canonical_reply requires bounded exact text or alternatives")
             if "expect_intent" in step and step["expect_intent"] not in (
                 "OBJECTIVE", "REQUEST", "CORRECTION", "HYPOTHETICAL",
                 "OBSERVATION", "INSTRUCTION", None,

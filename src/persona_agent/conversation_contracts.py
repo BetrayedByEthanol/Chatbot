@@ -115,6 +115,7 @@ class ResponseContext:
     historical_fence: HistoricalReadFence | None = None
     entity_history: EntityHistoryRead | None = None
     pattern_history: PatternRead | None = None
+    meaning_change_action: Literal["REPORT","BLOCKED_ROUTINE"] | None = None
 
 
 class TextModelGateway(Protocol):
