@@ -44,7 +44,8 @@ def _require_actor(actor: TrustedActor) -> None:
         raise PermissionDenied("conversation ingress requires authenticated user")
 
 
-def _selection(cursor, actor: TrustedActor, instance_id: UUID, generation: int) -> None:
+def _selection(cursor, actor: TrustedActor, instance_id: UUID, generation: int,
+               conversation_id: UUID | None = None) -> None:
     cursor.execute(
         "SELECT 1 FROM persona_instances WHERE user_id=%s AND id=%s",
         (actor.user_id, instance_id),
@@ -63,6 +64,9 @@ def _selection(cursor, actor: TrustedActor, instance_id: UUID, generation: int) 
         or selected["mode"] != "FOREGROUND"
     ):
         raise StaleSelection("conversation requires selected Foreground persona generation")
+    if actor.application_session_id is not None:
+        from .application_auth import check_application_actor
+        check_application_actor(cursor,actor,instance_id,generation,conversation_id)
 
 
 def _event(cursor, *, user_id: UUID, instance_id: UUID, conversation_id: UUID,
@@ -131,6 +135,10 @@ def ingest_text(connection: Connection, actor: TrustedActor,
     receipt_id = uuid4()
     with connection.transaction():
         with connection.cursor(row_factory=dict_row) as cursor:
+            # Credential-bound replays require live authority too.
+            if actor.application_session_id is not None:
+                _selection(cursor,actor,command.instance_id,command.expected_generation,
+                           command.conversation_id)
             cursor.execute(
                 "SELECT 1 FROM persona_instances WHERE user_id=%s AND id=%s",
                 (actor.user_id, command.instance_id),
@@ -169,7 +177,7 @@ def ingest_text(connection: Connection, actor: TrustedActor,
                     update={"replayed": True},
                 )
 
-            _selection(cursor, actor, command.instance_id, command.expected_generation)
+            _selection(cursor, actor, command.instance_id, command.expected_generation,command.conversation_id)
             cursor.execute(
                 """
                 INSERT INTO conversations(conversation_id,user_id,instance_id)
@@ -318,24 +326,32 @@ def lookup_response(connection: Connection, actor: TrustedActor,
     """Read an already-generated response, including after process restart."""
     require_idle(connection)
     _require_actor(actor)
-    with connection.cursor(row_factory=dict_row) as cursor:
+    def read(cursor):
         cursor.execute(
             """
             SELECT r.response_id,r.turn_id,r.response_text,r.model_id,
-                   r.delivery_status
+                   r.delivery_status,r.instance_id,r.selection_generation,r.conversation_id
             FROM conversation_responses r
             WHERE r.turn_id=%s AND r.user_id=%s
             """,
             (turn_id,actor.user_id),
         )
         row = cursor.fetchone()
-    if row is None:
-        return None
-    return TextResponseResult(
-        response_id=row["response_id"],turn_id=row["turn_id"],
-        text=row["response_text"],model_id=row["model_id"],
-        delivery_status=row["delivery_status"],replayed=True,
-    )
+        if row is None:
+            return None
+        if actor.application_session_id is not None:
+            _selection(cursor,actor,row["instance_id"],row["selection_generation"],row["conversation_id"])
+        return TextResponseResult(
+            response_id=row["response_id"],turn_id=row["turn_id"],
+            text=row["response_text"],model_id=row["model_id"],
+            delivery_status=row["delivery_status"],replayed=True,
+        )
+    if actor.application_session_id is not None:
+        with connection.transaction():
+            with connection.cursor(row_factory=dict_row) as cursor:
+                return read(cursor)
+    with connection.cursor(row_factory=dict_row) as cursor:
+        return read(cursor)
 
 
 def _pending_response_anchor(cursor, actor: TrustedActor, turn_id: UUID):
@@ -358,7 +374,7 @@ def _pending_response_anchor(cursor, actor: TrustedActor, turn_id: UUID):
     item=cursor.fetchone()
     if item is None:
         raise PermissionDenied("turn outside authenticated scope")
-    _selection(cursor,actor,item["instance_id"],item["selection_generation"])
+    _selection(cursor,actor,item["instance_id"],item["selection_generation"],item["conversation_id"])
     if item["status"]!="PENDING" or item["last_input_turn_id"]!=turn_id:
         raise StaleConversation("only the latest pending input may be answered")
     return item
@@ -1147,7 +1163,7 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
                 raise PermissionDenied("response turn outside authenticated scope")
             if scoped["instance_id"]!=context.instance_id:
                 raise PermissionDenied("response instance mismatch")
-            _selection(cursor,actor,context.instance_id,context.selection_generation)
+            _selection(cursor,actor,context.instance_id,context.selection_generation,context.conversation_id)
             from .entity_reference import entity_report as parse_entity_report
             report=parse_entity_report(scoped["input_text"])
             if entity_report and report is None:
@@ -1770,18 +1786,24 @@ def acknowledge_text_delivery(connection: Connection, actor: TrustedActor,
             row=cursor.fetchone()
             if row is None:
                 raise PermissionDenied("response outside authenticated scope")
+            if actor.application_session_id is not None:
+                _selection(cursor,actor,row["instance_id"],row["selection_generation"],
+                           row["conversation_id"])
+                from .application_auth import require_delivery_offer
+                require_delivery_offer(cursor,actor,row["response_id"])
             if row["delivery_status"]=="DELIVERED":
                 return TextResponseResult(
                     response_id=row["response_id"],turn_id=row["turn_id"],
                     text=row["response_text"],model_id=row["model_id"],
                     delivery_status="DELIVERED",replayed=True,
                 )
-            _selection(cursor,actor,row["instance_id"],row["selection_generation"])
+            _selection(cursor,actor,row["instance_id"],row["selection_generation"],row["conversation_id"])
             cursor.execute(
-                "SELECT conversation_id FROM conversations "
+                "SELECT conversation_id,last_input_turn_id FROM conversations "
                 "WHERE conversation_id=%s FOR NO KEY UPDATE",
                 (row["conversation_id"],),
             )
+            conversation=cursor.fetchone()
             # Another callback can commit DELIVERED while this one waits for
             # the conversation row lock. Re-read only after serialization so
             # concurrent duplicates behave like sequential retries.
@@ -1801,6 +1823,9 @@ def acknowledge_text_delivery(connection: Connection, actor: TrustedActor,
                     text=row["response_text"],model_id=row["model_id"],
                     delivery_status="DELIVERED",replayed=True,
                 )
+            if (actor.application_session_id is not None
+                    and (conversation is None or conversation["last_input_turn_id"]!=row["turn_id"])):
+                raise StaleConversation("application delivery offer superseded")
             cursor.execute(
                 """
                 UPDATE conversation_responses
@@ -1881,6 +1906,7 @@ def respond_to_text(connection: Connection, actor: TrustedActor, turn_id: UUID,
                     _selection(
                         cursor,actor,
                         response["instance_id"],response["selection_generation"],
+                        response["conversation_id"],
                     )
                     # A later user message also supersedes the authority to
                     # send an older, not-yet-delivered generated reply.

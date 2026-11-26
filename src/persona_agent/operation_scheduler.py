@@ -73,6 +73,8 @@ def enqueue_operation(
     platform = type(actor) is TrustedPlatformActor
     if type(actor) is not TrustedActor and not platform:
         raise PermissionDenied("enqueue requires a trusted user or platform actor")
+    if type(actor) is TrustedActor and actor.application_session_id is not None:
+        raise PermissionDenied("application session has no durable operation admission grant")
     # P2-03 grants the internal automation worker ONLY non-effecting summary
     # admission. It is not a generic platform permission to enqueue tools,
     # goals, external effects or arbitrary cognitive operations.

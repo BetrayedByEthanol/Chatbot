@@ -151,6 +151,8 @@ def schedule_text_analysis(
     """
     require_idle(connection)
     _require_actor(actor)
+    if actor.application_session_id is not None:
+        raise PermissionDenied("application session has no durable tool admission grant")
     tool_id=_tool_id(command.turn_id)
     with connection.transaction():
         with connection.cursor(row_factory=dict_row) as cur:

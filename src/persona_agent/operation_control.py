@@ -348,6 +348,8 @@ def cancel_operation(
     require_idle(connection)
     if type(actor) is not TrustedActor:
         raise PermissionDenied("cancellation requires authenticated primary user")
+    if actor.application_session_id is not None:
+        raise PermissionDenied("application session has no operation cancellation grant")
     fingerprint=_fingerprint(command)
     receipt_id=uuid4()
     with connection.transaction():

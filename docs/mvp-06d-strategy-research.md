@@ -45,3 +45,7 @@ python -m pytest -q tests/test_mvp06d_strategy_research.py \
 ```
 
 Candidate static review only; PostgreSQL and live CI NOT RUN at authoring. No real-model acceptance or external research provider. The local supplied-source route does not satisfy generalized external Task/Operation research, semantic support/safety review, natural conversational approval, autonomous strategy selection, statistical effectiveness evaluation or cross-context learning. US-050 remains M at authoring pending technical verification; other statuses unchanged. After passing technical CI, focused MVP-07A may proceed; full Phase 2/3 acceptance and deployment gates remain open.
+
+## Subsequent verification (26 November 2026)
+
+PR #130 merged as `1cf551755e0478bff19bf2efde1199a490ecf634`; final head `2507af4aa0e2c3195c7ec2dc9c3b9e29d691f201` passed [PostgreSQL CI](https://github.com/BetrayedByEthanol/Chatbot/actions/runs/45825422385) (2,261 passed, 3 skipped) and [live integration](https://github.com/BetrayedByEthanol/Chatbot/actions/runs/45825422330). Candidate authoring-time NOT RUN is superseded for technical CI only. Local research does not implement external provider admission or quality acceptance. Focused 07A proceeds.

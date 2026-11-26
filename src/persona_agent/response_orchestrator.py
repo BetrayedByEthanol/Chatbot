@@ -88,6 +88,8 @@ def respond_to_user_text(
             connection,actor,turn_id,timezone_name=decision.timezone_name,
         )
     if decision.route=="TEXT_ANALYSIS":
+        if actor.application_session_id is not None:
+            raise PermissionDenied("asynchronous dispatch is not enabled for application sessions")
         return respond_to_text_analysis(
             connection,actor,SlowTextToolCommand(
                 turn_id=turn_id,max_words=max_words,
