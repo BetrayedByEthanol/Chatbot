@@ -16,7 +16,7 @@ from .goal_decomposition_contracts import (
     proven_count_milestone,verified_count_measure,proposal_digest,
 )
 from .goal_state import (
-    _MAX_CHILDREN,_MAX_SUBGOAL_DEPTH,_locked_active_goal_ancestry,
+    _MAX_CHILDREN,_MAX_SUBGOAL_DEPTH,_locked_active_goal_ancestry,_has_existing_goal_tasks,
     _read_selected,
     _publish,_selected,
 )
@@ -197,6 +197,8 @@ def propose_derived_subgoal(
             if parent["created_event_id"]!=command.source_parent_event_id:
                 raise PermissionDenied("stale or forged parent source event")
             _authorized_lineage(cur,actor,command.instance_id,parent)
+            if _has_existing_goal_tasks(cur,actor,command.instance_id,command.parent_goal_id):
+                raise VersionConflict("goal decomposition stopped at existing tasks")
 
             cur.execute("SELECT 1 FROM goal_records WHERE goal_id=%s",
                         (command.proposed_goal_id,))

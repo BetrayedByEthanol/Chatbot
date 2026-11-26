@@ -5,7 +5,7 @@ No task can be verified by advice, prediction, or its own user report.
 """
 import hashlib
 import json
-from datetime import datetime
+from datetime import date, datetime
 from typing import Literal
 from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, model_validator, field_validator
@@ -56,6 +56,21 @@ class CreateTaskCommand(TaskUserCommand):
         if self.executor == "USER" and self.capability is not None:
             raise ValueError("user task cannot declare an agent capability")
         return self
+
+class CreateRecurringTaskCommand(CreateTaskCommand):
+    """Explicit approval of one owner-derived occurrence in a UTC cycle."""
+    window_start: date
+    window_end: date
+    ordinal: int = Field(ge=1,le=12)
+
+    @model_validator(mode="after")
+    def recurring_scope(self):
+        if self.executor!="USER" or self.capability is not None:
+            raise ValueError("recurring occurrence is a user action only")
+        if self.window_end<=self.window_start:
+            raise ValueError("recurring cycle must increase")
+        return self
+
 
 class AddTaskDependencyCommand(TaskUserCommand):
     task_id: UUID

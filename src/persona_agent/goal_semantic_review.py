@@ -21,7 +21,7 @@ from .goal_semantic_review_contracts import (
     ReviewSubgoalCommand,SemanticSubgoalFinding,SemanticSubgoalReviewResult,
 )
 from .goal_state import (
-    _MAX_CHILDREN,_MAX_SUBGOAL_DEPTH,_locked_active_goal_ancestry,
+    _MAX_CHILDREN,_MAX_SUBGOAL_DEPTH,_locked_active_goal_ancestry,_has_existing_goal_tasks,
     _publish,_selected,
 )
 from .lifecycle import TrustedPlatformActor
@@ -408,7 +408,8 @@ def review_pending_subgoal(
             final_decision="SUPERSEDED" if stale else decision
             accepted_event=None
             if final_decision=="ACCEPTED":
-                if parent["depth"]>=_MAX_SUBGOAL_DEPTH:
+                if (parent["depth"]>=_MAX_SUBGOAL_DEPTH
+                        or _has_existing_goal_tasks(cur,actor,command.instance_id,parent["goal_id"])):
                     final_decision="DEFERRED"
                 else:
                     cur.execute(

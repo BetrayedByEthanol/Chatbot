@@ -381,6 +381,20 @@ def _locked_active_goal_ancestry(
     return locked[parent_id]
 
 
+def _has_existing_goal_tasks(cur,actor,instance_id,goal_id):
+    """Lazy expansion stops at existing work, including uncertain evidence.
+
+    The caller holds the parent Goal lock. Task creation increments that
+    revision; cancelled tasks alone do not constitute an active plan.
+    """
+    cur.execute(
+        """SELECT 1 FROM goal_tasks WHERE goal_id=%s AND user_id=%s
+             AND instance_id=%s AND status<>'CANCELLED' LIMIT 1""",
+        (goal_id,actor.user_id,instance_id),
+    )
+    return cur.fetchone() is not None
+
+
 def derive_weekly_walking_milestone(
     connection: Connection,
     actor: TrustedPlatformActor,
@@ -445,6 +459,8 @@ def derive_weekly_walking_milestone(
             _version(parent,command.expected_parent_version)
             if parent["depth"] >= _MAX_SUBGOAL_DEPTH:
                 raise VersionConflict("goal decomposition depth limit")
+            if _has_existing_goal_tasks(cur,actor,command.instance_id,command.parent_goal_id):
+                raise VersionConflict("goal decomposition stopped at existing tasks")
 
             # A platform-derived child may extend an earlier validated
             # delegation; a direct parent must have authentic approval.
@@ -475,13 +491,15 @@ def derive_weekly_walking_milestone(
             if parent_target is None or command.weekly_walks >= parent_target:
                 raise PermissionDenied("unproven or noncontributing child milestone")
             title,outcome,criterion = milestone_fields(command.weekly_walks)
+            from .goal_decomposition_contracts import verified_count_measure
             cur.execute(
-                """SELECT 1 FROM goal_records
-                   WHERE parent_goal_id=%s AND user_id=%s AND instance_id=%s
-                     AND desired_outcome=%s LIMIT 1""",
-                (command.parent_goal_id,actor.user_id,command.instance_id,outcome),
+                """SELECT desired_outcome,success_criterion FROM goal_records
+                   WHERE parent_goal_id=%s AND user_id=%s AND instance_id=%s""",
+                (command.parent_goal_id,actor.user_id,command.instance_id),
             )
-            if cur.fetchone() is not None:
+            if any(verified_count_measure(row["desired_outcome"],row["success_criterion"])
+                   ==("complete","walk","week",command.weekly_walks)
+                   for row in cur.fetchall()):
                 raise VersionConflict("equivalent child milestone already exists")
             cur.execute(
                 """SELECT count(*) AS n FROM goal_records

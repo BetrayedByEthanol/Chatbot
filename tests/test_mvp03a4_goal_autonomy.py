@@ -417,3 +417,31 @@ def test_expired_lease_after_ancestry_lock_cannot_commit(dsn,monkeypatch):
         )
     assert call(dsn,run_one_goal_evaluation,OpportunityModel(None),
                 worker_id="expiry-cleanup")=="NO_PROPOSAL"
+
+
+def test_goal_evaluation_stops_at_existing_user_task(dsn,monkeypatch):
+    from persona_agent.goal_cycle import read_recurring_goal
+    from persona_agent.task_contracts import CreateRecurringTaskCommand,task_approval_phrase
+    from persona_agent.task_state import create_task
+    user,instance,root=closed_goal(dsn,monkeypatch)
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        draft=read_recurring_goal(conn,user_actor(user),instance,root).next_task
+        conversation=conn.execute(
+            "SELECT source_conversation_id FROM goal_records WHERE goal_id=%s",(root,)
+        ).fetchone()[0]
+    message="Please create this reading occurrence task."
+    source=goals.turn(dsn,user,instance,conversation,message)
+    command=CreateRecurringTaskCommand(
+        instance_id=instance,expected_generation=1,idempotency_key=str(uuid4()),
+        conversation_id=conversation,evidence_turn_id=source.turn_id,evidence_quote=message,
+        task_id=uuid4(),**draft.model_dump(),
+    )
+    approval=goals.turn(dsn,user,instance,conversation,task_approval_phrase(command))
+    call(dsn,create_task,user_actor(user),command.model_copy(update={"approval_turn_id":approval.turn_id}))
+    ready(dsn,user,instance)
+    assert call(dsn,schedule_goal_evaluation,stage_actor(user),instance,1) is None
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT count(*) FROM goal_autonomy_jobs WHERE user_id=%s AND instance_id=%s",
+            (user,instance),
+        ).fetchone()==(0,)
