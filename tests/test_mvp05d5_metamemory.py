@@ -1,4 +1,5 @@
 """MVP-05D.5: owner-observed gaps and user-reported retrieval quality."""
+from decimal import Decimal
 from uuid import uuid4
 
 import pytest
@@ -282,4 +283,4 @@ def test_reported_incorrect_answer_flags_review_not_fact_mutation(dsn):
         assert conn.execute(
             "SELECT version,value_text,record_status,confidence FROM memory_records WHERE memory_id=%s",
             (saved.memory_id,),
-        ).fetchone()==(1,"Toyota Camry","ACTIVE",0.96)
+        ).fetchone()==(1,"Toyota Camry","ACTIVE",Decimal("0.960"))
