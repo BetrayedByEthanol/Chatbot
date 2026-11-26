@@ -50,4 +50,4 @@ python -m pytest -q tests/test_mvp07b2_response_lineage.py \
   tests/test_phase2_cognition.py tests/test_phase5_speech_output.py
 ```
 
-Candidate static review only; PostgreSQL and live CI NOT RUN at authoring. US-117/118 remain partial; US-085 remains missing. Do not promote full 07B2 or deployment gate on this candidate.
+Merged in PR #132 (`2ca8985`). Final PR head `1c81164` passed PostgreSQL contracts (2,287 passed, 3 skipped), standalone contracts without Psycopg, and live integrated acceptance. These runs verified the PR head, not a separate merge-commit run. US-117/118 remain partial; US-085 remains missing. Do not promote full 07B2 or deployment gate.

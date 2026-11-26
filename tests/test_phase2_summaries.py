@@ -842,3 +842,188 @@ def test_generated_reply_revoked_by_persona_switch_is_summary_safe(dsn):
             """SELECT count(*) FROM conversation_summaries
                WHERE conversation_id=%s""",(conversation,),
         ).fetchone()[0]==2
+
+
+
+@pytest.mark.parametrize("legacy",[False,True])
+def test_summary_range_lineage_blocks_derived_episode_after_other_source_correction(dsn,legacy):
+    from psycopg.rows import dict_row
+    from persona_agent.memory import admit_memory,amend_memory
+    from persona_agent.summary_memory import summary_context_block
+    from test_phase2_memory import candidate,correction
+
+    user,instance,_=seed(dsn)
+    conv=uuid4()
+    source=add_turn(dsn,user,instance,conv,"My favorite drink is tea.")
+    saved=call(dsn,admit_memory,actor(user),candidate(instance,conv,source))
+    neutral=add_turn(dsn,user,instance,conv,"I adopted a rescue dog.")
+    for i in range(3):
+        add_turn(dsn,user,instance,conv,f"Later discussion {i}")
+    job=schedule(dsn,user,instance,conv,max_turns=2)
+    lease=claim(dsn)
+    assert lease.operation_id==job.operation_id
+    work=call(dsn,prepare_summary,lease)
+    draft=SummaryDraft.model_validate({
+        "summary":"User reported tea and adopting a rescue dog.",
+        "episodes":[{"source_turn_id":neutral.turn_id,
+                     "evidence_quote":"I adopted a rescue dog",
+                     "topic":"dog adoption","description":"Adopted a rescue dog; discussed tea.",
+                     "confidence":0.8}],
+    })
+    result=call(dsn,commit_summary,lease,work,draft,"summary-lineage-test")
+    call(dsn,run_summary,lease,FixedSummary())
+    with psycopg.connect(dsn,autocommit=True,row_factory=dict_row) as conn:
+        with conn.cursor() as cur:
+            row=cur.execute(
+                "SELECT source_turn_ids,summary_text FROM conversation_summaries WHERE summary_id=%s",
+                (result.summary_id,),
+            ).fetchone()
+            assert set(row["source_turn_ids"])=={source.turn_id,neutral.turn_id}
+            if legacy:
+                # Emulate an existing pre-0058 summary without guessing its
+                # historical projection. The original range remains its fence.
+                cur.execute("UPDATE conversation_summaries SET source_turn_ids=NULL WHERE summary_id=%s",
+                            (result.summary_id,))
+            assert "tea" in summary_context_block(cur,conv,user,instance,5,1200)
+    hits=call(dsn,search_episodes,actor(user),instance,"dog adoption")
+    assert len(hits)==1
+    unrelated_conv=uuid4()
+    unrelated=add_turn(dsn,user,instance,unrelated_conv,"I drive a Toyota Camry.")
+    call(dsn,admit_memory,actor(user),candidate(instance,unrelated_conv,unrelated,
+        kind="FACT",predicate="car",value="Toyota Camry",quote="I drive a Toyota Camry."))
+    with psycopg.connect(dsn,autocommit=True,row_factory=dict_row) as conn:
+        with conn.cursor() as cur:
+            assert "tea" in summary_context_block(cur,conv,user,instance,5,1200)
+    other_conv=uuid4()
+    newer=add_turn(dsn,user,instance,other_conv,"Actually my favorite drink is coffee.")
+    call(dsn,amend_memory,actor(user),correction(instance,other_conv,newer,saved.memory_id))
+    with psycopg.connect(dsn,autocommit=True,row_factory=dict_row) as conn:
+        with conn.cursor() as cur:
+            assert summary_context_block(cur,conv,user,instance,5,1200)==""
+            row=cur.execute(
+                "SELECT summary_text FROM conversation_summaries WHERE summary_id=%s",
+                (result.summary_id,),
+            ).fetchone()
+            assert "tea" in row["summary_text"]  # invalidation is not deletion
+    assert call(dsn,search_episodes,actor(user),instance,"dog adoption")==()
+    with pytest.raises(PermissionDenied):
+        call(dsn,episode_source_turn,actor(user),instance,hits[0].episode_id)
+
+
+def test_late_summary_rejects_corrected_input_and_fresh_projection_omits_it(dsn):
+    from psycopg.rows import dict_row
+    from persona_agent.memory import admit_memory,amend_memory
+    from persona_agent.summary_memory import _model_source,summary_context_block
+    from test_phase2_memory import candidate,correction
+
+    user,instance,_=seed(dsn)
+    conv=uuid4()
+    source=add_turn(dsn,user,instance,conv,"My favorite drink is tea.")
+    saved=call(dsn,admit_memory,actor(user),candidate(instance,conv,source))
+    neutral=add_turn(dsn,user,instance,conv,"I adopted a rescue dog.")
+    for i in range(3):
+        add_turn(dsn,user,instance,conv,f"Later discussion {i}")
+    job=schedule(dsn,user,instance,conv,max_turns=2)
+    lease=claim(dsn)
+    assert lease.operation_id==job.operation_id
+    old=call(dsn,prepare_summary,lease)
+    assert "favorite drink is tea" in _model_source(old.turns)
+
+    other_conv=uuid4()
+    newer=add_turn(dsn,user,instance,other_conv,"Actually my favorite drink is coffee.")
+    call(dsn,amend_memory,actor(user),correction(instance,other_conv,newer,saved.memory_id))
+    with pytest.raises(StaleSummary):
+        call(dsn,commit_summary,lease,old,SummaryDraft(summary="User likes tea."),"old")
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT summary_watermark FROM conversations WHERE conversation_id=%s",(conv,),
+        ).fetchone()==(0,)
+        assert conn.execute(
+            "SELECT count(*) FROM conversation_summaries WHERE conversation_id=%s",(conv,),
+        ).fetchone()==(0,)
+    fresh=call(dsn,prepare_summary,lease)
+    projection=json.loads(_model_source(fresh.turns))
+    assert projection[0]["user"]=="" and projection[0]["source_omitted"] is True
+    assert projection[1]["user"]=="I adopted a rescue dog."
+    invalid=SummaryDraft.model_validate({
+        "summary":"Invented stale source",
+        "episodes":[{"source_turn_id":source.turn_id,"evidence_quote":"My favorite drink is tea",
+                     "topic":"tea","description":"Stale evidence","confidence":0.8}],
+    })
+    with pytest.raises(InvalidSummary):
+        call(dsn,commit_summary,lease,fresh,invalid,"bad-citation")
+    result=call(dsn,commit_summary,lease,fresh,SummaryDraft(summary="User adopted a rescue dog."),"fresh")
+    call(dsn,run_summary,lease,FixedSummary())
+    with psycopg.connect(dsn,autocommit=True,row_factory=dict_row) as conn:
+        with conn.cursor() as cur:
+            row=cur.execute("SELECT source_turn_ids FROM conversation_summaries WHERE summary_id=%s",
+                            (result.summary_id,)).fetchone()
+            assert row["source_turn_ids"]==[neutral.turn_id]
+            assert "rescue dog" in summary_context_block(cur,conv,user,instance,5,1200)
+            assert "tea" not in summary_context_block(cur,conv,user,instance,5,1200)
+
+
+
+def test_summary_tracks_followup_origin_outside_its_range(dsn):
+    from psycopg.rows import dict_row
+    from persona_agent.dialogue_contracts import FocusThreadCommand
+    from persona_agent.dialogue_state import focus_thread
+    from persona_agent.memory import admit_memory,amend_memory
+    from persona_agent.summary_memory import _model_source,summary_context_block
+    from persona_agent.tool_contracts import RESOURCE_KEY,SlowTextToolCommand
+    from persona_agent.tool_gateway import (
+        acknowledge_tool_followup,prepare_tool_followup,reconcile_tool_followup,
+        respond_to_text_analysis,run_one_text_tool,schedule_text_analysis,
+    )
+    from test_phase1_dialogue import base,open_for,response,revision
+    from test_phase2_memory import candidate,correction
+
+    user,instance,_=seed(dsn)
+    call(dsn,configure_resource_pool,RESOURCE_KEY,capacity_units=2)
+    conv=uuid4()
+    source=add_turn(dsn,user,instance,conv,"My favorite drink is tea.")
+    saved=call(dsn,admit_memory,actor(user),candidate(instance,conv,source))
+    thread,_=open_for(dsn,user,instance,conv,source,"Analysis")
+    request=SlowTextToolCommand(turn_id=source.turn_id,max_words=5)
+    notice=call(dsn,respond_to_text_analysis,actor(user),request,await_seconds=0)
+    call(dsn,acknowledge_text_delivery,actor(user),notice.response_id)
+    tool=call(dsn,schedule_text_analysis,actor(user),request)
+    call(dsn,run_one_text_tool,worker_id="summary-lineage-tool")
+    unrelated=add_turn(dsn,user,instance,conv,"Unrelated trip planning")
+    open_for(dsn,user,instance,conv,unrelated,"Trip planning")
+    response(dsn,user,unrelated,"We can discuss the trip.")
+    resumed=add_turn(dsn,user,instance,conv,"Back to the text analysis")
+    call(dsn,focus_thread,actor(user),FocusThreadCommand(
+        **base(user,instance,conv,resumed,revision(dsn,user,conv)),thread_id=thread,
+    ))
+    response(dsn,user,resumed,"The analysis is ready.")
+    assert call(dsn,reconcile_tool_followup,actor(user),tool.tool_call_id).followup_state=="READY"
+    published=call(dsn,prepare_tool_followup,actor(user),tool.tool_call_id)
+    call(dsn,acknowledge_tool_followup,actor(user),tool.tool_call_id)
+    add_turn(dsn,user,instance,conv,"Next question")
+
+    first=schedule(dsn,user,instance,conv,max_turns=2,retain_recent=1)
+    first_lease=claim(dsn)
+    assert first_lease.operation_id==first.operation_id
+    call(dsn,run_summary,first_lease,FixedSummary())
+    second=schedule(dsn,user,instance,conv,max_turns=1,retain_recent=1)
+    assert (second.start_sequence,second.end_sequence)==(3,3)
+    lease=claim(dsn)
+    assert lease.operation_id==second.operation_id
+    work=call(dsn,prepare_summary,lease)
+    assert json.loads(_model_source(work.turns))[0]["delivered_followups"]==[published.text]
+    result=call(dsn,commit_summary,lease,work,SummaryDraft(summary="Late analysis result."),"test")
+    call(dsn,run_summary,lease,FixedSummary())
+    with psycopg.connect(dsn,autocommit=True,row_factory=dict_row) as conn:
+        with conn.cursor() as cur:
+            row=cur.execute("SELECT source_turn_ids FROM conversation_summaries WHERE summary_id=%s",
+                            (result.summary_id,)).fetchone()
+            assert set(row["source_turn_ids"])=={source.turn_id,resumed.turn_id}
+            assert "Late analysis result" in summary_context_block(cur,conv,user,instance,5,1200)
+
+    other_conv=uuid4()
+    newer=add_turn(dsn,user,instance,other_conv,"Actually my favorite drink is coffee.")
+    call(dsn,amend_memory,actor(user),correction(instance,other_conv,newer,saved.memory_id))
+    with psycopg.connect(dsn,autocommit=True,row_factory=dict_row) as conn:
+        with conn.cursor() as cur:
+            assert "Late analysis result" not in summary_context_block(cur,conv,user,instance,5,1200)
