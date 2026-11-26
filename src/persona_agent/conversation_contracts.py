@@ -8,6 +8,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .temporal_context import TemporalContext
+from .meta_episodic_contracts import PatternRead
 
 
 class TextInputCommand(BaseModel):
@@ -113,6 +114,7 @@ class ResponseContext:
     temporal_context: TemporalContext | None = None
     historical_fence: HistoricalReadFence | None = None
     entity_history: EntityHistoryRead | None = None
+    pattern_history: PatternRead | None = None
 
 
 class TextModelGateway(Protocol):

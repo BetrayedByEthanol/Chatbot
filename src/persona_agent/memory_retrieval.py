@@ -431,7 +431,10 @@ def needs_historical_read_fence(text: str) -> bool:
     from .historical_user_turns import _RETROSPECTIVE_ACTIVITY, _FOCUSED_NEXT_STEP
     from .intent_interpretation import explicit_topic_history_request
     from .temporal_context import _DATED_RECALL
+    from .meta_episodic_contracts import pattern_reference
 
+    if pattern_reference(text) is not None:
+        return True
     if (personal_fact_topic(text) is not None or entity_reference(text) is not None
             or entity_report(text) is not None):
         return False

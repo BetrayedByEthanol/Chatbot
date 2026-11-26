@@ -35,6 +35,9 @@ from .operation_contracts import (
 from .operation_control import complete_operation,fail_operation
 from .operation_scheduler import claim_operation,enqueue_operation
 from .runtime import PermissionDenied,StaleSelection
+from .meta_episodic import (
+    prepare_pattern_candidates,pattern_prompt,admit_pattern_proposals,pattern_count,
+)
 
 
 def _range(cur,job:dict) -> tuple[dict,...]:
@@ -236,12 +239,16 @@ def prepare_cognition(connection:Connection,lease:OperationLease) -> CognitiveWo
             if state is None or state["cognitive_watermark"]!=job["start_sequence"]-1:
                 raise StaleCognition("cognitive watermark has advanced")
             rows=_range(cur,job)
+            candidates,pattern_fence=prepare_pattern_candidates(
+                cur,lease.user_id,lease.instance_id,rows,
+            )
             return CognitiveWork(
                 operation_id=lease.operation_id,user_id=lease.user_id,
                 instance_id=lease.instance_id,conversation_id=job["conversation_id"],
                 expected_generation=job["expected_generation"],
                 start_sequence=job["start_sequence"],end_sequence=job["end_sequence"],
                 source_digest=_digest(rows),turns=rows,
+                pattern_candidates=candidates,pattern_fence=pattern_fence,
             )
 
 
@@ -267,8 +274,13 @@ def _messages(work:CognitiveWork) -> tuple[ModelMessage,...]:
         "Prefer [] over unsupported inference. Maximum five items. "
         "All content remains lower-trust model interpretation, never a memory fact."
     )
-    return (ModelMessage("system",instructions),
-            ModelMessage("user",json.dumps(evidence,ensure_ascii=False)))
+    pattern_instructions,pattern_data=pattern_prompt(work.pattern_candidates)
+    messages=[ModelMessage("system",instructions+pattern_instructions)]
+    if pattern_data is not None:
+        # Historical content is explicitly untrusted data, not instructions.
+        messages.append(ModelMessage("user",pattern_data))
+    messages.append(ModelMessage("user",json.dumps(evidence,ensure_ascii=False)))
+    return tuple(messages)
 
 
 def _parse(text:str) -> CognitiveDraft:
@@ -349,7 +361,8 @@ def commit_cognition(
                     operation_id=lease.operation_id,conversation_id=work.conversation_id,
                     end_sequence=work.end_sequence,
                     reflection_count=sum(kinds.values()),
-                    intention_count=kinds.get("INTENTION",0),replayed=True,
+                    intention_count=kinds.get("INTENTION",0),
+                    pattern_count=pattern_count(cur,lease.operation_id),replayed=True,
                 )
             # Locks were acquired in conversation -> job order above.
             # Revalidate P0 authority after any wait and before writes.
@@ -428,14 +441,16 @@ def commit_cognition(
                     "start_sequence":work.start_sequence,
                     "end_sequence":work.end_sequence,
                     "proposals":count,"intentions":intentions,
+                    "pattern_proposals":len(draft.patterns),
                 },
             )
+            patterns=admit_pattern_proposals(connection,cur,work,draft.patterns,model_id)
             require_claim(cur,lease)
             require_current_authority(cur,op)
             return CognitiveCommitted(
                 operation_id=lease.operation_id,conversation_id=work.conversation_id,
                 end_sequence=work.end_sequence,reflection_count=count,
-                intention_count=intentions,
+                intention_count=intentions,pattern_count=patterns,
             )
 
 
@@ -452,10 +467,11 @@ def run_cognition(
                 (lease.operation_id,),
             )
             counts={x["kind"]:x["n"] for x in cur.fetchall()}
+            patterns=pattern_count(cur,lease.operation_id)
         result=CognitiveCommitted(
             operation_id=lease.operation_id,conversation_id=work.conversation_id,
             end_sequence=work.end_sequence,reflection_count=sum(counts.values()),
-            intention_count=counts.get("INTENTION",0),replayed=True,
+            intention_count=counts.get("INTENTION",0),pattern_count=patterns,replayed=True,
         )
     else:
         try:

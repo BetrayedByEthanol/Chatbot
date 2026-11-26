@@ -6,6 +6,9 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator, field_validator
 
+from .conversation_contracts import HistoricalReadFence
+from .meta_episodic_contracts import PatternEpisode,PatternProposal
+
 COGNITIVE_OPERATION = "cognition.reflect_range.v1"
 COGNITIVE_CAPABILITY = "cognition.reflection"
 COGNITIVE_RESOURCE = "cognition.llm"
@@ -54,6 +57,7 @@ class CognitiveDraft(BaseModel):
 
     model_config=ConfigDict(extra="forbid",frozen=True)
     proposals: tuple[CognitiveProposal,...] = Field(default=(),max_length=5)
+    patterns: tuple[PatternProposal,...] = Field(default=(),max_length=2)
 
 
 class CognitiveScheduled(BaseModel):
@@ -73,6 +77,7 @@ class CognitiveCommitted(BaseModel):
     end_sequence: int
     reflection_count: int
     intention_count: int
+    pattern_count: int=0
     replayed: bool=False
 
 
@@ -88,6 +93,8 @@ class CognitiveWork:
     source_digest: str
     turns: tuple[dict,...]
     completed: bool=False
+    pattern_candidates: tuple[PatternEpisode,...]=()
+    pattern_fence: HistoricalReadFence | None=None
 
 
 @dataclass(frozen=True)
