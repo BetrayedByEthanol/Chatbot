@@ -24,7 +24,7 @@ from .goal_delegation_contracts import (
 from .conversation import _require_actor
 from .goal_contracts import (
     CreateGoalCommand,EvidenceView,GoalCommandResult,GoalUserCommand,GoalView,
-    ProposeGoalStrategyCommand,RecordGoalEvidenceCommand,
+    ProposeGoalStrategyCommand,ProposeResearchStrategyCommand,RecordGoalEvidenceCommand,
     SelectGoalStrategyCommand,SetGoalStatusCommand,StrategyView,
     goal_action_approval_phrase,
 )
@@ -223,7 +223,7 @@ def _command_in_transaction(
     source=_source(cur,actor,command)
     if isinstance(command,(
         CreateGoalCommand,SetGoalStatusCommand,
-        SelectGoalStrategyCommand,
+        SelectGoalStrategyCommand,ProposeResearchStrategyCommand,
     )):
         if conversational:
             from .goal_conversation import validate_conversational_approval
@@ -658,7 +658,13 @@ def propose_goal_strategy(
 )->GoalCommandResult:
     """Record a user-requested alternative; never change the active strategy."""
     def apply(cur,who,cmd,receipt):
-        goal=_goal(cur,who,cmd.instance_id,cmd.goal_id,lock="SHARE")
+        researched=isinstance(cmd,ProposeResearchStrategyCommand)
+        if researched:
+            goal=_locked_active_goal_ancestry(cur,who,cmd.instance_id,cmd.goal_id)
+            from .strategy_research import validate_research_candidate
+            validate_research_candidate(cur,who,goal,cmd)
+        else:
+            goal=_goal(cur,who,cmd.instance_id,cmd.goal_id,lock="SHARE")
         if goal["status"]!="ACTIVE":
             raise VersionConflict("goal not active for strategy proposals")
         cur.execute("SELECT 1 FROM goal_strategies WHERE strategy_id=%s",
@@ -680,11 +686,16 @@ def propose_goal_strategy(
              cmd.suitability_note.strip(),cmd.conversation_id,
              cmd.evidence_turn_id,cmd.evidence_quote,evt),
         )
+        if researched:
+            from .strategy_research import save_research_links
+            save_research_links(cur,who,cmd,evt)
         return GoalCommandResult(
             goal_id=cmd.goal_id,goal_version=goal["version"],event_id=evt,
             action="STRATEGY_PROPOSED",entity_id=cmd.strategy_id,
         )
-    return _command(connection,actor,command,"goal.strategy.propose.v1",apply)
+    return _command(connection,actor,command,
+        "goal.strategy.propose.research.v1" if isinstance(command,ProposeResearchStrategyCommand)
+        else "goal.strategy.propose.v1",apply)
 
 
 def select_goal_strategy(
@@ -692,10 +703,19 @@ def select_goal_strategy(
 )->GoalCommandResult:
     """Select an approved candidate; append selection history, not a rewrite."""
     def apply(cur,who,cmd,receipt):
-        goal=_goal(cur,who,cmd.instance_id,cmd.goal_id)
+        from .strategy_research import research_record,validate_research_selection
+        research=research_record(cur,who,cmd.instance_id,cmd.goal_id,cmd.strategy_id)
+        goal=(_locked_active_goal_ancestry(cur,who,cmd.instance_id,cmd.goal_id)
+              if research else _goal(cur,who,cmd.instance_id,cmd.goal_id))
         _version(goal,cmd.expected_goal_version)
         if goal["status"]!="ACTIVE":
             raise VersionConflict("goal not active for strategy selection")
+        if research:
+            validate_research_selection(cur,who,cmd,research)
+        elif research_record(cur,who,cmd.instance_id,cmd.goal_id,cmd.strategy_id):
+            # A researched candidate committed while we waited for the
+            # goal lock. Retry to acquire its full ancestry in stable order.
+            raise VersionConflict("research strategy changed before selection")
         cur.execute(
             """SELECT 1 FROM goal_strategies WHERE strategy_id=%s AND goal_id=%s
                AND user_id=%s AND instance_id=%s AND status='CANDIDATE'""",

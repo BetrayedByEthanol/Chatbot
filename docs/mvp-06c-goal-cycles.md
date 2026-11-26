@@ -44,3 +44,7 @@ Candidate static review only; PostgreSQL and live integration CI NOT RUN at auth
 ## Boundaries and next increment
 
 The positive-count leaf planner is a typed owner path, not a new conversational approval grammar or automatic action scheduler. General free-form task planning and user-facing goal-progress dialogue, independently verified outcome admission, absolute goal measures, negative/upper-bound diet goals, local timezones, cross-child contribution reconciliation, partially applicable windows, broader priority arbitration and diagnosis remain open. Existing 64 lifetime tasks per goal is preserved: future recurring cycles can be read/planned until the existing budget is reached; no hidden rollover, archival or deletion. A cancelled slot requires explicit review rather than silently replacing it. US-047/057/058 remain P; no story promotion, Phase 2/3 exit or deployment waiver. Focused 06D — authorized strategy research/adaptation follows technical regression.
+
+## Subsequent verification (26 November 2026)
+
+PR #129 merged as `965c8ceaf9e583fa2733fbd8a30e25d402f12d94`; final head `e84dfa1c7887369ba7ba2fc649cb5200ebc254e0` includes full ancestor evaluation-window enforcement. [PostgreSQL CI](https://github.com/BetrayedByEthanol/Chatbot/actions/runs/45822820464) passed (2,253 passed, 3 skipped); [live integration](https://github.com/BetrayedByEthanol/Chatbot/actions/runs/45822820516) passed. Authoring-time NOT RUN is superseded for technical CI only. No broader language, real-model behavioral or Phase 3 acceptance claimed. Focused 06D proceeds.

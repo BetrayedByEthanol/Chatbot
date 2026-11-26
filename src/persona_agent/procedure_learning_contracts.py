@@ -134,3 +134,23 @@ class ProcedureExperienceView(BaseModel):
     run_ids: tuple[UUID, ...]
     truncated: bool
     independently_verified_effectiveness: Literal[False] = False
+
+
+class ProcedureAdaptationGuidance(BaseModel):
+    """Read-only diagnostic recommendation; never authority to alter a method."""
+    model_config=ConfigDict(extra="forbid",frozen=True)
+    run_id:UUID
+    run_version:int
+    evaluation_id:UUID|None
+    variant_id:UUID|None
+    variant_revision:int|None
+    policy:Literal["STABLE","PARAMETERIZED","ADAPTIVE"]
+    outcome:ReportedOutcome|None
+    failure_cause:FailureCause|None
+    next_action:Literal["ASSESS_OUTCOME","REASSESS_STALE_EVIDENCE","NO_CHANGE",
+        "CHECK_INPUTS","CHECK_ENVIRONMENT","COMPLETE_REQUIRED_ACTION",
+        "REVIEW_SUCCESS_CRITERIA","DIAGNOSE_STABLE_METHOD","CLARIFY_CAUSE",
+        "CONSIDER_PARAMETER_CHANGE","CONSIDER_PRIVATE_VARIANT","CONSIDER_ALTERNATIVE_METHOD"]
+    parameter_names:tuple[str,...]=()
+    requires_approval:Literal[True]=True
+    independently_verified:Literal[False]=False

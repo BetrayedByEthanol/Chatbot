@@ -97,6 +97,48 @@ class ProposeGoalStrategyCommand(GoalUserCommand):
         return self
 
 
+class StrategySourcePin(BaseModel):
+    model_config=ConfigDict(extra="forbid",frozen=True)
+    document_id:UUID
+    version:int=Field(ge=1)
+    position:int=Field(ge=1)
+    content_sha256:str=Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class ResearchGoalStrategiesCommand(GoalUserCommand):
+    """Explicit local read-only research, never an external tool grant."""
+    goal_id:UUID
+    expected_goal_version:int=Field(ge=1)
+    query:str=Field(min_length=2,max_length=100)
+
+    @field_validator("query")
+    @classmethod
+    def bounded_query(cls,value):
+        if not value.strip() or any(ord(c)<32 or ord(c)==127 for c in value):
+            raise ValueError("invalid research query")
+        return value
+
+
+class ProposeResearchStrategyCommand(ProposeGoalStrategyCommand):
+    expected_goal_version:int=Field(ge=1)
+    research:ResearchGoalStrategiesCommand
+    sources:tuple[StrategySourcePin,...]=Field(min_length=1,max_length=4)
+    limitations:str=Field(min_length=10,max_length=600)
+
+    @model_validator(mode="after")
+    def research_scope(self):
+        if (self.instance_id!=self.research.instance_id
+                or self.expected_generation!=self.research.expected_generation
+                or self.goal_id!=self.research.goal_id
+                or self.expected_goal_version!=self.research.expected_goal_version):
+            raise ValueError("research and strategy scope differ")
+        if len(set((p.document_id,p.version,p.position) for p in self.sources))!=len(self.sources):
+            raise ValueError("duplicate research source")
+        if not self.limitations.strip():
+            raise ValueError("strategy limitations cannot be blank")
+        return self
+
+
 class SelectGoalStrategyCommand(GoalUserCommand):
     goal_id:UUID
     strategy_id:UUID
@@ -160,6 +202,7 @@ def goal_action_approval_phrase(command:GoalUserCommand)->str:
     """
     if not isinstance(command,(
         CreateGoalCommand,SetGoalStatusCommand,SelectGoalStrategyCommand,
+        ResearchGoalStrategiesCommand,ProposeResearchStrategyCommand,
     )):
         raise ValueError("action does not require approval")
     payload=command.model_dump(

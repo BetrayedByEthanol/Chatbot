@@ -189,8 +189,12 @@ def withdraw_knowledge(connection: Connection,actor: TrustedActor,
 
 
 def select_knowledge(cur,*,user_id,instance_id,query,max_results=3,max_chars=2400,
-                     document_id=None,variant_id=None):
-    """Single-statement current-snapshot read; no raw conversation fallback."""
+                     document_id=None,variant_id=None,pinned_version=None,pinned_position=None):
+    """Single-statement current-snapshot read; no raw conversation fallback.
+
+    Optional exact version/position filters support source-pin revalidation
+    without making eligibility depend on unrelated search ranking changes.
+    """
     from .metamemory import safe_query_key
     feedback_key=safe_query_key("KNOWLEDGE",query)
     cur.execute(
@@ -207,6 +211,8 @@ def select_knowledge(cur,*,user_id,instance_id,query,max_results=3,max_chars=240
              AND (d.expires_at IS NULL OR d.expires_at>clock_timestamp())
              AND (v.expires_at IS NULL OR v.expires_at>clock_timestamp())
              AND (%s::uuid IS NULL OR d.document_id=%s)
+             AND (%s::bigint IS NULL OR v.version=%s)
+             AND (%s::integer IS NULL OR p.position=%s)
              AND (%s::uuid IS NULL OR EXISTS (
                  SELECT 1 FROM memory_knowledge_procedure_refs k
                  JOIN personalized_procedures proc ON proc.variant_id=k.variant_id
@@ -236,7 +242,8 @@ def select_knowledge(cur,*,user_id,instance_id,query,max_results=3,max_chars=240
                     ts_rank_cd(to_tsvector('simple',p.passage_text),plainto_tsquery('simple',%s)) DESC,
                     v.recorded_at DESC,d.document_id,p.position
            LIMIT %s""",
-        (user_id,instance_id,document_id,document_id,variant_id,variant_id,query,feedback_key,query,max_results),
+        (user_id,instance_id,document_id,document_id,pinned_version,pinned_version,
+         pinned_position,pinned_position,variant_id,variant_id,query,feedback_key,query,max_results),
     )
     result=[]
     remaining=max_chars
