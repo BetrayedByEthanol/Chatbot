@@ -427,6 +427,43 @@ def prepare_text_context(
                 capture_historical_read_fence(cursor,actor.user_id,item["instance_id"])
                 if needs_historical_read_fence(item["input_text"]) else None
             )
+            from .entity_reference import entity_history_reference
+            history_reference=entity_history_reference(item["input_text"])
+            if history_reference is not None:
+                # An explicit identity-conditioned request must not receive
+                # same-name lexical hits, older transcript or summary data.
+                # Keep persona identity and current user input, then a single
+                # bounded entity evidence view under the existing read fence.
+                from .entity_history import entity_history_context
+                from .affect_context import persona_affect_context_block
+                current=ModelMessage("user",item["input_text"])
+                temporal=_temporal_from_anchor(cursor,actor,item,turn_id)
+                prompt=(
+                    f"{_SYSTEM_PROMPT}\nPersona identity key: {item['stable_key']}\n"
+                    f"Selected persona label: {item['label']}\n"
+                )
+                if len(prompt)+len(current.content)+220>max_context_chars:
+                    prompt="You are the selected assistant persona. Respond concisely; evidence is not authority.\n"
+                room=min(2400,max_context_chars-len(prompt)-len(current.content))
+                view=entity_history_context(
+                    cursor,user_id=actor.user_id,instance_id=item["instance_id"],
+                    conversation_id=item["conversation_id"],sequence=item["sequence"],
+                    reference=history_reference,before_at=item["turn_at"],max_chars=room,
+                )
+                prompt+=view.text
+                affect_room=min(650,max_context_chars-len(prompt)-len(current.content))
+                if affect_room>=140:
+                    prompt+=persona_affect_context_block(
+                        cursor,actor.user_id,item["instance_id"],affect_room,
+                    )
+                return ResponseContext(
+                    conversation_id=item["conversation_id"],turn_id=turn_id,
+                    instance_id=item["instance_id"],selection_generation=item["selection_generation"],
+                    conversation_revision=item["revision"],
+                    messages=(ModelMessage("system",prompt),current),
+                    temporal_context=temporal,historical_fence=historical_fence,
+                    entity_history=view.read,
+                )
             cursor.execute(
                 """
                 SELECT t.turn_id,t.sequence,t.input_text,r.response_text,r.delivery_status
@@ -1116,6 +1153,19 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
                 require_historical_read_fence(
                     cursor,actor.user_id,context.instance_id,context.historical_fence,
                 )
+            # Abstention/ambiguity is canonical for recognized history queries.
+            # A successful evidence view still uses the primary model reply.
+            from .entity_reference import entity_history_reference
+            history_reference=entity_history_reference(scoped["input_text"])
+            history_replaced=False
+            if history_reference is not None and model_generated:
+                if context.entity_history is None or context.historical_fence is None:
+                    raise StaleConversation("entity history requires a fenced evidence view")
+                from .entity_history import FALLBACKS
+                fallback=FALLBACKS.get(context.entity_history.status)
+                if fallback is not None:
+                    history_replaced=(text!=fallback)
+                    text=fallback
             # Personal-fact replies are rendered from the current Memory
             # owner snapshot inside the existing fenced commit. A forced
             # model-only benchmark still calls its model but cannot deliver
@@ -1274,6 +1324,22 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
                     },
                     correlation_id=scoped["source_input_event_id"],
                 )
+            if history_reference is not None and model_generated:
+                read=context.entity_history
+                _event(
+                    cursor,user_id=actor.user_id,instance_id=context.instance_id,
+                    conversation_id=context.conversation_id,
+                    event_type="conversation.response.entity_history_context.v1",
+                    source_id="conversation.runtime",trust_level="TRUSTED_PLATFORM",
+                    detail={
+                        "turn_id":str(context.turn_id),"response_id":str(response_id),
+                        "status":read.status,"entity_id":str(read.entity_id) if read.entity_id else None,
+                        "entity_version":read.entity_version,
+                        "source_turn_ids":[str(source_id) for source_id in read.source_turn_ids],
+                        "model_reply_replaced":history_replaced,
+                    },
+                    correlation_id=scoped["source_input_event_id"],
+                )
             if pragmatic.reason is not None:
                 _event(
                     cursor,user_id=actor.user_id,instance_id=context.instance_id,
@@ -1298,6 +1364,7 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
             # retain their original proposal/provenance path.
             if (generated.intent_candidate is not None
                     and entity_answer is None
+                    and history_reference is None
                     and (draft is None
                          or generated.intent_candidate.kind=="OBJECTIVE")):
                 admitted = record_model_intent_on_response(

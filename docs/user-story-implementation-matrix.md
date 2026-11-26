@@ -85,6 +85,10 @@ PPA-US-030 / 031 / 034 / 093 / 117: [scoped entity identities and grounded refer
 
 PPA-US-017 / 030 / 034 / 093 / 117: [conversational entity reports and delivered clarification](model-comparison.md#mvp-05c2--conversational-entity-reports-and-delivered-clarification) uses bounded authenticated whole-source reports for new/distinct identities and uniquely identified corrections; preserves typed owner commands, atomic response/owner commits and serialized entity writes. Delivered two-choice snapshots constrain short relation replies and are revalidated at commit. [Regression tests](../tests/test_mvp05c2_conversational_entities.py) cover admission, duplicate prevention, ambiguity, rollback, restart and stale choices. General semantic reference/mutation repair, entity-conditioned history and full lineage remain open. No I/P/M promotion.
 
+## MVP-05C.3 evidence update (25 November 2026)
+
+PPA-US-030 / 031 / 034 / 093 / 117: [entity-bound historical evidence and directed relationships](model-comparison.md#mvp-05c3--entity-bound-historical-evidence-and-directed-relationships) adds explicit scoped evidence links pinned to current revisions and typed directed relation revisions; selective exact-ID context, canonical abstention and existing revision/expiry fencing. [Regression tests](../tests/test_mvp05c3_entity_evidence.py) cover same-name isolation, evidence eligibility, corrections/retractions and stale inference. Bounded explicit owner APIs and grammar are not general semantic entity extraction or full lineage. No I/P/M promotion.
+
 ## Immediate follow-up
 
 1. PPA-US-016, 024, 090, 092, 088: evaluate real-model quality and adjudicate critical flags; fix grounded failure cases before adding infrastructure.

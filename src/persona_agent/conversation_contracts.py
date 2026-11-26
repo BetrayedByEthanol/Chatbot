@@ -92,6 +92,15 @@ class HistoricalReadFence:
 
 
 @dataclass(frozen=True)
+class EntityHistoryRead:
+    """Evidence selected for this model context, not claims made by the model."""
+    status: Literal["KNOWN","UNKNOWN","AMBIGUOUS","NO_EVIDENCE","BUDGET"]
+    entity_id: UUID | None=None
+    entity_version: int | None=None
+    source_turn_ids: tuple[UUID,...]=()
+
+
+@dataclass(frozen=True)
 class ResponseContext:
     conversation_id: UUID
     turn_id: UUID
@@ -103,6 +112,7 @@ class ResponseContext:
     preference_fence: PreferenceReadFence | None = None
     temporal_context: TemporalContext | None = None
     historical_fence: HistoricalReadFence | None = None
+    entity_history: EntityHistoryRead | None = None
 
 
 class TextModelGateway(Protocol):

@@ -15,12 +15,35 @@ def _alias(alias: RecordAlias) -> str:
     return alias
 
 
+def _linked_sources_visible_sql(alias: str, source_key: str) -> str:
+    """Conservatively exclude exact sources linked to an ineligible identity."""
+    return f"""NOT EXISTS (
+        SELECT 1 FROM memory_entity_evidence_links el
+        JOIN memory_entities en ON en.entity_id=el.entity_id
+          AND en.user_id=el.user_id AND en.instance_id=el.instance_id
+        WHERE el.user_id={alias}.user_id AND el.instance_id={alias}.instance_id
+          AND el.source_turn_id={alias}.{source_key}
+          AND (en.record_status<>'ACTIVE' OR en.privacy_class<>'NORMAL'
+               OR (en.expires_at IS NOT NULL AND en.expires_at<=clock_timestamp()))
+    )"""
+
+
+def _unmanaged_relationship_source_sql(alias: str,source_key: str) -> str:
+    return f"""NOT EXISTS (
+        SELECT 1 FROM memory_entity_relationship_revisions er
+        WHERE er.user_id={alias}.user_id AND er.instance_id={alias}.instance_id
+          AND er.source_turn_id={alias}.{source_key}
+    )"""
+
+
 def visible_record_sql(alias: RecordAlias) -> str:
     a = _alias(alias)
     return f"""(
         {a}.record_status='ACTIVE' AND {a}.privacy_class='NORMAL'
         AND {a}.epistemic_status='USER_REPORTED'
         AND ({a}.expires_at IS NULL OR {a}.expires_at>clock_timestamp())
+        AND {_linked_sources_visible_sql(a,"source_turn_id")}
+        AND {_unmanaged_relationship_source_sql(a,"source_turn_id")}
     )"""
 
 
@@ -111,10 +134,14 @@ def unmanaged_entity_source_sql(alias: Literal["t","memory_episodes"]) -> str:
     if alias not in ("t","memory_episodes"):
         raise ValueError("invalid internal source alias")
     source_key="turn_id" if alias=="t" else "source_turn_id"
-    return f"""NOT EXISTS (
-        SELECT 1 FROM memory_entity_revisions er
-        WHERE er.user_id={alias}.user_id AND er.instance_id={alias}.instance_id
-          AND er.source_turn_id={alias}.{source_key}
+    return f"""(
+        NOT EXISTS (
+            SELECT 1 FROM memory_entity_revisions er
+            WHERE er.user_id={alias}.user_id AND er.instance_id={alias}.instance_id
+              AND er.source_turn_id={alias}.{source_key}
+        )
+        AND {_unmanaged_relationship_source_sql(alias,source_key)}
+        AND {_linked_sources_visible_sql(alias,source_key)}
     )"""
 
 
@@ -182,11 +209,15 @@ def capture_historical_read_fence(cur, user_id: UUID, instance_id: UUID):
     """
     from .conversation_contracts import HistoricalReadFence, StaleConversation
     cur.execute(
-        """SELECT revision,(
-               SELECT min(m.expires_at) FROM memory_records m
-               WHERE m.user_id=r.user_id AND m.instance_id=r.instance_id
-                 AND m.record_status='ACTIVE' AND m.privacy_class='NORMAL'
-                 AND m.expires_at>clock_timestamp()
+        """SELECT revision,LEAST(
+               (SELECT min(m.expires_at) FROM memory_records m
+                WHERE m.user_id=r.user_id AND m.instance_id=r.instance_id
+                  AND m.record_status='ACTIVE' AND m.privacy_class='NORMAL'
+                  AND m.expires_at>clock_timestamp()),
+               (SELECT min(e.expires_at) FROM memory_entities e
+                WHERE e.user_id=r.user_id AND e.instance_id=r.instance_id
+                  AND e.record_status='ACTIVE' AND e.privacy_class='NORMAL'
+                  AND e.expires_at>clock_timestamp())
            ) AS next_expiry
            FROM historical_recall_revisions r WHERE user_id=%s AND instance_id=%s""",
         (user_id,instance_id),
