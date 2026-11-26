@@ -168,6 +168,34 @@ def _current_candidates(cur,work):
             if expected.get(row["episode_id"])==row["snapshot_hash"] and _safe_episode(row)}
 
 
+def episode_dependencies_current_sql() -> str:
+    """All supplied episode snapshots, including uncited candidates (job alias j)."""
+    return f"""NOT EXISTS (
+        SELECT 1 FROM unnest(j.source_episode_ids,j.source_episode_hashes)
+             AS dependency(episode_id,snapshot_hash)
+        WHERE NOT EXISTS (
+            SELECT 1 FROM memory_episodes {_JOIN_ORIGIN}
+            WHERE memory_episodes.episode_id=dependency.episode_id
+              AND memory_episodes.user_id=j.user_id
+              AND memory_episodes.instance_id=j.instance_id
+              AND {_eligible_sql()}
+              AND {_EPISODE_HASH}=dependency.snapshot_hash
+        )
+    )"""
+
+
+def require_current_pattern_candidates(cur,work):
+    """Reflections share the prompt with pattern candidates; pin all inputs.
+
+    Unlike optional pattern admission, unrelated scope revision changes need
+    not invalidate an independent reflection if every supplied snapshot is
+    still eligible and unchanged. Call under the final dependency lock.
+    """
+    from .cognitive_contracts import StaleCognition
+    if len(_current_candidates(cur,work))!=len(work.pattern_candidates):
+        raise StaleCognition("historical episode input changed during cognition")
+
+
 def _require_write_fence(cur,work):
     # Take the exclusive dependency lock only AFTER normal owner writes,
     # FK key locks and event stream writes. Deferred triggers reuse this lock.

@@ -37,20 +37,30 @@ from .operation_scheduler import claim_operation,enqueue_operation
 from .runtime import PermissionDenied,StaleSelection
 from .meta_episodic import (
     prepare_pattern_candidates,pattern_prompt,admit_pattern_proposals,pattern_count,
+    require_current_pattern_candidates,
 )
+from .memory_read_policy import eligible_summary_turn_sql
+from .cognitive_lineage import reflection_lineage_current_sql
 
 
-def _range(cur,job:dict) -> tuple[dict,...]:
+def _range(cur,job:dict,*,project:bool=True) -> tuple[dict,...]:
     """Read a frozen contiguous source range with delivery-state validation."""
     cur.execute(
-        """SELECT t.turn_id,t.sequence,t.input_text,t.status,t.created_at,
-                  response_lineage_derived_text(r.response_id,r.user_id,r.instance_id,r.knowledge_excerpt,r.response_text) AS response_text,
+        f"""SELECT t.turn_id,t.sequence,t.status,t.created_at,
+                  eligible.source_eligible,
+                  CASE WHEN eligible.source_eligible THEN t.input_text ELSE '' END AS input_text,
+                  CASE WHEN eligible.source_eligible THEN
+                    response_lineage_derived_text(r.response_id,r.user_id,r.instance_id,r.knowledge_excerpt,r.response_text)
+                  END AS response_text,
                   CASE WHEN r.delivery_status='GENERATED' AND NOT
                      response_lineage_current(r.response_id,r.user_id,r.instance_id)
                      THEN 'INVALIDATED' ELSE r.delivery_status END AS delivery_status,
                   r.selection_generation AS response_generation
            FROM conversation_turns t
            LEFT JOIN conversation_responses r ON r.turn_id=t.turn_id
+           CROSS JOIN LATERAL (
+                SELECT {eligible_summary_turn_sql() if project else "TRUE"} AS source_eligible
+           ) eligible
            WHERE t.conversation_id=%s AND t.user_id=%s
              AND t.instance_id=%s AND t.sequence BETWEEN %s AND %s
            ORDER BY t.sequence""",
@@ -77,6 +87,7 @@ def _digest(rows:tuple[dict,...]) -> str:
     payload=[{
         "id":str(r["turn_id"]),"sequence":r["sequence"],
         "user":r["input_text"],"status":r["status"],
+        "source_eligible":r["source_eligible"],
         "assistant":r["response_text"] if r["delivery_status"]=="DELIVERED"
                      else None,
     } for r in rows]
@@ -164,7 +175,7 @@ def schedule_cognition(
                     "instance_id":instance_id,"expected_generation":expected_generation,
                     "start_sequence":start,"end_sequence":end,
                 }
-                _range(cur,job)
+                _range(cur,job,project=False)
                 op_id=uuid5(
                     NAMESPACE_URL,
                     f"persona-agent/cognition/{conversation_id}/{start}/"
@@ -184,7 +195,7 @@ def schedule_cognition(
                 op_id=existing["operation_id"]
                 end=existing["end_sequence"]
                 attempt=existing["admission_attempt"]
-                _range(cur,existing)
+                _range(cur,existing,project=False)
 
     receipt=enqueue_operation(connection,actor,EnqueueOperation(
         operation_id=op_id,instance_id=instance_id,
@@ -259,6 +270,7 @@ def _messages(work:CognitiveWork) -> tuple[ModelMessage,...]:
     evidence=[{
         "turn_id":str(r["turn_id"]),"sequence":r["sequence"],
         "user":r["input_text"],
+        **({"source_omitted":True} if not r["source_eligible"] else {}),
         "assistant":r["response_text"] if r["delivery_status"]=="DELIVERED"
                     else None,
     } for r in work.turns]
@@ -274,6 +286,7 @@ def _messages(work:CognitiveWork) -> tuple[ModelMessage,...]:
         "\"confidence\":0.5,\"trigger_text\":null,\"expiry_days\":null}]}. "
         "For intentions set trigger_text and expiry_days (1-30); otherwise null. "
         "Quote must be an exact substring of the referenced USER text. "
+        "A source_omitted entry has no eligible evidence: do not infer or cite it. "
         "Prefer [] over unsupported inference. Maximum five items. "
         "All content remains lower-trust model interpretation, never a memory fact."
     )
@@ -299,9 +312,8 @@ def _checked(work:CognitiveWork,draft:CognitiveDraft) -> tuple:
     seen=set()
     for item in draft.proposals:
         source=by_id.get(item.source_turn_id)
-        if source is None or item.evidence_quote.casefold() not in (
-            source["input_text"].casefold()
-        ):
+        if (source is None or not source["source_eligible"]
+                or item.evidence_quote.casefold() not in source["input_text"].casefold()):
             raise InvalidCognitiveProposal("cognitive evidence must quote a source user turn")
         key=(item.kind,item.subject,item.content.casefold())
         if key in seen:
@@ -376,6 +388,7 @@ def commit_cognition(
             rows=_range(cur,job)
             if _digest(rows)!=work.source_digest:
                 raise StaleCognition("cognitive source digest changed")
+            require_current_pattern_candidates(cur,work)
             count=intentions=0
             for item in proposals:
                 reflection_id=uuid4()
@@ -430,8 +443,12 @@ def commit_cognition(
             )
             cur.execute(
                 """UPDATE cognitive_jobs SET committed_at=clock_timestamp(),
-                   model_id=%s WHERE operation_id=%s""",
-                (model_id,lease.operation_id),
+                   model_id=%s,source_turn_ids=%s,source_episode_ids=%s,
+                   source_episode_hashes=%s,source_digest=%s WHERE operation_id=%s""",
+                (model_id,[row["turn_id"] for row in rows if row["source_eligible"]],
+                 [episode.episode_id for episode in work.pattern_candidates],
+                 [episode.snapshot_hash for episode in work.pattern_candidates],
+                 work.source_digest,lease.operation_id),
             )
             _event(
                 cur,user_id=lease.user_id,instance_id=lease.instance_id,
@@ -448,6 +465,18 @@ def commit_cognition(
                 },
             )
             patterns=admit_pattern_proposals(connection,cur,work,draft.patterns,model_id)
+            # Finish normal owner/event writes before the shared scope
+            # revision lock. Pattern admission may already hold this lock
+            # exclusively; never acquire it before owner writes or upgrade
+            # a SHARE lock across a write. No locks span model inference.
+            cur.execute(
+                """SELECT revision FROM historical_recall_revisions
+                   WHERE user_id=%s AND instance_id=%s FOR SHARE""",
+                (lease.user_id,lease.instance_id),
+            )
+            if cur.fetchone() is None or _digest(_range(cur,job))!=work.source_digest:
+                raise StaleCognition("cognitive source eligibility changed before commit")
+            require_current_pattern_candidates(cur,work)
             require_claim(cur,lease)
             require_current_authority(cur,op)
             return CognitiveCommitted(
@@ -497,14 +526,14 @@ def run_cognition(
 def list_cognitive_proposals(
     connection:Connection,actor,instance_id:UUID,*,limit:int=20,
 ) -> tuple[dict,...]:
-    """Read-only, user-scoped diagnostic view; never response instructions."""
+    """Eligible, user-scoped diagnostic proposals; never response instructions."""
     from .contracts import TrustedActor
     require_idle(connection)
     if type(actor) is not TrustedActor or not 1<=limit<=100:
         raise PermissionDenied("cognitive review requires authenticated user scope")
     with connection.cursor(row_factory=dict_row) as cur:
         cur.execute(
-            """SELECT r.reflection_id,r.conversation_id,r.evidence_turn_id,
+            f"""SELECT r.reflection_id,r.conversation_id,r.evidence_turn_id,
                       r.evidence_quote,r.kind,r.subject,r.content,r.confidence,
                       r.related_reflection_id,r.temporal_scope,r.privacy_class,
                       r.epistemic_status,r.review_status,
@@ -512,10 +541,36 @@ def list_cognitive_proposals(
                       r.created_at
                FROM cognitive_reflections r
                WHERE r.user_id=%s AND r.instance_id=%s
+                 AND {reflection_lineage_current_sql()}
                ORDER BY r.created_at DESC,r.reflection_id LIMIT %s""",
             (actor.user_id,instance_id,limit),
         )
         return tuple(dict(x) for x in cur.fetchall())
+
+
+def list_eligible_cognitive_intentions(
+    connection:Connection,actor,instance_id:UUID,*,limit:int=20,
+) -> tuple[dict,...]:
+    """Current unasked proposals only. This read does not approve or deliver."""
+    from .contracts import TrustedActor
+    require_idle(connection)
+    if type(actor) is not TrustedActor or not 1<=limit<=100:
+        raise PermissionDenied("cognitive review requires authenticated user scope")
+    with connection.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            f"""SELECT i.intention_id,i.reflection_id,i.trigger_text,i.expires_at,
+                       i.status,i.delivery_constraints,r.content,r.evidence_turn_id
+                FROM cognitive_intentions i
+                JOIN cognitive_reflections r ON r.reflection_id=i.reflection_id
+                  AND r.user_id=i.user_id AND r.instance_id=i.instance_id
+                WHERE i.user_id=%s AND i.instance_id=%s AND i.status='PROPOSED'
+                  AND NOT i.already_asked AND i.expires_at>clock_timestamp()
+                  AND r.kind='INTENTION' AND r.review_status='PROPOSED'
+                  AND {reflection_lineage_current_sql()}
+                ORDER BY i.created_at DESC,i.intention_id LIMIT %s""",
+            (actor.user_id,instance_id,limit),
+        )
+        return tuple(dict(row) for row in cur.fetchall())
 
 
 def run_one_cognitive_operation(

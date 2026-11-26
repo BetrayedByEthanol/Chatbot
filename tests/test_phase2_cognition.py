@@ -689,3 +689,137 @@ def test_cognitive_commit_locks_conversation_before_job(dsn):
     # The P0 lease remains valid after the tested commit; complete it.
     from persona_agent.operation_control import complete_operation
     call(dsn,complete_operation,lease,result_ref=f"cognition:{lease.operation_id}")
+
+
+
+@pytest.mark.parametrize("change",["CORRECT","EXPIRE"])
+def test_cognitive_whole_range_lineage_rejects_late_work_and_preserves_history(dsn,change):
+    from datetime import datetime,timedelta,timezone
+    from persona_agent.cognitive_contracts import StaleCognition
+    from persona_agent.cognitive_engine import list_eligible_cognitive_intentions
+    from persona_agent.memory import admit_memory,amend_memory
+    from test_phase2_memory import turn,candidate,correction
+
+    user,instance,_=seed(dsn)
+    conv=uuid4()
+    source=turn(dsn,user,instance,conv,"My favorite drink is tea.")
+    saved=call(dsn,admit_memory,actor(user),candidate(instance,conv,source))
+    neutral=turn(dsn,user,instance,conv,"Garden progress was reported.")
+    turns(dsn,user,instance,conv,n=2)
+    scheduled=call(dsn,schedule_cognition,platform(user),conv,instance,1)
+    lease=claim(dsn)
+    assert lease.operation_id==scheduled.operation_id
+    work=call(dsn,prepare_cognition,lease)
+    assert work.turns[0]["input_text"]=="My favorite drink is tea."
+    draft=CognitiveDraft(proposals=(
+        CognitiveProposal(kind="HYPOTHESIS",subject="USER",
+            content="The user discussed gardening.",source_turn_id=neutral.turn_id,
+            evidence_quote="Garden progress",confidence=0.85),
+        CognitiveProposal(kind="INTENTION",subject="CONVERSATION",
+            content="Ask about garden progress.",source_turn_id=neutral.turn_id,
+            evidence_quote="Garden progress",confidence=0.8,
+            trigger_text="garden discussion",expiry_days=7),
+    ))
+    if change=="CORRECT":
+        other_conv=uuid4()
+        newer=turn(dsn,user,instance,other_conv,"Actually my favorite drink is coffee.")
+        call(dsn,amend_memory,actor(user),correction(instance,other_conv,newer,saved.memory_id))
+    else:
+        with psycopg.connect(dsn,autocommit=True) as conn:
+            conn.execute("UPDATE memory_records SET expires_at=%s WHERE memory_id=%s",
+                         (datetime.now(timezone.utc)-timedelta(seconds=1),saved.memory_id))
+    with pytest.raises(StaleCognition):
+        call(dsn,commit_cognition,lease,work,draft,"stale")
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute("SELECT cognitive_watermark FROM conversations WHERE conversation_id=%s",
+                            (conv,)).fetchone()==(0,)
+        assert conn.execute("SELECT count(*) FROM cognitive_reflections WHERE operation_id=%s",
+                            (lease.operation_id,)).fetchone()==(0,)
+        assert conn.execute("SELECT source_turn_ids FROM cognitive_jobs WHERE operation_id=%s",
+                            (lease.operation_id,)).fetchone()==(None,)
+    fresh=call(dsn,prepare_cognition,lease)
+    projection=json.loads(engine_module._messages(fresh)[-1].content)
+    assert projection[0]["source_omitted"] is True and projection[0]["user"]==""
+    assert projection[0]["assistant"] is None
+    invalid=CognitiveDraft(proposals=(CognitiveProposal(
+        kind="OBSERVATION",subject="USER",content="Old evidence",
+        source_turn_id=source.turn_id,evidence_quote="My favorite drink is tea",
+        confidence=0.8),))
+    with pytest.raises(InvalidCognitiveProposal):
+        call(dsn,commit_cognition,lease,fresh,invalid,"bad-citation")
+    result=call(dsn,commit_cognition,lease,fresh,draft,"fresh")
+    assert result.reflection_count==2 and result.intention_count==1
+    call(dsn,run_cognition,lease,FixedCognition())
+    assert len(call(dsn,list_cognitive_proposals,actor(user),instance))==2
+    assert len(call(dsn,list_eligible_cognitive_intentions,actor(user),instance))==1
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        ids,digest=conn.execute(
+            "SELECT source_turn_ids,source_digest FROM cognitive_jobs WHERE operation_id=%s",
+            (lease.operation_id,),
+        ).fetchone()
+        assert source.turn_id not in ids and neutral.turn_id in ids and len(digest)==64
+
+
+def test_cognitive_reflection_and_intention_invalidation_after_commit(dsn):
+    from persona_agent.cognitive_engine import list_eligible_cognitive_intentions
+    from persona_agent.memory import admit_memory,amend_memory
+    from test_phase2_memory import turn,candidate,correction
+
+    user,instance,alternate=seed(dsn,other=True)
+    conv=uuid4()
+    source=turn(dsn,user,instance,conv,"My favorite drink is tea.")
+    saved=call(dsn,admit_memory,actor(user),candidate(instance,conv,source))
+    neutral=turn(dsn,user,instance,conv,"Garden progress was reported.")
+    turns(dsn,user,instance,conv,n=2)
+    scheduled=call(dsn,schedule_cognition,platform(user),conv,instance,1)
+    lease=claim(dsn)
+    assert lease.operation_id==scheduled.operation_id
+    work=call(dsn,prepare_cognition,lease)
+    draft=CognitiveDraft(proposals=(
+        CognitiveProposal(kind="HYPOTHESIS",subject="USER",
+            content="The user discussed gardening and tea.",source_turn_id=neutral.turn_id,
+            evidence_quote="Garden progress",confidence=0.85),
+        CognitiveProposal(kind="INTENTION",subject="CONVERSATION",
+            content="Ask about garden progress.",source_turn_id=neutral.turn_id,
+            evidence_quote="Garden progress",confidence=0.8,
+            trigger_text="garden discussion",expiry_days=7),
+    ))
+    call(dsn,commit_cognition,lease,work,draft,"fresh")
+    call(dsn,run_cognition,lease,FixedCognition())
+    assert len(call(dsn,list_cognitive_proposals,actor(user),instance))==2
+    intentions=call(dsn,list_eligible_cognitive_intentions,actor(user),instance)
+    assert len(intentions)==1
+    intention_id=intentions[0]["intention_id"]
+    # Status, expiry and review checks are independent of source lineage.
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        conn.execute("UPDATE cognitive_intentions SET already_asked=true WHERE intention_id=%s",
+                     (intention_id,))
+    assert call(dsn,list_eligible_cognitive_intentions,actor(user),instance)==()
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        conn.execute("UPDATE cognitive_intentions SET already_asked=false,expires_at=clock_timestamp()-interval '1 second' WHERE intention_id=%s",
+                     (intention_id,))
+    assert call(dsn,list_eligible_cognitive_intentions,actor(user),instance)==()
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        conn.execute("UPDATE cognitive_intentions SET expires_at=clock_timestamp()+interval '7 days' WHERE intention_id=%s",
+                     (intention_id,))
+    assert len(call(dsn,list_eligible_cognitive_intentions,actor(user),instance))==1
+    assert call(dsn,list_eligible_cognitive_intentions,actor(user),alternate)==()
+    stranger,_,_=seed(dsn)
+    assert call(dsn,list_eligible_cognitive_intentions,actor(stranger),instance)==()
+
+    other_conv=uuid4()
+    unrelated=turn(dsn,user,instance,other_conv,"I drive a Toyota Camry.")
+    call(dsn,admit_memory,actor(user),candidate(instance,other_conv,unrelated,
+        kind="FACT",predicate="car",value="Toyota Camry",quote="I drive a Toyota Camry."))
+    assert len(call(dsn,list_cognitive_proposals,actor(user),instance))==2
+    newer=turn(dsn,user,instance,uuid4(),"Actually my favorite drink is coffee.")
+    call(dsn,amend_memory,actor(user),correction(instance,newer.conversation_id,newer,saved.memory_id))
+    assert call(dsn,list_cognitive_proposals,actor(user),instance)==()
+    assert call(dsn,list_eligible_cognitive_intentions,actor(user),instance)==()
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute("SELECT count(*) FROM cognitive_reflections WHERE operation_id=%s",
+                            (lease.operation_id,)).fetchone()==(2,)
+        assert conn.execute("SELECT status FROM cognitive_intentions WHERE user_id=%s AND instance_id=%s",
+                            (user,instance)).fetchone()==("PROPOSED",)
+        assert conn.execute("SELECT cognitive_watermark FROM conversations WHERE conversation_id=%s",
+                            (conv,)).fetchone()==(scheduled.end_sequence,)

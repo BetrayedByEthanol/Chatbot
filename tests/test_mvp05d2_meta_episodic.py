@@ -326,3 +326,53 @@ def test_duplicate_source_reports_do_not_count_twice(dsn):
         def generate(self,messages):
             raise AssertionError("committed operation must replay")
     assert call(dsn,run_cognition,lease,NoRepeat()).replayed
+
+
+
+@pytest.mark.parametrize("during_inference",[False,True])
+def test_reflection_depends_on_every_supplied_episode_snapshot(dsn,during_inference):
+    import psycopg
+    from persona_agent.cognitive_contracts import StaleCognition,CognitiveDraft,CognitiveProposal
+    from persona_agent.cognitive_engine import (
+        prepare_cognition,commit_cognition,run_cognition,list_cognitive_proposals,
+    )
+    from persona_agent.operation_control import fail_operation
+    from test_phase2_cognition import cancel_pending
+    actor,call,_,_,_,_=_helpers()
+    user,instance,_,evidence=_setup(dsn)
+    lease=_schedule(dsn,user,instance)
+    work=call(dsn,prepare_cognition,lease)
+    assert len(work.pattern_candidates)==3
+    target=evidence[2][1]
+    assert target in {item.episode_id for item in work.pattern_candidates}
+    draft=CognitiveDraft(proposals=(CognitiveProposal(
+        kind="OBSERVATION",subject="USER",content="Exercise was discussed.",
+        source_turn_id=work.turns[0]["turn_id"],evidence_quote="thinking about exercise",
+        confidence=0.8),))
+
+    def mutate():
+        with psycopg.connect(dsn,autocommit=True) as conn:
+            conn.execute("UPDATE memory_episodes SET description='Corrected episode' WHERE episode_id=%s",
+                         (target,))
+    if during_inference:
+        mutate()
+        with pytest.raises(StaleCognition,match="episode"):
+            call(dsn,commit_cognition,lease,work,draft,"stale-episode")
+        assert call(dsn,list_cognitive_proposals,actor(user),instance)==()
+        with psycopg.connect(dsn,autocommit=True) as conn:
+            assert conn.execute("SELECT cognitive_watermark FROM conversations WHERE conversation_id=%s",
+                                (work.conversation_id,)).fetchone()==(0,)
+        call(dsn,fail_operation,lease,reason="test stale episode",delay_seconds=5)
+        cancel_pending(dsn,user,lease.operation_id)
+    else:
+        call(dsn,commit_cognition,lease,work,draft,"episode-lineage")
+        # A committed receipt must replay metadata without a second model call.
+        call(dsn,run_cognition,lease,PatternGateway(_proposal(tuple(eid for _,eid in evidence[:2]))))
+        assert len(call(dsn,list_cognitive_proposals,actor(user),instance))==1
+        with psycopg.connect(dsn,autocommit=True) as conn:
+            ids,hashes=conn.execute("SELECT source_episode_ids,source_episode_hashes FROM cognitive_jobs WHERE operation_id=%s",
+                                   (lease.operation_id,)).fetchone()
+            assert set(ids)=={eid for _,eid in evidence}
+            assert len(hashes)==3 and all(len(h)==64 for h in hashes)
+        mutate()
+        assert call(dsn,list_cognitive_proposals,actor(user),instance)==()

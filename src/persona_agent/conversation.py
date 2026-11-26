@@ -869,13 +869,14 @@ def prepare_text_context(
             # MVP-03B.1: selectively add relevant approved Goal state and
             # lower-trust source-linked hypotheses to the existing context.
             # No LLM inference, domain mutation or action grant occurs here.
-            from .context_intelligence import goal_reflection_context_block
+            from .context_intelligence import prepare_goal_reflection_context
             goal_room=min(
                 1300,max_context_chars//3,
                 max_context_chars-len(prompt)-len(history[-1].content)-160,
             )
             if dated_window is None and goal_room>=420:
-                prompt+=goal_reflection_context_block(
+                from .entity_reference import entity_report
+                goal_view=prepare_goal_reflection_context(
                     cursor,user_id=actor.user_id,
                     instance_id=item["instance_id"],
                     conversation_id=item["conversation_id"],
@@ -885,7 +886,13 @@ def prepare_text_context(
                         and active is not None else None
                     ),
                     max_chars=goal_room,
+                    # Owner-writing entity reports cannot hold a historical
+                    # read fence; do not supply them with reflection content.
+                    include_reflections=entity_report(item["input_text"]) is None,
+                    capture_fence=historical_fence is None,
                 )
+                prompt+=goal_view.text
+                historical_fence=historical_fence or goal_view.historical_fence
             # MVP-03B.2: select data with dependency versions so a
             # concurrent ProcedureRun/dialogue change cannot justify a
             # stale response after model inference.
