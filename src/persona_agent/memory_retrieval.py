@@ -433,9 +433,10 @@ def needs_historical_read_fence(text: str) -> bool:
     from .temporal_context import _DATED_RECALL
     from .meta_episodic_contracts import pattern_reference
     from .personal_meaning_grammar import meaning_reference,meaning_use_reference
+    from .knowledge_contracts import knowledge_reference
 
     if (pattern_reference(text) is not None or meaning_reference(text) is not None
-            or meaning_use_reference(text) is not None):
+            or meaning_use_reference(text) is not None or knowledge_reference(text) is not None):
         return True
     if (personal_fact_topic(text) is not None or entity_reference(text) is not None
             or entity_report(text) is not None):

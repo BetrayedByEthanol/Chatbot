@@ -57,6 +57,9 @@ def respond_to_user_text(
     decision=decide_response(item["input_text"],default_timezone=zone)
     if decision.route=="PREFERENCE_RECALL":
         return respond_with_preference_recall(connection,actor,turn_id)
+    if decision.route=="KNOWLEDGE_RECALL":
+        from .knowledge_memory import respond_with_knowledge_recall
+        return respond_with_knowledge_recall(connection,actor,turn_id)
     if decision.route=="MEANING_RECALL":
         from .personal_meaning import respond_with_meaning_recall
         return respond_with_meaning_recall(connection,actor,turn_id)

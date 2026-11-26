@@ -229,6 +229,8 @@ MVP-05D.2 candidate evidence: [meta-episodic memory](mvp-05d2-meta-episodic-memo
 
 MVP-05D.3 candidate evidence: [semantic memory and personalized meanings](mvp-05d3-personal-meanings.md) preserves owner revisions, source spans and separate inferred links; supports scoped exact recall, recognized conflict suppression and contextual routine-use retrieval. PostgreSQL CI and behavioral acceptance pending; no I/P/M promotion.
 
+MVP-05D.4 candidate evidence: [document and procedural knowledge](mvp-05d4-document-knowledge.md) adds scoped approved source versions, exact passage provenance, bounded direct recall, procedure-revision references and current-source eligibility. PostgreSQL CI and behavioral acceptance pending; no I/P/M promotion.
+
 MVP-05C.2 candidate evidence: [conversational entity reports and delivered clarification](model-comparison.md#mvp-05c2--conversational-entity-reports-and-delivered-clarification) admits bounded explicit relationship reports through existing Memory commands and resolves relation-only short replies against delivered, unchanged named choice snapshots. General reference/ambiguity repair, entity relationships and history, measured performance and behavioral acceptance remain pending.
 
 MVP-05C.1 candidate evidence: [scoped entity identities and grounded reference recall](model-comparison.md#mvp-05c1--scoped-entity-identities-and-grounded-reference-recall) adds owner-validated identity, alias and relation revisions, canonical scoped name/alias resolution and immediately adjacent delivered pronoun binding. General conversational entity admission/ambiguity repair, entity-to-entity relations, derived lineage and behavioral acceptance remain pending.

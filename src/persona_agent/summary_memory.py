@@ -110,7 +110,7 @@ def _model_source(rows: tuple[dict, ...]) -> str:
 def _read_range(cur, job: dict) -> tuple[dict, ...]:
     cur.execute(
         """SELECT t.turn_id,t.sequence,t.input_text,t.status,t.created_at,
-                  r.response_text,r.delivery_status,
+                  CASE WHEN r.knowledge_excerpt THEN '[Saved document excerpts omitted; request fresh recall.]' ELSE r.response_text END AS response_text,r.delivery_status,
                   r.selection_generation AS response_selection_generation
            FROM conversation_turns t
            LEFT JOIN conversation_responses r ON r.turn_id=t.turn_id
@@ -690,7 +690,7 @@ def episode_source_turn(
                        memory_episodes.source_turn_id,memory_episodes.conversation_id,
                        memory_episodes.source_turn_at,memory_episodes.source_quote,
                        memory_episodes.epistemic_status,s.model_id,
-                       t.input_text,r.response_text,r.delivery_status
+                       t.input_text,CASE WHEN r.knowledge_excerpt THEN '[Saved document excerpts omitted; request fresh recall.]' ELSE r.response_text END AS response_text,r.delivery_status
                 FROM memory_episodes
                 JOIN conversation_summaries s
                   ON s.summary_id=memory_episodes.summary_id
