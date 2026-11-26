@@ -116,6 +116,14 @@ def _source(cur,actor:TrustedActor,command:GoalUserCommand)->dict:
 def _require_goal_approval(cur,actor:TrustedActor,command:GoalUserCommand,
                            source:dict)->None:
     """Reject goal state changes that lack a distinct exact user confirmation."""
+    if isinstance(command,CreateGoalCommand):
+        cur.execute(
+            """SELECT 1 FROM goal_conversation_candidates
+               WHERE goal_id=%s LIMIT 1""",
+            (command.goal_id,),
+        )
+        if cur.fetchone() is not None:
+            raise PermissionDenied("conversational candidate requires its delivered approval route")
     approval_id=command.approval_turn_id
     if approval_id is None or approval_id==command.evidence_turn_id:
         raise PermissionDenied("goal change requires a separate user confirmation")
@@ -172,131 +180,145 @@ def _version(goal:dict,expected:int)->None:
         raise VersionConflict("goal version changed")
 
 
-def _command(
-    connection:Connection,actor:TrustedActor,command:GoalUserCommand,
-    command_type:str,
-    apply:Callable,
+def _command_in_transaction(
+    cur,actor:TrustedActor,command:GoalUserCommand,command_type:str,
+    apply:Callable,*,conversational:bool=False,
 )->GoalCommandResult:
-    require_idle(connection)
     _require_actor(actor)
     receipt_id=uuid4()
     fingerprint=_fingerprint(command)
+    cur.execute(
+        "SELECT 1 FROM persona_instances WHERE user_id=%s AND id=%s",
+        (actor.user_id,command.instance_id),
+    )
+    if cur.fetchone() is None:
+        raise PermissionDenied("goal command outside user/persona scope")
+    cur.execute(
+        """INSERT INTO command_receipts(
+             receipt_id,user_id,instance_id,command_type,
+             idempotency_key,request_fingerprint
+           ) VALUES (%s,%s,%s,%s,%s,%s)
+           ON CONFLICT(user_id,instance_id,command_type,idempotency_key)
+           DO NOTHING RETURNING receipt_id""",
+        (receipt_id,actor.user_id,command.instance_id,
+         command_type,command.idempotency_key,fingerprint),
+    )
+    if cur.fetchone() is None:
+        cur.execute(
+            """SELECT request_fingerprint,result_json
+               FROM command_receipts
+               WHERE user_id=%s AND instance_id=%s
+                 AND command_type=%s AND idempotency_key=%s""",
+            (actor.user_id,command.instance_id,command_type,
+             command.idempotency_key),
+        )
+        prior=cur.fetchone()
+        if (prior is None or prior["request_fingerprint"]!=fingerprint
+            or prior["result_json"] is None):
+            raise IdempotencyConflict("goal idempotency key reused differently")
+        return GoalCommandResult.model_validate(
+            prior["result_json"]
+        ).model_copy(update={"replayed":True})
+    _selected(cur,actor,command)
+    source=_source(cur,actor,command)
+    if isinstance(command,(
+        CreateGoalCommand,SetGoalStatusCommand,
+        SelectGoalStrategyCommand,
+    )):
+        if conversational:
+            from .goal_conversation import validate_conversational_approval
+            validate_conversational_approval(cur,actor,command,source)
+        else:
+            _require_goal_approval(cur,actor,command,source)
+    result=apply(cur,actor,command,receipt_id)
+    cur.execute(
+        """UPDATE command_receipts SET event_id=%s,result_json=%s::jsonb
+           WHERE receipt_id=%s""",
+        (result.event_id,json.dumps(result.model_dump(mode="json")),
+         receipt_id),
+    )
+    return result
+
+
+
+def _command(
+    connection:Connection,actor:TrustedActor,command:GoalUserCommand,
+    command_type:str,apply:Callable,
+)->GoalCommandResult:
+    require_idle(connection)
+    _require_actor(actor)
     with connection.transaction():
         with connection.cursor(row_factory=dict_row) as cur:
-            cur.execute(
-                "SELECT 1 FROM persona_instances WHERE user_id=%s AND id=%s",
-                (actor.user_id,command.instance_id),
-            )
-            if cur.fetchone() is None:
-                raise PermissionDenied("goal command outside user/persona scope")
-            cur.execute(
-                """INSERT INTO command_receipts(
-                     receipt_id,user_id,instance_id,command_type,
-                     idempotency_key,request_fingerprint
-                   ) VALUES (%s,%s,%s,%s,%s,%s)
-                   ON CONFLICT(user_id,instance_id,command_type,idempotency_key)
-                   DO NOTHING RETURNING receipt_id""",
-                (receipt_id,actor.user_id,command.instance_id,
-                 command_type,command.idempotency_key,fingerprint),
-            )
-            if cur.fetchone() is None:
-                cur.execute(
-                    """SELECT request_fingerprint,result_json
-                       FROM command_receipts
-                       WHERE user_id=%s AND instance_id=%s
-                         AND command_type=%s AND idempotency_key=%s""",
-                    (actor.user_id,command.instance_id,command_type,
-                     command.idempotency_key),
-                )
-                prior=cur.fetchone()
-                if (prior is None or prior["request_fingerprint"]!=fingerprint
-                    or prior["result_json"] is None):
-                    raise IdempotencyConflict("goal idempotency key reused differently")
-                return GoalCommandResult.model_validate(
-                    prior["result_json"]
-                ).model_copy(update={"replayed":True})
-            _selected(cur,actor,command)
-            source=_source(cur,actor,command)
-            if isinstance(command,(
-                CreateGoalCommand,SetGoalStatusCommand,
-                SelectGoalStrategyCommand,
-            )):
-                _require_goal_approval(cur,actor,command,source)
-            result=apply(cur,actor,command,receipt_id)
-            cur.execute(
-                """UPDATE command_receipts SET event_id=%s,result_json=%s::jsonb
-                   WHERE receipt_id=%s""",
-                (result.event_id,json.dumps(result.model_dump(mode="json")),
-                 receipt_id),
-            )
-            return result
+            return _command_in_transaction(cur,actor,command,command_type,apply)
 
+
+def _create_goal_apply(cur,who,cmd,receipt):
+    cur.execute("SELECT 1 FROM goal_records WHERE goal_id=%s",(cmd.goal_id,))
+    if cur.fetchone() is not None:
+        raise VersionConflict("goal identifier already used")
+    depth=0
+    if cmd.parent_goal_id is not None:
+        parent=_goal(cur,who,cmd.instance_id,cmd.parent_goal_id)
+        _version(parent,cmd.expected_parent_version)
+        if parent["status"]!="ACTIVE":
+            raise VersionConflict("cannot decompose a paused or abandoned goal")
+        if parent["depth"]>=_MAX_SUBGOAL_DEPTH:
+            raise VersionConflict("goal decomposition depth limit")
+        cur.execute(
+            """SELECT count(*) AS count FROM goal_records
+               WHERE parent_goal_id=%s AND user_id=%s AND instance_id=%s""",
+            (cmd.parent_goal_id,who.user_id,cmd.instance_id),
+        )
+        if cur.fetchone()["count"]>=_MAX_CHILDREN:
+            raise VersionConflict("goal has reached its subgoal budget")
+        depth=parent["depth"]+1
+        cur.execute(
+            """UPDATE goal_records SET version=version+1,
+               updated_at=clock_timestamp() WHERE goal_id=%s
+                 AND user_id=%s AND instance_id=%s""",
+            (cmd.parent_goal_id,who.user_id,cmd.instance_id),
+        )
+    evt=_publish(
+        cur,who,cmd.instance_id,"goal.created.v1",{
+            "goal_id":str(cmd.goal_id),
+            "parent_goal_id":str(cmd.parent_goal_id)
+              if cmd.parent_goal_id else None,
+            "source_turn_id":str(cmd.evidence_turn_id),
+            "user_approved":True,"depth":depth,
+            "approval_turn_id":str(cmd.approval_turn_id),
+        },receipt,
+    )
+    cur.execute(
+        """INSERT INTO goal_records(
+             goal_id,user_id,instance_id,parent_goal_id,depth,
+             title,desired_outcome,success_criterion,horizon,target_at,
+             evaluation_start_at,evaluation_end_at,
+             source_conversation_id,source_turn_id,source_quote,
+             created_event_id
+           ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+        (cmd.goal_id,who.user_id,cmd.instance_id,cmd.parent_goal_id,
+         depth,cmd.title.strip(),cmd.desired_outcome.strip(),
+         cmd.success_criterion.strip(),cmd.horizon,cmd.target_at,
+         cmd.evaluation_start_at,cmd.evaluation_end_at,
+         cmd.conversation_id,cmd.evidence_turn_id,cmd.evidence_quote,
+         evt),
+    )
+    return GoalCommandResult(
+        goal_id=cmd.goal_id,goal_version=1,event_id=evt,
+        action="GOAL_CREATED",entity_id=cmd.goal_id,
+    )
 
 def create_goal(
     connection:Connection,actor:TrustedActor,command:CreateGoalCommand,
 )->GoalCommandResult:
-    """Create a root goal or an authorized bounded-depth subgoal.
+    """Create an explicitly authorized root or bounded-depth subgoal."""
+    return _command(connection,actor,command,"goal.create.v1",_create_goal_apply)
 
-    New subgoals must cite an expected parent version. Parent changes are
-    serialized by their row lock, not by a global persona work lock.
-    """
-    def apply(cur,who,cmd,receipt):
-        cur.execute("SELECT 1 FROM goal_records WHERE goal_id=%s",(cmd.goal_id,))
-        if cur.fetchone() is not None:
-            raise VersionConflict("goal identifier already used")
-        depth=0
-        if cmd.parent_goal_id is not None:
-            parent=_goal(cur,who,cmd.instance_id,cmd.parent_goal_id)
-            _version(parent,cmd.expected_parent_version)
-            if parent["status"]!="ACTIVE":
-                raise VersionConflict("cannot decompose a paused or abandoned goal")
-            if parent["depth"]>=_MAX_SUBGOAL_DEPTH:
-                raise VersionConflict("goal decomposition depth limit")
-            cur.execute(
-                """SELECT count(*) AS count FROM goal_records
-                   WHERE parent_goal_id=%s AND user_id=%s AND instance_id=%s""",
-                (cmd.parent_goal_id,who.user_id,cmd.instance_id),
-            )
-            if cur.fetchone()["count"]>=_MAX_CHILDREN:
-                raise VersionConflict("goal has reached its subgoal budget")
-            depth=parent["depth"]+1
-            cur.execute(
-                """UPDATE goal_records SET version=version+1,
-                   updated_at=clock_timestamp() WHERE goal_id=%s
-                     AND user_id=%s AND instance_id=%s""",
-                (cmd.parent_goal_id,who.user_id,cmd.instance_id),
-            )
-        evt=_publish(
-            cur,who,cmd.instance_id,"goal.created.v1",{
-                "goal_id":str(cmd.goal_id),
-                "parent_goal_id":str(cmd.parent_goal_id)
-                  if cmd.parent_goal_id else None,
-                "source_turn_id":str(cmd.evidence_turn_id),
-                "user_approved":True,"depth":depth,
-                "approval_turn_id":str(cmd.approval_turn_id),
-            },receipt,
-        )
-        cur.execute(
-            """INSERT INTO goal_records(
-                 goal_id,user_id,instance_id,parent_goal_id,depth,
-                 title,desired_outcome,success_criterion,horizon,target_at,
-                 evaluation_start_at,evaluation_end_at,
-                 source_conversation_id,source_turn_id,source_quote,
-                 created_event_id
-               ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
-            (cmd.goal_id,who.user_id,cmd.instance_id,cmd.parent_goal_id,
-             depth,cmd.title.strip(),cmd.desired_outcome.strip(),
-             cmd.success_criterion.strip(),cmd.horizon,cmd.target_at,
-             cmd.evaluation_start_at,cmd.evaluation_end_at,
-             cmd.conversation_id,cmd.evidence_turn_id,cmd.evidence_quote,
-             evt),
-        )
-        return GoalCommandResult(
-            goal_id=cmd.goal_id,goal_version=1,event_id=evt,
-            action="GOAL_CREATED",entity_id=cmd.goal_id,
-        )
-    return _command(connection,actor,command,"goal.create.v1",apply)
 
+def _create_goal_from_conversation(cur,actor:TrustedActor,command:CreateGoalCommand)->GoalCommandResult:
+    """Internal owner entry: exact delivered candidate authorization is mandatory."""
+    return _command_in_transaction(cur,actor,command,"goal.create.conversational.v1",_create_goal_apply,
+                                   conversational=True)
 
 
 

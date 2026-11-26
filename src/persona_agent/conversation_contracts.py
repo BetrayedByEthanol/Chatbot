@@ -116,6 +116,7 @@ class ResponseContext:
     entity_history: EntityHistoryRead | None = None
     pattern_history: PatternRead | None = None
     meaning_change_action: Literal["REPORT","BLOCKED_ROUTINE"] | None = None
+    goal_dialogue_action: bool = False
 
 
 class TextModelGateway(Protocol):
