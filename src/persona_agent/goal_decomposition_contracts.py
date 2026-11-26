@@ -12,6 +12,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .goal_contracts import GoalHorizon
+from .goal_delegation_contracts import weekly_walk_target
 
 class ProposeDerivedSubgoalCommand(BaseModel):
     model_config=ConfigDict(frozen=True,extra="forbid")
@@ -90,7 +91,27 @@ _COUNTABLE_UNITS={
     "exercise sessions":"exercise session",
     "training session":"training session",
     "training sessions":"training session",
+    "run session":"run session", "run sessions":"run session",
+    "cycle session":"cycle session", "cycle sessions":"cycle session",
+    "read session":"read session", "read sessions":"read session",
+    "work out session":"work out session", "work out sessions":"work out session",
+    "practice piano session":"practice piano session", "practice piano sessions":"practice piano session",
 }
+
+# The exact paired frequency grammar emitted by MVP-06A. Do not equate
+# sessions with distance, duration, number of books, or other measures.
+_WEEKLY_ACTIVITY=re.compile(
+    r"(?P<activity>exercise|run|cycle|read|work out|practice piano) "
+    rf"(?P<count>{_AMOUNT}) times? per week",re.I,
+)
+_WEEKLY_CRITERION=re.compile(
+    rf"complete at least (?P<count>{_AMOUNT}) "
+    r"(?P<activity>exercise|run|cycle|read|work out|practice piano) sessions? per week",re.I,
+)
+
+def _number(raw):
+    raw=raw.casefold()
+    return int(raw) if raw.isdigit() else _WORD_NUMBER[raw]
 
 
 def _measure(text: str) -> tuple[str,str,str,int] | None:
@@ -101,16 +122,33 @@ def _measure(text: str) -> tuple[str,str,str,int] | None:
     canonical_unit=_COUNTABLE_UNITS.get(match["unit"].casefold())
     if canonical_unit is None:
         return None
-    count=match["count"].casefold()
-    number=int(count) if count.isdigit() else _WORD_NUMBER[count]
-    return (match["verb"].casefold(),canonical_unit,
-            match["period"].casefold(),number)
+    verb=match["verb"].casefold()
+    # Newly supported MVP-06A session units represent completed sessions
+    # only; a negative/other verb must not gain a new mechanical proof.
+    if canonical_unit in ("run session","cycle session","read session",
+                          "work out session","practice piano session") and verb!="complete":
+        return None
+    # "Walk N walks" and "Complete N walks" count the same completed walks.
+    if canonical_unit=="walk" and verb in ("walk","complete"):
+        verb="complete"
+    return (verb,canonical_unit,match["period"].casefold(),_number(match["count"]))
 
 
 def verified_count_measure(
     desired_outcome: str, success_criterion: str,
 ) -> tuple[str,str,str,int] | None:
     """Both fields must describe the identical, supported count measure."""
+    walks=weekly_walk_target(desired_outcome,success_criterion)
+    if walks is not None:
+        return ("complete","walk","week",walks)
+    frequency=_WEEKLY_ACTIVITY.fullmatch(" ".join(desired_outcome.split()))
+    check=_WEEKLY_CRITERION.fullmatch(" ".join(success_criterion.split()))
+    if (frequency is not None and check is not None
+            and frequency["activity"].casefold()==check["activity"].casefold()
+            and _number(frequency["count"])==_number(check["count"])
+            and _number(frequency["count"])<=7):
+        return ("complete",frequency["activity"].casefold()+" session","week",
+                _number(frequency["count"]))
     outcome=_measure(desired_outcome)
     criterion=_measure(success_criterion)
     if outcome is None or criterion!=outcome:

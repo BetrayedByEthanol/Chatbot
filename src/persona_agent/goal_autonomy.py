@@ -105,6 +105,11 @@ def schedule_goal_evaluation(
                              AND child.instance_id=g.instance_id
                          )
                          AND NOT EXISTS(
+                           SELECT 1 FROM goal_tasks t WHERE t.goal_id=g.goal_id
+                             AND t.user_id=g.user_id AND t.instance_id=g.instance_id
+                             AND t.status<>'CANCELLED'
+                         )
+                         AND NOT EXISTS(
                            SELECT 1 FROM goal_subgoal_proposals pending
                            WHERE pending.parent_goal_id=g.goal_id
                              AND pending.user_id=g.user_id

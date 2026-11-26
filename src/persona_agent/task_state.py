@@ -21,7 +21,7 @@ from .runtime import (
 from .task_contracts import (
     AddTaskDependencyCommand, CancelTaskCommand, ConfirmCancellationProvenanceCommand,
     ConfirmUserTaskCommand,
-    CorrectTaskOutcomeCommand, CreateTaskCommand, ReportTaskOutcomeCommand,
+    CorrectTaskOutcomeCommand, CreateTaskCommand, CreateRecurringTaskCommand, ReportTaskOutcomeCommand,
     SetTaskPriorityCommand, TaskCommandResult, TaskUserCommand, TaskView,
     task_approval_phrase,
 )
@@ -319,10 +319,22 @@ def _command(connection: Connection, actor: TrustedActor,
 def create_task(connection: Connection, actor: TrustedActor,
                 command: CreateTaskCommand) -> TaskCommandResult:
     def apply(cur, receipt):
-        goal=_goal(cur,actor,command.instance_id,command.goal_id)
+        recurring=isinstance(command,CreateRecurringTaskCommand)
+        if recurring:
+            # Graph before ancestry locks: same ordering as outcome correction
+            # and progress reads; never lock one goal before its ancestors.
+            from .goal_state import _locked_active_goal_ancestry
+            _graph_lock(cur,actor,command.instance_id)
+            goal=_locked_active_goal_ancestry(cur,actor,command.instance_id,command.goal_id)
+        else:
+            goal=_goal(cur,actor,command.instance_id,command.goal_id)
         if goal["version"]!=command.expected_goal_version:
             raise VersionConflict("goal changed during task creation")
-        _active_goal_chain(cur,actor,command.instance_id,command.goal_id)
+        if recurring:
+            from .goal_cycle import validate_recurring_task
+            validate_recurring_task(cur,actor,goal,command)
+        else:
+            _active_goal_chain(cur,actor,command.instance_id,command.goal_id)
         cur.execute(
             """SELECT count(*) AS n FROM goal_tasks
                WHERE user_id=%s AND instance_id=%s AND goal_id=%s""",
@@ -334,6 +346,9 @@ def create_task(connection: Connection, actor: TrustedActor,
             "task_id":str(command.task_id),"goal_id":str(command.goal_id),
             "executor":command.executor,
             "approval_turn_id":str(command.approval_turn_id),
+            **({"recurring_window_start":command.window_start.isoformat(),
+                "recurring_window_end":command.window_end.isoformat(),
+                "recurring_ordinal":command.ordinal} if recurring else {}),
         },receipt)
         cur.execute(
             """INSERT INTO goal_tasks(
@@ -350,6 +365,14 @@ def create_task(connection: Connection, actor: TrustedActor,
              command.capability,command.conversation_id,command.evidence_turn_id,
              command.approval_turn_id,event),
         )
+        if recurring:
+            cur.execute(
+                """INSERT INTO goal_recurring_task_slots(
+                       task_id,goal_id,user_id,instance_id,window_start,window_end,ordinal,event_id
+                   ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""",
+                (command.task_id,command.goal_id,actor.user_id,command.instance_id,
+                 command.window_start,command.window_end,command.ordinal,event),
+            )
         cur.execute(
             """UPDATE goal_records SET version=version+1,updated_at=clock_timestamp()
                WHERE goal_id=%s AND user_id=%s AND instance_id=%s""",
@@ -357,7 +380,9 @@ def create_task(connection: Connection, actor: TrustedActor,
         )
         return TaskCommandResult(task_id=command.task_id,version=1,
                                  event_id=event,action="TASK_CREATED")
-    return _command(connection,actor,command,"goal.task.create.v1",apply)
+    return _command(connection,actor,command,
+        "goal.task.create.recurring.v1" if isinstance(command,CreateRecurringTaskCommand)
+        else "goal.task.create.v1",apply)
 
 
 def add_task_dependency(connection: Connection, actor: TrustedActor,
@@ -856,9 +881,12 @@ def list_tasks(connection: Connection, actor: TrustedActor, instance_id: UUID,
             )
             active=all(row["status"]=="ACTIVE" for row in cur.fetchall())
             cur.execute(
-                """SELECT * FROM goal_tasks WHERE goal_id=%s
-                   AND user_id=%s AND instance_id=%s
-                   ORDER BY created_at,task_id LIMIT %s""",
+                """SELECT t.*,s.window_start AS recurring_start,s.window_end AS recurring_end
+                   FROM goal_tasks t LEFT JOIN goal_recurring_task_slots s
+                     ON s.task_id=t.task_id AND s.goal_id=t.goal_id
+                     AND s.user_id=t.user_id AND s.instance_id=t.instance_id
+                   WHERE t.goal_id=%s AND t.user_id=%s AND t.instance_id=%s
+                   ORDER BY t.created_at,t.task_id LIMIT %s""",
                 (goal_id,actor.user_id,instance_id,limit),
             )
             rows=cur.fetchall()
@@ -911,6 +939,9 @@ def list_tasks(connection: Connection, actor: TrustedActor, instance_id: UUID,
                         blockers.append("CONFIRMATION_REQUIRES_REASSESSMENT")
                 if task["deadline"] is not None and task["deadline"]<=now:
                     blockers.append("DEADLINE_EXPIRED")
+                if (task["recurring_start"] is not None
+                        and not task["recurring_start"]<=now.date()<task["recurring_end"]):
+                    blockers.append("RECURRING_WINDOW_CLOSED")
                 if task["executor"]=="AGENT":
                     blockers.append("CAPABILITY_AND_PERMISSION_UNCHECKED")
                 result.append(TaskView(

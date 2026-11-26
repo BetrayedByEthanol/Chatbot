@@ -104,6 +104,22 @@ No story promotion based solely on a candidate; 098 remains P. Passing technical
 
 No story promotion before verification; US-100 remains partial. Focused 06C may follow passing candidate technical CI. Phase 2/3 exit and deployment gates remain unchanged.
 
+## 2G. MVP-06B merged and 06C candidate evidence
+
+- Final PR #128 head `f89ab900a8828355db45ae167eff8b07656d960b`: [PostgreSQL CI](https://github.com/BetrayedByEthanol/Chatbot/actions/runs/45812760570) SUCCESS (2,226 passed, 3 skipped); standalone contracts 5 passed; without Psycopg 975 passed, 211 skipped. [Live integration](https://github.com/BetrayedByEthanol/Chatbot/actions/runs/45812760687) SUCCESS after an Ollama observational baseline timeout rerun. Merged as `b412c7584ff928c93ba6d56bb6ac7fe15aeeee50`. Initial live technical acceptance had passed; no new generation budget, no quality acceptance or separate merge-SHA CI claimed.
+- [06C implementation](mvp-06c-goal-cycles.md); [candidate regression](../tests/test_mvp06c_goal_cycles.py). All new gates remain NOT RUN.
+
+| Criterion | Candidate evidence | Status |
+|---|---|---|
+| C01 — Approved outcome and contribution | Existing authenticated goal, canonical 06A frequency/count proof, unsupported measure abstention; existing semantic review retained | NOT RUN |
+| C02 — Lazy decomposition | One exact USER occurrence draft, separate task approval and parent CAS; no additional decomposition at existing noncancelled tasks; existing depth/breadth/operation budgets | NOT RUN |
+| C03 — Evidence and recurrence | Explicit UTC day/week/month, immutable task-slot association; actual task reports and effective confirmations counted separately, no independently verified claim | NOT RUN |
+| C04 — Correction and scope | Corrected report/confirmation and transitive prerequisites invalidate count and next-task admission; duplicate/stale/precreation evidence excluded; scoped selected owner | NOT RUN |
+| C05 — Priorities and bounds | Exclusive priority, existing unrelated task/child/review and explicit goal window stop expansion; per-goal task budget and current-cycle restrictions | NOT RUN |
+| C06 — Broader goals and execution | General/free-form task derivation, diet upper-bound goals, cross-child outcome reconciliation, local-time cycles, natural approval, independent verification and real-model acceptance | OPEN |
+
+US-047/057/058 stay partial; no story promotion or Phase 3 gate waiver. Focused 06D follows successful technical CI.
+
 ## 3. Confirmed Phase 0–1 acceptance items
 
 Each of the 28 stories below retains its canonical ID, authority, priority, owner and baseline implementation status. Confirmed criteria are reproduced from the master backlog; mixed criteria are scoped to their confirmed core with proposed details identified explicitly. Evidence links come from the matrix and are starting points, not proof of full coverage. Review applicable legacy verification candidates before acceptance; unapproved numerical parameters are not binding.
