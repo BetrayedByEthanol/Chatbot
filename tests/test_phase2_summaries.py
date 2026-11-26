@@ -988,7 +988,20 @@ def test_summary_tracks_followup_origin_outside_its_range(dsn):
     notice=call(dsn,respond_to_text_analysis,actor(user),request,await_seconds=0)
     call(dsn,acknowledge_text_delivery,actor(user),notice.response_id)
     tool=call(dsn,schedule_text_analysis,actor(user),request)
-    call(dsn,run_one_text_tool,worker_id="summary-lineage-tool")
+    # The session-scoped test database may contain earlier queued work.
+    # Verify the claimed operation matches this test's fixture.
+    for _ in range(100):
+        tool_lease=call(dsn,run_one_text_tool,worker_id="summary-lineage-tool")
+        assert tool_lease is not None
+        if tool_lease.operation_id==tool.operation_id:
+            break
+    else:
+        pytest.fail("fixture tool operation not reached")
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT status FROM operations WHERE operation_id=%s",
+            (tool.operation_id,),
+        ).fetchone()==("COMPLETED",)
     unrelated=add_turn(dsn,user,instance,conv,"Unrelated trip planning")
     open_for(dsn,user,instance,conv,unrelated,"Trip planning")
     response(dsn,user,unrelated,"We can discuss the trip.")
