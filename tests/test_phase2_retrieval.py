@@ -405,7 +405,7 @@ def test_disputed_slot_is_excluded_from_hybrid_and_focused_recall(dsn):
 
 @pytest.mark.parametrize("change",["CORRECT","RETRACT","SENSITIVE","EXPIRED","CONFLICT"])
 def test_episode_source_cannot_bypass_current_memory_eligibility(dsn,change):
-    from persona_agent.summary_memory import search_episodes
+    from persona_agent.summary_memory import search_episodes,episode_source_turn
     user,instance,_=seed(dsn)
     source=episode(dsn,user,instance)
     assert source is not None
@@ -415,7 +415,10 @@ def test_episode_source_cannot_bypass_current_memory_eligibility(dsn,change):
         memory_kind="FACT",subject_key="user",predicate_key="rescue_dog_adoption",
         value_text="adopted",confidence=0.96,idempotency_key=str(uuid4()),
     ))
-    assert call(dsn,search_episodes,actor(user),instance,"rescue dog")
+    eligible=call(dsn,search_episodes,actor(user),instance,"rescue dog")
+    assert len(eligible)==1
+    episode_id=eligible[0].episode_id
+    assert call(dsn,episode_source_turn,actor(user),instance,episode_id)["evidence_quote"]=="rescue dog"
     if change in ("CORRECT","RETRACT","CONFLICT"):
         text="Actually, I did not adopt a rescue dog."
         newer=turn(dsn,user,instance,source.conversation_id,text)
@@ -434,6 +437,8 @@ def test_episode_source_cannot_bypass_current_memory_eligibility(dsn,change):
                 conn.execute("UPDATE memory_records SET expires_at=clock_timestamp() WHERE memory_id=%s",
                              (saved.memory_id,))
     assert call(dsn,search_episodes,actor(user),instance,"rescue dog")==()
+    with pytest.raises(PermissionDenied):
+        call(dsn,episode_source_turn,actor(user),instance,episode_id)
     hits=call(dsn,search_relevant_history,actor(user),instance,"rescue dog")
     assert all(h.source_type!="EPISODE" and h.source_turn_id!=source.turn_id for h in hits)
     current=turn(dsn,user,instance,uuid4(),"Do you remember the rescue dog adoption?")

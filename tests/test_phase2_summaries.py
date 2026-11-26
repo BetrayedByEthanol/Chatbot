@@ -176,6 +176,13 @@ def test_incremental_summary_recall_original_evidence_and_restart(dsn):
     evidence=call(dsn,episode_source_turn,actor(user),instance,hits[0].episode_id)
     assert evidence["user_text"]=="I adopted a rescue dog in September."
     assert evidence["assistant_text"] is None
+    assert evidence["episode_id"]==hits[0].episode_id
+    assert evidence["summary_id"]==result.summary_id
+    assert evidence["model_id"]=="fake-summary-v1"
+    assert evidence["epistemic_status"]=="MODEL_INTERPRETED"
+    assert evidence["evidence_quote"]=="I adopted a rescue dog"
+    assert evidence["evidence_quote_matches_source"] is True
+    assert 'historical user quote: "I adopted a rescue dog"' in restored.messages[0].content
 
 
 def test_progressive_ranges_do_not_overlap_and_no_unnecessary_summary(dsn):
@@ -276,6 +283,73 @@ def test_model_evidence_rejected_and_watermark_unchanged(dsn):
             "UPDATE operations SET status='FAILED' WHERE operation_id=%s",
             (job.operation_id,),
         )
+
+
+@pytest.mark.parametrize("quote",["I adopted a rescue dog","i adopted a rescue dog",
+                                  "Hidden middle evidence","middle of source omitted"])
+def test_episode_citation_requires_exact_visible_user_span(quote):
+    from persona_agent.summary_memory import _model_source,_validate_episode_citations
+    source=uuid4()
+    original=("I adopted a rescue dog. "+"庭"*4500+
+              "Hidden middle evidence"+"庭"*4500+" The end.")
+    rows=({"turn_id":source,"input_text":original,"delivery_status":None,
+           "response_text":None,"followups":()},)
+    projected=json.loads(_model_source(rows))[0]["user"]
+    assert "I adopted a rescue dog" in projected
+    assert "Hidden middle evidence" not in projected
+    draft=SummaryDraft.model_validate({
+        "summary":"A long conversation.",
+        "episodes":[{"source_turn_id":source,"evidence_quote":quote,
+                     "topic":"experience","description":"Candidate interpretation",
+                     "confidence":0.7}],
+    })
+    if quote=="I adopted a rescue dog":
+        _validate_episode_citations(rows,draft)
+    else:
+        with pytest.raises(InvalidSummary):
+            _validate_episode_citations(rows,draft)
+
+
+def test_omitted_episode_evidence_cannot_commit_summary(dsn):
+    user,instance,_=seed(dsn)
+    conv=uuid4()
+    source=add_turn(dsn,user,instance,conv,
+                    "Opening. "+"庭"*4500+"Hidden middle evidence"+"庭"*4500+" Ending.")
+    for i in range(3):
+        add_turn(dsn,user,instance,conv,f"Follow-up {i}")
+    job=schedule(dsn,user,instance,conv,max_turns=1)
+    lease=claim(dsn)
+
+    class OmittedCitation:
+        def generate(self,messages):
+            projected=json.loads(messages[-1].content)[0]
+            assert projected["turn_id"]==str(source.turn_id)
+            assert "Hidden middle evidence" not in projected["user"]
+            return ModelReply(model_id="omitted-evidence-test",text=json.dumps({
+                "summary":"A long conversation.",
+                "episodes":[{"source_turn_id":str(source.turn_id),
+                             "evidence_quote":"Hidden middle evidence",
+                             "topic":"experience","description":"Candidate interpretation",
+                             "confidence":0.7}],
+            }))
+
+    with pytest.raises(InvalidSummary,match="outside model-visible"):
+        call(dsn,run_summary,lease,OmittedCitation())
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT summary_watermark FROM conversations WHERE conversation_id=%s",(conv,),
+        ).fetchone()[0]==0
+        assert conn.execute(
+            "SELECT count(*) FROM memory_episodes WHERE conversation_id=%s",(conv,),
+        ).fetchone()[0]==0
+        assert conn.execute(
+            "SELECT count(*) FROM conversation_summaries WHERE conversation_id=%s",(conv,),
+        ).fetchone()[0]==0
+        assert conn.execute(
+            "SELECT status FROM operations WHERE operation_id=%s",(job.operation_id,),
+        ).fetchone()[0]=="RETRY_WAIT"
+        conn.execute("UPDATE operations SET status='FAILED' WHERE operation_id=%s",
+                     (job.operation_id,))
 
 
 def test_stale_persona_generation_during_model_inference(dsn):
