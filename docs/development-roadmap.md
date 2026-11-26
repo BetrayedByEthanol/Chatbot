@@ -38,7 +38,7 @@ After the scoped 05E reassessment of the 12 MVP-05 stories, the matrix contains 
 | MVP-05 — Time, recall and entities | 1–2 | MVP-04 evidence; existing memory | 05A–E.1 merged; technical CI and v2 automated benchmark passed; independent quality review open |
 | MVP-06 — Goal and procedure dialogue | 3 | MVP-04; relevant MVP-05 grounding and owner gates | 06A/B/C merged and technical CI passed; 06D research/adaptation candidate; Phase 3 exit also requires Phase 2 exit |
 | MVP-07A — Authenticated application | 0–1 | BASE | 07A local authenticated text boundary merged; mandatory remote/untrusted gate remains open |
-| MVP-07B — Data lifecycle and provenance | 0, 2, 6 | BASE; deployment scope decision; owner inventory | 07B1 and 07B2 response-lineage merged; summary source-lineage candidate; broader policy and propagation open |
+| MVP-07B — Data lifecycle and provenance | 0, 2, 6 | BASE; deployment scope decision; owner inventory | 07B1, response and summary lineage merged; cognitive source-lineage candidate; broader policy and propagation open |
 | P2-F — Remaining cognitive state | 2 | MVP-05; relevant MVP-07B correction contracts | Required for Phase 2 exit |
 | P4-F — Background autonomy | 4 | Phase 0–3 exit evidence; applicable permissions and resource budgets | Existing slices to harden |
 | P5-F — Voice and social | 5 | Phase 0–4 exit evidence; authenticated host; participant policy | Existing audio adapters to integrate |
@@ -179,7 +179,9 @@ Primary IDs: 117, 118, 085.
 
 07B2 first increment — [Persistent response lineage](mvp-07b2-response-lineage.md): immutable response read-fence metadata, historical revision/expiry and exact preference dependency checks at replay, text offers/ACK and speech admission. Guarded assistant text is not copied into new derived conversation, summary or cognition inputs; invalidated generated replies are not a worker readiness barrier. Merged in PR #132 (`2ca8985`); final head `1c81164` passed [PostgreSQL contracts](https://github.com/BetrayedByEthanol/Chatbot/actions/runs/45835070197) (2,287 passed, 3 skipped) and [live integration](https://github.com/BetrayedByEthanol/Chatbot/actions/runs/45835070154). Standalone contracts without Psycopg passed. This is a conservative first vertical slice.
 
-07B2 second increment — [Summary source lineage](mvp-07b2-summary-lineage.md): explicit bounded source-turn set, omission of exact Memory-invalidated inputs, late summary commit revalidation, and whole-range eligibility for summaries and their episodes. Candidate CI pending. Raw foreground context, reflection/intention lineage, broader procedure and derived-index propagation remain open; 07B3 and deployment remain gated.
+07B2 second increment — [Summary source lineage](mvp-07b2-summary-lineage.md): explicit bounded source-turn set, omission of exact Memory-invalidated inputs, late summary commit revalidation, and whole-range eligibility for summaries and their episodes. Merged in PR #133 (`f229600`); final head `c754bd3` passed [PostgreSQL contracts](https://github.com/BetrayedByEthanol/Chatbot/actions/runs/45841164964) (2,291 passed, 3 skipped) and [live integration](https://github.com/BetrayedByEthanol/Chatbot/actions/runs/45841164697) after a model timeout rerun.
+
+07B2 third increment — [Cognitive source lineage](mvp-07b2-cognitive-lineage.md): bounded raw and episode snapshot dependencies, late cognitive result fencing, eligible reflection and intention reads, and response-lineage protection for selected goal hypotheses. Candidate CI pending. Raw foreground context, broader procedure/task and derived-index propagation, query performance and 07B3 remain open; deployment remains gated.
 
 ### P4-F — Bounded Background autonomy
 

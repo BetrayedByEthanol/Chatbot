@@ -33,7 +33,7 @@ def get_context(dsn,user,instance,conv,text,*,budget=12000):
 
 
 def hypothesis(dsn,user,instance,conv,source,content,*,kind="HYPOTHESIS",
-               review="PROPOSED",confidence=0.87,scope="CURRENT"):
+               review="PROPOSED",confidence=0.87,scope="CURRENT",legacy=False):
     job_id,reflection_id=uuid4(),uuid4()
     with psycopg.connect(dsn,autocommit=True) as connection:
         with connection.transaction():
@@ -48,9 +48,14 @@ def hypothesis(dsn,user,instance,conv,source,content,*,kind="HYPOTHESIS",
                 """INSERT INTO cognitive_jobs(
                      operation_id,conversation_id,user_id,instance_id,
                      expected_generation,admission_attempt,
-                     start_sequence,end_sequence
-                   ) VALUES (%s,%s,%s,%s,1,%s,%s,%s)""",
-                (job_id,conv,user,instance,row[0],source.sequence,source.sequence),
+                     start_sequence,end_sequence,committed_at,source_turn_ids,
+                     source_episode_ids,source_episode_hashes,source_digest
+                   ) VALUES (%s,%s,%s,%s,1,%s,%s,%s,clock_timestamp(),
+                             %s,%s,%s,%s)""",
+                (job_id,conv,user,instance,row[0],source.sequence,source.sequence,
+                 None if legacy else [source.turn_id],
+                 None if legacy else [],None if legacy else [],
+                 None if legacy else sha256(content.encode()).hexdigest()),
             )
             connection.execute(
                 """INSERT INTO cognitive_reflections(
@@ -265,3 +270,46 @@ def test_direct_context_builder_is_read_only_and_bounded(dsn):
     assert before==after
     assert len(result)<=700
     assert "Approved/delegated Goal state" in result
+
+
+
+def test_reflection_context_fenced_and_omitted_after_source_correction(dsn):
+    from persona_agent.conversation import commit_text_response
+    from persona_agent.conversation_contracts import ModelReply,StaleHistoricalContext
+    from persona_agent.memory import admit_memory,amend_memory
+    from test_phase2_memory import candidate,correction
+
+    user,instance,conv,_=setup_goal(dsn)
+    source=goals.turn(dsn,user,instance,conv,
+        "My favorite drink is tea. I could not meet my weekly meal targets.")
+    saved=goals.call(dsn,admit_memory,goals.actor(user),candidate(instance,conv,source))
+    rid=hypothesis(dsn,user,instance,conv,source,
+                   "Eating habits and meal targets may be affected by tea.")
+    prompt,context=get_context(dsn,user,instance,conv,"How is my eating goal progressing?")
+    assert str(rid) in prompt and context.historical_fence is not None
+    newer=goals.turn(dsn,user,instance,uuid4(),"Actually my favorite drink is coffee.")
+    goals.call(dsn,amend_memory,goals.actor(user),correction(
+        instance,newer.conversation_id,newer,saved.memory_id,
+    ))
+    with pytest.raises(StaleHistoricalContext):
+        goals.call(dsn,commit_text_response,goals.actor(user),context,
+                   ModelReply(model_id="stale",text="Tea may affect your goal."),model_generated=True)
+    prompt,_=get_context(dsn,user,instance,conv,"How is my eating goal progressing?")
+    assert str(rid) not in prompt
+    assert "Approved/delegated Goal state" in prompt
+
+
+
+def test_legacy_hypotheses_remain_stored_but_are_not_eligible_context(dsn):
+    from persona_agent.cognitive_engine import list_cognitive_proposals
+    user,instance,conv,_=setup_goal(dsn)
+    source=goals.turn(dsn,user,instance,conv,"I could not meet my weekly meal targets.")
+    rid=hypothesis(dsn,user,instance,conv,source,
+                   "Eating habits and meal targets may be affected by work.",legacy=True)
+    prompt,_=get_context(dsn,user,instance,conv,"How is my eating goal progressing?")
+    assert str(rid) not in prompt
+    assert "Approved/delegated Goal state" in prompt
+    assert goals.call(dsn,list_cognitive_proposals,goals.actor(user),instance)==()
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute("SELECT review_status FROM cognitive_reflections WHERE reflection_id=%s",
+                            (rid,)).fetchone()==("PROPOSED",)
