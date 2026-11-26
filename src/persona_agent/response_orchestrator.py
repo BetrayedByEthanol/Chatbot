@@ -94,4 +94,5 @@ def respond_to_user_text(
             ),await_seconds=await_seconds,
         )
     return respond_to_text(connection,actor,turn_id,gateway,
-                           adaptive_meaning_change=True,adaptive_goal_dialogue=True)
+                           adaptive_meaning_change=True,adaptive_goal_dialogue=True,
+                           adaptive_procedure_guidance=True)

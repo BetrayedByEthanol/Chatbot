@@ -259,33 +259,75 @@ def start_procedure_run(connection: Connection, actor: TrustedActor,
                     result_type=ProcedureRunResult)
 
 
+def _record_step_apply(cur,actor,command,receipt):
+    run,step=_step_admission(cur,actor,command)
+    if step["executor"]!="USER":
+        raise PermissionDenied("agent steps require future operation-result gate")
+    before=step["status"]
+    after=command.outcome
+    if before==after:
+        if after not in ("FAILED","BLOCKED"):
+            raise VersionConflict("procedure step progress unchanged")
+        # A new obstacle report is new evidence even if the outcome does
+        # not change. The run lock in _step_admission serializes this
+        # check and append; a different receipt cannot reuse the same
+        # authenticated report to manufacture a second observation.
+        cur.execute(
+            """SELECT 1 FROM procedure_run_step_events
+               WHERE run_id=%s AND step_id=%s AND user_id=%s AND instance_id=%s
+                 AND source_turn_id=%s AND kind=%s LIMIT 1""",
+            (command.run_id,command.step_id,actor.user_id,command.instance_id,
+             command.evidence_turn_id,after),
+        )
+        if cur.fetchone() is not None:
+            raise VersionConflict("obstacle evidence already recorded")
+    if before=="USER_CONFIRMED":
+        raise VersionConflict("correct confirmed step before new evidence")
+    if after=="USER_CONFIRMED" and before!="USER_REPORTED_DONE":
+        raise VersionConflict("step user confirmation needs a current user report")
+    if after!="USER_CONFIRMED" and before=="USER_REPORTED_DONE":
+        # A contradictory statement must append an explicit correction,
+        # rather than quietly overwrite the recorded DONE claim.
+        raise VersionConflict("correct the user report before changing it")
+    return _evidence_step_event(
+        cur,actor,command,run,step,receipt,kind=after,after=after,
+        detail=command.detail,
+    )
+
+
 def record_procedure_step(connection: Connection, actor: TrustedActor,
                           command: RecordProcedureStepCommand) -> ProcedureRunResult:
     """User reports and explicit confirmations; never independently VERIFIED."""
-    def apply(cur,receipt):
-        run,step=_step_admission(cur,actor,command)
-        if step["executor"]!="USER":
-            raise PermissionDenied("agent steps require future operation-result gate")
-        before=step["status"]
-        after=command.outcome
-        if before==after:
-            raise VersionConflict("procedure step progress unchanged")
-        if before=="USER_CONFIRMED":
-            raise VersionConflict("correct confirmed step before new evidence")
-        if after=="USER_CONFIRMED" and before!="USER_REPORTED_DONE":
-            raise VersionConflict("step user confirmation needs a current user report")
-        if after!="USER_CONFIRMED" and before=="USER_REPORTED_DONE":
-            # A contradictory statement must append an explicit correction,
-            # rather than quietly overwrite the recorded DONE claim.
-            raise VersionConflict("correct the user report before changing it")
-        return _evidence_step_event(
-            cur,actor,command,run,step,receipt,kind=after,after=after,
-            detail=command.detail,
-        )
     return _command(
-        connection,actor,command,"procedure.run.step.record.v1",apply,
+        connection,actor,command,"procedure.run.step.record.v1",lambda cur,receipt: _record_step_apply(cur,actor,command,receipt),
         result_type=ProcedureRunResult,
         requires_approval=(command.outcome=="USER_CONFIRMED"),
+    )
+
+
+def _instruction_apply(cur,actor,command,receipt):
+    run,step=_step_admission(cur,actor,command)
+    if step["executor"]!="USER":
+        raise PermissionDenied("agent instruction cannot be user-delivered")
+    cur.execute(
+        """SELECT turn_id,response_text,delivery_status FROM conversation_responses
+           WHERE response_id=%s AND conversation_id=%s
+             AND user_id=%s AND instance_id=%s""",
+        (command.response_id,command.conversation_id,
+         actor.user_id,command.instance_id),
+    )
+    response=cur.fetchone()
+    if (response is None or response["turn_id"]!=command.evidence_turn_id
+        or response["delivery_status"]!="DELIVERED"):
+        raise VersionConflict("instruction response was not acknowledged as delivered")
+    if step["instruction"] not in response["response_text"]:
+        raise PermissionDenied("delivered response did not contain pinned instruction")
+    if step["status"] in ("USER_CONFIRMED","NEEDS_REVIEW"):
+        raise VersionConflict("cannot rewrite confirmed or corrected step delivery")
+    after=("INSTRUCTED" if step["status"]=="NOT_STARTED" else step["status"])
+    return _evidence_step_event(
+        cur,actor,command,run,step,receipt,kind="INSTRUCTION_DELIVERED",
+        after=after,response_id=command.response_id,
     )
 
 
@@ -297,32 +339,8 @@ def acknowledge_procedure_instruction(connection: Connection, actor: TrustedActo
     Generated or interrupted/unconfirmed speech must never count as heard.
     No user report, success, task state or tool execution is inferred.
     """
-    def apply(cur,receipt):
-        run,step=_step_admission(cur,actor,command)
-        if step["executor"]!="USER":
-            raise PermissionDenied("agent instruction cannot be user-delivered")
-        cur.execute(
-            """SELECT turn_id,response_text,delivery_status FROM conversation_responses
-               WHERE response_id=%s AND conversation_id=%s
-                 AND user_id=%s AND instance_id=%s""",
-            (command.response_id,command.conversation_id,
-             actor.user_id,command.instance_id),
-        )
-        response=cur.fetchone()
-        if (response is None or response["turn_id"]!=command.evidence_turn_id
-            or response["delivery_status"]!="DELIVERED"):
-            raise VersionConflict("instruction response was not acknowledged as delivered")
-        if step["instruction"] not in response["response_text"]:
-            raise PermissionDenied("delivered response did not contain pinned instruction")
-        if step["status"] in ("USER_CONFIRMED","NEEDS_REVIEW"):
-            raise VersionConflict("cannot rewrite confirmed or corrected step delivery")
-        after=("INSTRUCTED" if step["status"]=="NOT_STARTED" else step["status"])
-        return _evidence_step_event(
-            cur,actor,command,run,step,receipt,kind="INSTRUCTION_DELIVERED",
-            after=after,response_id=command.response_id,
-        )
     return _command(
-        connection,actor,command,"procedure.run.step.delivery.v1",apply,
+        connection,actor,command,"procedure.run.step.delivery.v1",lambda cur,receipt: _instruction_apply(cur,actor,command,receipt),
         result_type=ProcedureRunResult,requires_approval=False,
     )
 
@@ -399,59 +417,61 @@ def link_procedure_thread(connection: Connection, actor: TrustedActor,
     )
 
 
+def _status_apply(cur,actor,command,receipt):
+    run=_run(cur,actor,command.instance_id,command.run_id)
+    _expected(run,command.expected_run_version)
+    old=run["status"]
+    statuses={
+        "PAUSE":("PAUSED",("ACTIVE","NEEDS_REVIEW")),
+        "RESUME":("ACTIVE",("PAUSED",)),
+        "CANCEL":("CANCELLED",("ACTIVE","PAUSED","NEEDS_REVIEW")),
+        "FINISH":("USER_CONFIRMED",("ACTIVE",)),
+    }
+    new,eligible=statuses[command.action]
+    if old not in eligible:
+        raise VersionConflict("invalid procedure run status transition")
+    if command.action in ("FINISH","RESUME"):
+        cur.execute(
+            """SELECT status,executor FROM procedure_run_steps WHERE run_id=%s""",
+            (command.run_id,),
+        )
+        steps=cur.fetchall()
+        if command.action=="FINISH" and (not steps or any(
+            not (
+                (step["executor"]=="USER" and step["status"]=="USER_CONFIRMED")
+                or (step["executor"]=="AGENT" and step["status"]=="VERIFIED")
+            )
+            for step in steps
+        )):
+            raise VersionConflict("all user steps require explicit confirmation")
+        if command.action=="RESUME" and any(
+            step["status"]=="NEEDS_REVIEW" for step in steps
+        ):
+            new="NEEDS_REVIEW"
+    event=_publish(cur,actor,command.instance_id,"procedure.run.status.v1",{
+        "run_id":str(command.run_id),"old_status":old,
+        "new_status":new,"action":command.action,
+        "task_status_not_modified":True,
+    },receipt)
+    version=run["version"]+1
+    cur.execute(
+        """UPDATE procedure_runs SET status=%s,version=%s,
+             updated_at=clock_timestamp() WHERE run_id=%s""",
+        (new,version,command.run_id),
+    )
+    action={
+        "PAUSE":"RUN_PAUSED","RESUME":"RUN_RESUMED",
+        "CANCEL":"RUN_CANCELLED","FINISH":"RUN_USER_CONFIRMED",
+    }[command.action]
+    return ProcedureRunResult(run_id=command.run_id,version=version,
+                              event_id=event,action=action)
+
+
 def set_procedure_run_status(connection: Connection, actor: TrustedActor,
                              command: SetProcedureRunStatusCommand
                              ) -> ProcedureRunResult:
-    def apply(cur,receipt):
-        run=_run(cur,actor,command.instance_id,command.run_id)
-        _expected(run,command.expected_run_version)
-        old=run["status"]
-        statuses={
-            "PAUSE":("PAUSED",("ACTIVE","NEEDS_REVIEW")),
-            "RESUME":("ACTIVE",("PAUSED",)),
-            "CANCEL":("CANCELLED",("ACTIVE","PAUSED","NEEDS_REVIEW")),
-            "FINISH":("USER_CONFIRMED",("ACTIVE",)),
-        }
-        new,eligible=statuses[command.action]
-        if old not in eligible:
-            raise VersionConflict("invalid procedure run status transition")
-        if command.action in ("FINISH","RESUME"):
-            cur.execute(
-                """SELECT status,executor FROM procedure_run_steps WHERE run_id=%s""",
-                (command.run_id,),
-            )
-            steps=cur.fetchall()
-            if command.action=="FINISH" and (not steps or any(
-                not (
-                    (step["executor"]=="USER" and step["status"]=="USER_CONFIRMED")
-                    or (step["executor"]=="AGENT" and step["status"]=="VERIFIED")
-                )
-                for step in steps
-            )):
-                raise VersionConflict("all user steps require explicit confirmation")
-            if command.action=="RESUME" and any(
-                step["status"]=="NEEDS_REVIEW" for step in steps
-            ):
-                new="NEEDS_REVIEW"
-        event=_publish(cur,actor,command.instance_id,"procedure.run.status.v1",{
-            "run_id":str(command.run_id),"old_status":old,
-            "new_status":new,"action":command.action,
-            "task_status_not_modified":True,
-        },receipt)
-        version=run["version"]+1
-        cur.execute(
-            """UPDATE procedure_runs SET status=%s,version=%s,
-                 updated_at=clock_timestamp() WHERE run_id=%s""",
-            (new,version,command.run_id),
-        )
-        action={
-            "PAUSE":"RUN_PAUSED","RESUME":"RUN_RESUMED",
-            "CANCEL":"RUN_CANCELLED","FINISH":"RUN_USER_CONFIRMED",
-        }[command.action]
-        return ProcedureRunResult(run_id=command.run_id,version=version,
-                                  event_id=event,action=action)
     return _command(
-        connection,actor,command,"procedure.run.status.v1",apply,
+        connection,actor,command,"procedure.run.status.v1",lambda cur,receipt: _status_apply(cur,actor,command,receipt),
         result_type=ProcedureRunResult,
     )
 

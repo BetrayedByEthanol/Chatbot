@@ -87,6 +87,23 @@ Technical regression supports focused MVP-06A after passing on the candidate. Fu
 
 No story promotion based solely on a candidate; 098 remains P. Passing technical CI supports focused 06B, not Phase 3 exit or deployment.
 
+## 2F. MVP-06A merged and 06B candidate evidence
+
+- Final PR #127 head `dfe3297dd246f43562de87958e1f5c7b06108d8e`: [PostgreSQL CI](https://github.com/BetrayedByEthanol/Chatbot/actions/runs/45806428624) SUCCESS (2,182 passed, 3 skipped); standalone contracts 5 passed; without Psycopg 942 passed, 200 skipped. [Live integration](https://github.com/BetrayedByEthanol/Chatbot/actions/runs/45806428618) SUCCESS. Merged as `54ce3cb916398908b3cb7762330c167a58fabbca`. This supersedes 06A NOT RUN for technical CI only. No independent quality review or separate merge-SHA CI claimed.
+- [06B implementation](mvp-06b-guided-procedures.md) and [candidate tests](../tests/test_mvp06b_guided_procedures.py). All new gates below remain NOT RUN.
+
+| Criterion | Candidate evidence | Status |
+|---|---|---|
+| B01 — Relevant guidance | Unique named/title or run ID, delivered adjacency and existing focused link for navigation; no guessed run for reports | NOT RUN |
+| B02 — Delivery versus completion | Acknowledged pinned instruction; attempts, failure, user report and separate confirmation; no VERIFIED claim | NOT RUN |
+| B03 — User-paced navigation | Next first unresolved; repeat, clarify, back review; skip cannot bypass required step | NOT RUN |
+| B04 — Status authorization | Separate delivered confirmation for pause, resume, cancel; same scope and version | NOT RUN |
+| B05 — Continuity | Nginx four-step STABLE fixture, fresh connections and session, old report renewal, no repinning | NOT RUN |
+| B06 — Safety/replay | Undelivered/late, stale, ambiguous, concurrent/duplicate, cross-persona, forced model, AGENT step abstention | NOT RUN |
+| B07 — Broader interaction | Free-form step interpretation, optional/conditional skip, semantic troubleshooting, natural initial start/finalize, real-model and target host acceptance | OPEN |
+
+No story promotion before verification; US-100 remains partial. Focused 06C may follow passing candidate technical CI. Phase 2/3 exit and deployment gates remain unchanged.
+
 ## 3. Confirmed Phase 0–1 acceptance items
 
 Each of the 28 stories below retains its canonical ID, authority, priority, owner and baseline implementation status. Confirmed criteria are reproduced from the master backlog; mixed criteria are scoped to their confirmed core with proposed details identified explicitly. Evidence links come from the matrix and are starting points, not proof of full coverage. Review applicable legacy verification candidates before acceptance; unapproved numerical parameters are not binding.
