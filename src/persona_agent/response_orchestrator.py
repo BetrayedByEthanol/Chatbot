@@ -93,4 +93,4 @@ def respond_to_user_text(
                 turn_id=turn_id,max_words=max_words,
             ),await_seconds=await_seconds,
         )
-    return respond_to_text(connection,actor,turn_id,gateway)
+    return respond_to_text(connection,actor,turn_id,gateway,adaptive_meaning_change=True)

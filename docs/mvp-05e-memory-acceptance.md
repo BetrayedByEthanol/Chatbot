@@ -40,3 +40,7 @@ Example model choices only; use installed authorized target model(s), configured
 ## Gate decision and deferred work
 
 05A–D merged; 05E technical consolidation candidate. Full Phase 2 gate requires P2-F cognitive/emotional/attention integration and applicable MVP-07B lineage. Focused MVP-06A can proceed after candidate technical CI; preserve exact approved Goal authority. Source-qualified model use of private documents is a targeted dependency for 06B/06D when necessary; retain read-only information and never admit execution from content. Broad semantic definitions/corrections, cognitive gap discovery (GAP-04/05), relevance feedback and held-out evaluation (GAP-09), episode significance (GAP-12), general claim/repair verification (GAP-07/08) and privacy/deletion propagation remain open. Remote deployment remains blocked by MVP-07A/B. No new model, external provider or scheduler selected.
+
+## Subsequent evidence (26 November 2026)
+
+PR #125 merged after successful [contract CI](https://github.com/BetrayedByEthanol/Chatbot/actions/runs/45791975798) (2,150 passed, 3 skipped) and [live integration](https://github.com/BetrayedByEthanol/Chatbot/actions/runs/45791975921). Operator v1 real-model comparison completed four runs; independent review remains open. See [05E.1](mvp-05e1-correction-routing.md) for measured evidence and candidate correction-routing follow-up. Original candidate notes above record authoring-time state, not current CI disposition.

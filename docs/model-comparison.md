@@ -776,3 +776,7 @@ bash -n scripts/compare-persona-models
 
 Real Ollama+PostgreSQL comparison remains a manual runtime acceptance test;
 these unit tests use no model or Docker daemon.
+
+## MVP-05E.1 — Correction routing and conversational calibration
+
+See [05E.1 evidence and candidate implementation](mvp-05e1-correction-routing.md) for verified aggregate operator v1 comparison results (Qwen 2.5 7B / Qwen 3.5 9B, full / model-only, thinking off), direct meaning-change route, v2 deterministic assertions and reconfirmation. Raw bundles and scorecards are not committed. No independent quality winner; candidate v2 run remains NOT RUN.

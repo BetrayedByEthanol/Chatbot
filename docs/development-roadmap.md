@@ -35,8 +35,8 @@ After the scoped 05E reassessment of the 12 MVP-05 stories, the matrix contains 
 |---|---|---|---|
 | BASE — Foundation regression | 0; cross-cutting | Existing implementation | Maintain continuously |
 | MVP-04 — Conversational quality | 0–1; early evaluation | BASE | Implementation increments merged; independent quality review open |
-| MVP-05 — Time, recall and entities | 1–2 | MVP-04 evidence; existing memory | 05A–D merged; 05E consolidation candidate |
-| MVP-06 — Goal and procedure dialogue | 3 | MVP-04; relevant MVP-05 grounding and owner gates | Focused 06A next after 05E technical regression; Phase 3 exit also requires Phase 2 exit |
+| MVP-05 — Time, recall and entities | 1–2 | MVP-04 evidence; existing memory | 05A–E merged, technical CI passed; 05E.1 correction-routing candidate |
+| MVP-06 — Goal and procedure dialogue | 3 | MVP-04; relevant MVP-05 grounding and owner gates | Focused 06A next after 05E.1 technical regression; Phase 3 exit also requires Phase 2 exit |
 | MVP-07A — Authenticated application | 0–1 | BASE | Can proceed independently; mandatory before remote/untrusted access |
 | MVP-07B — Data lifecycle and provenance | 0, 2, 6 | BASE; deployment scope decision; owner inventory | Start policy/lineage work early; full propagation is a later gate |
 | P2-F — Remaining cognitive state | 2 | MVP-05; relevant MVP-07B correction contracts | Required for Phase 2 exit |
@@ -106,6 +106,8 @@ Primary IDs: 091, 113, 029, 030, 031, 034, 093, 027, 028, 032, 033, 092.
 05D.5 candidate implementation (26 Nov 2026): [MetaMemory and retrieval feedback](mvp-05d5-metamemory.md) adds recall-driven gap history, delivered-choice suppression, evidence-bound user feedback and exact-query/document-version ranking demotion. GAP-04/09 partial evidence; cognitive proposals, broad feedback and held-out evaluation remain follow-ups.
 
 05E — [Integrated acceptance and consolidation](mvp-05e-memory-acceptance.md): 05A–D merged. Reuse source/owner fences for unsupported known-topic definitions, fix clarification cooldown from actual question delivery, add a cross-store 50-turn compression/restart regression and a real-model review scenario. Candidate tests NOT RUN. 7 I / 5 P / 0 M after scoped reassessment; no architectural phase exit or behavioral acceptance. Focused 06A may follow passing technical CI without waiting for deferred P2-F or remote deployment gates. Source-qualified document use is a targeted dependency for 06B/D when required, not a new knowledge architecture.
+
+05E.1 — [Correction routing and conversational calibration](mvp-05e1-correction-routing.md): verified PR #125 technical CI (2,150 passed, 3 skipped) and operator's four real-model v1 runs (68 delivered, zero runtime errors; independent review not completed). Reuse prepared historical fence and canonical commit to bypass inference for persisted unsupported definition reports and unresolved routine-use requests; distinguish understood conversation from saved definition. Extend a versioned v2 scenario with exact canonical reply/auto-route checks and reconfirmation. Candidate CI and v2 real-model run NOT RUN. No new goal/Memory authority or model selection.
 
 Reuse [retrieval](phase2-05.md), [unified context](mvp-03b1-unified-context.md), [longitudinal context](mvp-03b3-longitudinal-context-evaluation.md), [memory eligibility](mvp-02c12-source-grounded-eligibility.md) and [Phase 2 integration](phase2-08.md). Use existing `prepare_text_context`, `memory_retrieval`, `historical_user_turns` and dialogue ownership; no second context builder. 05A is a Phase 1 requirement; 05B–D belong to Phase 2. The confirmed core of 113 is selective adequate retrieval; proposed stop-reason schemas/escalation policy are not automatically approved. For correction across derived stores, depend on MVP-07B.
 

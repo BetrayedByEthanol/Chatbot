@@ -216,7 +216,7 @@ def _check_turn(
     step: dict, turn: dict, snapshot: dict, *,
     previous_operations: int | None = None,
 ) -> list[dict]:
-    """Outcome-based assertions: no model-text substring guessing.
+    """Outcome-based assertions: exact canonical replies, not model-text substring guessing.
 
     A failed deterministic behavioral assertion is reported, not hidden by
     successful response-delivery contracts. Interpretation stays tentative.
@@ -235,6 +235,15 @@ def _check_turn(
     if "expect_model_id" in step:
         record("route",turn["model_id"]==step["expect_model_id"],
                turn["model_id"],step["expect_model_id"],category="contract")
+    if "expect_auto_model_id" in step and step.get("mode","auto")=="auto":
+        record("auto_route",turn["model_id"]==step["expect_auto_model_id"],
+               turn["model_id"],step["expect_auto_model_id"],category="contract")
+    if "expect_canonical_reply" in step:
+        # Exact deterministic owner-rendered output, never a semantic
+        # rating of arbitrary model prose. Applies in both comparison modes.
+        expected=step["expect_canonical_reply"]
+        allowed=[expected] if isinstance(expected,str) else expected
+        record("canonical_reply",turn["assistant"] in allowed,turn["assistant"],expected)
     signals = _signals_for_turn(snapshot,turn["turn_id"])
     if "expect_intent" in step:
         kinds = [row["intent_kind"] for row in signals]

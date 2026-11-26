@@ -60,6 +60,12 @@ See [MVP-05E evidence and limitations](mvp-05e-memory-acceptance.md). Do not che
 
 Technical regression supports focused MVP-06A after passing on the candidate. Full behavioral acceptance, P2-F and applicable MVP-07B remain open. Remote deployment remains blocked. Do not mark Phase 2 accepted on this evidence alone.
 
+## 2C. MVP-05E merged and 05E.1 candidate evidence
+
+- Final PR #125 head `19b2522148a5a45f317b8fcfbb32e24e48211d2d`: [PostgreSQL CI](https://github.com/BetrayedByEthanol/Chatbot/actions/runs/45791975798) SUCCESS, 2,150 passed / 3 skipped, standalone contracts 5 passed, no-Psycopg 925 passed / 185 skipped; [live integration](https://github.com/BetrayedByEthanol/Chatbot/actions/runs/45791975921) SUCCESS. Merged as `c6dfac0484c24350d0c9b45e0f39ba4434739d6c`. This supersedes 05E candidate NOT RUN for technical CI only; no new run on merge SHA claimed.
+- A08 v1 real-model scenario: operator-provided comparison archive reviewed; 4/4 completed, 68 delivered, no runtime errors or goals created. Automated evaluation checked delivery/no unapproved goal, not all memory behavior. All independent scorecards remain unfilled. No acceptance or latency threshold met by assertion.
+- 05E.1 [correction routing and calibration](mvp-05e1-correction-routing.md) adds direct-route and exact-output regressions, revised acknowledgment and [v2 scenario](../scenarios/mvp05e1_memory_acceptance.json). Candidate CI and v2 real-model evidence NOT RUN; private review artifacts remain outside repository. No story status promotion or Phase 2 gate waiver.
+
 ## 3. Confirmed Phase 0–1 acceptance items
 
 Each of the 28 stories below retains its canonical ID, authority, priority, owner and baseline implementation status. Confirmed criteria are reproduced from the master backlog; mixed criteria are scoped to their confirmed core with proposed details identified explicitly. Evidence links come from the matrix and are starting points, not proof of full coverage. Review applicable legacy verification candidates before acceptance; unapproved numerical parameters are not binding.
