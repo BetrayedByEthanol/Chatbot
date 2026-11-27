@@ -6,6 +6,8 @@ Baseline PR #130 plus candidate 0056. Architecture v2.5.1 §§5, 12, 19.3 and US
 
 Existing `compose.e2e.yaml` binds PostgreSQL to loopback; `compose.terminal-review.yaml` explicitly provisions isolated short-lived review DBs with loopback port and local password. Existing local acceptance host is operator-only; candidate 07A is a local credential-bound JSONL adapter. Ollama provider requests may include personal conversation/context; server configuration is trusted, but a production provider/retention policy has not been selected. Do not enable external or untrusted deployment on this evidence.
 
+**Planned P2-F1.1 addition (27 November 2026):** the [learning-control contract](predictive-user-modeling-refinement.md#611-learning-control-ownership-and-lifecycle) adds an Authorization/Governance-owned, instance-scoped versioned control and reset boundary; Cognitive/Relationship learned records and response projections depend on it. Inventory its authenticated command/event receipts, retained generations, evidence dependencies and derived outputs before activation. Disable is logical suppression; reset permanently excludes older learned generations from personalization, not physical erasure. Applicable retention, consent, deletion, backup and external-copy policies remain DEC-03/07B3 work. No implementation or deployment approval claimed.
+
 ## Persisted owner groups and dependent copies
 
 | Owner / migration range | Private records and dependent copies to inspect | Initial invalidation concern |
