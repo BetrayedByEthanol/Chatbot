@@ -37,3 +37,19 @@ The new code still requires real PostgreSQL integration and EXPLAIN verification
 the earlier 13 focused tests passed locally before this correction. Full-suite
 failures must be reassessed after the performance correction, not masked by
 raising timeouts.
+
+
+## P2 resolved-reference budget correction
+
+The objective and its selected eligible corrections are now a required
+context unit. The source collector admits their union in one bounded operation,
+only after the required text fits; rejected units leave the collector unchanged.
+Optional notes can use only remaining source and character capacity. No change
+to the existing three-detail selection window, historical authority, focus
+transition or persistence schema. This closes the reported partial-admission
+failure and the equivalent character-trimming failure within that window.
+
+Performance correction verification (commit a48a884): local 2342 passed,
+3 skipped in 539.96s; GitHub PostgreSQL 2342 passed, 3 skipped in 853.54s.
+The P2 correction adds separate unit and PostgreSQL boundary regressions;
+these require verification at the new head.

@@ -366,3 +366,42 @@ def test_focused_thread_lineage_only_checks_selected_candidate(dsn,prefer_hash_j
                 assert conn.execute(
                     "SELECT current_setting('persona_test.checks')::int AS n"
                 ).fetchone()["n"]==checks
+
+
+@pytest.mark.parametrize("spare_sources", [0, 1])
+def test_resolved_objective_correction_is_atomic_at_source_limit(dsn,spare_sources):
+    """The original fits on its own; its correction needs one more source."""
+    from persona_agent.dialogue_lineage import DialogueDependencies
+    from persona_agent.intent_interpretation import resolved_objective_context_block
+    from persona_agent.raw_context import MAX_RAW_SOURCES
+
+    user,instance=seed(dsn)
+    conv=uuid4()
+    objective=incoming(dsn,user,instance,conv,"I want to practice walking daily.")
+    response(dsn,user,objective,"We can discuss walking.")
+    correction=incoming(dsn,user,instance,conv,"Actually, once per week would be better.")
+    response(dsn,user,correction,"We can adjust the cadence.")
+    switch=incoming(dsn,user,instance,conv,"Switch the topic to cooking.")
+    response(dsn,user,switch,"We can discuss cooking.")
+    request=incoming(dsn,user,instance,conv,"What about that walking goal?")
+    # Simulate the raw history reservation without creating 128 extra turns.
+    reserved={objective.turn_id,request.turn_id}
+    reserved.update(uuid4() for _ in range(MAX_RAW_SOURCES-len(reserved)-spare_sources))
+    dependencies=DialogueDependencies(reserved,None)
+    with psycopg.connect(dsn,autocommit=True,row_factory=dict_row) as conn:
+        with conn.cursor() as cur:
+            kwargs=dict(user_id=user,instance_id=instance,conversation_id=conv,
+                        turn_id=request.turn_id,latest_text="What about that walking goal?",
+                        max_chars=1100)
+            baseline=resolved_objective_context_block(cur,**kwargs)
+            assert "practice walking daily" in baseline
+            assert "Actually, once per week would be better." in baseline
+            block=resolved_objective_context_block(cur,**kwargs,dependencies=dependencies)
+            if spare_sources:
+                assert "Actually, once per week would be better." in block
+                assert correction.turn_id in dependencies.source_ids
+                assert objective.turn_id in dependencies.source_ids
+            else:
+                assert block==""
+                assert dependencies.source_ids==set()
+                assert not dependencies.uses_broad

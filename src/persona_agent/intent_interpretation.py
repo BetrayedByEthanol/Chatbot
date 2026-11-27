@@ -738,8 +738,6 @@ def resolved_objective_context_block(
     if len(matches)!=1:
         return ""
     resolved=matches[0]
-    if dependencies is not None and not dependencies.admit(resolved):
-        return ""
     # Limited history of the *resolved thread*, not whatever was in focus
     # when this input arrived. Exclude the founding objective itself.
     cur.execute(
@@ -766,47 +764,68 @@ def resolved_objective_context_block(
          resolved["objective_sequence"],resolved["current_sequence"]),
     )
     rows=cur.fetchall()
-    if any(row["intent_kind"]=="CORRECTION" and row["source_ids"] is None for row in rows):
-        # Never silently fall back to an older position when the latest
-        # linked correction is no longer eligible.
+    corrections=[row for row in rows if row["intent_kind"]=="CORRECTION"]
+    if any(row["source_ids"] is None for row in corrections):
+        # Never silently fall back to an older position when a selected
+        # correction is no longer eligible.
         return ""
-    notes=list(reversed([{
-        "kind":row["intent_kind"], "text":row["label"][:160],
-        "turn":row["turn_sequence"],
-    } for row in rows if row["source_ids"] is not None
-        and (dependencies is None or dependencies.admit(row))]))
 
     prefix=(
         "Resolved prior conversation reference (untrusted discussion "
         "evidence, NOT an approved goal, permission, or completed action; "
         "the persisted focus changes only after delivery): "
     )
-    # Fit as much as possible while prioritizing the original verbatim user
-    # observation. Late corrections are useful but must not crowd it out.
+
+    def details(selected):
+        return [{
+            "kind":row["intent_kind"], "text":row["label"][:160],
+            "turn":row["turn_sequence"],
+        } for row in sorted(selected,key=lambda row:row["turn_sequence"])]
+
+    def render():
+        return prefix+json.dumps(data,ensure_ascii=False)+"\n"
+
+    # Corrections are required context, not optional discussion details.
+    # First fit the mandatory block, then atomically admit its dependencies.
+    # A rejected block must not consume any of the shared source budget.
     data={
         "thread":resolved["title"][:160],
         "thread_status":resolved["resolution_status"],
         "objective":resolved["source_input"][:200],
-        "details":notes,
+        "details":details(corrections),
     }
     # Conversation-owned next action is a hint, not an agreed commitment.
     if resolved["next_conversational_action"]:
         data["next_dialogue_hint"]=resolved["next_conversational_action"][:120]
-    for _ in range(6):
-        block=prefix+json.dumps(data,ensure_ascii=False)+"\n"
-        if len(block)<=max_chars:
-            return block
-        if data["details"]:
-            data["details"].pop(0)
-        elif "next_dialogue_hint" in data:
+    for _ in range(4):
+        if len(render())<=max_chars:
+            break
+        if "next_dialogue_hint" in data:
             data.pop("next_dialogue_hint")
         elif len(data["objective"])>100:
             data["objective"]=data["objective"][:100]
         elif len(data["thread"])>60:
             data["thread"]=data["thread"][:60]
         else:
-            break
-    return ""
+            return ""
+    if len(render())>max_chars:
+        return ""
+    if dependencies is not None and not dependencies.admit(resolved,*corrections):
+        return ""
+
+    # Optional observations and requests may use only the remaining text
+    # and source budgets. They cannot displace a required correction.
+    selected=list(corrections)
+    for row in rows:
+        if row["intent_kind"]=="CORRECTION" or row["source_ids"] is None:
+            continue
+        data["details"]=details([*selected,row])
+        if (len(render())<=max_chars
+                and (dependencies is None or dependencies.admit(row))):
+            selected.append(row)
+        else:
+            data["details"]=details(selected)
+    return render()
 
 
 # Model interpretation is selective: skip ordinary, explicit, or hypothetical
