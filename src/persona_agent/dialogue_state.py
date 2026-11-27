@@ -387,8 +387,11 @@ def resolve_dialogue_act(connection: Connection, actor: TrustedActor,
         if act["status"]!="PENDING":
             raise VersionConflict("dialogue act has already been resolved")
         if not command.cancel:
-            cur.execute("SELECT 1 FROM current_dialogue_acts WHERE act_id=%s AND user_id=%s",
-                        (command.act_id,actor.user_id))
+            cur.execute(
+                """SELECT 1 FROM current_dialogue_acts
+                   WHERE act_id=%s AND user_id=%s AND instance_id=%s AND conversation_id=%s""",
+                (command.act_id,actor.user_id,command.instance_id,command.conversation_id),
+            )
             if cur.fetchone() is None:
                 raise VersionConflict("pending dialogue evidence requires reassessment")
         _link_turn(cur,command.conversation_id,actor.user_id,command.instance_id,
@@ -460,13 +463,16 @@ def load_active_dialogue(
                           COALESCE(v.title,'[Earlier topic omitted; source unavailable]') AS title,
                           d.attention_status,d.resolution_status,
                           v.next_conversational_action,d.revision
-                   FROM dialogue_threads d LEFT JOIN current_dialogue_threads v
-                     ON v.thread_id=d.thread_id AND v.user_id=d.user_id AND v.instance_id=d.instance_id
-                     AND v.conversation_id=d.conversation_id
-                   WHERE d.conversation_id=%s AND d.user_id=%s
+                   FROM dialogue_threads d LEFT JOIN LATERAL (
+               SELECT v.* FROM current_dialogue_threads v
+               WHERE v.thread_id=d.thread_id AND v.user_id=d.user_id AND v.instance_id=d.instance_id
+                 AND v.conversation_id=d.conversation_id
+               OFFSET 0
+           ) v ON true
+                   WHERE d.conversation_id=%s AND d.user_id=%s AND d.instance_id=%s
                    ORDER BY CASE WHEN d.thread_id=%s THEN 0 ELSE 1 END,
                             d.updated_at DESC,d.thread_id LIMIT 32""",
-                (conversation_id,actor.user_id,conv["focus_thread_id"]),
+                (conversation_id,actor.user_id,conv["instance_id"],conv["focus_thread_id"]),
             )
             threads=tuple(DialogueThread(**t) for t in cur.fetchall())
             acts=()
@@ -475,16 +481,18 @@ def load_active_dialogue(
                 cur.execute(
                     """SELECT act_id,thread_id,kind,label,source_response_id
                        FROM current_dialogue_acts
-                       WHERE thread_id=%s AND user_id=%s AND status='PENDING'
+                       WHERE thread_id=%s AND user_id=%s AND instance_id=%s AND conversation_id=%s
+                         AND status='PENDING'
                        ORDER BY created_at,act_id LIMIT 8""",
-                    (conv["focus_thread_id"],actor.user_id),
+                    (conv["focus_thread_id"],actor.user_id,conv["instance_id"],conversation_id),
                 )
                 acts=tuple(PendingAct(**a) for a in cur.fetchall())
                 cur.execute(
                     """SELECT referent_id,thread_id,kind,label,source_turn_id
-                       FROM current_dialogue_referents WHERE thread_id=%s AND user_id=%s
+                       FROM current_dialogue_referents
+                       WHERE thread_id=%s AND user_id=%s AND instance_id=%s AND conversation_id=%s
                        ORDER BY created_at DESC,referent_id LIMIT 8""",
-                    (conv["focus_thread_id"],actor.user_id),
+                    (conv["focus_thread_id"],actor.user_id,conv["instance_id"],conversation_id),
                 )
                 refs=tuple(Referent(**r) for r in cur.fetchall())
             return ActiveDialogue(
@@ -525,14 +533,18 @@ def resolve_trivial_ack_on_ingress(
             AND response.user_id=a.user_id
             AND response.delivery_status='DELIVERED'
            JOIN conversation_turns source ON source.turn_id=response.turn_id
-           JOIN current_dialogue_threads thread ON thread.thread_id=a.thread_id
-             AND thread.user_id=a.user_id AND thread.instance_id=a.instance_id
-             AND thread.conversation_id=a.conversation_id
+           JOIN LATERAL (
+               SELECT thread.* FROM current_dialogue_threads thread
+               WHERE thread.thread_id=a.thread_id
+                 AND thread.user_id=a.user_id AND thread.instance_id=a.instance_id
+                 AND thread.conversation_id=a.conversation_id
+               OFFSET 0
+           ) thread ON true
            WHERE a.conversation_id=%s AND a.thread_id=%s
-             AND a.user_id=%s AND a.kind='ACKNOWLEDGMENT'
+             AND a.user_id=%s AND a.instance_id=%s AND a.kind='ACKNOWLEDGMENT'
              AND a.status='PENDING'
            ORDER BY a.created_at,a.act_id LIMIT 2""",
-        (conversation_id,thread,user_id),
+        (conversation_id,thread,user_id,instance_id),
     )
     acts=cur.fetchall()
     if len(acts)!=1:

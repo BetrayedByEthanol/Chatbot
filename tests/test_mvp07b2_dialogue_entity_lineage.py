@@ -288,3 +288,81 @@ def test_entity_relationship_source_is_not_reused_after_revision_or_endpoint_exp
         assert len(view.relationships)==1 and view.relationships[0].relation=="KNOWS"
     else:
         assert view.relationships==()
+
+
+@pytest.mark.parametrize("prefer_hash_joins", [False, True])
+def test_focused_thread_lineage_only_checks_selected_candidate(dsn,prefer_hash_joins):
+    """Assert actual candidate evaluation rather than machine-dependent timing.
+
+    The equivalent instrumented turn predicate is installed only inside a
+    transaction that is rolled back, including its DDL.
+    """
+    from persona_agent.dialogue_integration import _focused_auto_thread
+
+    user,instance=seed(dsn)
+    conv=uuid4()
+    first=incoming(dsn,user,instance,conv,"I want to walk more.")
+    response(dsn,user,first,"A short walk would be a good starting point.")
+    second=incoming(dsn,user,instance,conv,"Switch the topic to cooking.")
+    response(dsn,user,second,"We can discuss cooking.")
+    other_conv=uuid4()
+    other=incoming(dsn,user,instance,other_conv,"I want to learn Python.")
+    response(dsn,user,other,"We can start with Python basics.")
+    foreign_user,foreign_instance=seed(dsn)
+    foreign=incoming(dsn,foreign_user,foreign_instance,uuid4(),"I want to exercise more.")
+    response(dsn,foreign_user,foreign,"We can discuss exercise.")
+    no_focus=uuid4()
+    incoming(dsn,user,instance,no_focus,"Hello.")
+
+    with psycopg.connect(dsn,autocommit=True,row_factory=dict_row) as conn:
+        with conn.transaction(force_rollback=True):
+            target=conn.execute(
+                """SELECT d.thread_id,d.origin_turn_id
+                   FROM conversations c JOIN dialogue_threads d ON d.thread_id=c.focus_thread_id
+                   WHERE c.conversation_id=%s AND c.user_id=%s AND c.instance_id=%s
+                     AND d.origin_kind='AUTO_SIGNAL'""",
+                (conv,user,instance),
+            ).fetchone()
+            assert target is not None
+            assert conn.execute(
+                "SELECT count(*) AS n FROM dialogue_threads WHERE conversation_id=%s",
+                (conv,),
+            ).fetchone()["n"] >= 2
+            conn.execute("SET LOCAL jit=off")
+            if prefer_hash_joins:
+                conn.execute("SET LOCAL enable_nestloop=off")
+            for key,value in (("uid",user),("iid",instance),("cid",conv),
+                              ("sid",target["origin_turn_id"]),("checks",0)):
+                conn.execute("SELECT set_config(%s,%s,true)",
+                             ("persona_test."+key,str(value)))
+            conn.execute("""
+                CREATE OR REPLACE FUNCTION dialogue_turn_current(
+                    uid uuid,iid uuid,cid uuid,sid uuid
+                ) RETURNS boolean LANGUAGE plpgsql AS $$
+                BEGIN
+                    IF sid IS NOT NULL THEN
+                        IF uid IS DISTINCT FROM current_setting('persona_test.uid')::uuid
+                           OR iid IS DISTINCT FROM current_setting('persona_test.iid')::uuid
+                           OR cid IS DISTINCT FROM current_setting('persona_test.cid')::uuid
+                           OR sid IS DISTINCT FROM current_setting('persona_test.sid')::uuid THEN
+                            RAISE EXCEPTION 'eligibility evaluated outside selected focus';
+                        END IF;
+                        PERFORM set_config('persona_test.checks',
+                            (current_setting('persona_test.checks')::int+1)::text,true);
+                    END IF;
+                    RETURN sid IS NOT NULL AND raw_context_sources_current(uid,iid,cid,ARRAY[sid]);
+                END;
+                $$;
+            """)
+            with conn.cursor() as cur:
+                assert _focused_auto_thread(cur,user_id=user,instance_id=instance,
+                                            conversation_id=conv)==target["thread_id"]
+                checks=conn.execute(
+                    "SELECT current_setting('persona_test.checks')::int AS n"
+                ).fetchone()["n"]
+                assert checks > 0
+                assert _focused_auto_thread(cur,user_id=user,instance_id=instance,
+                                            conversation_id=no_focus) is None
+                assert conn.execute(
+                    "SELECT current_setting('persona_test.checks')::int AS n"
+                ).fetchone()["n"]==checks

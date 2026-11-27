@@ -264,9 +264,12 @@ def _unique_active_objective(
            JOIN conversations c
              ON c.conversation_id=s.conversation_id AND c.user_id=s.user_id
             AND c.instance_id=s.instance_id
-           JOIN current_dialogue_threads d
-             ON d.thread_id=l.thread_id AND d.conversation_id=l.conversation_id
-            AND d.user_id=l.user_id AND d.instance_id=l.instance_id
+           JOIN LATERAL (
+               SELECT d.* FROM current_dialogue_threads d
+               WHERE d.thread_id=l.thread_id AND d.conversation_id=l.conversation_id
+                 AND d.user_id=l.user_id AND d.instance_id=l.instance_id
+               OFFSET 0
+           ) d ON true
            WHERE s.conversation_id=%s AND s.user_id=%s AND s.instance_id=%s
              AND s.intent_kind='OBJECTIVE' AND s.turn_sequence<%s
              AND s.turn_sequence>=%s
@@ -299,9 +302,12 @@ def _named_objective_reference(
            JOIN dialogue_turn_links l
              ON l.turn_id=s.turn_id AND l.conversation_id=s.conversation_id
             AND l.user_id=s.user_id AND l.instance_id=s.instance_id
-           JOIN current_dialogue_threads d
-             ON d.thread_id=l.thread_id AND d.conversation_id=l.conversation_id
-            AND d.user_id=l.user_id AND d.instance_id=l.instance_id
+           JOIN LATERAL (
+               SELECT d.* FROM current_dialogue_threads d
+               WHERE d.thread_id=l.thread_id AND d.conversation_id=l.conversation_id
+                 AND d.user_id=l.user_id AND d.instance_id=l.instance_id
+               OFFSET 0
+           ) d ON true
            WHERE s.conversation_id=%s AND s.user_id=%s AND s.instance_id=%s
              AND s.intent_kind='OBJECTIVE' AND s.turn_sequence<%s
              AND d.origin_kind='AUTO_SIGNAL' AND d.resolution_status='OPEN'
@@ -501,7 +507,9 @@ def correction_precedence_context_block(
         """SELECT source.signal_id,source.conversation_id,
                   source.turn_sequence,source.epistemic_status,
                   original.turn_id,original.input_text,original.created_at,
-                  EXISTS(SELECT 1 FROM current_dialogue_intents v WHERE v.signal_id=source.signal_id)
+                  EXISTS(SELECT 1 FROM current_dialogue_intents v WHERE v.signal_id=source.signal_id
+                         AND v.user_id=source.user_id AND v.instance_id=source.instance_id
+                         AND v.conversation_id=source.conversation_id OFFSET 0)
                       AS source_current,
                   EXISTS (
                       SELECT 1 FROM memory_revisions revision
@@ -547,7 +555,9 @@ def correction_precedence_context_block(
     cur.execute(
         """SELECT change.turn_id,change.input_text,change.created_at,
                   signal.turn_sequence,signal.epistemic_status,
-                  EXISTS(SELECT 1 FROM current_dialogue_intents v WHERE v.signal_id=signal.signal_id)
+                  EXISTS(SELECT 1 FROM current_dialogue_intents v WHERE v.signal_id=signal.signal_id
+                         AND v.user_id=signal.user_id AND v.instance_id=signal.instance_id
+                         AND v.conversation_id=signal.conversation_id OFFSET 0)
                       AS source_current,
                   EXISTS (
                       SELECT 1 FROM memory_revisions revision
@@ -688,11 +698,14 @@ def resolved_objective_context_block(
                   source.turn_sequence AS objective_sequence,
                   current.turn_sequence AS current_sequence
            FROM conversation_intent_signals current
-           JOIN current_dialogue_intents source
-             ON source.signal_id=current.related_signal_id
-            AND source.conversation_id=current.conversation_id
-            AND source.user_id=current.user_id
-            AND source.instance_id=current.instance_id
+           JOIN LATERAL (
+               SELECT source.* FROM current_dialogue_intents source
+               WHERE source.signal_id=current.related_signal_id
+                 AND source.conversation_id=current.conversation_id
+                 AND source.user_id=current.user_id
+                 AND source.instance_id=current.instance_id
+               OFFSET 0
+           ) source ON true
            JOIN conversation_turns input
              ON input.turn_id=source.turn_id
             AND input.conversation_id=source.conversation_id
@@ -703,11 +716,14 @@ def resolved_objective_context_block(
             AND link.conversation_id=source.conversation_id
             AND link.user_id=source.user_id
             AND link.instance_id=source.instance_id
-           JOIN current_dialogue_threads thread
-             ON thread.thread_id=link.thread_id
-            AND thread.conversation_id=link.conversation_id
-            AND thread.user_id=link.user_id
-            AND thread.instance_id=link.instance_id
+           JOIN LATERAL (
+               SELECT thread.* FROM current_dialogue_threads thread
+               WHERE thread.thread_id=link.thread_id
+                 AND thread.conversation_id=link.conversation_id
+                 AND thread.user_id=link.user_id
+                 AND thread.instance_id=link.instance_id
+               OFFSET 0
+           ) thread ON true
            WHERE current.turn_id=%s AND current.conversation_id=%s
              AND current.user_id=%s AND current.instance_id=%s
              AND current.intent_kind='REQUEST'
@@ -730,9 +746,13 @@ def resolved_objective_context_block(
         """SELECT cue.intent_kind,cue.label,cue.turn_sequence,
                   eligible.source_ids,eligible.broad_dependency
            FROM conversation_intent_signals cue
-           LEFT JOIN current_dialogue_intents eligible ON eligible.signal_id=cue.signal_id
-             AND eligible.user_id=cue.user_id AND eligible.instance_id=cue.instance_id
-             AND eligible.conversation_id=cue.conversation_id
+           LEFT JOIN LATERAL (
+               SELECT eligible.* FROM current_dialogue_intents eligible
+               WHERE eligible.signal_id=cue.signal_id
+                 AND eligible.user_id=cue.user_id AND eligible.instance_id=cue.instance_id
+                 AND eligible.conversation_id=cue.conversation_id
+               OFFSET 0
+           ) eligible ON true
            JOIN dialogue_turn_links link
              ON link.turn_id=cue.turn_id
             AND link.conversation_id=cue.conversation_id

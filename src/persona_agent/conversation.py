@@ -787,9 +787,9 @@ def prepare_text_context(
                     SELECT title,attention_status,resolution_status,
                            next_conversational_action,source_ids,broad_dependency
                     FROM current_dialogue_threads
-                    WHERE conversation_id=%s AND user_id=%s AND thread_id=%s
+                    WHERE conversation_id=%s AND user_id=%s AND instance_id=%s AND thread_id=%s
                     """,
-                    (item["conversation_id"],actor.user_id,item["focus_thread_id"]),
+                    (item["conversation_id"],actor.user_id,item["instance_id"],item["focus_thread_id"]),
                 )
                 active=cursor.fetchone()
                 if active is not None and not dialogue_dependencies.admit(active):
@@ -825,10 +825,10 @@ def prepare_text_context(
                     cursor.execute(
                         """
                         SELECT kind,label,source_ids,broad_dependency FROM current_dialogue_referents
-                        WHERE conversation_id=%s AND user_id=%s AND thread_id=%s
+                        WHERE conversation_id=%s AND user_id=%s AND instance_id=%s AND thread_id=%s
                         ORDER BY created_at DESC,referent_id LIMIT 4
                         """,
-                        (item["conversation_id"],actor.user_id,item["focus_thread_id"]),
+                        (item["conversation_id"],actor.user_id,item["instance_id"],item["focus_thread_id"]),
                     )
                     refs=[{"kind":r["kind"],"label":r["label"]} for r in cursor.fetchall()
                           if dialogue_dependencies.admit(r)]

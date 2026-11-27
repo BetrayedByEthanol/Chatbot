@@ -72,11 +72,14 @@ def _candidates(cur,user_id,instance_id,conversation_id,focus_thread_id):
                       AND dialogue_turn_current(l.user_id,l.instance_id,l.conversation_id,l.source_turn_id)
                   ) AS focus_link,
                   (SELECT dt.title FROM procedure_run_thread_links l
-                   JOIN current_dialogue_threads dt
-                     ON dt.thread_id=l.thread_id
-                    AND dt.conversation_id=l.conversation_id
-                    AND dt.user_id=l.user_id
-                    AND dt.instance_id=l.instance_id
+                   JOIN LATERAL (
+               SELECT dt.* FROM current_dialogue_threads dt
+               WHERE dt.thread_id=l.thread_id
+                 AND dt.conversation_id=l.conversation_id
+                 AND dt.user_id=l.user_id
+                 AND dt.instance_id=l.instance_id
+               OFFSET 0
+           ) dt ON true
                    WHERE l.run_id=r.run_id AND l.user_id=r.user_id
                      AND l.instance_id=r.instance_id
                      AND dialogue_turn_current(l.user_id,l.instance_id,l.conversation_id,l.source_turn_id)
@@ -234,10 +237,13 @@ def prepare_procedure_dialogue_context(
                   dt.resolution_status,dt.next_conversational_action,
                   c.revision AS conversation_revision
            FROM procedure_run_thread_links l
-           JOIN current_dialogue_threads dt
-             ON dt.thread_id=l.thread_id
-            AND dt.conversation_id=l.conversation_id
-            AND dt.user_id=l.user_id AND dt.instance_id=l.instance_id
+           JOIN LATERAL (
+               SELECT dt.* FROM current_dialogue_threads dt
+               WHERE dt.thread_id=l.thread_id
+                 AND dt.conversation_id=l.conversation_id
+                 AND dt.user_id=l.user_id AND dt.instance_id=l.instance_id
+               OFFSET 0
+           ) dt ON true
            JOIN conversations c
              ON c.conversation_id=l.conversation_id
             AND c.user_id=l.user_id AND c.instance_id=l.instance_id

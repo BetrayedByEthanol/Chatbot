@@ -458,9 +458,15 @@ CREATE VIEW current_dialogue_threads AS
             (hint.source_ids IS NOT NULL AND dialogue_response_broad(
                 d.user_id,d.instance_id,d.next_action_response_id))) AS broad_dependency
     FROM dialogue_threads d
-    LEFT JOIN current_dialogue_intents s ON s.turn_id=d.origin_turn_id
-      AND s.conversation_id=d.conversation_id AND s.user_id=d.user_id AND s.instance_id=d.instance_id
-      AND d.origin_kind='AUTO_SIGNAL'
+    -- Select the origin signal for this thread before evaluating lineage.
+    -- OFFSET 0 prevents flattening into a database-wide eligibility join.
+    LEFT JOIN LATERAL (
+        SELECT s.* FROM current_dialogue_intents s
+        WHERE s.turn_id=d.origin_turn_id
+          AND s.conversation_id=d.conversation_id AND s.user_id=d.user_id
+          AND s.instance_id=d.instance_id AND d.origin_kind='AUTO_SIGNAL'
+        OFFSET 0
+    ) s ON true
     CROSS JOIN LATERAL (SELECT CASE
         WHEN d.next_conversational_action IS NULL THEN NULL::uuid[]
         WHEN d.next_action_response_id IS NOT NULL THEN dialogue_response_sources(

@@ -147,9 +147,13 @@ def _correction_followups(
                   origin.signal_id AS origin_signal_id,
                   (dialogue_turn_current(t.user_id,t.instance_id,t.conversation_id,t.turn_id)
                    AND (signal.signal_id IS NULL OR EXISTS(
-                      SELECT 1 FROM current_dialogue_intents eligible WHERE eligible.signal_id=signal.signal_id))
+                      SELECT 1 FROM current_dialogue_intents eligible WHERE eligible.signal_id=signal.signal_id
+                         AND eligible.user_id=signal.user_id AND eligible.instance_id=signal.instance_id
+                         AND eligible.conversation_id=signal.conversation_id OFFSET 0))
                    AND (origin.signal_id IS NULL OR EXISTS(
-                      SELECT 1 FROM current_dialogue_intents eligible WHERE eligible.signal_id=origin.signal_id))
+                      SELECT 1 FROM current_dialogue_intents eligible WHERE eligible.signal_id=origin.signal_id
+                         AND eligible.user_id=origin.user_id AND eligible.instance_id=origin.instance_id
+                         AND eligible.conversation_id=origin.conversation_id OFFSET 0))
                   ) AS source_current,
                   EXISTS (
                       SELECT 1 FROM memory_revisions mr
@@ -283,7 +287,9 @@ def _linked_resumed_cadence_update(
     cur.execute(
         """SELECT signal_id,EXISTS(
                    SELECT 1 FROM current_dialogue_intents eligible
-                   WHERE eligible.signal_id=conversation_intent_signals.signal_id) AS source_current
+                   WHERE eligible.signal_id=conversation_intent_signals.signal_id
+                         AND eligible.user_id=conversation_intent_signals.user_id AND eligible.instance_id=conversation_intent_signals.instance_id
+                         AND eligible.conversation_id=conversation_intent_signals.conversation_id OFFSET 0) AS source_current
            FROM conversation_intent_signals
            WHERE turn_id=%s AND conversation_id=%s
              AND user_id=%s AND instance_id=%s
@@ -299,7 +305,9 @@ def _linked_resumed_cadence_update(
         """SELECT t.turn_id,t.created_at,t.input_text,t.status,
                   s.epistemic_status,
                   EXISTS(SELECT 1 FROM current_dialogue_intents eligible
-                         WHERE eligible.signal_id=s.signal_id) AS source_current,
+                         WHERE eligible.signal_id=s.signal_id
+                         AND eligible.user_id=s.user_id AND eligible.instance_id=s.instance_id
+                         AND eligible.conversation_id=s.conversation_id OFFSET 0) AS source_current,
                   EXISTS (
                       SELECT 1 FROM memory_revisions revision
                       WHERE revision.user_id=t.user_id

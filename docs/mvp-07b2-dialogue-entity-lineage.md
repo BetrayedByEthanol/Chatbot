@@ -10,3 +10,30 @@ Closure increment following the six merged 07B2 slices. Preserve actual authenti
 ## Boundaries
 
 Read and response boundaries are guarded, but ingress/explicit dialogue mutation transactions still rely on existing conversation serialization, not a new exact cross-owner late-write fence. A concurrent invalidation may leave a historical link or resolution; effective reads must not reuse stale labels. Reassessment of resolution-state contributions, explicit action resolution concurrency, owner-specific affect/relationship and general tool/notification propagation remain open. Cross-session procedure context uses the existing broad scope fence. Legacy unbound response rows fail closed. No generalized semantic correction, inferred identity merge, deletion, or deployment. Query cost needs measurement. Regression tests cover current projection masking, original source dependencies outside the retained message window, explicit cancellation, linked objective invalidation, entity correction/retraction/privacy/expiry, alias continuity and report recognition. Local PostgreSQL unavailable; static review only, CI pending.
+
+
+## Foreground query regression correction
+
+Local PostgreSQL EXPLAIN on PR #141 measured the former focused-thread join at
+3,093.90 ms / 122,300 shared buffer hits, with 868 signal eligibility evaluations.
+Adding explicit conversation/user/instance scope reduced it to 29.10 ms / 1,036
+hits; the unvalidated primary-key lookup was 0.024 ms (diagnostic only).
+JIT on/off did not materially affect the original query. The test suite also
+showed time-dependent failures under the excessive latency.
+
+The unmerged migration 0062 now correlates origin eligibility to the candidate
+thread, and application joins use scoped, non-flattenable LATERAL subqueries
+where joining a general current projection could cause unrelated validation.
+Correlated historical checks include the complete record scope and an OFFSET 0
+barrier. The focus lookup requires an exact thread identity and scope before
+validating lineage. No eligibility predicate, expiry rule, provenance check,
+response fence or durable history has been removed. No cache or vector service
+is introduced.
+
+A PostgreSQL regression checks actual predicate evaluation in the focused
+lookup under normal and hash-join-favoring planner settings, including unrelated
+threads in the same conversation, another conversation and another user.
+The new code still requires real PostgreSQL integration and EXPLAIN verification;
+the earlier 13 focused tests passed locally before this correction. Full-suite
+failures must be reassessed after the performance correction, not masked by
+raising timeouts.
