@@ -158,8 +158,8 @@ def test_cross_session_affect_context_has_commit_and_delivery_fence(dsn,commit_b
     request=turn(dsn,user,instance,uuid4(),"Tell me something interesting.")
     context=call(dsn,prepare_text_context,actor(user),request.turn_id,max_turns=1)
     assert "Tentative user-affect signal" in context.messages[0].content
-    assert context.historical_fence is not None
-    assert context.historical_fence.next_expiry is not None
+    assert context.presentation_fence is not None
+    assert context.presentation_fence.next_expiry is not None
     assert source.turn_id not in context.raw_context_fence.source_turn_ids
     generated=ModelReply(model_id="test-affect",text="You sound excited.")
     if commit_before_invalidation:
@@ -184,3 +184,36 @@ def test_projection_watermark_expiry_invalidates_without_revision_change():
     state["evidence_next_expiry"]=now+timedelta(days=1)
     assert projection_current(state,HistoricalReadFence(4,state["evidence_next_expiry"]))
     assert not projection_current(state,HistoricalReadFence(5,state["evidence_next_expiry"]))
+
+
+
+def test_presentation_only_replies_keep_recent_context_and_inherit_fence(dsn):
+    user,instance,_=seed(dsn)
+    source=turn(dsn,user,instance,uuid4(),"Please keep replies short.")
+    preference(dsn,user,instance,source,"Please keep replies short")
+    saved=link_memory(dsn,user,instance,source.conversation_id,source.turn_id)
+    conv=uuid4()
+    request=turn(dsn,user,instance,conv,"Hello.")
+    context=call(dsn,prepare_text_context,actor(user),request.turn_id)
+    assert context.presentation_fence is not None
+    assert context.historical_fence is None
+    first=call(dsn,commit_text_response,actor(user),context,
+               ModelReply(model_id="test-affect",text="A concise greeting."),model_generated=True)
+    call(dsn,acknowledge_text_delivery,actor(user),first.response_id)
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT presentation_only FROM conversation_response_lineage WHERE response_id=%s",
+            (first.response_id,),
+        ).fetchone()==(True,)
+    next_turn=turn(dsn,user,instance,conv,"Okay.")
+    followup=call(dsn,prepare_text_context,actor(user),next_turn.turn_id)
+    assert any(m.role=="assistant" and m.content=="A concise greeting."
+               for m in followup.messages)
+    assert followup.presentation_fence is not None
+    invalidate(dsn,user,instance,saved,"EXPIRE")
+    with pytest.raises(StaleHistoricalContext):
+        call(dsn,commit_text_response,actor(user),followup,
+             ModelReply(model_id="test-affect",text="Another greeting."),model_generated=True)
+    fresh=call(dsn,prepare_text_context,actor(user),next_turn.turn_id)
+    assert all(m.content!="A concise greeting." for m in fresh.messages)
+    assert "Explicit user preference" not in fresh.messages[0].content

@@ -46,7 +46,8 @@ def require_preference_fence(cur,user_id,instance_id,fence):
         raise StaleConversation("Relationship preference changed during recall")
 
 
-def persist_response_lineage(cur,*,response_id,user_id,instance_id,historical,preference):
+def persist_response_lineage(cur,*,response_id,user_id,instance_id,historical,preference,
+                             presentation_only=False):
     keys=preference.keys if preference is not None else ()
     revisions=preference.revisions if preference is not None else ()
     if historical is None and not keys:
@@ -54,12 +55,12 @@ def persist_response_lineage(cur,*,response_id,user_id,instance_id,historical,pr
     cur.execute(
         """INSERT INTO conversation_response_lineage(
                response_id,user_id,instance_id,historical_revision,next_expiry,
-               preference_keys,preference_revisions
-           ) VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb)""",
+               preference_keys,preference_revisions,presentation_only
+           ) VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb,%s)""",
         (response_id,user_id,instance_id,
          historical.revision if historical is not None else None,
          historical.next_expiry if historical is not None else None,
-         list(keys),json.dumps(revisions)),
+         list(keys),json.dumps(revisions),presentation_only),
     )
 
 

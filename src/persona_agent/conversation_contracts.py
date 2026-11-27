@@ -126,6 +126,7 @@ class ResponseContext:
     goal_dialogue_action: bool = False
     procedure_guidance_action: bool = False
     raw_context_fence: RawContextFence | None = None
+    presentation_fence: HistoricalReadFence | None = None
 
 
 class TextModelGateway(Protocol):

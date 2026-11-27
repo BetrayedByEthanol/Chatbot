@@ -5,6 +5,18 @@ ALTER TABLE persona_emotion_state ADD COLUMN evidence_next_expiry timestamptz;
 ALTER TABLE relationship_state ADD COLUMN evidence_revision bigint;
 ALTER TABLE relationship_state ADD COLUMN evidence_next_expiry timestamptz;
 
+-- Presentation-only responses can participate in recent verbatim history
+-- while their broad scope/expiry fence is inherited. Other historical
+-- evidence and summary/cognition omission rules remain unchanged.
+ALTER TABLE conversation_response_lineage
+    ADD COLUMN presentation_only boolean NOT NULL DEFAULT false,
+    ADD CONSTRAINT presentation_only_requires_scope_fence CHECK (
+        NOT presentation_only OR (
+            NOT legacy_unbound AND historical_revision IS NOT NULL
+            AND cardinality(preference_keys)=0
+        )
+    );
+
 CREATE INDEX emotion_applied_scope_idx ON emotion_appraisals
     (user_id,instance_id,source_turn_at,appraisal_id) WHERE applied;
 CREATE INDEX relationship_feedback_scope_idx ON relationship_observations

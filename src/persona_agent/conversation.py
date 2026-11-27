@@ -591,20 +591,19 @@ def prepare_text_context(
                 )
                 prompt+=view.text
                 affect_room=min(650,max_context_chars-len(prompt)-len(current.content))
+                affect_fence=None
                 if affect_room>=140:
                     affect_block,affect_fence=prepare_affect_context(
                         cursor,actor.user_id,item["instance_id"],affect_room,historical_fence,
                     )
                     prompt+=affect_block
-                    if affect_fence is not None:
-                        historical_fence=affect_fence
                 return ResponseContext(
                     conversation_id=item["conversation_id"],turn_id=turn_id,
                     instance_id=item["instance_id"],selection_generation=item["selection_generation"],
                     conversation_revision=item["revision"],
                     messages=(ModelMessage("system",prompt),current),
                     temporal_context=temporal,historical_fence=historical_fence,
-                    entity_history=view.read,
+                    entity_history=view.read,presentation_fence=affect_fence,
                 )
             # Owner-writing entity reports are canonical at commit and do
             # not require historical raw text in a diagnostic model request.
@@ -620,7 +619,8 @@ def prepare_text_context(
                     temporal_context=_temporal_from_anchor(cursor,actor,item,turn_id),
                 )
             from .raw_context import project_recent_context
-            recent,history,history_sequences,history_dependencies,reusable=project_recent_context(
+            (recent,history,history_sequences,history_dependencies,
+             reusable,presentation_fence)=project_recent_context(
                 cursor,user_id=actor.user_id,instance_id=item["instance_id"],
                 conversation_id=item["conversation_id"],turn_id=turn_id,
                 sequence=item["sequence"],max_turns=max_turns,
@@ -874,13 +874,14 @@ def prepare_text_context(
                 len(history[-1].content),min(256,max_context_chars//4),
             )-160
             if affect_room>=140:
+                from .affect_lineage import merge_read_fences
                 affect_block,affect_fence=prepare_affect_context(
                     cursor,actor.user_id,item["instance_id"],
-                    min(650,affect_room),historical_fence or dialogue_fence,
+                    min(650,affect_room),
+                    merge_read_fences(historical_fence or dialogue_fence,presentation_fence),
                 )
                 prompt+=affect_block
-                if affect_fence is not None:
-                    historical_fence=affect_fence
+                presentation_fence=merge_read_fences(presentation_fence,affect_fence)
             # MVP-03B.1: selectively add relevant approved Goal state and
             # lower-trust source-linked hypotheses to the existing context.
             # No LLM inference, domain mutation or action grant occurs here.
@@ -1165,7 +1166,7 @@ def prepare_text_context(
                 conversation_revision=item["revision"],
                 messages=(system,*kept),
                 procedure_fence=procedure_fence,temporal_context=temporal,
-                historical_fence=historical_fence,
+                historical_fence=historical_fence,presentation_fence=presentation_fence,
                 raw_context_fence=RawContextFence(
                     tuple(sorted(raw_dependencies | grounding_dependencies |
                                  dialogue_dependencies.source_ids)),reusable,
@@ -1332,7 +1333,8 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
                         )
             from .response_lineage import require_preference_fence,persist_response_lineage
             from .memory_read_policy import capture_historical_read_fence,require_historical_read_fence
-            historical=context.historical_fence
+            from .affect_lineage import merge_read_fences
+            historical=merge_read_fences(context.historical_fence,context.presentation_fence)
             from .response_decisions import personal_fact_topic
             fact_topic=personal_fact_topic(scoped["input_text"])
             reads_fact_owner=fact_topic is not None and (personal_fact_recall or model_generated)
@@ -1579,7 +1581,15 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
             )
             persist_response_lineage(cursor,response_id=response_id,user_id=actor.user_id,
                 instance_id=context.instance_id,historical=historical,
-                preference=context.preference_fence)
+                preference=context.preference_fence,
+                presentation_only=(
+                    context.presentation_fence is not None
+                    and context.historical_fence is None
+                    and context.preference_fence is None
+                    and not reads_fact_owner and not knowledge_answered
+                    and entity_answer is None and not writes_goal and not writes_guidance
+                    and historical==context.presentation_fence
+                ))
             from .raw_context import persist_raw_context_lineage,require_raw_context_fence
             persist_raw_context_lineage(cursor,response_id=response_id,user_id=actor.user_id,
                 instance_id=context.instance_id,conversation_id=context.conversation_id,

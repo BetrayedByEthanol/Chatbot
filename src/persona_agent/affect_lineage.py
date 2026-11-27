@@ -37,13 +37,14 @@ def projection_current(state,fence):
 
 
 def merge_read_fences(earlier,later):
-    """Keep the first observed revision and earliest time boundary."""
+    """Keep the oldest observed monotonic revision and earliest time boundary."""
     if earlier is None:
         return later
     if later is None:
         return earlier
     expiries=[x for x in (earlier.next_expiry,later.next_expiry) if x is not None]
-    return HistoricalReadFence(earlier.revision,min(expiries) if expiries else None)
+    return HistoricalReadFence(min(earlier.revision,later.revision),
+                               min(expiries) if expiries else None)
 
 
 def fence_with_expiry(fence,expiry):

@@ -237,7 +237,7 @@ def respond_with_preference_recall(
     # model context; its own owner-specific fence remains authoritative.
     context=replace(
         context,preference_fence=PreferenceReadFence(keys,revisions),
-        historical_fence=historical,
+        historical_fence=historical,presentation_fence=None,
     )
     return commit_text_response(
         connection,actor,context,
