@@ -6,7 +6,7 @@ approval. Other proposals are durably staged for future semantic review,
 never made actionable merely because a model supplied a rationale.
 """
 import json
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from psycopg import Connection
 from psycopg.rows import dict_row
