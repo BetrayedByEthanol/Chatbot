@@ -227,6 +227,8 @@ def _read_entities(cur,*,user_id: UUID,instance_id: UUID,reference: EntityRefere
            WHERE m.user_id=%s AND m.instance_id=%s
              AND m.record_status='ACTIVE' AND m.privacy_class='NORMAL'
              AND (m.expires_at IS NULL OR m.expires_at>clock_timestamp())
+             AND raw_context_sources_current(m.user_id,m.instance_id,
+                      m.relation_source_conversation_id,ARRAY[m.relation_source_turn_id])
              AND (%s::uuid IS NULL OR m.entity_id=%s)
              AND (%s::text IS NULL OR m.name_keys @> ARRAY[%s]::text[])
              AND (%s='ANY' OR (%s='PERSON' AND m.entity_kind='PERSON')

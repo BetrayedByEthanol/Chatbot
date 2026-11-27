@@ -65,7 +65,7 @@ def _unique_named_discussion(
     broader topic-keyword ambiguity gate; two exact matches abstain.
     """
     cur.execute(
-        """SELECT thread_id FROM dialogue_threads
+        """SELECT thread_id FROM current_dialogue_threads
            WHERE conversation_id=%s AND user_id=%s AND instance_id=%s
              AND origin_kind='AUTO_SIGNAL' AND resolution_status='OPEN'
              AND lower(title)=lower(%s)
@@ -89,7 +89,7 @@ def _unique_explicit_topic_match(
     """
     scope = (conversation_id, user_id, instance_id)
     cur.execute(
-        """SELECT thread_id FROM dialogue_threads
+        """SELECT thread_id FROM current_dialogue_threads
            WHERE conversation_id=%s AND user_id=%s AND instance_id=%s
              AND origin_kind='AUTO_SIGNAL' AND resolution_status='OPEN'
              AND lower(title)=lower(%s)
@@ -102,7 +102,7 @@ def _unique_explicit_topic_match(
     if len(exact) > 1:
         return None, True
     cur.execute(
-        """SELECT thread_id FROM dialogue_threads
+        """SELECT thread_id FROM current_dialogue_threads
            WHERE conversation_id=%s AND user_id=%s AND instance_id=%s
              AND origin_kind='AUTO_SIGNAL' AND resolution_status='OPEN'
              AND to_tsvector('english',title)
@@ -134,7 +134,7 @@ def _fresh_named_discussion(
     # topic. This does NOT claim that they are a uniquely resolved goal.
     root=keyword[:-3] if keyword.endswith("ing") and len(keyword)>6 else keyword
     cur.execute(
-        """SELECT title FROM dialogue_threads
+        """SELECT title FROM current_dialogue_threads
            WHERE conversation_id=%s AND user_id=%s AND instance_id=%s
              AND origin_kind='AUTO_SIGNAL'
            ORDER BY updated_at DESC LIMIT 65""",
@@ -251,7 +251,7 @@ def advance_on_delivery(
         return
     cur.execute(
         """SELECT signal_id,intent_kind,label,related_signal_id
-           FROM conversation_intent_signals
+           FROM current_dialogue_intents
            WHERE turn_id=%s AND conversation_id=%s AND user_id=%s
              AND instance_id=%s""",
         (turn_id,conversation_id,user_id,instance_id),
@@ -265,12 +265,18 @@ def advance_on_delivery(
             # source signal's existing thread via authentic turn evidence.
             cur.execute(
                 """SELECT l.thread_id
-                   FROM conversation_intent_signals origin
+                   FROM current_dialogue_intents origin
                    JOIN dialogue_turn_links l
                      ON l.turn_id=origin.turn_id
                     AND l.conversation_id=origin.conversation_id
                     AND l.user_id=origin.user_id
-                   JOIN dialogue_threads d ON d.thread_id=l.thread_id
+                   JOIN LATERAL (
+               SELECT d.* FROM current_dialogue_threads d
+               WHERE d.thread_id=l.thread_id
+                 AND d.conversation_id=l.conversation_id AND d.user_id=l.user_id
+                 AND d.instance_id=l.instance_id
+               OFFSET 0
+           ) d ON true
                    WHERE origin.signal_id=%s AND origin.conversation_id=%s
                      AND origin.user_id=%s AND origin.instance_id=%s
                      AND d.instance_id=%s
@@ -333,7 +339,7 @@ def advance_on_delivery(
                     )[:160]
                     if title:
                         cur.execute(
-                            """SELECT thread_id FROM dialogue_threads
+                            """SELECT thread_id FROM current_dialogue_threads
                                WHERE conversation_id=%s AND user_id=%s
                                  AND instance_id=%s AND origin_kind='AUTO_SIGNAL'
                                  AND lower(title)=lower(%s)
@@ -385,7 +391,7 @@ def advance_on_delivery(
     if current is None:
         return
     cur.execute(
-        """SELECT origin_kind FROM dialogue_threads
+        """SELECT origin_kind FROM current_dialogue_threads
            WHERE thread_id=%s AND conversation_id=%s AND user_id=%s
              AND instance_id=%s""",
         (current,conversation_id,user_id,instance_id),
@@ -419,10 +425,10 @@ def advance_on_delivery(
         else "AUTO_DELIVERED_QUESTION"
     )
     cur.execute(
-        """SELECT 1 FROM dialogue_pending_acts
+        """SELECT 1 FROM current_dialogue_acts
            WHERE thread_id=%s AND conversation_id=%s AND user_id=%s
-             AND status='PENDING' LIMIT 1""",
-        (current,conversation_id,user_id),
+             AND instance_id=%s AND status='PENDING' LIMIT 1""",
+        (current,conversation_id,user_id,instance_id),
     )
     if cur.fetchone() is not None:
         return
@@ -442,11 +448,15 @@ def advance_on_delivery(
     auto_hint=(("Await choice: " if is_decision else "Await answer: ")+label)[:200]
     cur.execute(
         """UPDATE dialogue_threads
-           SET next_conversational_action=COALESCE(next_conversational_action,%s),
+           SET next_action_response_id=CASE WHEN next_conversational_action IS NULL
+                    THEN %s ELSE next_action_response_id END,
+               next_action_turn_id=CASE WHEN next_conversational_action IS NULL
+                    THEN NULL ELSE next_action_turn_id END,
+               next_conversational_action=COALESCE(next_conversational_action,%s),
                revision=revision+1,updated_at=clock_timestamp()
            WHERE thread_id=%s AND conversation_id=%s AND user_id=%s
              AND instance_id=%s""",
-        (auto_hint,current,conversation_id,user_id,instance_id),
+        (response_id,auto_hint,current,conversation_id,user_id,instance_id),
     )
     _event_of_progress(
         cur,user_id=user_id,instance_id=instance_id,
@@ -458,6 +468,25 @@ def advance_on_delivery(
         turn_id=turn_id,thread_id=current,act_id=str(act_id),
         response_id=str(response_id),
     )
+
+
+def _focused_auto_thread(cur, *, user_id, instance_id, conversation_id):
+    """Select the exact scoped focus before validating its dialogue lineage."""
+    cur.execute(
+        """SELECT c.focus_thread_id FROM conversations c
+           JOIN LATERAL (
+               SELECT t.* FROM current_dialogue_threads t
+               WHERE t.thread_id=c.focus_thread_id
+                 AND t.conversation_id=c.conversation_id AND t.user_id=c.user_id
+                 AND t.instance_id=c.instance_id AND t.origin_kind='AUTO_SIGNAL'
+               OFFSET 0
+           ) t ON true
+           WHERE c.conversation_id=%s AND c.user_id=%s
+             AND c.instance_id=%s""",
+        (conversation_id,user_id,instance_id),
+    )
+    row=cur.fetchone()
+    return row["focus_thread_id"] if row is not None else None
 
 
 def resolve_auto_question_on_ingress(
@@ -499,17 +528,11 @@ def resolve_auto_question_on_ingress(
         # delivery adaptation can create/focus their own thread. Never
         # resolve an unrelated earlier question as "answered".
         return
-    cur.execute(
-        """SELECT c.focus_thread_id FROM conversations c
-           JOIN dialogue_threads t ON t.thread_id=c.focus_thread_id
-           WHERE c.conversation_id=%s AND c.user_id=%s
-             AND c.instance_id=%s AND t.origin_kind='AUTO_SIGNAL'""",
-        (conversation_id,user_id,instance_id),
+    current=_focused_auto_thread(
+        cur,user_id=user_id,instance_id=instance_id,conversation_id=conversation_id,
     )
-    row=cur.fetchone()
-    if row is None:
+    if current is None:
         return
-    current=row["focus_thread_id"]
     # MVP-01A has already persisted explicit references in the same
     # authenticated ingress transaction. Do not mark a question on the
     # focused thread ANSWERED when this turn references a different
@@ -517,11 +540,14 @@ def resolve_auto_question_on_ingress(
     cur.execute(
         """SELECT signal.related_signal_id, origin_link.thread_id AS referenced_thread
            FROM conversation_intent_signals signal
-           LEFT JOIN conversation_intent_signals origin
-             ON origin.signal_id=signal.related_signal_id
-            AND origin.conversation_id=signal.conversation_id
-            AND origin.user_id=signal.user_id
-            AND origin.instance_id=signal.instance_id
+           LEFT JOIN LATERAL (
+               SELECT origin.* FROM current_dialogue_intents origin
+               WHERE origin.signal_id=signal.related_signal_id
+                 AND origin.conversation_id=signal.conversation_id
+                 AND origin.user_id=signal.user_id
+                 AND origin.instance_id=signal.instance_id
+               OFFSET 0
+           ) origin ON true
            LEFT JOIN dialogue_turn_links origin_link
              ON origin_link.turn_id=origin.turn_id
             AND origin_link.conversation_id=origin.conversation_id
@@ -539,7 +565,7 @@ def resolve_auto_question_on_ingress(
     cur.execute(
         """SELECT a.act_id,a.origin_kind,a.kind,a.label,t.sequence,
                   r.delivery_status
-           FROM dialogue_pending_acts a
+           FROM current_dialogue_acts a
            JOIN conversation_responses r
              ON r.response_id=a.source_response_id
             AND r.conversation_id=a.conversation_id

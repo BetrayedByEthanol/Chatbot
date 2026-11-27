@@ -257,16 +257,19 @@ def _unique_active_objective(
     """Find a single objective attached to the focused AUTO discussion."""
     cur.execute(
         """SELECT s.signal_id
-           FROM conversation_intent_signals s
+           FROM current_dialogue_intents s
            JOIN dialogue_turn_links l
              ON l.turn_id=s.turn_id AND l.conversation_id=s.conversation_id
             AND l.user_id=s.user_id AND l.instance_id=s.instance_id
            JOIN conversations c
              ON c.conversation_id=s.conversation_id AND c.user_id=s.user_id
             AND c.instance_id=s.instance_id
-           JOIN dialogue_threads d
-             ON d.thread_id=l.thread_id AND d.conversation_id=l.conversation_id
-            AND d.user_id=l.user_id AND d.instance_id=l.instance_id
+           JOIN LATERAL (
+               SELECT d.* FROM current_dialogue_threads d
+               WHERE d.thread_id=l.thread_id AND d.conversation_id=l.conversation_id
+                 AND d.user_id=l.user_id AND d.instance_id=l.instance_id
+               OFFSET 0
+           ) d ON true
            WHERE s.conversation_id=%s AND s.user_id=%s AND s.instance_id=%s
              AND s.intent_kind='OBJECTIVE' AND s.turn_sequence<%s
              AND s.turn_sequence>=%s
@@ -295,13 +298,16 @@ def _named_objective_reference(
     name=match.group("name").casefold()
     cur.execute(
         """SELECT s.signal_id,s.label
-           FROM conversation_intent_signals s
+           FROM current_dialogue_intents s
            JOIN dialogue_turn_links l
              ON l.turn_id=s.turn_id AND l.conversation_id=s.conversation_id
             AND l.user_id=s.user_id AND l.instance_id=s.instance_id
-           JOIN dialogue_threads d
-             ON d.thread_id=l.thread_id AND d.conversation_id=l.conversation_id
-            AND d.user_id=l.user_id AND d.instance_id=l.instance_id
+           JOIN LATERAL (
+               SELECT d.* FROM current_dialogue_threads d
+               WHERE d.thread_id=l.thread_id AND d.conversation_id=l.conversation_id
+                 AND d.user_id=l.user_id AND d.instance_id=l.instance_id
+               OFFSET 0
+           ) d ON true
            WHERE s.conversation_id=%s AND s.user_id=%s AND s.instance_id=%s
              AND s.intent_kind='OBJECTIVE' AND s.turn_sequence<%s
              AND d.origin_kind='AUTO_SIGNAL' AND d.resolution_status='OPEN'
@@ -345,7 +351,7 @@ def _related_objective(cur, user_id, instance_id, conversation_id, sequence, dra
     if draft.kind not in ("REQUEST","CORRECTION") or not _REFERENCE.search(text):
         return None
     cur.execute(
-        """SELECT signal_id FROM conversation_intent_signals
+        """SELECT signal_id FROM current_dialogue_intents
            WHERE conversation_id=%s AND user_id=%s AND instance_id=%s
              AND intent_kind='OBJECTIVE'
              AND turn_sequence<%s AND turn_sequence>=%s
@@ -403,15 +409,16 @@ def record_intent_on_ingress(
 
 def intent_context_block(
     cur, *, user_id, instance_id, conversation_id,
-    turn_sequence, latest_text, max_chars,
+    turn_sequence, latest_text, max_chars,dependencies=None,
 ):
     """Small evidence-anchored context view; never authorizes an action."""
     import json
     if max_chars < 180 or classify_intent(latest_text) is None:
         return ""
     cur.execute(
-        """SELECT signal_id,intent_kind,label,turn_sequence,related_signal_id
-           FROM conversation_intent_signals
+        """SELECT signal_id,intent_kind,label,turn_sequence,related_signal_id,
+                  source_ids,broad_dependency
+           FROM current_dialogue_intents
            WHERE conversation_id=%s AND user_id=%s AND instance_id=%s
              AND turn_sequence<=%s AND turn_sequence>=%s
            ORDER BY turn_sequence DESC LIMIT 5""",
@@ -447,7 +454,9 @@ def intent_context_block(
             for r in reversed(selected[:count])
         ]
         rendered = head + json.dumps(payload, ensure_ascii=False) + "\n"
-        if len(rendered) <= max_chars:
+        if len(rendered) <= max_chars and (
+            dependencies is None or dependencies.admit(*selected[:count])
+        ):
             return rendered
     return ""
 
@@ -498,6 +507,10 @@ def correction_precedence_context_block(
         """SELECT source.signal_id,source.conversation_id,
                   source.turn_sequence,source.epistemic_status,
                   original.turn_id,original.input_text,original.created_at,
+                  EXISTS(SELECT 1 FROM current_dialogue_intents v WHERE v.signal_id=source.signal_id
+                         AND v.user_id=source.user_id AND v.instance_id=source.instance_id
+                         AND v.conversation_id=source.conversation_id OFFSET 0)
+                      AS source_current,
                   EXISTS (
                       SELECT 1 FROM memory_revisions revision
                       WHERE revision.user_id=original.user_id
@@ -530,6 +543,7 @@ def correction_precedence_context_block(
     # be independently resurfaced as current by Conversation retrieval.
     # Check all possible roots *before* selecting one.
     if (len(roots) != 1
+            or not roots[0]["source_current"]
             or roots[0]["has_memory_revision"]
             or roots[0]["has_memory_candidate"]
             or _SENSITIVE.search(roots[0]["input_text"])):
@@ -541,6 +555,10 @@ def correction_precedence_context_block(
     cur.execute(
         """SELECT change.turn_id,change.input_text,change.created_at,
                   signal.turn_sequence,signal.epistemic_status,
+                  EXISTS(SELECT 1 FROM current_dialogue_intents v WHERE v.signal_id=signal.signal_id
+                         AND v.user_id=signal.user_id AND v.instance_id=signal.instance_id
+                         AND v.conversation_id=signal.conversation_id OFFSET 0)
+                      AS source_current,
                   EXISTS (
                       SELECT 1 FROM memory_revisions revision
                       WHERE revision.user_id=change.user_id
@@ -572,6 +590,7 @@ def correction_precedence_context_block(
     )
     correction = cur.fetchone()
     if (correction is None
+            or not correction["source_current"]
             or correction["has_memory_revision"]
             or correction["has_memory_candidate"]
             or _SENSITIVE.search(correction["input_text"])
@@ -655,7 +674,7 @@ def correction_precedence_context_block(
 
 def resolved_objective_context_block(
     cur, *, user_id, instance_id, conversation_id, turn_id,
-    latest_text: str, max_chars: int,
+    latest_text: str, max_chars: int,dependencies=None,
 ) -> str:
     """Read-only, scope-fenced context for a *persisted* named reference.
 
@@ -674,14 +693,19 @@ def resolved_objective_context_block(
                   input.input_text AS source_input,
                   thread.thread_id,thread.title,thread.resolution_status,
                   thread.next_conversational_action,
+                  source.source_ids||thread.source_ids AS source_ids,
+                  (source.broad_dependency OR thread.broad_dependency) AS broad_dependency,
                   source.turn_sequence AS objective_sequence,
                   current.turn_sequence AS current_sequence
            FROM conversation_intent_signals current
-           JOIN conversation_intent_signals source
-             ON source.signal_id=current.related_signal_id
-            AND source.conversation_id=current.conversation_id
-            AND source.user_id=current.user_id
-            AND source.instance_id=current.instance_id
+           JOIN LATERAL (
+               SELECT source.* FROM current_dialogue_intents source
+               WHERE source.signal_id=current.related_signal_id
+                 AND source.conversation_id=current.conversation_id
+                 AND source.user_id=current.user_id
+                 AND source.instance_id=current.instance_id
+               OFFSET 0
+           ) source ON true
            JOIN conversation_turns input
              ON input.turn_id=source.turn_id
             AND input.conversation_id=source.conversation_id
@@ -692,11 +716,14 @@ def resolved_objective_context_block(
             AND link.conversation_id=source.conversation_id
             AND link.user_id=source.user_id
             AND link.instance_id=source.instance_id
-           JOIN dialogue_threads thread
-             ON thread.thread_id=link.thread_id
-            AND thread.conversation_id=link.conversation_id
-            AND thread.user_id=link.user_id
-            AND thread.instance_id=link.instance_id
+           JOIN LATERAL (
+               SELECT thread.* FROM current_dialogue_threads thread
+               WHERE thread.thread_id=link.thread_id
+                 AND thread.conversation_id=link.conversation_id
+                 AND thread.user_id=link.user_id
+                 AND thread.instance_id=link.instance_id
+               OFFSET 0
+           ) thread ON true
            WHERE current.turn_id=%s AND current.conversation_id=%s
              AND current.user_id=%s AND current.instance_id=%s
              AND current.intent_kind='REQUEST'
@@ -714,8 +741,16 @@ def resolved_objective_context_block(
     # Limited history of the *resolved thread*, not whatever was in focus
     # when this input arrived. Exclude the founding objective itself.
     cur.execute(
-        """SELECT cue.intent_kind,cue.label,cue.turn_sequence
+        """SELECT cue.intent_kind,cue.label,cue.turn_sequence,
+                  eligible.source_ids,eligible.broad_dependency
            FROM conversation_intent_signals cue
+           LEFT JOIN LATERAL (
+               SELECT eligible.* FROM current_dialogue_intents eligible
+               WHERE eligible.signal_id=cue.signal_id
+                 AND eligible.user_id=cue.user_id AND eligible.instance_id=cue.instance_id
+                 AND eligible.conversation_id=cue.conversation_id
+               OFFSET 0
+           ) eligible ON true
            JOIN dialogue_turn_links link
              ON link.turn_id=cue.turn_id
             AND link.conversation_id=cue.conversation_id
@@ -728,42 +763,69 @@ def resolved_objective_context_block(
         (conversation_id,user_id,instance_id,resolved["thread_id"],
          resolved["objective_sequence"],resolved["current_sequence"]),
     )
-    notes=list(reversed([{
-        "kind":row["intent_kind"], "text":row["label"][:160],
-        "turn":row["turn_sequence"],
-    } for row in cur.fetchall()]))
+    rows=cur.fetchall()
+    corrections=[row for row in rows if row["intent_kind"]=="CORRECTION"]
+    if any(row["source_ids"] is None for row in corrections):
+        # Never silently fall back to an older position when a selected
+        # correction is no longer eligible.
+        return ""
 
     prefix=(
         "Resolved prior conversation reference (untrusted discussion "
         "evidence, NOT an approved goal, permission, or completed action; "
         "the persisted focus changes only after delivery): "
     )
-    # Fit as much as possible while prioritizing the original verbatim user
-    # observation. Late corrections are useful but must not crowd it out.
+
+    def details(selected):
+        return [{
+            "kind":row["intent_kind"], "text":row["label"][:160],
+            "turn":row["turn_sequence"],
+        } for row in sorted(selected,key=lambda row:row["turn_sequence"])]
+
+    def render():
+        return prefix+json.dumps(data,ensure_ascii=False)+"\n"
+
+    # Corrections are required context, not optional discussion details.
+    # First fit the mandatory block, then atomically admit its dependencies.
+    # A rejected block must not consume any of the shared source budget.
     data={
         "thread":resolved["title"][:160],
         "thread_status":resolved["resolution_status"],
         "objective":resolved["source_input"][:200],
-        "details":notes,
+        "details":details(corrections),
     }
     # Conversation-owned next action is a hint, not an agreed commitment.
     if resolved["next_conversational_action"]:
         data["next_dialogue_hint"]=resolved["next_conversational_action"][:120]
-    for _ in range(6):
-        block=prefix+json.dumps(data,ensure_ascii=False)+"\n"
-        if len(block)<=max_chars:
-            return block
-        if data["details"]:
-            data["details"].pop(0)
-        elif "next_dialogue_hint" in data:
+    for _ in range(4):
+        if len(render())<=max_chars:
+            break
+        if "next_dialogue_hint" in data:
             data.pop("next_dialogue_hint")
         elif len(data["objective"])>100:
             data["objective"]=data["objective"][:100]
         elif len(data["thread"])>60:
             data["thread"]=data["thread"][:60]
         else:
-            break
-    return ""
+            return ""
+    if len(render())>max_chars:
+        return ""
+    if dependencies is not None and not dependencies.admit(resolved,*corrections):
+        return ""
+
+    # Optional observations and requests may use only the remaining text
+    # and source budgets. They cannot displace a required correction.
+    selected=list(corrections)
+    for row in rows:
+        if row["intent_kind"]=="CORRECTION" or row["source_ids"] is None:
+            continue
+        data["details"]=details([*selected,row])
+        if (len(render())<=max_chars
+                and (dependencies is None or dependencies.admit(row))):
+            selected.append(row)
+        else:
+            data["details"]=details(selected)
+    return render()
 
 
 # Model interpretation is selective: skip ordinary, explicit, or hypothetical
@@ -851,7 +913,7 @@ def record_model_intent_on_response(
             and candidate.kind in ("REQUEST","CORRECTION")
             and _ANAPHORA.search(input_text)):
         cur.execute(
-            """SELECT signal_id FROM conversation_intent_signals
+            """SELECT signal_id FROM current_dialogue_intents
                WHERE conversation_id=%s AND user_id=%s AND instance_id=%s
                  AND intent_kind='OBJECTIVE'
                  AND turn_sequence<%s AND turn_sequence>=%s

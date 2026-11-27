@@ -219,6 +219,7 @@ def eligible_summary_turn_sql() -> str:
               AND mr.source_turn_id=t.turn_id
               AND (mr.version<>linked.version OR NOT {eligible_record_sql("linked")})
         )
+        AND entity_turn_current(t.user_id,t.instance_id,t.conversation_id,t.turn_id)
     )"""
 
 

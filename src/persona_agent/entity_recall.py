@@ -60,7 +60,11 @@ def _adjacent_grounding(cur,*,user_id,instance_id,conversation_id,sequence,
     for the canonical identity-clarification path.
     """
     cur.execute(
-        """SELECT e.payload,t.input_text
+        """SELECT e.payload,t.input_text,
+                  (dialogue_turn_current(t.user_id,t.instance_id,t.conversation_id,t.turn_id)
+                   AND response_entity_lineage_current(r.response_id,r.user_id,r.instance_id)
+                   AND (e.event_type<>'conversation.response.entity_history_context.v1'
+                        OR response_lineage_current(r.response_id,r.user_id,r.instance_id))) AS source_current
            FROM conversation_turns anchor
            JOIN conversation_turns t ON t.conversation_id=anchor.conversation_id
              AND t.user_id=anchor.user_id AND t.instance_id=anchor.instance_id
@@ -93,7 +97,7 @@ def _adjacent_grounding(cur,*,user_id,instance_id,conversation_id,sequence,
 
 def _adjacent_entity(cur,**scope):
     row=_adjacent_grounding(cur,include_history=True,**scope)
-    if row is None or row["payload"].get("status")!="KNOWN":
+    if row is None or not row["source_current"] or row["payload"].get("status")!="KNOWN":
         return None
     try:
         return UUID(row["payload"].get("entity_id"))
@@ -105,8 +109,10 @@ def adjacent_entity_clarification(cur,**scope):
     row=_adjacent_grounding(cur,**scope)
     if row is None or row["payload"].get("status")!="AMBIGUOUS":
         return None
-    # Only the original named lookup (not an arbitrary ambiguous report)
-    # with exactly two displayed, persisted choices can be continued.
+    # Recognize the shape of the earlier question even when its evidence
+    # became stale: route to canonical reassessment instead of allowing an
+    # unconstrained model fallback. The resolver revalidates under lock.
+    # Only the original named lookup with two displayed choices qualifies.
     reference=entity_reference(row["input_text"])
     if reference is None or reference.adjacent:
         return None
@@ -139,11 +145,19 @@ def _lock_current_entity_view(cur,user_id,instance_id):
 def resolve_entity_clarification(cur,*,relation,**scope):
     """Never apply a clarification as an entity mutation or other authority."""
     from .entity_memory import _read_entities
+    if adjacent_entity_clarification(cur,**scope) is None:
+        return None
+    _lock_current_entity_view(cur,scope["user_id"],scope["instance_id"])
     pending=adjacent_entity_clarification(cur,**scope)
     if pending is None:
         return None
+    previous=_adjacent_grounding(cur,**scope)
+    if previous is None or not previous["source_current"]:
+        return EntityAnswer(
+            "The saved matches changed. Please repeat the name or give a distinguishing alias.",
+            "AMBIGUOUS",
+        )
     reference,choices=pending
-    _lock_current_entity_view(cur,scope["user_id"],scope["instance_id"])
     hits=_read_entities(
         cur,user_id=scope["user_id"],instance_id=scope["instance_id"],reference=reference,
     )
@@ -181,6 +195,10 @@ def resolve_entity_answer(cur,*,user_id: UUID,instance_id: UUID,
             conversation_id=conversation_id,sequence=sequence,
         )
         if entity_id is None:
+            previous=_adjacent_grounding(cur,user_id=user_id,instance_id=instance_id,
+                conversation_id=conversation_id,sequence=sequence,include_history=True)
+            if previous is not None and not previous["source_current"]:
+                return render_entity_hits(())
             return EntityAnswer("Which person or object do you mean?","AMBIGUOUS")
     return render_entity_hits(_read_entities(
         cur,user_id=user_id,instance_id=instance_id,reference=reference,entity_id=entity_id,

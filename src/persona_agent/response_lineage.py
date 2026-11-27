@@ -91,5 +91,16 @@ def require_response_lineage(cur,user_id,instance_id,response_id):
             from .raw_context import require_raw_context_fence
             require_raw_context_fence(cur,user_id,instance_id,raw["conversation_id"],
                 RawContextFence(tuple(raw["source_turn_ids"]),raw["reusable"]))
+        cur.execute("SELECT entity_response_has_evidence(%s,%s,%s) AS tracked",
+                    (response_id,user_id,instance_id))
+        if cur.fetchone()["tracked"]:
+            # Entity owner writes bump the revision on commit. Lock only
+            # at output; exact event pins also cover canonical report replies.
+            from .workflow_evidence import lock_scope
+            lock_scope(cur,user_id,instance_id)
+            cur.execute("SELECT response_entity_lineage_current(%s,%s,%s) AS current",
+                        (response_id,user_id,instance_id))
+            if not cur.fetchone()["current"]:
+                raise InvalidatedResponse("entity response evidence no longer current")
     except (StaleHistoricalContext,StaleConversation) as exc:
         raise InvalidatedResponse("response evidence no longer current") from exc

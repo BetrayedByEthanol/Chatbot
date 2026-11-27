@@ -347,9 +347,12 @@ def _focused_terms(cur, user_id: UUID, instance_id: UUID,
                    conversation_id: UUID) -> str:
     cur.execute(
         """SELECT t.thread_id,t.title FROM conversations c
-           JOIN dialogue_threads t
-             ON t.thread_id=c.focus_thread_id AND t.conversation_id=c.conversation_id
-             AND t.user_id=c.user_id AND t.instance_id=c.instance_id
+           JOIN LATERAL (
+               SELECT t.* FROM current_dialogue_threads t
+               WHERE t.thread_id=c.focus_thread_id AND t.conversation_id=c.conversation_id
+                 AND t.user_id=c.user_id AND t.instance_id=c.instance_id
+               OFFSET 0
+           ) t ON true
            WHERE c.conversation_id=%s AND c.user_id=%s
              AND c.instance_id=%s AND t.attention_status='FOCUSED'""",
         (conversation_id,user_id,instance_id),
@@ -358,7 +361,7 @@ def _focused_terms(cur, user_id: UUID, instance_id: UUID,
     if thread is None:
         return ""
     cur.execute(
-        """SELECT label FROM dialogue_referents
+        """SELECT label FROM current_dialogue_referents
            WHERE conversation_id=%s AND user_id=%s AND instance_id=%s
              AND thread_id=%s AND kind='TOPIC'
            ORDER BY created_at DESC,referent_id LIMIT 3""",
