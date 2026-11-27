@@ -35,17 +35,27 @@ def prepare_affect_context(cur,user_id,instance_id,max_chars:int,fence=None):
         return "",None
     fence=fence or capture_historical_read_fence(cur,user_id,instance_id)
     cur.execute(
-        """SELECT preference_key,scope_key,preference_value,source_quote
-           FROM current_relationship_preferences
-           WHERE user_id=%s AND instance_id=%s AND status='ACTIVE'
+        """WITH candidates AS MATERIALIZED (
+               SELECT * FROM relationship_preferences
+               WHERE user_id=%s AND instance_id=%s AND status='ACTIVE'
+               ORDER BY CASE preference_key
+                   WHEN 'RESPONSE_LENGTH' THEN 0
+                   WHEN 'EMOJI_USE' THEN 1
+                   WHEN 'PROACTIVE_MESSAGES' THEN 2
+                   WHEN 'AVOID_PROACTIVE_TOPIC' THEN 3
+                   ELSE 4 END, scope_key
+               LIMIT 20
+           )
+           SELECT preference_key,scope_key,preference_value,source_quote
+           FROM candidates p
+           WHERE dialogue_turn_current(p.user_id,p.instance_id,
+                                       p.source_conversation_id,p.source_turn_id)
            ORDER BY CASE preference_key
                WHEN 'RESPONSE_LENGTH' THEN 0
                WHEN 'EMOJI_USE' THEN 1
                WHEN 'PROACTIVE_MESSAGES' THEN 2
                WHEN 'AVOID_PROACTIVE_TOPIC' THEN 3
-               ELSE 4 END,
-               scope_key
-           LIMIT 20""",
+               ELSE 4 END, scope_key""",
         (user_id,instance_id),
     )
     # Global communication preferences occupy the first three query slots

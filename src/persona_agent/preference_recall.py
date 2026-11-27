@@ -20,7 +20,7 @@ from .conversation import (
 from .conversation_contracts import ModelReply, PreferenceReadFence, TextResponseResult
 from .operation_contracts import require_idle
 from .relationship_state import (
-    PreferenceView, read_relationship_state,
+    PreferenceView, read_relationship_preferences,
     has_saved_relationship_preference_history,
 )
 from .response_decisions import (
@@ -143,7 +143,7 @@ def _render_emoji(preference: PreferenceView | None) -> str:
 
 
 def _render_emoji_history(
-    preference: PreferenceView | None, ever_saved: bool,
+    preference: PreferenceView | None, ever_saved: bool, *, removed: bool=False,
 ) -> str:
     """Historical existence, unlike current preference, survives REMOVE."""
     if preference is not None:
@@ -151,8 +151,11 @@ def _render_emoji_history(
     if ever_saved:
         # History contains the removed preference's value and source quote,
         # but the user only asked whether one had ever been specified.
+        if removed:
+            return ("Yes. You previously had a saved emoji preference, "
+                    "but it was removed and no emoji preference is currently active.")
         return ("Yes. You previously had a saved emoji preference, "
-                "but it was removed and no emoji preference is currently active.")
+                "but I cannot establish a current active preference.")
     return "I don't have a saved record of you specifying an emoji preference."
 
 
@@ -189,7 +192,10 @@ def respond_with_preference_recall(
         from .memory_read_policy import capture_historical_read_fence
         with connection.cursor(row_factory=dict_row) as cur:
             historical=capture_historical_read_fence(cur,actor.user_id,context.instance_id)
-    snapshot=read_relationship_state(connection,actor,context.instance_id)
+    keys=tuple(t for t in topics if t!="PLANNING")
+    preferences=read_relationship_preferences(
+        connection,actor,context.instance_id,keys=list(keys),
+    ) if keys else ()
     ever_saved_emoji=(
         has_saved_relationship_preference_history(
             connection,actor,context.instance_id,"EMOJI_USE",
@@ -205,23 +211,25 @@ def respond_with_preference_recall(
             parts.append(_render_planning(planning))
         elif topic=="RESPONSE_LENGTH":
             parts.append(_render_length(
-                _active_preference(snapshot.preferences,"RESPONSE_LENGTH"),
+                _active_preference(preferences,"RESPONSE_LENGTH"),
             ))
         elif topic=="EMOJI_USE":
-            current=_active_preference(snapshot.preferences,"EMOJI_USE")
+            current=_active_preference(preferences,"EMOJI_USE")
             parts.append(
-                _render_emoji_history(current,ever_saved_emoji)
-                if historical_emoji else _render_emoji(current)
+                _render_emoji_history(
+                    current,ever_saved_emoji,
+                    removed=any(p.preference_key=="EMOJI_USE" and p.status=="REMOVED"
+                                for p in preferences),
+                ) if historical_emoji else _render_emoji(current)
             )
         else:
             raise ValueError("unsupported preference recall topic")
 
     # Fence the relevant Relationship revisions; the domain remains the
     # authority and may change between this read and the short commit.
-    keys=tuple(t for t in topics if t!="PLANNING")
     revisions=tuple(sorted(
         (p.preference_key,p.status,p.version)
-        for p in snapshot.preferences
+        for p in preferences
         if p.scope_key=="" and p.preference_key in keys
     ))
     from dataclasses import replace

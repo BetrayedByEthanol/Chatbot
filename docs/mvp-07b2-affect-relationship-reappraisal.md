@@ -40,3 +40,16 @@ classifier, model-affect policy change, or cross-domain notification propagation
 is added. Existing pre-0063 assistant replies without affect provenance cannot
 be assigned invented dependencies. Review commit/delivery lock ordering and
 exercise real PostgreSQL and full-suite scaling before merge.
+
+## Initial regressions
+
+The new test module covers correction/retraction/expiry, independent applied
+mood/feedback survival, immutable observation history, late ineligible events,
+preference revision non-resurrection, controlled cross-session response commit
+and delivery, and time-only projection watermark expiration. Direct preference
+recall now reads only requested global slots, not the full rapport projection.
+Foreground topic-boundary selection is capped before source eligibility;
+an ineligible candidate can leave an unused slot rather than scan all history.
+
+Acceptance remains pending real PostgreSQL CI and review. General semantic
+correction detection and proactive/notification consumers remain out of scope.

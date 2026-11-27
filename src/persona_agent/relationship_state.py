@@ -378,13 +378,42 @@ def set_relationship_preference(
             return result
 
 
+def _read_current_preferences(cur,user_id,instance_id,*,keys=None):
+    cur.execute(
+        """SELECT preference_key,scope_key,preference_value,status,version,
+                  source_turn_id,source_quote
+           FROM current_relationship_preferences
+           WHERE user_id=%s AND instance_id=%s
+             AND (%s::text[] IS NULL OR (scope_key='' AND preference_key=ANY(%s::text[])))
+           ORDER BY preference_key,scope_key""",
+        (user_id,instance_id,keys,keys),
+    )
+    return tuple(PreferenceView(**dict(row)) for row in cur.fetchall())
+
+
+def read_relationship_preferences(connection:Connection,actor:TrustedActor,
+                                  instance_id:UUID,*,keys=None):
+    """Read only the requested global preference slots, never replay rapport."""
+    require_idle(connection)
+    _require_actor(actor)
+    with connection.transaction(),connection.cursor(row_factory=dict_row) as cur:
+        cur.execute("SELECT 1 FROM persona_instances WHERE user_id=%s AND id=%s",
+                    (actor.user_id,instance_id))
+        if cur.fetchone() is None:
+            raise PermissionDenied("relationship preference read outside actor scope")
+        fence=capture_historical_read_fence(cur,actor.user_id,instance_id)
+        result=_read_current_preferences(cur,actor.user_id,instance_id,keys=keys)
+        require_historical_read_fence(cur,actor.user_id,instance_id,fence)
+        return result
+
+
 def read_relationship_state(
     connection:Connection,actor:TrustedActor,instance_id:UUID,
 )->RelationshipSnapshot:
     """Authenticated scoped state; no hidden inferred attachment."""
     require_idle(connection)
     _require_actor(actor)
-    with connection.cursor(row_factory=dict_row) as cur:
+    with connection.transaction(),connection.cursor(row_factory=dict_row) as cur:
         cur.execute(
             "SELECT 1 FROM persona_instances WHERE user_id=%s AND id=%s",
             (actor.user_id,instance_id),
@@ -400,15 +429,8 @@ def read_relationship_state(
         )
         state=cur.fetchone()
         rapport=effective_rapport(cur,actor.user_id,instance_id,state,fence)
-        cur.execute(
-            """SELECT preference_key,scope_key,preference_value,status,version,
-                      source_turn_id,source_quote
-               FROM current_relationship_preferences
-               WHERE user_id=%s AND instance_id=%s
-               ORDER BY preference_key,scope_key""",
-            (actor.user_id,instance_id),
-        )
-        preferences=tuple(PreferenceView(**dict(row)) for row in cur.fetchall())
+        preferences=_read_current_preferences(cur,actor.user_id,instance_id)
+        require_historical_read_fence(cur,actor.user_id,instance_id,fence)
     return RelationshipSnapshot(
         user_id=actor.user_id,instance_id=instance_id,
         version=state["version"] if state else 0,

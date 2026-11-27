@@ -6,7 +6,6 @@ Foreground reads never rebuild an unbounded mood history.
 from datetime import datetime,timezone
 
 from .conversation_contracts import HistoricalReadFence
-from .memory_read_policy import capture_historical_read_fence
 from .raw_context import eligible_turn_ids
 
 FOREGROUND_APPRAISAL_LIMIT=128
@@ -21,8 +20,13 @@ def current_sources(cur,user_id,instance_id,rows):
     groups={}
     for row in rows:
         groups.setdefault(row["conversation_id"],set()).add(row["source_turn_id"])
-    return set().union(*(eligible_turn_ids(cur,user_id,instance_id,cid,ids)
-                         for cid,ids in groups.items()))
+    eligible=set()
+    for cid,ids in groups.items():
+        ordered=sorted(ids)
+        for start in range(0,len(ordered),FOREGROUND_APPRAISAL_LIMIT):
+            eligible.update(eligible_turn_ids(cur,user_id,instance_id,cid,
+                ordered[start:start+FOREGROUND_APPRAISAL_LIMIT]))
+    return eligible
 
 
 def projection_current(state,fence):

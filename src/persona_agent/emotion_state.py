@@ -254,7 +254,7 @@ def read_emotion_state(
     now=at or datetime.now(timezone.utc)
     if now.tzinfo is None or now.utcoffset() is None:
         raise ValueError("emotion snapshot requires timezone-aware date")
-    with connection.cursor(row_factory=dict_row) as cur:
+    with connection.transaction(),connection.cursor(row_factory=dict_row) as cur:
         cur.execute(
             "SELECT 1 FROM persona_instances WHERE user_id=%s AND id=%s",
             (actor.user_id,instance_id),
@@ -269,6 +269,7 @@ def read_emotion_state(
         )
         state=effective_emotion_projection(cur,actor.user_id,instance_id,cur.fetchone(),fence)
         user_cue=current_user_affect(cur,actor.user_id,instance_id,now)
+        require_historical_read_fence(cur,actor.user_id,instance_id,fence)
     baseline=(float(state["baseline_valence"]),
               float(state["baseline_arousal"]),
               float(state["baseline_engagement"])) if state else _BASELINE

@@ -21,17 +21,23 @@ def require_preference_fence(cur,user_id,instance_id,fence):
         (user_id,instance_id),
     )
     cur.fetchone()
-    # Lock owner before the Memory eligibility watermark. An invalidated
-    # latest revision must compare as absent, never as an older preference.
+    # Acquire owner rows before the Memory eligibility watermark. Even
+    # an ineligible stored revision remains the owner's concurrency record.
+    cur.execute(
+        """SELECT preference_key FROM relationship_preferences
+           WHERE user_id=%s AND instance_id=%s AND scope_key=''
+             AND preference_key=ANY(%s::text[])
+           ORDER BY preference_key FOR SHARE""",
+        (user_id,instance_id,list(fence.keys)),
+    )
+    cur.fetchall()
     from .workflow_evidence import lock_scope
     lock_scope(cur,user_id,instance_id)
     cur.execute(
-        """SELECT preference_key,status,version FROM relationship_preferences p
+        """SELECT preference_key,status,version FROM current_relationship_preferences
            WHERE user_id=%s AND instance_id=%s AND scope_key=''
              AND preference_key=ANY(%s::text[])
-             AND dialogue_turn_current(p.user_id,p.instance_id,
-                                       p.source_conversation_id,p.source_turn_id)
-           ORDER BY preference_key FOR SHARE""",
+           ORDER BY preference_key""",
         (user_id,instance_id,list(fence.keys)),
     )
     observed=tuple((row["preference_key"],row["status"],row["version"])
