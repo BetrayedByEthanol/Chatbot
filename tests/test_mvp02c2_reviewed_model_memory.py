@@ -294,3 +294,37 @@ def test_newer_unresolved_explicit_conflict_suppresses_stale_memory_recall(dsn):
     assert "newer user-reported correction" in prompt
     assert "Do not assert the old value" in prompt
     assert host.observe_state()["goals"]==0
+
+
+@pytest.mark.parametrize("stage",["BEFORE_MODEL","DURING_MODEL","BEFORE_APPROVAL"])
+def test_model_candidate_source_withdrawal_fences_inference_and_review(dsn,stage):
+    from persona_agent.runtime import PermissionDenied
+    from workflow_evidence_helpers import link_memory,invalidate
+    host,_,consumer=fixture(dsn)
+    identity=host.begin_session("source-withdrawal")
+    source=host.send("I've gotten into gardening lately.",idempotency_key="source")
+    actor=TrustedActor(user_id=identity.user_id,source_id="reviewer")
+    saved=link_memory(dsn,identity.user_id,identity.instance_id,
+                      identity.conversation_id,UUID(source.turn_id))
+    if stage=="BEFORE_MODEL":
+        invalidate(dsn,identity.user_id,identity.instance_id,saved,"EXPIRE")
+    class WithdrawingModel(MemoryProposer):
+        def generate(self,messages):
+            reply=super().generate(messages)
+            if stage=="DURING_MODEL":
+                invalidate(dsn,identity.user_id,identity.instance_id,saved,"EXPIRE")
+            return reply
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        model=WithdrawingModel(conn)
+        result=run_model_memory_tick(conn,model,consumer_id=consumer)
+    assert len(model.calls)==(0 if stage=="BEFORE_MODEL" else 1)
+    assert result.retry_pending==0
+    assert result.proposed==(1 if stage=="BEFORE_APPROVAL" else 0)
+    if stage=="BEFORE_APPROVAL":
+        pending,=call(dsn,list_model_memory_candidates,actor,identity.instance_id)
+        invalidate(dsn,identity.user_id,identity.instance_id,saved,"EXPIRE")
+        with pytest.raises(PermissionDenied):
+            call(dsn,approve_model_memory_candidate,actor,pending.candidate_id,
+                 expected_generation=identity.generation)
+    assert call(dsn,list_model_memory_candidates,actor,identity.instance_id)==()
+    assert call(dsn,search_memories,actor,identity.instance_id,"gardening")==()

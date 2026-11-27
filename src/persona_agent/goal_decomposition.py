@@ -374,16 +374,8 @@ def propose_derived_subgoal(
                     cur,lease,status="PROPOSED",model_id=model_id,
                     proposal_id=command.proposal_id,
                     proposed_goal_id=command.proposed_goal_id,
+                    evidence_ids=evidence_ids,evidence_goal_id=command.parent_goal_id,
                 )
-                # All operation/owner/resource writes precede the late
-                # shared Memory fence; a denial rolls back every effect.
-                from .workflow_evidence import lock_scope
-                lock_scope(cur,actor.user_id,command.instance_id)
-                cur.execute("SELECT goal_evidence_current(%s,%s,%s,%s::uuid[]) AS eligible",
-                            (actor.user_id,command.instance_id,command.parent_goal_id,
-                             list(evidence_ids)))
-                if not cur.fetchone()["eligible"]:
-                    raise VersionConflict("Goal proposal evidence invalidated")
             return result
 
 

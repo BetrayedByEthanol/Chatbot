@@ -321,19 +321,20 @@ def run_one_text_tool(
     except Exception as exc:
         fail_operation(connection,lease,reason=f"tool execution failed: {type(exc).__name__}")
         return lease
-    with connection.transaction():
-        with connection.cursor(row_factory=dict_row) as cur:
-            lock_scope(cur,lease.user_id,lease.instance_id)
-            eligible=source_current(cur,lease.user_id,lease.instance_id,
-                                    payload["conversation_id"],payload["turn_id"])
-            if eligible:
+    try:
+        with connection.transaction():
+            with connection.cursor(row_factory=dict_row) as cur:
                 cur.execute(
                     """INSERT INTO conversation_tool_results(
                            operation_id,claim_generation,result_text
                        ) VALUES (%s,%s,%s) ON CONFLICT DO NOTHING""",
                     (lease.operation_id,lease.claim_generation,text),
                 )
-    if not eligible:
+                lock_scope(cur,lease.user_id,lease.instance_id)
+                if not source_current(cur,lease.user_id,lease.instance_id,
+                                      payload["conversation_id"],payload["turn_id"]):
+                    raise ToolResultNotReady("tool request invalidated during execution")
+    except ToolResultNotReady:
         fail_operation(connection,lease,reason="tool request invalidated during execution")
         return lease
     # The P0 completion fence rejects expired/revoked claims. Orphaned

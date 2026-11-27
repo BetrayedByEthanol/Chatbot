@@ -318,6 +318,7 @@ def _prompt(work:dict)->tuple[ModelMessage,...]:
 def _finalize_goal_evaluation_locked(
     cur,lease:OperationLease,*,status:str,model_id:str,
     proposal_id:UUID|None=None,proposed_goal_id:UUID|None=None,
+    evidence_ids=(),evidence_goal_id:UUID|None=None,
 )->None:
     """Atomically close the Goal job and its exact P0 lease.
 
@@ -353,6 +354,15 @@ def _finalize_goal_evaluation_locked(
     if cur.fetchone() is None:
         raise VersionConflict("Goal evaluation result already finalized")
     release_resources(cur,op)
+    if evidence_goal_id is not None:
+        # Owner, job and resource locks precede the Memory fence. The
+        # subsequent live-clock claim check covers time spent waiting here.
+        from .workflow_evidence import lock_scope
+        lock_scope(cur,lease.user_id,lease.instance_id)
+        cur.execute("SELECT goal_evidence_current(%s,%s,%s,%s::uuid[]) AS eligible",
+                    (lease.user_id,lease.instance_id,evidence_goal_id,list(evidence_ids)))
+        if not cur.fetchone()["eligible"]:
+            raise VersionConflict("Goal evaluation evidence invalidated")
     # A blocking Goal/selection/pool lock may have consumed the lease.
     # The P0 completion UPDATE repeats the live-clock fence after all locks.
     require_claim(cur,lease)
@@ -400,14 +410,8 @@ def _commit_job(connection:Connection,lease:OperationLease,*,status:str,
             _finalize_goal_evaluation_locked(
                 cur,lease,status=status,model_id=model_id,
                 proposal_id=proposal_id,proposed_goal_id=proposed_goal_id,
+                evidence_ids=evidence_ids,evidence_goal_id=goal_id,
             )
-            if goal_id is not None:
-                from .workflow_evidence import lock_scope
-                lock_scope(cur,lease.user_id,lease.instance_id)
-                cur.execute("SELECT goal_evidence_current(%s,%s,%s,%s::uuid[]) AS eligible",
-                            (lease.user_id,lease.instance_id,goal_id,list(evidence_ids)))
-                if not cur.fetchone()["eligible"]:
-                    raise VersionConflict("Goal evaluation evidence invalidated")
 
 
 def run_goal_evaluation(

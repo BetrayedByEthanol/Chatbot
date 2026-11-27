@@ -393,6 +393,10 @@ def _refresh_review_queue(
     """
     with connection.transaction():
         with connection.cursor(row_factory=dict_row) as cur:
+            cur.execute("SELECT 1 FROM persona_instances WHERE user_id=%s AND id=%s",
+                        (actor.user_id,instance_id))
+            if cur.fetchone() is None:
+                raise PermissionDenied("memory conflict review outside user scope")
             fence=capture_historical_read_fence(cur,actor.user_id,instance_id)
             cur.execute(
                 """SELECT c.* FROM memory_extraction_candidates c

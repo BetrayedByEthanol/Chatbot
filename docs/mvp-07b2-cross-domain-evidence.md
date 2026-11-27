@@ -47,3 +47,11 @@ legacy unbound copies, durable reappraisal of accepted derived goals, exact
 research selection approval chains beyond the present recorded pins, critical
 epoch reassessment after certification, and end-to-end notification provider
 copies are not solved by these changes.
+
+
+Additional verification covers reviewed-model extraction before inference,
+during inference and before approval; and exact durable Goal proposal pins
+that force stale retirement before semantic review. The final Goal worker
+check is ordered after resource release and before the live-clock operation
+completion check, so a lock wait cannot extend a lease. No real PostgreSQL
+execution has been performed by the author.

@@ -165,7 +165,9 @@ $$;
 -- not provide new instructions or AGENT authority from withdrawn citations.
 CREATE FUNCTION strategy_research_usable(uid uuid,iid uuid,sid uuid)
 RETURNS boolean LANGUAGE sql AS $$
-    SELECT NOT EXISTS (SELECT 1 FROM goal_strategy_research r
+    SELECT EXISTS (SELECT 1 FROM goal_strategies s
+        WHERE s.user_id=uid AND s.instance_id=iid AND s.strategy_id=sid)
+    AND (NOT EXISTS (SELECT 1 FROM goal_strategy_research r
         WHERE r.user_id=uid AND r.instance_id=iid AND r.strategy_id=sid)
     OR (
         strategy_research_sources_current(uid,iid,sid)
@@ -196,7 +198,7 @@ RETURNS boolean LANGUAGE sql AS $$
                        v.content FROM passage.start_offset+1 FOR passage.end_offset-passage.start_offset)
               )
         )
-    )
+    ))
 $$;
 
 CREATE OR REPLACE FUNCTION workflow_variant_current(uid uuid,iid uuid,vid uuid,rev integer)
