@@ -69,15 +69,17 @@ def _candidates(cur,user_id,instance_id,conversation_id,focus_thread_id):
                     WHERE l.run_id=r.run_id AND l.user_id=r.user_id
                       AND l.instance_id=r.instance_id
                       AND l.conversation_id=%s AND l.thread_id=%s
+                      AND dialogue_turn_current(l.user_id,l.instance_id,l.conversation_id,l.source_turn_id)
                   ) AS focus_link,
                   (SELECT dt.title FROM procedure_run_thread_links l
-                   JOIN dialogue_threads dt
+                   JOIN current_dialogue_threads dt
                      ON dt.thread_id=l.thread_id
                     AND dt.conversation_id=l.conversation_id
                     AND dt.user_id=l.user_id
                     AND dt.instance_id=l.instance_id
                    WHERE l.run_id=r.run_id AND l.user_id=r.user_id
                      AND l.instance_id=r.instance_id
+                     AND dialogue_turn_current(l.user_id,l.instance_id,l.conversation_id,l.source_turn_id)
                    ORDER BY l.linked_at DESC,l.thread_id DESC LIMIT 1)
                     AS linked_title
            FROM procedure_runs r
@@ -154,11 +156,11 @@ def prepare_procedure_dialogue_context(
     """Read scoped unfinished work and return its freshness dependencies."""
     if not 450<=max_chars<=1800 or not _CONTINUE.search(latest_text):
         return PreparedProcedureContext("")
+    historical=capture_historical_read_fence(cur,user_id,instance_id)
     rows=_candidates(cur,user_id,instance_id,conversation_id,focus_thread_id)
     run=_choose(rows,latest_text,overflow=len(rows)>24)
     if run is None:
         return PreparedProcedureContext("")
-    historical=capture_historical_read_fence(cur,user_id,instance_id)
     if not evidence_current(cur,user_id,instance_id,"run",run["run_id"]):
         return PreparedProcedureContext(
             "Tracked procedure requires source-evidence reassessment. Do not use prior "
@@ -232,7 +234,7 @@ def prepare_procedure_dialogue_context(
                   dt.resolution_status,dt.next_conversational_action,
                   c.revision AS conversation_revision
            FROM procedure_run_thread_links l
-           JOIN dialogue_threads dt
+           JOIN current_dialogue_threads dt
              ON dt.thread_id=l.thread_id
             AND dt.conversation_id=l.conversation_id
             AND dt.user_id=l.user_id AND dt.instance_id=l.instance_id
@@ -241,6 +243,7 @@ def prepare_procedure_dialogue_context(
             AND c.user_id=l.user_id AND c.instance_id=l.instance_id
            WHERE l.run_id=%s AND l.user_id=%s AND l.instance_id=%s
              AND dt.resolution_status='OPEN'
+             AND dialogue_turn_current(l.user_id,l.instance_id,l.conversation_id,l.source_turn_id)
              AND (l.conversation_id<>%s OR l.thread_id IS DISTINCT FROM %s)
            ORDER BY l.linked_at DESC,l.thread_id DESC LIMIT 1""",
         (run["run_id"],user_id,instance_id,conversation_id,focus_thread_id),
@@ -255,7 +258,7 @@ def prepare_procedure_dialogue_context(
             }))
         cur.execute(
             """SELECT a.kind,a.label
-               FROM dialogue_pending_acts a
+               FROM current_dialogue_acts a
                JOIN conversation_responses resp
                  ON resp.conversation_id=a.conversation_id
                 AND resp.response_id=a.source_response_id

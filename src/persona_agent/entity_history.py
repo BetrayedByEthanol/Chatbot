@@ -106,6 +106,12 @@ def _relationships(cur,user_id,instance_id,entity_id,since,until,limit):
              AND (s.expires_at IS NULL OR s.expires_at>clock_timestamp())
              AND o.record_status='ACTIVE' AND o.privacy_class='NORMAL'
              AND (o.expires_at IS NULL OR o.expires_at>clock_timestamp())
+             AND raw_context_sources_current(r.user_id,r.instance_id,r.source_conversation_id,
+                                             ARRAY[r.source_turn_id])
+             AND raw_context_sources_current(s.user_id,s.instance_id,s.relation_source_conversation_id,
+                                             ARRAY[s.relation_source_turn_id])
+             AND raw_context_sources_current(o.user_id,o.instance_id,o.relation_source_conversation_id,
+                                             ARRAY[o.relation_source_turn_id])
              AND (%s::timestamptz IS NULL OR r.source_turn_at>=%s)
              AND (%s::timestamptz IS NULL OR r.source_turn_at<=%s)
            ORDER BY r.source_turn_at DESC,r.relationship_id LIMIT %s""",

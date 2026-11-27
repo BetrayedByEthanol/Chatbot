@@ -102,7 +102,9 @@ def _status(connection,identity):
                                      AND l.instance_id=r.instance_id)
                                  AND NOT EXISTS (SELECT 1 FROM conversation_response_raw_lineage raw
                                    WHERE raw.response_id=r.response_id AND raw.user_id=r.user_id
-                                     AND raw.instance_id=r.instance_id) THEN 'UNTRACKED'
+                                     AND raw.instance_id=r.instance_id)
+                                 AND NOT entity_response_has_evidence(r.response_id,r.user_id,r.instance_id)
+                               THEN 'UNTRACKED'
                                WHEN response_lineage_current(r.response_id,r.user_id,r.instance_id)
                                THEN 'CURRENT' ELSE 'INVALIDATED' END AS source_status
                    FROM conversations c JOIN conversation_turns t ON t.turn_id=c.last_input_turn_id

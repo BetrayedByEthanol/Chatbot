@@ -695,6 +695,20 @@ def prepare_text_context(
                     # Grounding may quote a turn subsequently trimmed from
                     # the verbatim window. Keep this bounded candidate set.
                     grounding_dependencies={row["turn_id"] for row in grounding_rows}
+            from .dialogue_lineage import DialogueDependencies
+            from .intent_interpretation import is_named_objective_reference
+            # Reserve all potentially retained raw sources; metadata cannot
+            # displace their dependency IDs to fit the 128-source budget.
+            dialogue_fence=historical_fence
+            if (dialogue_fence is None and dated_window is None
+                    and (item["focus_thread_id"] is not None
+                         or is_named_objective_reference(history[-1].content))):
+                dialogue_fence=capture_historical_read_fence(
+                    cursor,actor.user_id,item["instance_id"])
+            dialogue_dependencies=DialogueDependencies(
+                set().union(*history_dependencies,grounding_dependencies),
+                dialogue_fence,
+            )
             # MVP-01F.2: the authenticated ingress already resolved a
             # named objective reference. Put its source and discussion
             # evidence into THIS response's context, before optionally
@@ -714,25 +728,31 @@ def prepare_text_context(
                     instance_id=item["instance_id"],
                     conversation_id=item["conversation_id"],
                     turn_id=turn_id,latest_text=history[-1].content,
-                    max_chars=reference_room,
+                    max_chars=reference_room,dependencies=dialogue_dependencies,
                 )
             # Preserve a linked correction chain for explicit historical
             # cadence recall before optional summary/memory selection can
             # crowd out the source that supersedes the old discussion.
             # The view is source-linked, read-only and never Goal authority.
-            from .intent_interpretation import correction_precedence_context_block
+            from .intent_interpretation import correction_precedence_context_block,_CADENCE_RECALL
             correction_room=min(
                 950,max_context_chars//3,
                 max_context_chars-len(prompt)-len(history[-1].content)-160,
             )
-            if dated_window is None and correction_room>=450:
-                prompt+=correction_precedence_context_block(
+            if (dated_window is None and correction_room>=450
+                    and _CADENCE_RECALL.fullmatch(history[-1].content.strip().replace("’","'"))):
+                correction_fence=historical_fence or dialogue_fence or capture_historical_read_fence(
+                    cursor,actor.user_id,item["instance_id"])
+                correction_block=correction_precedence_context_block(
                     cursor,user_id=actor.user_id,
                     instance_id=item["instance_id"],
                     before_at=item["turn_at"],
                     latest_text=history[-1].content,
                     max_chars=correction_room,
                 )
+                if correction_block:
+                    prompt+=correction_block
+                    historical_fence=correction_fence
             # The previous delivered topic may remain the persisted focus
             # while the user's new switch is being answered. Do not feed it
             # back as the *active* discussion on this transition turn.
@@ -765,19 +785,21 @@ def prepare_text_context(
                 cursor.execute(
                     """
                     SELECT title,attention_status,resolution_status,
-                           next_conversational_action
-                    FROM dialogue_threads
+                           next_conversational_action,source_ids,broad_dependency
+                    FROM current_dialogue_threads
                     WHERE conversation_id=%s AND user_id=%s AND thread_id=%s
                     """,
                     (item["conversation_id"],actor.user_id,item["focus_thread_id"]),
                 )
                 active=cursor.fetchone()
+                if active is not None and not dialogue_dependencies.admit(active):
+                    active=None
                 if active is not None:
                     cursor.execute(
                         """
                         SELECT a.kind,a.label,a.origin_kind,r.delivery_status,
-                               t.sequence AS source_sequence
-                        FROM dialogue_pending_acts a
+                               t.sequence AS source_sequence,a.source_ids,a.broad_dependency
+                        FROM current_dialogue_acts a
                         LEFT JOIN conversation_responses r
                           ON r.response_id=a.source_response_id
                          AND r.conversation_id=a.conversation_id
@@ -792,7 +814,7 @@ def prepare_text_context(
                         (item["conversation_id"],actor.user_id,item["instance_id"],
                          item["focus_thread_id"]),
                     )
-                    pending_rows=cursor.fetchall()
+                    pending_rows=[r for r in cursor.fetchall() if dialogue_dependencies.admit(r)]
                     pending=[{"kind":p["kind"],"label":p["label"]} for p in pending_rows]
                     from .contextual_interpretation import pending_reply_context
                     prompt+=pending_reply_context(
@@ -802,13 +824,14 @@ def prepare_text_context(
                     )
                     cursor.execute(
                         """
-                        SELECT kind,label FROM dialogue_referents
+                        SELECT kind,label,source_ids,broad_dependency FROM current_dialogue_referents
                         WHERE conversation_id=%s AND user_id=%s AND thread_id=%s
                         ORDER BY created_at DESC,referent_id LIMIT 4
                         """,
                         (item["conversation_id"],actor.user_id,item["focus_thread_id"]),
                     )
-                    refs=[dict(r) for r in cursor.fetchall()]
+                    refs=[{"kind":r["kind"],"label":r["label"]} for r in cursor.fetchall()
+                          if dialogue_dependencies.admit(r)]
                     state={"thread":{"title":active["title"],
                         "attention":active["attention_status"],
                         "resolution":active["resolution_status"],
@@ -1070,7 +1093,7 @@ def prepare_text_context(
                             conversation_id=item["conversation_id"],
                             turn_sequence=item["sequence"],
                             latest_text=history[-1].content,
-                            max_chars=intent_cap,
+                            max_chars=intent_cap,dependencies=dialogue_dependencies,
                         )
                     content+=intent_context_cache[intent_cap]
                 # Preserve the latest user input over any optional history.
@@ -1121,6 +1144,11 @@ def prepare_text_context(
                 cutoff=actual_cutoff
             else:
                 raise AssertionError("retained history cutoff did not converge")
+            if dialogue_dependencies.uses_broad:
+                # The dialogue snapshot was observed before any subsequent
+                # optional context fence. Never substitute a newer revision
+                # for an earlier source read.
+                historical_fence=dialogue_dependencies.historical_fence
             system=ModelMessage("system",prompt)
             return ResponseContext(
                 conversation_id=item["conversation_id"],turn_id=turn_id,
@@ -1131,7 +1159,8 @@ def prepare_text_context(
                 procedure_fence=procedure_fence,temporal_context=temporal,
                 historical_fence=historical_fence,
                 raw_context_fence=RawContextFence(
-                    tuple(sorted(raw_dependencies | grounding_dependencies)),reusable,
+                    tuple(sorted(raw_dependencies | grounding_dependencies |
+                                 dialogue_dependencies.source_ids)),reusable,
                 ),
             )
 
@@ -1608,6 +1637,7 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
                         "turn_id":str(context.turn_id),"response_id":str(response_id),
                         "status":entity_answer.status,"policy_revision":ENTITY_POLICY_REVISION,
                         "model_reply_replaced":model_generated and entity_changed,
+                        "entity_report":report is not None,
                         "entity_id":str(entity_answer.entity_id) if entity_answer.entity_id else None,
                         "entity_version":entity_answer.version,
                         "evidence_turn_id":str(entity_answer.source_turn_id) if entity_answer.source_turn_id else None,

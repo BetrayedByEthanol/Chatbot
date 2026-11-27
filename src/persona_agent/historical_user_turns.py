@@ -145,6 +145,12 @@ def _correction_followups(
         """SELECT t.turn_id,t.created_at,t.input_text,t.sequence,t.status,
                   signal.intent_kind,signal.related_signal_id,
                   origin.signal_id AS origin_signal_id,
+                  (dialogue_turn_current(t.user_id,t.instance_id,t.conversation_id,t.turn_id)
+                   AND (signal.signal_id IS NULL OR EXISTS(
+                      SELECT 1 FROM current_dialogue_intents eligible WHERE eligible.signal_id=signal.signal_id))
+                   AND (origin.signal_id IS NULL OR EXISTS(
+                      SELECT 1 FROM current_dialogue_intents eligible WHERE eligible.signal_id=origin.signal_id))
+                  ) AS source_current,
                   EXISTS (
                       SELECT 1 FROM memory_revisions mr
                       WHERE mr.user_id=t.user_id AND mr.instance_id=t.instance_id
@@ -174,6 +180,8 @@ def _correction_followups(
     corrections=[]
     for row in cur.fetchall():
         text=row["input_text"].strip()
+        if not row["source_current"]:
+            return ()
         if (row["status"] != "RESPONDED"
                 or parse_explicit_topic_switch(text) is not None
                 or _SENSITIVE.search(text)
@@ -273,7 +281,10 @@ def _linked_resumed_cadence_update(
     from .intent_interpretation import _FREQUENCY_CORRECTION
 
     cur.execute(
-        """SELECT signal_id FROM conversation_intent_signals
+        """SELECT signal_id,EXISTS(
+                   SELECT 1 FROM current_dialogue_intents eligible
+                   WHERE eligible.signal_id=conversation_intent_signals.signal_id) AS source_current
+           FROM conversation_intent_signals
            WHERE turn_id=%s AND conversation_id=%s
              AND user_id=%s AND instance_id=%s
              AND intent_kind='OBJECTIVE' LIMIT 2""",
@@ -282,11 +293,13 @@ def _linked_resumed_cadence_update(
     roots = cur.fetchall()
     if not roots:
         return {}
-    if len(roots) != 1:
+    if len(roots) != 1 or not roots[0]["source_current"]:
         return None
     cur.execute(
         """SELECT t.turn_id,t.created_at,t.input_text,t.status,
                   s.epistemic_status,
+                  EXISTS(SELECT 1 FROM current_dialogue_intents eligible
+                         WHERE eligible.signal_id=s.signal_id) AS source_current,
                   EXISTS (
                       SELECT 1 FROM memory_revisions revision
                       WHERE revision.user_id=t.user_id
@@ -313,7 +326,7 @@ def _linked_resumed_cadence_update(
     change = cur.fetchone()
     if change is None:
         return {}
-    if (change["status"] != "RESPONDED"
+    if (change["status"] != "RESPONDED" or not change["source_current"]
             or change["has_memory_revision"] or change["has_memory_candidate"]
             or _SENSITIVE.search(change["input_text"])
             or _FREQUENCY_CORRECTION.fullmatch(

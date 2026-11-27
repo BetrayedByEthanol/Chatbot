@@ -36,7 +36,8 @@ def project_recent_context(cur,*,user_id,instance_id,conversation_id,turn_id,
                       r.knowledge_excerpt,r.response_text) AS response_text,
                   r.delivery_status,
                   raw.source_turn_ids,raw.reusable,
-                  (r.knowledge_excerpt OR EXISTS (
+                  (r.knowledge_excerpt OR entity_response_has_evidence(r.response_id,r.user_id,r.instance_id)
+                   OR EXISTS (
                       SELECT 1 FROM conversation_response_lineage l
                       WHERE l.response_id=r.response_id AND l.user_id=r.user_id
                         AND l.instance_id=r.instance_id
