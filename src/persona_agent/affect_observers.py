@@ -22,6 +22,7 @@ from .event_delivery import (
     subscribe,
 )
 from .operation_contracts import require_idle
+from .conversation_contracts import StaleHistoricalContext
 from .runtime import PermissionDenied
 
 _INPUT_EVENT="conversation.user_text.received.v1"
@@ -166,7 +167,7 @@ def run_affect_tick(
                     pass
             except StaleDelivery:
                 continue
-            except (PermissionDenied,ValueError) as exc:
+            except (PermissionDenied,ValueError,StaleHistoricalContext) as exc:
                 try:
                     retry_delivery(connection,lease,error=str(exc),delay_seconds=5)
                     retries+=1

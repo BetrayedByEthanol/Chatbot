@@ -7,23 +7,36 @@ is promoted into relationship authority by this view.
 
 from datetime import datetime,timezone
 
-from .emotion_state import _decay
+from .emotion_state import _decay,effective_emotion_projection,current_user_affect
+from .affect_lineage import FOREGROUND_APPRAISAL_LIMIT,fence_with_expiry
+from .memory_read_policy import capture_historical_read_fence
 from .communication_preference_rules import parse_explicit_sentence_limit
 
 
-def persona_affect_context_block(
-    cur,user_id,instance_id,max_chars:int,
-) -> str:
+def prepare_affect_context(cur,user_id,instance_id,max_chars:int,fence=None):
     """Bounded context contribution inside the foreground's existing read.
 
     Nothing here authorizes tools, overrides a direct user message, or implies
     that a reported user feeling was independently verified.
     """
     if max_chars<140:
-        return ""
+        return "",None
+    # Avoid capturing an additional fence for personas with no affect or
+    # preference state. All later reads are scoped and the fence is observed
+    # before the evidence is used.
+    cur.execute(
+        """SELECT EXISTS(SELECT 1 FROM persona_emotion_state
+                         WHERE user_id=%s AND instance_id=%s)
+               OR EXISTS(SELECT 1 FROM relationship_preferences
+                         WHERE user_id=%s AND instance_id=%s AND status='ACTIVE') AS available""",
+        (user_id,instance_id,user_id,instance_id),
+    )
+    if not cur.fetchone()["available"]:
+        return "",None
+    fence=fence or capture_historical_read_fence(cur,user_id,instance_id)
     cur.execute(
         """SELECT preference_key,scope_key,preference_value,source_quote
-           FROM relationship_preferences
+           FROM current_relationship_preferences
            WHERE user_id=%s AND instance_id=%s AND status='ACTIVE'
            ORDER BY CASE preference_key
                WHEN 'RESPONSE_LENGTH' THEN 0
@@ -41,23 +54,14 @@ def persona_affect_context_block(
     # global instructions from the foreground model.
     preferences=cur.fetchall()
     cur.execute(
-        """SELECT valence,arousal,engagement,baseline_valence,
-                  baseline_arousal,baseline_engagement,last_source_at
+        """SELECT *
            FROM persona_emotion_state
            WHERE user_id=%s AND instance_id=%s""",
         (user_id,instance_id),
     )
-    mood=cur.fetchone()
-    cur.execute(
-        """SELECT user_affect_label,confidence,source_turn_at
-           FROM emotion_appraisals
-           WHERE user_id=%s AND instance_id=%s AND applied
-             AND user_affect_label IS NOT NULL
-             AND expires_at>clock_timestamp()
-           ORDER BY source_turn_at DESC,appraisal_id DESC LIMIT 1""",
-        (user_id,instance_id),
-    )
-    affect=cur.fetchone()
+    mood=effective_emotion_projection(cur,user_id,instance_id,cur.fetchone(),fence,
+                                      limit=FOREGROUND_APPRAISAL_LIMIT)
+    affect=current_user_affect(cur,user_id,instance_id,datetime.now(timezone.utc))
 
     lines=[]
     for p in preferences:
@@ -98,13 +102,15 @@ def persona_affect_context_block(
         else:
             continue
         lines.append(line)
+    affect_line=None
     if affect is not None:
-        lines.append(
+        affect_line=(
             "Tentative user-affect signal (not verified fact): "
             f"{affect['user_affect_label'].lower()}, "
             f"confidence {float(affect['confidence']):.2f}; "
             "ask rather than assume when it matters."
         )
+        lines.append(affect_line)
     if mood is not None and mood["last_source_at"] is not None:
         now=datetime.now(timezone.utc)
         valence=_decay(
@@ -122,10 +128,17 @@ def persona_affect_context_block(
                 f"valence {valence:+.2f}, arousal {arousal:.2f}."
             )
     if not lines:
-        return ""
+        return "",None
     header="Scoped persona presentation context (evidence-linked; preferences override affect):\n"
     result=header
     for line in lines:
         if len(result)+len(line)+1<=max_chars:
             result+=line+"\n"
-    return result if result!=header else ""
+            if line==affect_line:
+                fence=fence_with_expiry(fence,affect["expires_at"])
+    return (result,fence) if result!=header else ("",None)
+
+
+def persona_affect_context_block(cur,user_id,instance_id,max_chars:int)->str:
+    """Compatibility read-only text projection; generation uses the fenced form."""
+    return prepare_affect_context(cur,user_id,instance_id,max_chars)[0]

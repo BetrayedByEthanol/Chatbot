@@ -574,7 +574,7 @@ def prepare_text_context(
                 # Keep persona identity and current user input, then a single
                 # bounded entity evidence view under the existing read fence.
                 from .entity_history import entity_history_context
-                from .affect_context import persona_affect_context_block
+                from .affect_context import prepare_affect_context
                 current=ModelMessage("user",item["input_text"])
                 temporal=_temporal_from_anchor(cursor,actor,item,turn_id)
                 prompt=(
@@ -592,9 +592,12 @@ def prepare_text_context(
                 prompt+=view.text
                 affect_room=min(650,max_context_chars-len(prompt)-len(current.content))
                 if affect_room>=140:
-                    prompt+=persona_affect_context_block(
-                        cursor,actor.user_id,item["instance_id"],affect_room,
+                    affect_block,affect_fence=prepare_affect_context(
+                        cursor,actor.user_id,item["instance_id"],affect_room,historical_fence,
                     )
+                    prompt+=affect_block
+                    if affect_fence is not None:
+                        historical_fence=affect_fence
                 return ResponseContext(
                     conversation_id=item["conversation_id"],turn_id=turn_id,
                     instance_id=item["instance_id"],selection_generation=item["selection_generation"],
@@ -866,15 +869,18 @@ def prepare_text_context(
             # Explicit communication preferences precede optional simulated
             # affect and tentative user-cue estimates. The whole block fits
             # inside the existing prompt budget; never drop the latest input.
-            from .affect_context import persona_affect_context_block
+            from .affect_context import prepare_affect_context
             affect_room=max_context_chars-len(prompt)-min(
                 len(history[-1].content),min(256,max_context_chars//4),
             )-160
             if affect_room>=140:
-                prompt+=persona_affect_context_block(
+                affect_block,affect_fence=prepare_affect_context(
                     cursor,actor.user_id,item["instance_id"],
-                    min(650,affect_room),
+                    min(650,affect_room),historical_fence or dialogue_fence,
                 )
+                prompt+=affect_block
+                if affect_fence is not None:
+                    historical_fence=affect_fence
             # MVP-03B.1: selectively add relevant approved Goal state and
             # lower-trust source-linked hypotheses to the existing context.
             # No LLM inference, domain mutation or action grant occurs here.
@@ -1148,7 +1154,9 @@ def prepare_text_context(
                 # The dialogue snapshot was observed before any subsequent
                 # optional context fence. Never substitute a newer revision
                 # for an earlier source read.
-                historical_fence=dialogue_dependencies.historical_fence
+                from .affect_lineage import merge_read_fences
+                historical_fence=merge_read_fences(
+                    dialogue_dependencies.historical_fence,historical_fence)
             system=ModelMessage("system",prompt)
             return ResponseContext(
                 conversation_id=item["conversation_id"],turn_id=turn_id,

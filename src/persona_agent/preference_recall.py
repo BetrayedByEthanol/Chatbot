@@ -60,7 +60,8 @@ def _planning_instruction(
     """
     with connection.cursor(row_factory=dict_row) as cur:
         cur.execute(
-            """SELECT t.input_text
+            """SELECT t.input_text,
+                      dialogue_turn_current(t.user_id,t.instance_id,t.conversation_id,t.turn_id) AS eligible
                FROM conversation_turns t
                JOIN conversation_turns anchor ON anchor.turn_id=%s
                  AND anchor.user_id=t.user_id
@@ -73,9 +74,11 @@ def _planning_instruction(
                LIMIT 48""",
             (turn_id,actor.user_id,instance_id),
         )
-        candidates=[row["input_text"] for row in cur.fetchall()]
-    for text in candidates:
-        normalized=_normalize_instruction(text)
+        candidates=cur.fetchall()
+    for row in candidates:
+        if not row["eligible"]:
+            return None
+        normalized=_normalize_instruction(row["input_text"])
         if any(p.fullmatch(normalized) for p in _ALLOW_BIG_PLAN):
             return "ALLOWED"
         if any(p.fullmatch(normalized) for p in _NO_BIG_PLAN):
@@ -175,11 +178,18 @@ def respond_with_preference_recall(
     topics=preference_recall_topics(context.messages[-1].content)
     if topics is None:
         raise ValueError("preference recall requires an explicit direct question")
-    snapshot=read_relationship_state(connection,actor,context.instance_id)
     historical_emoji=(
         "EMOJI_USE" in topics and
         is_historical_emoji_preference_query(context.messages[-1].content)
     )
+    # Canonical historical questions have their own scope fence, captured
+    # before reading either saved history or exact planning evidence.
+    historical=None
+    if historical_emoji or "PLANNING" in topics:
+        from .memory_read_policy import capture_historical_read_fence
+        with connection.cursor(row_factory=dict_row) as cur:
+            historical=capture_historical_read_fence(cur,actor.user_id,context.instance_id)
+    snapshot=read_relationship_state(connection,actor,context.instance_id)
     ever_saved_emoji=(
         has_saved_relationship_preference_history(
             connection,actor,context.instance_id,"EMOJI_USE",
@@ -219,7 +229,7 @@ def respond_with_preference_recall(
     # model context; its own owner-specific fence remains authoritative.
     context=replace(
         context,preference_fence=PreferenceReadFence(keys,revisions),
-        historical_fence=None,
+        historical_fence=historical,
     )
     return commit_text_response(
         connection,actor,context,
