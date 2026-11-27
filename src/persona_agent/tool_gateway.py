@@ -31,6 +31,8 @@ from .operation_scheduler import claim_operation, enqueue_operation
 from .operation_control import complete_operation, fail_operation
 from .runtime import IdempotencyConflict, PermissionDenied, StaleSelection
 from .response_decisions import explicit_analysis_payload
+from .workflow_evidence import lock_scope,source_current,require_source_current
+from .conversation_contracts import RawContextFence
 from .tool_contracts import (
     RESOURCE_KEY, SLOW_TOOL, TIME_TOOL, SlowTextToolCommand,
     ToolCallResult, ToolFollowup, ToolAuthorizationError, ToolResultNotReady,
@@ -177,6 +179,9 @@ def schedule_text_analysis(
                 _selection(cur,actor,turn["instance_id"],turn["selection_generation"])
                 if turn["status"]!="PENDING" or turn["last_input_turn_id"]!=command.turn_id:
                     raise StaleConversation("only the latest pending turn may schedule tools")
+                if not source_current(cur,actor.user_id,turn["instance_id"],
+                                      turn["conversation_id"],command.turn_id):
+                    raise ToolAuthorizationError("tool request evidence no longer eligible")
                 cur.execute(
                     """
                     INSERT INTO conversation_tool_calls(
@@ -285,9 +290,13 @@ def run_one_text_tool(
     with connection.cursor(row_factory=dict_row) as cur:
         cur.execute(
             """
-            SELECT t.input_text,c.tool_config,c.selection_generation
+            SELECT t.input_text,c.tool_config,c.selection_generation,
+                   c.conversation_id,c.turn_id,
+                   dialogue_turn_current(c.user_id,c.instance_id,c.conversation_id,c.turn_id) AS eligible
             FROM conversation_tool_calls c
             JOIN conversation_turns t ON t.turn_id=c.turn_id
+              AND t.user_id=c.user_id AND t.instance_id=c.instance_id
+              AND t.conversation_id=c.conversation_id
             WHERE c.tool_call_id=%s AND c.user_id=%s AND c.instance_id=%s
             """,
             (lease.operation_id,lease.user_id,lease.instance_id),
@@ -295,6 +304,9 @@ def run_one_text_tool(
         payload=cur.fetchone()
     if payload is None or payload["selection_generation"]!=lease.selection_generation:
         fail_operation(connection,lease,reason="tool correlation missing or obsolete")
+        return lease
+    if not payload["eligible"]:
+        fail_operation(connection,lease,reason="tool request evidence no longer eligible")
         return lease
     try:
         # External dependency injection MUST happen without database locks.
@@ -310,14 +322,20 @@ def run_one_text_tool(
         fail_operation(connection,lease,reason=f"tool execution failed: {type(exc).__name__}")
         return lease
     with connection.transaction():
-        connection.execute(
-            """
-            INSERT INTO conversation_tool_results(
-                operation_id,claim_generation,result_text
-            ) VALUES (%s,%s,%s) ON CONFLICT DO NOTHING
-            """,
-            (lease.operation_id,lease.claim_generation,text),
-        )
+        with connection.cursor(row_factory=dict_row) as cur:
+            lock_scope(cur,lease.user_id,lease.instance_id)
+            eligible=source_current(cur,lease.user_id,lease.instance_id,
+                                    payload["conversation_id"],payload["turn_id"])
+            if eligible:
+                cur.execute(
+                    """INSERT INTO conversation_tool_results(
+                           operation_id,claim_generation,result_text
+                       ) VALUES (%s,%s,%s) ON CONFLICT DO NOTHING""",
+                    (lease.operation_id,lease.claim_generation,text),
+                )
+    if not eligible:
+        fail_operation(connection,lease,reason="tool request invalidated during execution")
+        return lease
     # The P0 completion fence rejects expired/revoked claims. Orphaned
     # attempt results cannot be used unless COMPLETED references this attempt.
     complete_operation(
@@ -372,11 +390,18 @@ def _read_outcome(cur, row) -> _ToolOutcome | None:
         return _ToolOutcome(
             "UNAVAILABLE","I don't have a verified result for the text analysis.",
         )
+    if not source_current(cur,row["user_id"],row["instance_id"],
+                          row["conversation_id"],row["turn_id"]):
+        return _ToolOutcome("UNAVAILABLE","The source of the text analysis is no longer available.")
     return _ToolOutcome("SUCCESS",text)
 
 
 def _replay_delivered_followup(cur, row) -> ToolFollowup:
-    """Replay the exact acknowledged assistant output, not current worker data."""
+    """Replay acknowledged output only while its exact request is eligible."""
+    lock_scope(cur,row["user_id"],row["instance_id"])
+    if not source_current(cur,row["user_id"],row["instance_id"],
+                          row["conversation_id"],row["turn_id"]):
+        raise ToolResultNotReady("follow-up source no longer eligible")
     cur.execute(
         """SELECT response_text FROM conversation_assistant_followups
            WHERE tool_call_id=%s AND conversation_id=%s AND turn_id=%s
@@ -475,6 +500,8 @@ def respond_to_text_analysis(
                 raise AssertionError("historical response should be replayed")
         return respond_to_text(connection,actor,command.turn_id,NeverRun())
     context=prepare_direct_tool_context(connection,actor,command.turn_id)
+    from dataclasses import replace
+    context=replace(context,raw_context_fence=RawContextFence((command.turn_id,),True))
     tool=schedule_text_analysis(connection,actor,command)
     result=_await_result(connection,actor,tool.tool_call_id,await_seconds)
     if result is not None:
@@ -529,9 +556,12 @@ def reconcile_tool_followup(
                 "DIRECT" if response and response["model_id"]==_DIRECT_MODEL else
                 "DEFERRED" if response and response["model_id"]==_DEFERRED_MODEL else None
             )
-            outcome=_read_outcome(cur,row)
+            lock_scope(cur,row["user_id"],row["instance_id"])
+            eligible=source_current(cur,row["user_id"],row["instance_id"],
+                                    row["conversation_id"],row["turn_id"])
+            outcome=_read_outcome(cur,row) if eligible else None
             if (
-                selection is None or selection["instance_id"]!=row["instance_id"]
+                not eligible or selection is None or selection["instance_id"]!=row["instance_id"]
                 or selection["generation"]!=row["selection_generation"]
                 or selection["mode"]!="FOREGROUND"
             ):
@@ -601,6 +631,10 @@ def prepare_tool_followup(
             row=_read_call(cur,actor.user_id,tool_call_id,lock=True)
             if row["followup_state"]!="READY":
                 raise ToolResultNotReady("tool follow-up not ready")
+            lock_scope(cur,row["user_id"],row["instance_id"])
+            if not source_current(cur,row["user_id"],row["instance_id"],
+                                  row["conversation_id"],row["turn_id"]):
+                raise ToolResultNotReady("follow-up source no longer eligible")
             outcome=_read_outcome(cur,row)
             if outcome is None:
                 raise ToolResultNotReady("terminal outcome unavailable")
@@ -636,6 +670,10 @@ def acknowledge_tool_followup(
                 raise StaleConversation("follow-up superseded before acknowledgment")
             if row["followup_state"]!="READY":
                 raise ToolResultNotReady("tool follow-up not ready")
+            lock_scope(cur,row["user_id"],row["instance_id"])
+            if not source_current(cur,row["user_id"],row["instance_id"],
+                                  row["conversation_id"],row["turn_id"]):
+                raise ToolResultNotReady("follow-up source no longer eligible")
             outcome=_read_outcome(cur,row)
             if outcome is None:
                 raise ToolResultNotReady("terminal outcome unavailable")

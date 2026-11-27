@@ -89,7 +89,7 @@ def _authorized_lineage(cur,actor,instance_id,parent):
 def propose_derived_subgoal(
     connection:Connection,actor:TrustedPlatformActor,
     command:ProposeDerivedSubgoalCommand,*,lease:OperationLease|None=None,
-    model_id:str|None=None,
+    model_id:str|None=None,evidence_ids:tuple[UUID,...]|None=None,
 )->DerivedSubgoalProposalResult:
     """Stage, or auto-accept a *proved* quantitative child, in one transaction.
 
@@ -106,6 +106,10 @@ def propose_derived_subgoal(
                             or not 1<=len(model_id)<=128))
         or (not background and (lease is not None or model_id is not None))):
         raise PermissionDenied("subgoal proposal requires trusted Goal evaluator")
+    if evidence_ids is not None and (
+        not background or len(evidence_ids)>3 or len(set(evidence_ids))!=len(evidence_ids)
+    ):
+        raise PermissionDenied("invalid Goal evaluation evidence pins")
     receipt_id=uuid4()
     command_type="goal.subgoal.propose.v1"
     fingerprint=_fingerprint(command)
@@ -339,15 +343,15 @@ def propose_derived_subgoal(
                      source_parent_event_id,title,desired_outcome,
                      success_criterion,horizon,contribution_note,
                      proposal_digest,status,decision_method,created_event_id,
-                     accepted_goal_event_id)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                     accepted_goal_event_id,input_evidence_ids)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
                 (command.proposal_id,command.proposed_goal_id,actor.user_id,
                  command.instance_id,command.parent_goal_id,
                  command.expected_parent_version,command.source_parent_event_id,
                  command.title.strip(),command.desired_outcome.strip(),
                  command.success_criterion.strip(),command.horizon,
                  command.contribution_note.strip(),digest,status,method,
-                 proposal_event,goal_event),
+                 proposal_event,goal_event,list(evidence_ids) if evidence_ids is not None else None),
             )
             result=DerivedSubgoalProposalResult(
                 proposal_id=command.proposal_id,
@@ -366,6 +370,14 @@ def propose_derived_subgoal(
                 # and P0 completion: a crash cannot strand a changed parent
                 # version behind an unfinalized Goal evaluation operation.
                 from .goal_autonomy import _finalize_goal_evaluation_locked
+                if evidence_ids is not None:
+                    from .workflow_evidence import lock_scope
+                    lock_scope(cur,actor.user_id,command.instance_id)
+                    cur.execute("SELECT goal_evidence_current(%s,%s,%s,%s::uuid[]) AS eligible",
+                                (actor.user_id,command.instance_id,command.parent_goal_id,
+                                 list(evidence_ids)))
+                    if not cur.fetchone()["eligible"]:
+                        raise VersionConflict("Goal proposal evidence invalidated")
                 _finalize_goal_evaluation_locked(
                     cur,lease,status="PROPOSED",model_id=model_id,
                     proposal_id=command.proposal_id,

@@ -123,6 +123,22 @@ def process_alignment(cur,epoch:dict)->str:
     )
     if cur.fetchone() is not None:
         return "SOURCE_UNVERIFIED"
+    # A previous batch may have passed before Memory withdrew evidence.
+    # Revalidate only this epoch's eligible task/run candidates; historical
+    # checks are retained, but a stale certificate must not become READY.
+    from .workflow_evidence import lock_scope
+    lock_scope(cur,epoch["user_id"],epoch["instance_id"])
+    cur.execute(
+        """SELECT 1 FROM background_alignment_task_checks checked
+           WHERE checked.user_id=%s AND checked.instance_id=%s
+             AND checked.background_epoch=%s AND checked.decision='ELIGIBLE'
+             AND (NOT workflow_task_plan_current(checked.user_id,checked.instance_id,checked.task_id)
+               OR (checked.procedure_run_id IS NOT NULL AND NOT workflow_run_current(
+                   checked.user_id,checked.instance_id,checked.procedure_run_id)))
+           LIMIT 1""",scope,
+    )
+    if cur.fetchone() is not None:
+        return "SOURCE_UNVERIFIED"
     # Audit the precise result, NOT a generic "alignment complete" boolean.
     # The certificate and the existing P0 ready row share one transaction
     # with the preparation stage event/outbox in the calling coordinator.

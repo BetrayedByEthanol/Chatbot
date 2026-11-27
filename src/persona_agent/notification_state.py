@@ -24,6 +24,16 @@ from .notification_contracts import (
 )
 
 
+from .workflow_evidence import lock_scope,source_current
+
+
+def _notification_source_current(cur,row):
+    if row["source_turn_id"] is None:
+        return True
+    return source_current(cur,row["user_id"],row["instance_id"],
+                          row["source_conversation_id"],row["source_turn_id"])
+
+
 def _actor(actor):
     if type(actor) is not TrustedActor:
         raise PermissionDenied("notification action requires authenticated primary user")
@@ -245,6 +255,11 @@ def schedule_notification(
                  command.source_conversation_id,command.source_turn_id,
                  command.idempotency_key,_fingerprint(command),event),
             )
+            if command.source_turn_id is not None:
+                lock_scope(cur,actor.user_id,command.instance_id)
+                if not source_current(cur,actor.user_id,command.instance_id,
+                                      command.source_conversation_id,command.source_turn_id):
+                    raise PermissionDenied("notification source no longer eligible")
             result=NotificationResult(intent_id=command.intent_id,event_id=event)
             _remember(cur,rid,event,result)
             return result
@@ -353,6 +368,18 @@ def dispatch_due_notifications(connection: Connection, *, limit: int=32) -> int:
                     now=cur.fetchone()["now"]
                     if _is_quiet(policy,now):
                         continue
+                    if intent["source_turn_id"] is not None:
+                        lock_scope(cur,intent["user_id"],intent["instance_id"])
+                        if not _notification_source_current(cur,intent):
+                            cur.execute(
+                                """UPDATE notification_intents SET active=false,
+                                       updated_at=clock_timestamp() WHERE intent_id=%s""",(ident,))
+                            _event(cur,intent["user_id"],intent["instance_id"],
+                                   "notification.source_invalidated.v1",{"intent_id":str(ident)},
+                                   actor_source="notification.platform.in_app",
+                                   trust_level="TRUSTED_PLATFORM")
+                            committed+=1
+                            continue
                     overdue=now-intent["next_due_at"]>timedelta(hours=24)
                     if not overdue:
                         occurrence=uuid4()
@@ -398,9 +425,12 @@ def dispatch_due_notifications(connection: Connection, *, limit: int=32) -> int:
             with connection.transaction():
                 with connection.cursor(row_factory=dict_row) as cur:
                     cur.execute(
-                        """SELECT * FROM notification_occurrences
-                           WHERE occurrence_id=%s AND status='SNOOZED'
-                             AND snoozed_until<=clock_timestamp() FOR UPDATE SKIP LOCKED""",
+                        """SELECT o.*,i.source_turn_id,i.source_conversation_id
+                           FROM notification_occurrences o JOIN notification_intents i
+                             ON i.intent_id=o.intent_id AND i.user_id=o.user_id
+                             AND i.instance_id=o.instance_id
+                           WHERE o.occurrence_id=%s AND o.status='SNOOZED'
+                             AND o.snoozed_until<=clock_timestamp() FOR UPDATE OF o SKIP LOCKED""",
                         (oid,),
                     )
                     row=cur.fetchone()
@@ -414,6 +444,18 @@ def dispatch_due_notifications(connection: Connection, *, limit: int=32) -> int:
                     cur.execute("SELECT clock_timestamp() AS now")
                     if _is_quiet(policy,cur.fetchone()["now"]):
                         continue
+                    if row["source_turn_id"] is not None:
+                        lock_scope(cur,row["user_id"],row["instance_id"])
+                        if not _notification_source_current(cur,row):
+                            cur.execute(
+                                """UPDATE notification_occurrences SET status='CANCELLED',
+                                     snoozed_until=NULL WHERE occurrence_id=%s""",(oid,))
+                            _event(cur,row["user_id"],row["instance_id"],
+                                   "notification.source_invalidated.v1",{"occurrence_id":str(oid)},
+                                   actor_source="notification.platform.in_app",
+                                   trust_level="TRUSTED_PLATFORM")
+                            committed+=1
+                            continue
                     cur.execute(
                         """UPDATE notification_occurrences SET status='AVAILABLE',
                              snoozed_until=NULL,available_at=clock_timestamp()
@@ -442,7 +484,10 @@ def list_notification_inbox(
                       o.available_at,i.kind,i.body
                FROM notification_occurrences o
                JOIN notification_intents i ON i.intent_id=o.intent_id
+                 AND i.user_id=o.user_id AND i.instance_id=o.instance_id
                WHERE o.user_id=%s AND o.status='AVAILABLE'
+                 AND notification_source_current(i.user_id,i.instance_id,
+                                                 i.source_conversation_id,i.source_turn_id)
                ORDER BY o.available_at DESC,o.occurrence_id LIMIT %s""",
             (actor.user_id,limit),
         )
@@ -472,8 +517,10 @@ def respond_to_notification(
             if cur.fetchone() is None:
                 raise PermissionDenied("notification response outside authenticated user")
             cur.execute(
-                """SELECT o.*,i.active FROM notification_occurrences o
+                """SELECT o.*,i.active,i.source_turn_id,i.source_conversation_id
+                   FROM notification_occurrences o
                    JOIN notification_intents i ON i.intent_id=o.intent_id
+                     AND i.user_id=o.user_id AND i.instance_id=o.instance_id
                    WHERE o.occurrence_id=%s AND o.user_id=%s FOR UPDATE OF o""",
                 (command.occurrence_id,actor.user_id),
             )
@@ -488,6 +535,12 @@ def respond_to_notification(
                 )
             if row["status"]!="AVAILABLE":
                 raise VersionConflict("notification already acknowledged or snoozed")
+            # STOP/ACK remain possible for an already seen item. Never
+            # resume or feed a withdrawn notification into persona context.
+            if command.action in ("SNOOZE","REPLY") and row["source_turn_id"] is not None:
+                lock_scope(cur,row["user_id"],row["instance_id"])
+                if not _notification_source_current(cur,row):
+                    raise VersionConflict("notification source no longer eligible")
             if command.action=="SNOOZE":
                 cur.execute(
                     """UPDATE notification_occurrences SET status='SNOOZED',
@@ -556,10 +609,16 @@ def list_pending_notification_replies(
         if selected is None or selected["instance_id"]!=instance_id or selected["mode"]!="FOREGROUND":
             raise StaleSelection("persona must be reactivated to read inbound replies")
         cur.execute(
-            """SELECT reply_id,occurrence_id,reply_text,event_id,created_at
-               FROM notification_inbound_replies
-               WHERE user_id=%s AND instance_id=%s AND state='PENDING_PERSONA'
-               ORDER BY created_at,reply_id LIMIT %s""",
+            """SELECT r.reply_id,r.occurrence_id,r.reply_text,r.event_id,r.created_at
+               FROM notification_inbound_replies r
+               JOIN notification_occurrences o ON o.occurrence_id=r.occurrence_id
+                 AND o.user_id=r.user_id AND o.instance_id=r.instance_id
+               JOIN notification_intents i ON i.intent_id=o.intent_id
+                 AND i.user_id=o.user_id AND i.instance_id=o.instance_id
+               WHERE r.user_id=%s AND r.instance_id=%s AND r.state='PENDING_PERSONA'
+                 AND notification_source_current(i.user_id,i.instance_id,
+                                                 i.source_conversation_id,i.source_turn_id)
+               ORDER BY r.created_at,r.reply_id LIMIT %s""",
             (actor.user_id,instance_id,limit),
         )
         return tuple(dict(r) for r in cur.fetchall())

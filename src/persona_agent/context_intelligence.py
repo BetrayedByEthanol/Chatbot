@@ -174,31 +174,36 @@ def prepare_goal_reflection_context(
     if not included:
         return GoalReflectionContext("")
     ids=[g["goal_id"] for g in included]
+    # Capture before reading evidence, not after it has entered the prompt.
+    fence=(capture_historical_read_fence(cur,user_id,instance_id)
+           if capture_fence else None)
+    evidence_included=False
     cur.execute(
         """SELECT goal_id,evidence_kind,source_turn_id,source_quote
-           FROM goal_evidence
+           FROM goal_evidence e
            WHERE user_id=%s AND instance_id=%s AND goal_id=ANY(%s::uuid[])
+             AND dialogue_turn_current(e.user_id,e.instance_id,
+                                       e.source_conversation_id,e.source_turn_id)
              AND epistemic_status='USER_REPORTED'
              AND classification_status='UNREVIEWED'
            ORDER BY recorded_at DESC,evidence_id DESC LIMIT 3""",
         (user_id,instance_id,ids),
     )
     for row in cur.fetchall():
-        add(_line("User-reported, unreviewed Goal evidence (not verification): ",{
+        if add(_line("User-reported, unreviewed Goal evidence (not verification): ",{
             "goal_id":str(row["goal_id"]),"kind":row["evidence_kind"],
             "source_turn_id":str(row["source_turn_id"]),
             "quote":row["source_quote"][:150],
-        }))
+        })):
+            evidence_included=True
     if not include_reflections or max_chars-len(text)<190 or not _terms(latest_text):
-        return GoalReflectionContext(text)
+        return GoalReflectionContext(text,fence if evidence_included else None)
     goal_terms=frozenset().union(*(
         _terms(g["title"]+" "+g["desired_outcome"]+" "+g["success_criterion"])
         for g in included
     ))
     # One bounded read, only when a Goal is already relevant. All remaining
     # signals stay model-interpreted; intentions must pass a separate owner.
-    fence=(capture_historical_read_fence(cur,user_id,instance_id)
-           if capture_fence else None)
     cur.execute(
         f"""SELECT r.reflection_id,r.content,r.confidence,
                   r.evidence_quote,r.evidence_turn_id
@@ -230,7 +235,7 @@ def prepare_goal_reflection_context(
             "confidence":float(row["confidence"]),
         })):
             return GoalReflectionContext(text,fence)
-    return GoalReflectionContext(text)
+    return GoalReflectionContext(text,fence if evidence_included else None)
 
 
 def goal_reflection_context_block(cur,**kwargs) -> str:

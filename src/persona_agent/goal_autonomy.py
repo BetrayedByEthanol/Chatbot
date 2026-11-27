@@ -276,8 +276,10 @@ def _work(connection:Connection,lease:OperationLease)->dict:
                 raise VersionConflict("goal opportunity became stale")
             # Evidence stays bounded and user-reported, not model-as-fact.
             cur.execute(
-                """SELECT evidence_kind,source_quote FROM goal_evidence
+                """SELECT evidence_id,evidence_kind,source_quote FROM goal_evidence e
                    WHERE goal_id=%s AND user_id=%s AND instance_id=%s
+                     AND dialogue_turn_current(e.user_id,e.instance_id,
+                                               e.source_conversation_id,e.source_turn_id)
                    ORDER BY recorded_at DESC,evidence_id DESC LIMIT 3""",
                 (job["goal_id"],lease.user_id,lease.instance_id),
             )
@@ -292,7 +294,8 @@ def _prompt(work:dict)->tuple[ModelMessage,...]:
             "success_criterion":work["success_criterion"],
             "horizon":work["horizon"],
         },
-        "user_reported_evidence":[dict(row) for row in work["recent_evidence"]],
+        "user_reported_evidence":[{k:v for k,v in row.items() if k!="evidence_id"}
+                                  for row in work["recent_evidence"]],
     }
     return (
         ModelMessage(role="system",content=(
@@ -378,10 +381,27 @@ def _finalize_goal_evaluation_locked(
 
 def _commit_job(connection:Connection,lease:OperationLease,*,status:str,
                 model_id:str,proposal_id:UUID|None=None,
-                proposed_goal_id:UUID|None=None)->None:
+                proposed_goal_id:UUID|None=None,evidence_ids=(),goal_id=None,
+                parent_version=None)->None:
     """Atomic no-proposal path; candidate path finalizes in Goal owner."""
     with connection.transaction():
         with connection.cursor(row_factory=dict_row) as cur:
+            require_claim(cur,lease)
+            if goal_id is not None:
+                cur.execute(
+                    """SELECT version,status FROM goal_records
+                       WHERE goal_id=%s AND user_id=%s AND instance_id=%s FOR SHARE""",
+                    (goal_id,lease.user_id,lease.instance_id),
+                )
+                goal=cur.fetchone()
+                if goal is None or goal["version"]!=parent_version or goal["status"]!="ACTIVE":
+                    raise VersionConflict("Goal evaluation parent changed")
+                from .workflow_evidence import lock_scope
+                lock_scope(cur,lease.user_id,lease.instance_id)
+                cur.execute("SELECT goal_evidence_current(%s,%s,%s,%s::uuid[]) AS eligible",
+                            (lease.user_id,lease.instance_id,goal_id,list(evidence_ids)))
+                if not cur.fetchone()["eligible"]:
+                    raise VersionConflict("Goal evaluation evidence invalidated")
             _finalize_goal_evaluation_locked(
                 cur,lease,status=status,model_id=model_id,
                 proposal_id=proposal_id,proposed_goal_id=proposed_goal_id,
@@ -395,6 +415,7 @@ def run_goal_evaluation(
     require_idle(connection)
     try:
         work=_work(connection,lease)
+        evidence_ids=tuple(row["evidence_id"] for row in work["recent_evidence"])
         reply=gateway.generate(_prompt(work))
         if not 1<=len(reply.model_id)<=128 or len(reply.text)>5000:
             raise ValueError("invalid Goal evaluator response bounds")
@@ -404,7 +425,9 @@ def run_goal_evaluation(
             raise ValueError("invalid Goal opportunity model output") from exc
 
         if draft.candidate is None:
-            _commit_job(connection,lease,status="NO_PROPOSAL",model_id=reply.model_id)
+            _commit_job(connection,lease,status="NO_PROPOSAL",model_id=reply.model_id,
+                        evidence_ids=evidence_ids,goal_id=work["goal_id"],
+                        parent_version=work["parent_version"])
             return "NO_PROPOSAL"
 
         proposed_goal_id=uuid5(NAMESPACE_URL,f"goal-autonomy/child/{lease.operation_id}")
@@ -424,7 +447,7 @@ def run_goal_evaluation(
         propose_derived_subgoal(
             connection,TrustedPlatformActor(
                 user_id=lease.user_id,source_id=GOAL_EVALUATION_SOURCE,
-            ),command,lease=lease,model_id=reply.model_id,
+            ),command,lease=lease,model_id=reply.model_id,evidence_ids=evidence_ids,
         )
         return "PROPOSED"
     except Exception as exc:
