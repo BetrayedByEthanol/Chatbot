@@ -106,9 +106,9 @@ def propose_derived_subgoal(
                             or not 1<=len(model_id)<=128))
         or (not background and (lease is not None or model_id is not None))):
         raise PermissionDenied("subgoal proposal requires trusted Goal evaluator")
-    if evidence_ids is not None and (
+    if (background and evidence_ids is None) or (evidence_ids is not None and (
         not background or len(evidence_ids)>3 or len(set(evidence_ids))!=len(evidence_ids)
-    ):
+    )):
         raise PermissionDenied("invalid Goal evaluation evidence pins")
     receipt_id=uuid4()
     command_type="goal.subgoal.propose.v1"
@@ -370,19 +370,20 @@ def propose_derived_subgoal(
                 # and P0 completion: a crash cannot strand a changed parent
                 # version behind an unfinalized Goal evaluation operation.
                 from .goal_autonomy import _finalize_goal_evaluation_locked
-                if evidence_ids is not None:
-                    from .workflow_evidence import lock_scope
-                    lock_scope(cur,actor.user_id,command.instance_id)
-                    cur.execute("SELECT goal_evidence_current(%s,%s,%s,%s::uuid[]) AS eligible",
-                                (actor.user_id,command.instance_id,command.parent_goal_id,
-                                 list(evidence_ids)))
-                    if not cur.fetchone()["eligible"]:
-                        raise VersionConflict("Goal proposal evidence invalidated")
                 _finalize_goal_evaluation_locked(
                     cur,lease,status="PROPOSED",model_id=model_id,
                     proposal_id=command.proposal_id,
                     proposed_goal_id=command.proposed_goal_id,
                 )
+                # All operation/owner/resource writes precede the late
+                # shared Memory fence; a denial rolls back every effect.
+                from .workflow_evidence import lock_scope
+                lock_scope(cur,actor.user_id,command.instance_id)
+                cur.execute("SELECT goal_evidence_current(%s,%s,%s,%s::uuid[]) AS eligible",
+                            (actor.user_id,command.instance_id,command.parent_goal_id,
+                             list(evidence_ids)))
+                if not cur.fetchone()["eligible"]:
+                    raise VersionConflict("Goal proposal evidence invalidated")
             return result
 
 

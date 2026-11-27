@@ -31,7 +31,7 @@ from .operation_scheduler import claim_operation, enqueue_operation
 from .operation_control import complete_operation, fail_operation
 from .runtime import IdempotencyConflict, PermissionDenied, StaleSelection
 from .response_decisions import explicit_analysis_payload
-from .workflow_evidence import lock_scope,source_current,require_source_current
+from .workflow_evidence import lock_scope,source_current
 from .conversation_contracts import RawContextFence
 from .tool_contracts import (
     RESOURCE_KEY, SLOW_TOOL, TIME_TOOL, SlowTextToolCommand,

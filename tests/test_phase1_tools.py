@@ -1101,3 +1101,63 @@ def test_whitespace_worker_output_is_not_a_successful_result(dsn):
             "SELECT count(*) FROM conversation_tool_results WHERE operation_id=%s",
             (tool.operation_id,),
         ).fetchone()[0]==0
+
+
+@pytest.mark.parametrize("stage",["BEFORE_WORK","DURING_WORK","READY","DELIVERED"])
+def test_tool_source_invalidation_fences_worker_and_followup(dsn,stage):
+    from workflow_evidence_helpers import link_memory,invalidate
+    user,instance=seed(dsn)
+    configure_tool_pool(dsn)
+    source=incoming(dsn,user,instance,"alpha beta beta gamma")
+    saved=link_memory(dsn,user,instance,source.conversation_id,source.turn_id)
+    cmd=SlowTextToolCommand(turn_id=source.turn_id,max_words=2)
+    notice=invoke(dsn,respond_to_text_analysis,actor(user),cmd,await_seconds=0)
+    finish_initial(dsn,user,notice.response_id)
+    tool=invoke(dsn,schedule_text_analysis,actor(user),cmd)
+    calls=[]
+    def execute(text,max_words):
+        calls.append(text)
+        if stage=="DURING_WORK":
+            invalidate(dsn,user,instance,saved,"EXPIRE")
+        return "Withdrawable analysis result."
+    if stage=="BEFORE_WORK":
+        invalidate(dsn,user,instance,saved,"EXPIRE")
+    invoke(dsn,run_one_text_tool,worker_id="source-invalidation",executor=execute)
+    if stage in ("READY","DELIVERED"):
+        assert invoke(dsn,prepare_tool_followup,actor(user),tool.tool_call_id).text=="Withdrawable analysis result."
+        if stage=="DELIVERED":
+            invoke(dsn,acknowledge_tool_followup,actor(user),tool.tool_call_id)
+        invalidate(dsn,user,instance,saved,"EXPIRE")
+    assert len(calls)==(0 if stage=="BEFORE_WORK" else 1)
+    with pytest.raises(ToolResultNotReady):
+        invoke(dsn,prepare_tool_followup,actor(user),tool.tool_call_id)
+    with pytest.raises(ToolResultNotReady):
+        invoke(dsn,acknowledge_tool_followup,actor(user),tool.tool_call_id)
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT count(*) FROM conversation_tool_results WHERE operation_id=%s",
+            (tool.operation_id,),
+        ).fetchone()[0]==(0 if stage in ("BEFORE_WORK","DURING_WORK") else 1)
+        assert conn.execute(
+            "SELECT count(*) FROM conversation_assistant_followups WHERE tool_call_id=%s",
+            (tool.tool_call_id,),
+        ).fetchone()[0]==(1 if stage=="DELIVERED" else 0)
+
+
+def test_direct_tool_result_cannot_replay_after_source_invalidation(dsn):
+    from persona_agent.conversation_contracts import InvalidatedResponse
+    from workflow_evidence_helpers import link_memory,invalidate
+    user,instance=seed(dsn)
+    configure_tool_pool(dsn)
+    source=incoming(dsn,user,instance)
+    saved=link_memory(dsn,user,instance,source.conversation_id,source.turn_id)
+    cmd=SlowTextToolCommand(turn_id=source.turn_id)
+    invoke(dsn,schedule_text_analysis,actor(user),cmd)
+    invoke(dsn,run_one_text_tool,worker_id="direct-source")
+    reply=invoke(dsn,respond_to_text_analysis,actor(user),cmd,await_seconds=0)
+    assert reply.model_id=="tool.initial.direct.v1"
+    invalidate(dsn,user,instance,saved,"EXPIRE")
+    with pytest.raises(InvalidatedResponse):
+        invoke(dsn,acknowledge_text_delivery,actor(user),reply.response_id)
+    with pytest.raises(InvalidatedResponse):
+        invoke(dsn,respond_to_text_analysis,actor(user),cmd,await_seconds=0)

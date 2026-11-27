@@ -1670,3 +1670,37 @@ def test_stale_retry_respects_receipt_before_parent_lock(dsn,monkeypatch):
                  AND idempotency_key=%s""",
             (user,instance,command.idempotency_key),
         ).fetchone()[0]==1
+
+
+@pytest.mark.parametrize("change",["CORRECT","RETRACT","EXPIRE"])
+def test_goal_evidence_withdrawal_preserves_approved_goal(dsn,change):
+    from persona_agent.conversation import prepare_text_context,commit_text_response
+    from persona_agent.conversation_contracts import ModelReply,StaleHistoricalContext
+    from workflow_evidence_helpers import link_memory,invalidate
+    user,instance,conv,gid=approved_book_goal(dsn)
+    source=turn(dsn,user,instance,conv,"I finished reading a chapter today.")
+    cmd=RecordGoalEvidenceCommand(
+        instance_id=instance,expected_generation=1,idempotency_key=uuid4().hex,
+        conversation_id=conv,evidence_turn_id=source.turn_id,evidence_quote="I finished reading a chapter today.",
+        goal_id=gid,expected_goal_version=1,evidence_kind="SUCCESS_REPORTED",evidence_id=uuid4(),
+    )
+    call(dsn,record_goal_evidence,actor(user),cmd)
+    saved=link_memory(dsn,user,instance,conv,source.turn_id)
+    request=turn(dsn,user,instance,uuid4(),"How is my reading goal progressing?")
+    context=call(dsn,prepare_text_context,actor(user),request.turn_id,max_turns=1)
+    assert "I finished reading a chapter today." in context.messages[0].content
+    assert context.historical_fence is not None
+    invalidate(dsn,user,instance,saved,change)
+    assert call(dsn,list_goal_evidence,actor(user),instance,gid)==()
+    view=call(dsn,list_goals,actor(user),instance)[0]
+    assert view.status=="ACTIVE" and view.version==2 and view.evidence_count==0
+    assert view.desired_outcome=="Read 3 books per month"
+    with pytest.raises(StaleHistoricalContext):
+        call(dsn,commit_text_response,actor(user),context,
+             ModelReply(model_id="goal-source",text="A chapter completed."),model_generated=True)
+    fresh=call(dsn,prepare_text_context,actor(user),request.turn_id,max_turns=1)
+    assert "I finished reading a chapter today." not in fresh.messages[0].content
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute("SELECT source_quote FROM goal_evidence WHERE evidence_id=%s",
+                            (cmd.evidence_id,)).fetchone()==(cmd.evidence_quote,)
+    assert call(dsn,record_goal_evidence,actor(user),cmd).replayed

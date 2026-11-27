@@ -386,7 +386,8 @@ def _commit_job(connection:Connection,lease:OperationLease,*,status:str,
     """Atomic no-proposal path; candidate path finalizes in Goal owner."""
     with connection.transaction():
         with connection.cursor(row_factory=dict_row) as cur:
-            require_claim(cur,lease)
+            op=require_claim(cur,lease)
+            require_current_authority(cur,op)
             if goal_id is not None:
                 cur.execute(
                     """SELECT version,status FROM goal_records
@@ -396,16 +397,17 @@ def _commit_job(connection:Connection,lease:OperationLease,*,status:str,
                 goal=cur.fetchone()
                 if goal is None or goal["version"]!=parent_version or goal["status"]!="ACTIVE":
                     raise VersionConflict("Goal evaluation parent changed")
+            _finalize_goal_evaluation_locked(
+                cur,lease,status=status,model_id=model_id,
+                proposal_id=proposal_id,proposed_goal_id=proposed_goal_id,
+            )
+            if goal_id is not None:
                 from .workflow_evidence import lock_scope
                 lock_scope(cur,lease.user_id,lease.instance_id)
                 cur.execute("SELECT goal_evidence_current(%s,%s,%s,%s::uuid[]) AS eligible",
                             (lease.user_id,lease.instance_id,goal_id,list(evidence_ids)))
                 if not cur.fetchone()["eligible"]:
                     raise VersionConflict("Goal evaluation evidence invalidated")
-            _finalize_goal_evaluation_locked(
-                cur,lease,status=status,model_id=model_id,
-                proposal_id=proposal_id,proposed_goal_id=proposed_goal_id,
-            )
 
 
 def run_goal_evaluation(

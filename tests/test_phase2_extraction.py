@@ -779,3 +779,46 @@ def test_matching_conflict_becomes_revision_scoped_corroboration(dsn):
             "SELECT count(*) FROM memory_revisions WHERE memory_id=%s",
             (matching.memory_id,),
         ).fetchone()[0]==2
+
+
+def test_invalidated_source_does_not_create_new_extraction_candidate(dsn):
+    from workflow_evidence_helpers import link_memory,invalidate
+    consumer=bootstrap(dsn)
+    user,instance,_=seed(dsn)
+    conv=uuid4()
+    source=turn(dsn,user,instance,conv,"My favorite drink is tea.")
+    saved=link_memory(dsn,user,instance,conv,source.turn_id)
+    invalidate(dsn,user,instance,saved,"EXPIRE")
+    tick(dsn,consumer)
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT count(*) FROM memory_extraction_candidates WHERE source_turn_id=%s",
+            (source.turn_id,),
+        ).fetchone()==(0,)
+        assert conn.execute(
+            """SELECT count(*) FROM memory_records WHERE user_id=%s AND instance_id=%s
+               AND predicate_key='favorite_drink'""",(user,instance),
+        ).fetchone()==(0,)
+
+
+def test_withdrawn_conflict_source_cannot_be_approved(dsn):
+    from workflow_evidence_helpers import link_memory,invalidate
+    consumer=bootstrap(dsn)
+    user,instance,_=seed(dsn)
+    conv=uuid4()
+    turn(dsn,user,instance,conv,"My favorite drink is tea.")
+    tick(dsn,consumer)
+    source=turn(dsn,user,instance,conv,"My favorite drink is coffee.")
+    saved=link_memory(dsn,user,instance,conv,source.turn_id)
+    tick(dsn,consumer)
+    pending,=call(dsn,list_extraction_conflicts,actor(user),instance)
+    invalidate(dsn,user,instance,saved,"EXPIRE")
+    assert call(dsn,list_extraction_conflicts,actor(user),instance)==()
+    with pytest.raises(PermissionDenied):
+        call(dsn,approve_extraction_conflict,actor(user),pending.candidate_id,
+             expected_generation=1,expected_version=pending.expected_version)
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT status FROM memory_extraction_candidates WHERE candidate_id=%s",
+            (pending.candidate_id,),
+        ).fetchone()==("CONFLICT",)

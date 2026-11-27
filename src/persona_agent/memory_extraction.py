@@ -325,7 +325,6 @@ def _reassess_conflict(cur, candidate: dict) -> dict:
     """
     if candidate["status"]!="CONFLICT":
         return candidate
-    fence=capture_historical_read_fence(cur,candidate["user_id"],candidate["instance_id"])
     if not admission_source_current(cur,candidate["user_id"],candidate["instance_id"],
                                     candidate["conversation_id"],candidate["source_turn_id"]):
         return {**candidate,"status":"STALE"}
@@ -379,7 +378,6 @@ def _reassess_conflict(cur, candidate: dict) -> dict:
              candidate["user_id"],candidate["instance_id"],
              candidate["source_quote"]),
         )
-    verify_admission_snapshot(cur,candidate["user_id"],candidate["instance_id"],fence)
     return {**candidate,"status":new_status,
             "target_version":current["version"]}
 
@@ -395,6 +393,7 @@ def _refresh_review_queue(
     """
     with connection.transaction():
         with connection.cursor(row_factory=dict_row) as cur:
+            fence=capture_historical_read_fence(cur,actor.user_id,instance_id)
             cur.execute(
                 """SELECT c.* FROM memory_extraction_candidates c
                    JOIN memory_records m ON m.memory_id=c.target_memory_id
@@ -408,8 +407,12 @@ def _refresh_review_queue(
                 (actor.user_id,instance_id,limit),
             )
             candidates=cur.fetchall()
+            changed=False
             for candidate in candidates:
-                _reassess_conflict(cur,candidate)
+                result=_reassess_conflict(cur,candidate)
+                changed=changed or result["target_version"]!=candidate["target_version"]
+            if changed:
+                verify_admission_snapshot(cur,actor.user_id,instance_id,fence)
 
 
 def list_extraction_conflicts(

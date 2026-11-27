@@ -445,3 +445,35 @@ def test_goal_evaluation_stops_at_existing_user_task(dsn,monkeypatch):
             "SELECT count(*) FROM goal_autonomy_jobs WHERE user_id=%s AND instance_id=%s",
             (user,instance),
         ).fetchone()==(0,)
+
+
+@pytest.mark.parametrize("candidate", [None,outcome()])
+def test_goal_worker_withdrawal_during_inference_rolls_back_result(dsn,monkeypatch,candidate):
+    from persona_agent.goal_contracts import RecordGoalEvidenceCommand
+    from persona_agent.goal_state import record_goal_evidence
+    from persona_agent.runtime import VersionConflict
+    from workflow_evidence_helpers import link_memory,invalidate
+    user,instance,root=closed_goal(dsn,monkeypatch)
+    conv=uuid4()
+    source=goals.turn(dsn,user,instance,conv,"I finished reading a chapter today.")
+    call(dsn,record_goal_evidence,goals.actor(user),RecordGoalEvidenceCommand(
+        instance_id=instance,expected_generation=1,idempotency_key=uuid4().hex,
+        conversation_id=conv,evidence_turn_id=source.turn_id,
+        evidence_quote="I finished reading a chapter today.",
+        goal_id=root,expected_goal_version=1,evidence_kind="SUCCESS_REPORTED",evidence_id=uuid4(),
+    ))
+    saved=link_memory(dsn,user,instance,conv,source.turn_id)
+    ready(dsn,user,instance)
+    staged=call(dsn,schedule_goal_evaluation,stage_actor(user),instance,1)
+    prioritize_goal_operation(dsn,staged.operation_id)
+    model=OpportunityModel(candidate,callback=lambda:invalidate(dsn,user,instance,saved,"EXPIRE"))
+    with pytest.raises(VersionConflict,match="evidence invalidated"):
+        call(dsn,run_one_goal_evaluation,model,worker_id="withdrawn-goal-evidence")
+    assert model.calls==1
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute("SELECT status FROM goal_autonomy_jobs WHERE operation_id=%s",
+                            (staged.operation_id,)).fetchone()==("STAGED",)
+        assert conn.execute("SELECT count(*) FROM goal_subgoal_proposals WHERE parent_goal_id=%s",
+                            (root,)).fetchone()==(0,)
+        assert conn.execute("SELECT count(*) FROM goal_records WHERE parent_goal_id=%s",
+                            (root,)).fetchone()==(0,)

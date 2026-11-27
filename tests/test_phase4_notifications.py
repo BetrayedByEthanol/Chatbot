@@ -434,3 +434,51 @@ def test_local_dst_recurring_schedule_gap_and_fold():
     before_fall=datetime(2026,10,24,12,tzinfo=zone).astimezone(timezone.utc)
     fall=_next_daily(before_fall,"Europe/Berlin",2,30)
     assert fall.isoformat()=="2026-10-25T00:30:00+00:00"  # first fold only
+
+
+@pytest.mark.parametrize("stage",["BEFORE_DUE","AVAILABLE","SNOOZED"])
+def test_notification_withdrawal_stops_effective_delivery(dsn,stage):
+    from test_phase2_memory import turn
+    from workflow_evidence_helpers import link_memory,invalidate
+    user,instance,_=_ready(dsn)
+    conv=uuid4()
+    source=turn(dsn,user,instance,conv,"Remind me about my private report.")
+    saved=link_memory(dsn,user,instance,conv,source.turn_id)
+    cmd=schedule(user,instance,recur="DAILY").model_copy(update={
+        "source_conversation_id":conv,"source_turn_id":source.turn_id,
+    })
+    call(dsn,schedule_notification,user_actor(user),cmd)
+    occurrence=None
+    if stage!="BEFORE_DUE":
+        call(dsn,dispatch_due_notifications)
+        occurrence=next(x for x in call(dsn,list_notification_inbox,user_actor(user))
+                        if x.intent_id==cmd.intent_id)
+        if stage=="SNOOZED":
+            call(dsn,respond_to_notification,user_actor(user),NotificationActionCommand(
+                occurrence_id=occurrence.occurrence_id,idempotency_key=uuid4().hex,
+                action="SNOOZE",snooze_minutes=5,
+            ))
+            with psycopg.connect(dsn,autocommit=True) as conn:
+                conn.execute("UPDATE notification_occurrences SET snoozed_until=clock_timestamp()-interval '1 second' WHERE occurrence_id=%s",
+                             (occurrence.occurrence_id,))
+    invalidate(dsn,user,instance,saved,"EXPIRE")
+    assert not any(x.intent_id==cmd.intent_id for x in
+                   call(dsn,list_notification_inbox,user_actor(user)))
+    call(dsn,dispatch_due_notifications)
+    if stage=="BEFORE_DUE":
+        assert check(dsn,"SELECT active FROM notification_intents WHERE intent_id=%s",
+                     (cmd.intent_id,))==[(False,)]
+        assert check(dsn,"SELECT count(*) FROM notification_occurrences WHERE intent_id=%s",
+                     (cmd.intent_id,))==[(0,)]
+    elif stage=="SNOOZED":
+        assert check(dsn,"SELECT status FROM notification_occurrences WHERE occurrence_id=%s",
+                     (occurrence.occurrence_id,))==[("CANCELLED",)]
+    else:
+        with pytest.raises(VersionConflict):
+            call(dsn,respond_to_notification,user_actor(user),NotificationActionCommand(
+                occurrence_id=occurrence.occurrence_id,idempotency_key=uuid4().hex,
+                action="SNOOZE",snooze_minutes=5,
+            ))
+        # Withdrawal is not a fabricated STOP/ACK or deletion.
+        assert check(dsn,"SELECT status FROM notification_occurrences WHERE occurrence_id=%s",
+                     (occurrence.occurrence_id,))==[("AVAILABLE",)]

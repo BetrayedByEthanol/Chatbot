@@ -116,7 +116,13 @@ $$;
 -- closed via their immutable job association rather than guessed pins.
 ALTER TABLE goal_subgoal_proposals ADD COLUMN input_evidence_ids uuid[];
 ALTER TABLE goal_subgoal_proposals ADD CONSTRAINT goal_proposal_evidence_bound
-    CHECK (input_evidence_ids IS NULL OR cardinality(input_evidence_ids)<=3);
+    CHECK (input_evidence_ids IS NULL OR (
+        cardinality(input_evidence_ids)<=3 AND array_position(input_evidence_ids,NULL) IS NULL
+    ));
+CREATE TRIGGER immutable_goal_proposal_evidence
+    BEFORE UPDATE OF input_evidence_ids ON goal_subgoal_proposals
+    FOR EACH ROW WHEN (OLD.input_evidence_ids IS DISTINCT FROM NEW.input_evidence_ids)
+    EXECUTE FUNCTION reject_procedure_history_mutation();
 
 CREATE FUNCTION goal_proposal_evidence_current(uid uuid,iid uuid,pid uuid)
 RETURNS boolean LANGUAGE sql AS $$
@@ -151,4 +157,79 @@ CREATE FUNCTION notification_source_current(uid uuid,iid uuid,cid uuid,sid uuid)
 RETURNS boolean LANGUAGE sql AS $$
     SELECT CASE WHEN cid IS NULL AND sid IS NULL THEN true
            ELSE dialogue_turn_current(uid,iid,cid,sid) END
+$$;
+
+
+-- Exact saved-document version, source approval and passage integrity.
+-- The old strategy selection remains recorded; a researched method must
+-- not provide new instructions or AGENT authority from withdrawn citations.
+CREATE FUNCTION strategy_research_usable(uid uuid,iid uuid,sid uuid)
+RETURNS boolean LANGUAGE sql AS $$
+    SELECT NOT EXISTS (SELECT 1 FROM goal_strategy_research r
+        WHERE r.user_id=uid AND r.instance_id=iid AND r.strategy_id=sid)
+    OR (
+        strategy_research_sources_current(uid,iid,sid)
+        AND EXISTS (SELECT 1 FROM goal_strategy_research_sources p
+            WHERE p.user_id=uid AND p.instance_id=iid AND p.strategy_id=sid)
+        AND NOT EXISTS (
+            SELECT 1 FROM goal_strategy_research_sources p
+            LEFT JOIN memory_knowledge_documents d ON d.document_id=p.document_id
+              AND d.user_id=p.user_id AND d.instance_id=p.instance_id
+            LEFT JOIN memory_knowledge_versions v ON v.document_id=p.document_id
+              AND v.version=p.version AND v.user_id=p.user_id AND v.instance_id=p.instance_id
+            LEFT JOIN memory_knowledge_passages passage ON passage.document_id=p.document_id
+              AND passage.version=p.version AND passage.position=p.position
+              AND passage.user_id=p.user_id AND passage.instance_id=p.instance_id
+            WHERE p.user_id=uid AND p.instance_id=iid AND p.strategy_id=sid
+              AND (
+                d.document_id IS NULL OR d.current_version<>p.version
+                OR d.record_status<>'ACTIVE' OR d.privacy_class<>'NORMAL'
+                OR (d.expires_at IS NOT NULL AND d.expires_at<=clock_timestamp())
+                OR v.document_id IS NULL OR v.privacy_class<>'NORMAL'
+                OR (v.expires_at IS NOT NULL AND v.expires_at<=clock_timestamp())
+                OR NOT workflow_source_current(v.user_id,v.instance_id,
+                       v.source_conversation_id,v.evidence_turn_id,v.approval_turn_id)
+                OR v.content_sha256 IS DISTINCT FROM p.content_sha256
+                OR v.content_sha256 IS DISTINCT FROM encode(sha256(convert_to(v.content,'UTF8')),'hex')
+                OR passage.document_id IS NULL
+                OR passage.passage_text IS DISTINCT FROM substring(
+                       v.content FROM passage.start_offset+1 FOR passage.end_offset-passage.start_offset)
+              )
+        )
+    )
+$$;
+
+CREATE OR REPLACE FUNCTION workflow_variant_current(uid uuid,iid uuid,vid uuid,rev integer)
+RETURNS boolean LANGUAGE sql AS $$
+    WITH RECURSIVE chain(revision,depth) AS (
+        SELECT rev,1
+        UNION ALL
+        SELECT p.expected_revision,c.depth+1 FROM chain c
+        JOIN procedure_adaptation_decisions d ON d.variant_id=vid
+          AND d.user_id=uid AND d.instance_id=iid AND d.applied_revision=c.revision
+          AND d.decision='APPLY'
+        JOIN procedure_adaptation_proposals p ON p.proposal_id=d.proposal_id
+          AND p.variant_id=d.variant_id AND p.user_id=d.user_id AND p.instance_id=d.instance_id
+        WHERE c.depth<32 AND p.expected_revision<c.revision
+    )
+    SELECT count(*)<=32 AND EXISTS (
+        SELECT 1 FROM personalized_procedures v
+        WHERE v.variant_id=vid AND v.user_id=uid AND v.instance_id=iid
+          AND (v.strategy_id IS NULL OR strategy_research_usable(uid,iid,v.strategy_id))
+    ) AND COALESCE(bool_and(
+        EXISTS (SELECT 1 FROM personalized_procedure_revisions v
+            WHERE v.variant_id=vid AND v.user_id=uid AND v.instance_id=iid
+              AND v.revision=c.revision
+              AND workflow_source_current(uid,iid,v.source_conversation_id,v.source_turn_id,v.approval_turn_id))
+        AND NOT EXISTS (
+            SELECT 1 FROM procedure_adaptation_decisions d
+            JOIN procedure_adaptation_proposals p ON p.proposal_id=d.proposal_id
+              AND p.variant_id=d.variant_id AND p.user_id=d.user_id AND p.instance_id=d.instance_id
+            WHERE d.variant_id=vid AND d.user_id=uid AND d.instance_id=iid
+              AND d.decision='APPLY' AND d.applied_revision=c.revision
+              AND (NOT workflow_source_current(uid,iid,d.source_conversation_id,d.source_turn_id,d.approval_turn_id)
+                   OR NOT workflow_proposal_current(uid,iid,p.proposal_id)
+                   OR NOT EXISTS (SELECT 1 FROM chain prior
+                        WHERE prior.depth=c.depth+1 AND prior.revision=p.expected_revision)))
+    ),false) FROM chain c
 $$;

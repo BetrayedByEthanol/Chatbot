@@ -36,7 +36,7 @@ from .memory_extraction import (
 from .model_gateway import OllamaChatGateway
 from .operation_contracts import require_idle
 from .runtime import PermissionDenied, VersionConflict
-from .extraction_lineage import admission_source_current,verify_admission_snapshot
+from .extraction_lineage import verify_admission_snapshot
 from .memory_read_policy import capture_historical_read_fence
 from .workflow_evidence import source_current,lock_scope
 

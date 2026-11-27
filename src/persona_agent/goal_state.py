@@ -783,7 +783,10 @@ def list_goals(
                            ORDER BY s.goal_version DESC LIMIT 1)
                              AS selected_strategy_id,
                           (SELECT count(*) FROM goal_evidence e
-                           WHERE e.goal_id=g.goal_id) AS evidence_count
+                           WHERE e.goal_id=g.goal_id AND e.user_id=g.user_id
+                             AND e.instance_id=g.instance_id
+                             AND dialogue_turn_current(e.user_id,e.instance_id,
+                                                       e.source_conversation_id,e.source_turn_id)) AS evidence_count
                    FROM goal_records g WHERE g.user_id=%s AND g.instance_id=%s
                    ORDER BY g.depth,g.created_at,g.goal_id LIMIT %s""",
                 (actor.user_id,instance_id,limit),

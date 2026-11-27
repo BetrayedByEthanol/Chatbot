@@ -16,7 +16,7 @@ from .knowledge_contracts import KnowledgePassage
 from .knowledge_memory import select_knowledge
 from .operation_contracts import require_idle
 from .runtime import PermissionDenied,VersionConflict
-from .workflow_evidence import source_current,require_source_current,lock_scope
+from .workflow_evidence import require_source_current,lock_scope
 
 MAX_SOURCES=4
 MAX_STRATEGIES=12
@@ -212,6 +212,9 @@ def validate_research_selection(cur,actor,command,record):
     _current_approval(cur,actor,command)
     if not research_provenance_current(cur,record):
         raise VersionConflict("research approval evidence invalidated")
+    if _resolve_pins(cur,actor,command.instance_id,record["query"],
+                     _pins(cur,record)) is None:
+        raise VersionConflict("research source unavailable; review strategy before selection")
 
 
 @dataclass(frozen=True)
@@ -317,6 +320,11 @@ def compare_goal_strategies(connection,actor,instance_id,goal_id):
                 sources=(_resolve_pins(cur,actor,instance_id,record["query"],_pins(cur,record))
                          if record and research_provenance_current(cur,record) else None)
                 observations,truncated=_observations(cur,actor,instance_id,goal_id,row["strategy_id"])
+                if record and not sources:
+                    # Preserve the selected identifier, not the unusable
+                    # derived method or withdrawn citation's paraphrase.
+                    row=dict(row,title="[Research strategy requires reassessment]",
+                             approach="",suitability_note="")
                 items.append(StrategyComparisonItem(**row,
                     selected=row["strategy_id"]==selected,
                     limitations=record["limitations"] if record and sources else None,
