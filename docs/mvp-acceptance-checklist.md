@@ -153,7 +153,7 @@ US-050 remains M until candidate CI/review; other statuses unchanged. Technical 
 
 US-004/009/010/117/118 remain P; US-085 remains M. No status promotion, remote/untrusted deployment approval or Phase 2/3 exit.
 
-## 2J. MVP-07A merged and 07B2 first candidate evidence
+## 2J. MVP-07A merged and 07B2 first candidate evidence (historical; §2K supersedes execution status)
 
 - Final PR #131 head `013844252529c8d64824edf6fe3e5f115d400dbd`: [PostgreSQL CI](https://github.com/BetrayedByEthanol/Chatbot/actions/runs/45829385892) SUCCESS (2,278 passed, 3 skipped); standalone contracts 5 passed; without Psycopg 996 passed, 241 skipped. [Live integration](https://github.com/BetrayedByEthanol/Chatbot/actions/runs/45829385876) SUCCESS. Merged as `62f54a8945a9d57e559214c137c5ae1fc90ed84a`. Initial 07B1 inventory merged. No separate merge-SHA CI or remote deployment acceptance claimed.
 - [07B2 response-lineage implementation](mvp-07b2-response-lineage.md); [candidate regression](../tests/test_mvp07b2_response_lineage.py). New tests NOT RUN at authoring.
@@ -168,6 +168,23 @@ US-004/009/010/117/118 remain P; US-085 remains M. No status promotion, remote/u
 | B3 — Deletion policy | Physical erasure, restore/backup/provider copies, exports and audit retention | OPEN |
 
 US-117/118 remain P; US-085 remains M. No complete 07B2 acceptance or untrusted deployment approval.
+
+## 2K. MVP-07B2 merged technical evidence and predictive admission (27 November 2026)
+
+This supersedes §2J's candidate/NOT RUN execution status for the bounded response slice; the original §2J table is retained as historical candidate evidence. PR-head successes are not independent merge-SHA runs, full story acceptance or release certification.
+
+| Increment | Merge / tested head | Technical evidence |
+|---|---|---|
+| Response lineage | #132 `2ca8985` / `1c81164` | [Contracts](https://github.com/BetrayedByEthanol/Chatbot/actions/runs/45835070197) (2,287 passed, 3 skipped); [live](https://github.com/BetrayedByEthanol/Chatbot/actions/runs/45835070154) passed. Covers bounded B2.1–4 regression scope. |
+| Summary lineage | #133 `f229600` / `c754bd3` | [Contracts](https://github.com/BetrayedByEthanol/Chatbot/actions/runs/45841164964) (2,291 passed, 3 skipped); [live](https://github.com/BetrayedByEthanol/Chatbot/actions/runs/45841164697) passed after timeout rerun. |
+| Cognitive lineage | #135 `7e18dfe` / `cad404f` | [Contracts](https://github.com/BetrayedByEthanol/Chatbot/actions/runs/45866145844) (2,298 passed, 3 skipped); [live](https://github.com/BetrayedByEthanol/Chatbot/actions/runs/45866145718) passed. |
+| Raw foreground | #136 `27a950d` / `a58553c` | [Contracts](https://github.com/BetrayedByEthanol/Chatbot/actions/runs/45882904720) (2,307 passed, 3 skipped); [live](https://github.com/BetrayedByEthanol/Chatbot/actions/runs/45882904716) passed. |
+| Workflow evidence | #137 `66b888e` / `2e00d4a` | [Contracts](https://github.com/BetrayedByEthanol/Chatbot/actions/runs/45889760151) (2,316 passed, 3 skipped); [live](https://github.com/BetrayedByEthanol/Chatbot/actions/runs/45889760150) passed. |
+| Derived projections | #138 `827073d` / `5854636` | [Phase 0 contracts](https://github.com/BetrayedByEthanol/Chatbot/actions/runs/45894540960) and [Phase 1 live integrated acceptance](https://github.com/BetrayedByEthanol/Chatbot/actions/runs/45894541044) passed; run conclusions verified against PR head, no new pass count asserted. |
+
+B2.5 remains OPEN: complete dialogue/intent, affect, remaining lifecycle/derived dependencies and predictive-record coverage not demonstrated. B3 remains OPEN: deletion/retention, external copies/backups and restore behavior. US-117/118 remain P and US-085 remains M. No status promotion, phase exit, full 07B acceptance or deployment approval.
+
+Continuation only (not additional Phase 0–1 MVP criteria): P2-F1.1 [predictive admission contract](predictive-user-modeling-refinement.md#61-predictive-learning-admission-contract-p2-f11), checks A-PRED-1–5, are NOT RUN for newly introduced predictive records. Reuse merged 07B2 evidence but require owner-specific scope, source validity, late writes/replay, learning-control/reset and safe fallback checks before enabling each real-user persistent learning path. P2-F3 [relevance-gate evaluation](predictive-user-modeling-refinement.md#62-relevance-gate-and-measured-acceptance-p2-f3) is NOT RUN; baseline and thresholds remain open. No new tests executed in this documentation review.
 
 ## 3. Confirmed Phase 0–1 acceptance items
 
@@ -491,7 +508,7 @@ For every criterion record ID, source criterion, candidate revision, actual test
 
 ## 8. Next development work
 
-**Continuation refinement (26 November 2026):** [PRED-ROADMAP-01](predictive-user-modeling-refinement.md) adopts scoped expectation/prediction and approach-learning criteria within existing P2-F1/F2/F3 and later integration/evaluation reviews. It does not add a Phase 0–1 acceptance item, change the existing execution sequence or deployment gates, or promote any acceptance result. Applicable 07B correction/lineage contracts gate durable personalized learning; no mandatory predictive prefetch or per-turn verification.
+**Continuation refinement (26 November 2026):** [PRED-ROADMAP-01](predictive-user-modeling-refinement.md) adopts scoped expectation/prediction and approach-learning criteria within existing P2-F1/F2/F3 and later integration/evaluation reviews. It does not add a Phase 0–1 acceptance item, change the existing execution sequence or deployment gates, or promote any acceptance result. P2-F1.1–6 subdivide work without reordering work packages; specific predictive admission checks and verified 07B2 evidence are in §2K. P2-F3 adds held-out relevance-gate measurement; no mandatory predictive prefetch or per-turn verification.
 
 Start MVP-04A benchmark and review integrity: diagnose actual gateway failure from available evidence, improve validation diagnostics if reproduced, preserve frozen scenario and independent review requirements. Then MVP-04B reproduced grounding fixes, MVP-04C pragmatic/correction checks, MVP-04D tool/late result checks, MVP-05A trusted time. Authentication and applicable data-lifecycle decisions precede untrusted deployment.
 
