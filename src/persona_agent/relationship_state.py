@@ -26,6 +26,9 @@ from .runtime import (
     _fingerprint,
 )
 
+from .affect_lineage import current_sources,projection_current,source_current
+from .memory_read_policy import capture_historical_read_fence,require_historical_read_fence
+
 RELATIONSHIP_CONSUMER="relationship.user_interaction.v1"
 _COMMAND="relationship.preference.set.v1"
 
@@ -172,6 +175,39 @@ def _preference_update(
     )
 
 
+def effective_rapport(cur,user_id,instance_id,state,fence):
+    """Replay originally applicable feedback, retaining factual interaction count.
+
+    Event stream order reproduces the owner's original late-delivery rule.
+    Revoked feedback does not resurrect older, originally unapplied feedback.
+    """
+    if state is None:
+        return 0.0
+    if projection_current(state,fence):
+        return float(state["rapport"])
+    cur.execute(
+        """SELECT o.conversation_id,o.source_turn_id,o.source_turn_at,o.feedback
+           FROM relationship_observations o JOIN events e
+             ON e.event_id=o.event_id AND e.user_id=o.user_id AND e.instance_id=o.instance_id
+           WHERE o.user_id=%s AND o.instance_id=%s AND o.feedback<>'NONE'
+           ORDER BY e.stream_sequence""",
+        (user_id,instance_id),
+    )
+    rows=cur.fetchall()
+    eligible=current_sources(cur,user_id,instance_id,rows)
+    rapport=0.0
+    watermark=None
+    for row in rows:
+        at=row["source_turn_at"]
+        if watermark is not None and at<=watermark:
+            continue
+        watermark=at
+        if row["source_turn_id"] in eligible:
+            rapport=round(max(-1,min(1,rapport+(
+                .06 if row["feedback"]=="POSITIVE" else -.08))),3)
+    return rapport
+
+
 def observe_relationship_input(cur,event,source:dict) -> bool:
     """At-least-once authenticated interaction, no inference beyond feedback."""
     state=_ensure_state(cur,event.user_id,event.instance_id)
@@ -186,7 +222,10 @@ def observe_relationship_input(cur,event,source:dict) -> bool:
     # allow punctuation normalization to turn an oversized input into a
     # match whose full evidence would violate a CHECK constraint. The turn
     # still counts as an interaction with neutral feedback.
-    matchable=len(source["input_text"])<=200
+    fence=capture_historical_read_fence(cur,event.user_id,event.instance_id)
+    eligible=source_current(cur,event.user_id,event.instance_id,
+                            source["conversation_id"],source["turn_id"])
+    matchable=eligible and len(source["input_text"])<=200
     normalized=_exact(source["input_text"]) if matchable else ""
     feedback=_FEEDBACK.get(normalized,"NONE")
     count=state["interaction_count"]+1
@@ -194,7 +233,7 @@ def observe_relationship_input(cur,event,source:dict) -> bool:
     apply_feedback=(feedback!="NONE"
                     and (previous is None or source["created_at"]>previous))
     rapport=max(-1,min(1,
-        float(state["rapport"])+(
+        effective_rapport(cur,event.user_id,event.instance_id,state,fence)+(
             (0.06 if feedback=="POSITIVE" else -0.08)
             if apply_feedback else 0
         ),
@@ -208,10 +247,12 @@ def observe_relationship_input(cur,event,source:dict) -> bool:
                    coalesce(last_interaction_at,%s),%s
                ),
                last_feedback_at=CASE WHEN %s THEN %s ELSE last_feedback_at END,
+               evidence_revision=%s,evidence_next_expiry=%s,
                updated_at=clock_timestamp()
            WHERE user_id=%s AND instance_id=%s""",
         (count,familiarity,rapport,source["created_at"],source["created_at"],
-         apply_feedback,source["created_at"],event.user_id,event.instance_id),
+         apply_feedback,source["created_at"],fence.revision,fence.next_expiry,
+         event.user_id,event.instance_id),
     )
     event_id=write_domain_event(
         cur,user_id=event.user_id,instance_id=event.instance_id,
@@ -244,6 +285,7 @@ def observe_relationship_input(cur,event,source:dict) -> bool:
             key=key,scope=scope,value=value,action="SET",
             causation_id=event.event_id,
         )
+    require_historical_read_fence(cur,event.user_id,event.instance_id,fence)
     return True
 
 
@@ -311,6 +353,10 @@ def set_relationship_preference(
                 not in evidence["input_text"].casefold()):
                 raise PermissionDenied("relationship preference must cite actual user text")
             _ensure_state(cur,actor.user_id,command.instance_id)
+            fence=capture_historical_read_fence(cur,actor.user_id,command.instance_id)
+            if not source_current(cur,actor.user_id,command.instance_id,
+                                  command.conversation_id,command.evidence_turn_id):
+                raise PermissionDenied("relationship preference source no longer eligible")
             result=_preference_update(
                 cur,user_id=actor.user_id,instance_id=command.instance_id,
                 conversation_id=command.conversation_id,
@@ -328,7 +374,37 @@ def set_relationship_preference(
                    SET event_id=%s,result_json=%s::jsonb WHERE receipt_id=%s""",
                 (result.event_id,json.dumps(result.model_dump(mode="json")),receipt_id),
             )
+            require_historical_read_fence(cur,actor.user_id,command.instance_id,fence)
             return result
+
+
+def _read_current_preferences(cur,user_id,instance_id,*,keys=None):
+    cur.execute(
+        """SELECT preference_key,scope_key,preference_value,status,version,
+                  source_turn_id,source_quote
+           FROM current_relationship_preferences
+           WHERE user_id=%s AND instance_id=%s
+             AND (%s::text[] IS NULL OR (scope_key='' AND preference_key=ANY(%s::text[])))
+           ORDER BY preference_key,scope_key""",
+        (user_id,instance_id,keys,keys),
+    )
+    return tuple(PreferenceView(**dict(row)) for row in cur.fetchall())
+
+
+def read_relationship_preferences(connection:Connection,actor:TrustedActor,
+                                  instance_id:UUID,*,keys=None):
+    """Read only the requested global preference slots, never replay rapport."""
+    require_idle(connection)
+    _require_actor(actor)
+    with connection.transaction(),connection.cursor(row_factory=dict_row) as cur:
+        cur.execute("SELECT 1 FROM persona_instances WHERE user_id=%s AND id=%s",
+                    (actor.user_id,instance_id))
+        if cur.fetchone() is None:
+            raise PermissionDenied("relationship preference read outside actor scope")
+        fence=capture_historical_read_fence(cur,actor.user_id,instance_id)
+        result=_read_current_preferences(cur,actor.user_id,instance_id,keys=keys)
+        require_historical_read_fence(cur,actor.user_id,instance_id,fence)
+        return result
 
 
 def read_relationship_state(
@@ -337,36 +413,30 @@ def read_relationship_state(
     """Authenticated scoped state; no hidden inferred attachment."""
     require_idle(connection)
     _require_actor(actor)
-    with connection.cursor(row_factory=dict_row) as cur:
+    with connection.transaction(),connection.cursor(row_factory=dict_row) as cur:
         cur.execute(
             "SELECT 1 FROM persona_instances WHERE user_id=%s AND id=%s",
             (actor.user_id,instance_id),
         )
         if cur.fetchone() is None:
             raise PermissionDenied("relationship state outside actor scope")
+        fence=capture_historical_read_fence(cur,actor.user_id,instance_id)
         cur.execute(
-            """SELECT version,interaction_count,familiarity,rapport,
-                      last_interaction_at
+            """SELECT *
                FROM relationship_state
                WHERE user_id=%s AND instance_id=%s""",
             (actor.user_id,instance_id),
         )
         state=cur.fetchone()
-        cur.execute(
-            """SELECT preference_key,scope_key,preference_value,status,version,
-                      source_turn_id,source_quote
-               FROM relationship_preferences
-               WHERE user_id=%s AND instance_id=%s
-               ORDER BY preference_key,scope_key""",
-            (actor.user_id,instance_id),
-        )
-        preferences=tuple(PreferenceView(**dict(row)) for row in cur.fetchall())
+        rapport=effective_rapport(cur,actor.user_id,instance_id,state,fence)
+        preferences=_read_current_preferences(cur,actor.user_id,instance_id)
+        require_historical_read_fence(cur,actor.user_id,instance_id,fence)
     return RelationshipSnapshot(
         user_id=actor.user_id,instance_id=instance_id,
         version=state["version"] if state else 0,
         interaction_count=state["interaction_count"] if state else 0,
         familiarity=float(state["familiarity"]) if state else 0,
-        rapport=float(state["rapport"]) if state else 0,
+        rapport=rapport,
         last_interaction_at=state["last_interaction_at"] if state else None,
         preferences=preferences,
     )
@@ -399,10 +469,12 @@ def has_saved_relationship_preference_history(
             raise PermissionDenied("relationship state outside actor scope")
         cur.execute(
             """SELECT EXISTS(
-                   SELECT 1 FROM relationship_preference_revisions
+                   SELECT 1 FROM relationship_preference_revisions p
                    WHERE user_id=%s AND instance_id=%s
                      AND preference_key=%s AND scope_key=%s
                      AND status='ACTIVE'
+                     AND dialogue_turn_current(p.user_id,p.instance_id,
+                                               p.source_conversation_id,p.source_turn_id)
                ) AS ever_saved""",
             (actor.user_id, instance_id, preference_key, scope_key),
         )

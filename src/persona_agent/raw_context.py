@@ -3,7 +3,9 @@
 Conversation owns chronology and provenance; Memory owns source eligibility.
 No raw-content copies, semantic revocation, or owner writes occur here.
 """
-from .conversation_contracts import ModelMessage, StaleHistoricalContext
+from datetime import datetime,timezone
+
+from .conversation_contracts import HistoricalReadFence,ModelMessage,StaleHistoricalContext
 
 MAX_RAW_SOURCES=128
 OMITTED_USER="[Earlier user statement omitted: source no longer eligible.]"
@@ -28,20 +30,23 @@ def project_recent_context(cur,*,user_id,instance_id,conversation_id,turn_id,
     Prior response bodies inherit the bounded union of their source IDs.
     Prefer the latest response/follow-up when the lineage budget is tight;
     the user turns themselves always have priority. Existing broad-fenced
-    responses retain their established omission policy.
+    content-dependent responses retain their established omission policy.
+    A current presentation-only reply may be reused with its inherited
+    scope/expiry fence, in addition to the exact raw dependency IDs.
     """
     cur.execute(
         """SELECT t.turn_id,t.sequence,t.input_text,
                   response_lineage_derived_text(r.response_id,r.user_id,r.instance_id,
                       r.knowledge_excerpt,r.response_text) AS response_text,
-                  r.delivery_status,
-                  raw.source_turn_ids,raw.reusable,
-                  (r.knowledge_excerpt OR entity_response_has_evidence(r.response_id,r.user_id,r.instance_id)
-                   OR EXISTS (
-                      SELECT 1 FROM conversation_response_lineage l
-                      WHERE l.response_id=r.response_id AND l.user_id=r.user_id
-                        AND l.instance_id=r.instance_id
-                  )) AS broad_omitted
+                  r.delivery_status,r.response_text AS stored_response_text,
+                  raw.source_turn_ids,raw.reusable,raw.legacy_unbound AS raw_unbound,
+                  l.presentation_only,l.historical_revision,l.next_expiry,
+                  h.revision AS current_historical_revision,
+                  (r.knowledge_excerpt OR entity_response_has_evidence(
+                      r.response_id,r.user_id,r.instance_id)) AS content_guarded,
+                  (r.knowledge_excerpt OR entity_response_has_evidence(
+                      r.response_id,r.user_id,r.instance_id)
+                   OR l.response_id IS NOT NULL) AS broad_omitted
            FROM conversation_turns t
            LEFT JOIN conversation_responses r ON r.turn_id=t.turn_id
              AND r.user_id=t.user_id AND r.instance_id=t.instance_id
@@ -49,12 +54,28 @@ def project_recent_context(cur,*,user_id,instance_id,conversation_id,turn_id,
            LEFT JOIN conversation_response_raw_lineage raw ON raw.response_id=r.response_id
              AND raw.user_id=r.user_id AND raw.instance_id=r.instance_id
              AND raw.conversation_id=r.conversation_id
+           LEFT JOIN conversation_response_lineage l ON l.response_id=r.response_id
+             AND l.user_id=r.user_id AND l.instance_id=r.instance_id
+           LEFT JOIN historical_recall_revisions h ON h.user_id=t.user_id
+             AND h.instance_id=t.instance_id
            WHERE t.conversation_id=%s AND t.user_id=%s AND t.instance_id=%s
              AND t.sequence<=%s
            ORDER BY t.sequence DESC LIMIT %s""",
         (conversation_id,user_id,instance_id,sequence,max_turns),
     )
     recent=list(reversed(cur.fetchall()))
+    now=datetime.now(timezone.utc)
+    for row in recent:
+        row["presentation_fence"]=None
+        if (row["presentation_only"] and not row["content_guarded"]
+                and row["reusable"] is True and not row["raw_unbound"]
+                and row["source_turn_ids"] is not None
+                and row["historical_revision"]==row["current_historical_revision"]
+                and (row["next_expiry"] is None or row["next_expiry"]>now)):
+            row["presentation_fence"]=HistoricalReadFence(
+                row["historical_revision"],row["next_expiry"])
+            row["broad_omitted"]=False
+            row["response_text"]=row["stored_response_text"]
     anchors={row["turn_id"] for row in recent}
     cur.execute(
         """SELECT delivery_turn_id,turn_id AS source_turn_id,response_text
@@ -93,6 +114,7 @@ def project_recent_context(cur,*,user_id,instance_id,conversation_id,turn_id,
     history=[]
     sequences=[]
     dependencies=[]
+    presentation_fence=None
     def add(sequence,role,text,ids=()):
         history.append(ModelMessage(role,text))
         sequences.append(sequence)
@@ -114,6 +136,10 @@ def project_recent_context(cur,*,user_id,instance_id,conversation_id,turn_id,
                 add(seq,"assistant",row["response_text"])
             elif deps is not None and deps<=eligible:
                 add(seq,"assistant",row["response_text"],deps)
+                if row["presentation_fence"] is not None:
+                    from .affect_lineage import merge_read_fences
+                    presentation_fence=merge_read_fences(
+                        presentation_fence,row["presentation_fence"])
             else:
                 add(seq,"assistant",OMITTED_ASSISTANT)
         for index,followup in enumerate(followups.get(anchor,())):
@@ -122,7 +148,7 @@ def project_recent_context(cur,*,user_id,instance_id,conversation_id,turn_id,
                 add(seq,"assistant",followup["response_text"],deps)
             else:
                 add(seq,"assistant",OMITTED_FOLLOWUP)
-    return recent,history,sequences,dependencies,turn_id in eligible
+    return recent,history,sequences,dependencies,turn_id in eligible,presentation_fence
 
 
 def require_raw_context_fence(cur,user_id,instance_id,conversation_id,fence):
