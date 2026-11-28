@@ -201,7 +201,7 @@ def test_withdrawn_latest_question_suppresses_gap_without_older_fallback(dsn):
     assert gaps(dsn,user,instance,open_only=True)[0].response_id==again.response_id
 
 
-def test_awaiting_clarification_is_not_reasked_after_delivery_or_invalid_source(dsn):
+def test_awaiting_clarification_suppresses_repeat_until_source_invalidates(dsn):
     from test_mvp05c1_entity_continuity import _register
     user,instance,_=seed(dsn)
     _register(dsn,user,instance,"Alex","FRIEND")
@@ -230,7 +230,7 @@ def test_current_review_feedback_prioritizes_attention_but_audit_survives_expiry
     req,answer=_ask(dsn,user,instance,"What car do I drive?")
     command=_feedback(dsn,user,instance,req,answer,outcome="MISSED")
     call(dsn,record_retrieval_feedback,actor(user),command)
-    _,other=_ask(dsn,user,instance,"What is my favorite drink?")
+    _,other=_ask(dsn,user,instance,"What camera do I own?")
     current=gaps(dsn,user,instance,open_only=True,attention_only=True)
     assert [(r.response_id,r.gap_state) for r in current]==[
         (answer.response_id,"REVIEW_REQUIRED"),(other.response_id,"OPEN")]
