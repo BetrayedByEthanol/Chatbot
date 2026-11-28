@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import Literal, Protocol, Sequence
 from uuid import UUID
 from .learning_control_contracts import PredictiveFence
+from .prediction_contracts import ComparisonRead
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -130,6 +131,8 @@ class ResponseContext:
     presentation_fence: HistoricalReadFence | None = None
     # Host-only optional contribution. No predictive producer in P2-F1.1.
     predictive_fence: PredictiveFence | None = None
+    # Diagnostic host signal only: not part of model messages or delivery.
+    prediction_comparison: ComparisonRead | None = None
 
 
 class TextModelGateway(Protocol):

@@ -281,7 +281,8 @@ def ingest_text(connection: Connection, actor: TrustedActor,
             if provenance is None:
                 from .learning_control import stamp_learning_input
                 stamp_learning_input(cursor,user_id=actor.user_id,instance_id=command.instance_id,
-                                     turn_id=turn_id,event_id=event_id)
+                                     turn_id=turn_id,event_id=event_id,text=command.text,
+                                     received_at=receipt_at)
             from .explicit_memory_reports import record_explicit_memory_report
             record_explicit_memory_report(
                 cursor,user_id=actor.user_id,instance_id=command.instance_id,
@@ -1170,6 +1171,11 @@ def prepare_text_context(
                 historical_fence=merge_read_fences(
                     dialogue_dependencies.historical_fence,historical_fence)
             system=ModelMessage("system",prompt)
+            # P2-F1.3 only computes a host diagnostic; no learned text or
+            # appraisal is supplied to the model. P2-F1.4 must fence its use.
+            from .prediction_lifecycle import compare_incoming_report
+            comparison=compare_incoming_report(cursor,actor.user_id,item["instance_id"],
+                                               turn_id,item["input_text"],item["turn_at"])
             return ResponseContext(
                 conversation_id=item["conversation_id"],turn_id=turn_id,
                 instance_id=item["instance_id"],
@@ -1178,6 +1184,7 @@ def prepare_text_context(
                 messages=(system,*kept),
                 procedure_fence=procedure_fence,temporal_context=temporal,
                 historical_fence=historical_fence,presentation_fence=presentation_fence,
+                prediction_comparison=comparison if comparison.route!="SKIP" else None,
                 raw_context_fence=RawContextFence(
                     tuple(sorted(raw_dependencies | grounding_dependencies |
                                  dialogue_dependencies.source_ids)),reusable,

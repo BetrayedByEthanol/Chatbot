@@ -196,6 +196,8 @@ P2-F1.1 candidate: [Governance control and admission](p2-f11-predictive-learning
 
 P2-F1.1 merged #145: [Phase 0](https://github.com/BetrayedByEthanol/Chatbot/actions/runs/46143062679) 2,405 passed, 3 skipped; [live](https://github.com/BetrayedByEthanol/Chatbot/actions/runs/46143062676) PASS. P2-F1.2 [contextual expectations](p2-f12-contextual-expectations.md): actual owner path candidate; tests NOT RUN, no full predictive activation or story promotion.
 
+P2-F1.2 merged #146: [Phase 0](https://github.com/BetrayedByEthanol/Chatbot/actions/runs/46149223791) 2,420 passed, 3 skipped; [live](https://github.com/BetrayedByEthanol/Chatbot/actions/runs/46149224696) PASS. P2-F1.3 [prediction lifecycle](p2-f13-prediction-lifecycle.md): forecast/resolution and selective comparison actual owner paths candidate, tests NOT RUN; no learned response presentation or story promotion.
+
 ## 3. Confirmed Phase 0–1 acceptance items
 
 Each of the 28 stories below retains its canonical ID, authority, priority, owner and baseline implementation status. Confirmed criteria are reproduced from the master backlog; mixed criteria are scoped to their confirmed core with proposed details identified explicitly. Evidence links come from the matrix and are starting points, not proof of full coverage. Review applicable legacy verification candidates before acceptance; unapproved numerical parameters are not binding.
