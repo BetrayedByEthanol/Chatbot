@@ -62,9 +62,9 @@ def stage_support_intention(cur,work,comparison_id,comparison):
 def _projection_current(cur,user_id,instance_id,p):
     f=p.fence
     cur.execute("""SELECT subjective_projection_current(%s,%s,%s,%s,%s::uuid[],
-                    %s,%s,%s,%s,%s) AS current""",
+                    %s,%s,%s,%s,%s,%s) AS current""",
                 (user_id,instance_id,f.control_version,f.reset_generation,list(f.source_turn_ids),
-                 p.expectation_revision_id,p.outcome_turn_id,p.intention_id,p.kind,p.expires_at))
+                 p.expectation_revision_id,p.outcome_turn_id,p.occasion,p.intention_id,p.kind,p.expires_at))
     return cur.fetchone()["current"]
 
 
@@ -86,11 +86,17 @@ def prepare_subjective_projection(cur,user_id,instance_id,comparison,*,max_chars
     e=_expectation(cur,user_id,instance_id,comparison.expectation_revision_id)
     if e is None or e["maturity"]!="TENTATIVE":
         return None
-    cur.execute("""SELECT reported_completion,reported_context,reported_at
+    cur.execute("""SELECT reported_completion,reported_context,reported_at,reported_occasion
                    FROM predictive_input_admissions WHERE turn_id=%s AND user_id=%s AND instance_id=%s""",
                 (comparison.outcome_turn_id,user_id,instance_id))
     report=cur.fetchone()
     if report is None:
+        return None
+    cur.execute("""SELECT 1 FROM conversation_response_lineage
+                   WHERE subjective_expectation_id=%s AND subjective_occasion=%s
+                     AND user_id=%s AND instance_id=%s""",
+                (e["revision_id"],report["reported_occasion"],user_id,instance_id))
+    if cur.fetchone() is not None:
         return None
     intent=None
     if report["reported_completion"] is False:
@@ -134,7 +140,7 @@ def prepare_subjective_projection(cur,user_id,instance_id,comparison,*,max_chars
     time_bounds=[x for x in (f.next_expiry,captured.next_expiry,expiry) if x is not None]
     combined=PredictiveFence(f.control_version,f.reset_generation,ids,
                              min(f.historical_revision,captured.historical_revision),min(time_bounds))
-    projection=SubjectiveProjection(e["revision_id"],comparison.outcome_turn_id,
+    projection=SubjectiveProjection(e["revision_id"],comparison.outcome_turn_id,report["reported_occasion"],
                                     intent["intention_id"] if intent else None,
                                     "MISMATCH" if mismatch else "SUPPORT",expiry,combined,text)
     try:

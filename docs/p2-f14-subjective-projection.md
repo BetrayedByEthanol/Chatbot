@@ -55,7 +55,10 @@ reviewable choices, not general approved thresholds. Selection is bounded
 to one candidate by indexed exact context and current revision; invalid
 candidate abstains, no fallback to older interpretations. A unique
 response-lineage reservation makes each intention at most once admitted to
-a generated response. Reservation is deliberately conservative, even if a
+a generated response. A second uniqueness guard reserves the exact prior
+expectation revision and reported occasion, preventing duplicate projection
+even when ingress visibility differs from reception timestamp order.
+Reservation is deliberately conservative, even if a
 generated response is never delivered; no automatic recovery of a consumed
 opportunity. This does NOT set already_asked, FULFILLED or prove actual
 presentation of a suggestion. The existing model-proposed intentions
@@ -107,8 +110,9 @@ mood write, exact relevance/one reservation/no false delivery claim,
 commit/offer/ACK/replay invalidation on revision, control, source,
 counterreport and preference changes, cancellation before/after commit,
 cold-start/budget/irrelevant suppression, expiry, no assistant-derived
-evidence and cross-instance access. Overlap fixture observes actual
-PostgreSQL blocking of a new report against the controlled-output gate.
+evidence and cross-instance access. Overlap fixtures observe actual
+PostgreSQL blocking of a new report against the controlled-output gate and
+test out-of-order duplicate ingress against the unique projection slot.
 Existing F1.3 four-polarity test now requires mismatch projection only
 where relevant instead of the previous no-projection contract; its
 forecast/evidence assertions remain. New candidate NOT RUN; static source

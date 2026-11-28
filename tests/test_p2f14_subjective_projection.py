@@ -311,3 +311,51 @@ def test_intention_inspection_and_cancellation_deny_foreign_owner(dsn):
         with pytest.raises(PermissionDenied):
             call(dsn,cancel_subjective_intention,actor(other),command)
         assert history(dsn,user,instance)[0]["status"]=="PROPOSED"
+
+
+def test_out_of_order_prepared_duplicate_cannot_reserve_second_projection(dsn):
+    """Both report admissions can be visible in a different commit order.
+
+    Emulate that ordering at the immutable source fixture boundary by
+    delaying the earlier ingress transaction. Only the exact prior
+    expectation/occasion can reserve presentation, regardless of report ID.
+    """
+    import persona_agent.learning_control as control
+    user,instance,_=seed(dsn)
+    with available_cognitive_slots(dsn,user,instance,1):
+        initialize(dsn,user,instance,False)
+        at_gate=Event()
+        release=Event()
+        selected=[]
+        original=control.serialize_admitted_report
+        def pause_first(cur,uid,iid):
+            if uid==user and not selected:
+                selected.append(True)
+                at_gate.set()
+                assert release.wait(20)
+            return original(cur,uid,iid)
+        # Bind the earlier report while it remains uncommitted. The later
+        # report can commit first and reserve its presentation.
+        from unittest.mock import patch
+        with patch.object(control,"serialize_admitted_report",pause_first):
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                earlier=pool.submit(incoming,dsn,user,instance,report(0))
+                try:
+                    assert at_gate.wait(10)
+                    later=incoming(dsn,user,instance,report(0))
+                    prepared=prepare(dsn,user,later)
+                    assert prepared.subjective_projection is not None
+                    first=reply(dsn,user,prepared)
+                finally:
+                    release.set()
+                previous=earlier.result(timeout=15)
+        assert not lineage(dsn,first.response_id)["current"]
+        # The older timestamp is now eligible for comparison, but cannot
+        # reuse the same prior expectation/occasion presentation slot.
+        fresh=prepare(dsn,user,previous)
+        assert fresh.prediction_comparison.classification=="UNEXPECTED"
+        assert fresh.subjective_projection is None
+        with psycopg.connect(dsn,autocommit=True) as conn:
+            assert conn.execute("""SELECT count(*) FROM conversation_response_lineage
+                                   WHERE user_id=%s AND instance_id=%s AND subjective_expectation_id IS NOT NULL""",
+                                (user,instance)).fetchone()==(1,)

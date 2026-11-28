@@ -59,9 +59,9 @@ def persist_response_lineage(cur,*,response_id,user_id,instance_id,historical,pr
                response_id,user_id,instance_id,historical_revision,next_expiry,
                preference_keys,preference_revisions,presentation_only,
                predictive_control_version,predictive_reset_generation,predictive_source_ids,
-               subjective_expectation_id,subjective_outcome_turn_id,subjective_intention_id,
-               subjective_kind,subjective_expires_at
-           ) VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+               subjective_expectation_id,subjective_outcome_turn_id,subjective_occasion,
+               subjective_intention_id,subjective_kind,subjective_expires_at
+           ) VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
            ON CONFLICT DO NOTHING RETURNING response_id""",
         (response_id,user_id,instance_id,
          historical.revision if historical is not None else None,
@@ -72,6 +72,7 @@ def persist_response_lineage(cur,*,response_id,user_id,instance_id,historical,pr
          list(predictive.source_turn_ids) if predictive is not None else None,
          subjective.expectation_revision_id if subjective is not None else None,
          subjective.outcome_turn_id if subjective is not None else None,
+         subjective.occasion if subjective is not None else None,
          subjective.intention_id if subjective is not None else None,
          subjective.kind if subjective is not None else None,
          subjective.expires_at if subjective is not None else None),
@@ -90,8 +91,8 @@ def require_response_lineage(cur,user_id,instance_id,response_id):
         """SELECT historical_revision,next_expiry,preference_keys,
                   preference_revisions,legacy_unbound,predictive_control_version,
                   predictive_reset_generation,predictive_source_ids,
-                  subjective_expectation_id,subjective_outcome_turn_id,subjective_intention_id,
-                  subjective_kind,subjective_expires_at
+                  subjective_expectation_id,subjective_outcome_turn_id,subjective_occasion,
+                  subjective_intention_id,subjective_kind,subjective_expires_at
            FROM conversation_response_lineage
            WHERE response_id=%s AND user_id=%s AND instance_id=%s""",
         (response_id,user_id,instance_id),
@@ -132,7 +133,7 @@ def require_response_lineage(cur,user_id,instance_id,response_id):
                 from .subjective_contracts import SubjectiveProjection
                 from .subjective_context import require_subjective_projection
                 require_subjective_projection(cur,user_id,instance_id,SubjectiveProjection(
-                    row["subjective_expectation_id"],row["subjective_outcome_turn_id"],
+                    row["subjective_expectation_id"],row["subjective_outcome_turn_id"],row["subjective_occasion"],
                     row["subjective_intention_id"],row["subjective_kind"],
                     row["subjective_expires_at"],fence,""))
             else:

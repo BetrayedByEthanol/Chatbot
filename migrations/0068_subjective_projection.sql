@@ -31,6 +31,7 @@ CREATE INDEX cognitive_condition_intentions_idx
 ALTER TABLE conversation_response_lineage
     ADD COLUMN subjective_expectation_id uuid,
     ADD COLUMN subjective_outcome_turn_id uuid,
+    ADD COLUMN subjective_occasion date,
     ADD COLUMN subjective_intention_id uuid,
     ADD COLUMN subjective_kind text,
     ADD COLUMN subjective_expires_at timestamptz,
@@ -42,9 +43,9 @@ ALTER TABLE conversation_response_lineage
         REFERENCES cognitive_intentions(intention_id,user_id,instance_id),
     ADD CHECK(
         (subjective_expectation_id IS NULL AND subjective_outcome_turn_id IS NULL
-          AND subjective_intention_id IS NULL AND subjective_kind IS NULL AND subjective_expires_at IS NULL)
+          AND subjective_occasion IS NULL AND subjective_intention_id IS NULL AND subjective_kind IS NULL AND subjective_expires_at IS NULL)
         OR (subjective_expectation_id IS NOT NULL AND subjective_outcome_turn_id IS NOT NULL
-          AND subjective_kind IS NOT NULL AND subjective_kind IN ('MISMATCH','SUPPORT')
+          AND subjective_occasion IS NOT NULL AND subjective_kind IS NOT NULL AND subjective_kind IN ('MISMATCH','SUPPORT')
           AND subjective_expires_at IS NOT NULL AND predictive_control_version IS NOT NULL
           AND subjective_outcome_turn_id=ANY(predictive_source_ids)
           AND (subjective_kind<>'SUPPORT' OR subjective_intention_id IS NOT NULL))
@@ -52,6 +53,9 @@ ALTER TABLE conversation_response_lineage
 CREATE UNIQUE INDEX subjective_intention_once_idx
     ON conversation_response_lineage(subjective_intention_id)
     WHERE subjective_intention_id IS NOT NULL;
+CREATE UNIQUE INDEX subjective_expectation_occasion_once_idx
+    ON conversation_response_lineage(subjective_expectation_id,subjective_occasion)
+    WHERE subjective_expectation_id IS NOT NULL;
 
 -- Fail closed for optional learned presentation when a stored explicit
 -- proactive boundary exists, even if its own evidence is under review.
@@ -69,7 +73,7 @@ $$;
 -- the projection, not the independent authenticated input.
 CREATE FUNCTION subjective_projection_current(
     uid uuid,iid uuid,ver bigint,gen bigint,ids uuid[],
-    eid uuid,tid uuid,intid uuid,kind text,expiry timestamptz
+    eid uuid,tid uuid,occasion date,intid uuid,kind text,expiry timestamptz
 ) RETURNS boolean LANGUAGE sql AS $$
     SELECT COALESCE(expiry>clock_timestamp() AND subjective_boundary_allows(uid,iid)
       AND EXISTS (
@@ -84,7 +88,8 @@ CREATE FUNCTION subjective_projection_current(
           AND e.created_at<a.reported_at AND a.comparison_expectation_id=eid
           AND expiry<=a.reported_at+interval '1 hour'
           AND a.admitted_control_version=ver AND a.reset_generation=gen
-          AND a.reported_context=e.context_key AND a.reported_completion IS NOT NULL
+          AND a.reported_context=e.context_key AND a.reported_occasion=occasion
+          AND a.reported_completion IS NOT NULL
           AND e.source_turn_ids <@ ids AND tid=ANY(ids)
           AND (kind='SUPPORT' OR (kind='MISMATCH'
                 AND a.reported_completion<>(e.direction='COMPLETION')))
@@ -137,7 +142,7 @@ RETURNS boolean LANGUAGE sql AS $$
             OR (l.subjective_expectation_id IS NOT NULL AND NOT subjective_projection_current(
                 l.user_id,l.instance_id,l.predictive_control_version,l.predictive_reset_generation,
                 l.predictive_source_ids,l.subjective_expectation_id,l.subjective_outcome_turn_id,
-                l.subjective_intention_id,l.subjective_kind,l.subjective_expires_at))
+                l.subjective_occasion,l.subjective_intention_id,l.subjective_kind,l.subjective_expires_at))
             OR (l.historical_revision IS NOT NULL AND
                 (h.revision IS DISTINCT FROM l.historical_revision
                  OR (l.next_expiry IS NOT NULL AND l.next_expiry<=clock_timestamp())))
