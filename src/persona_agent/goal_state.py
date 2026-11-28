@@ -807,9 +807,20 @@ def list_goal_strategies(
             _read_selected(cur,actor,instance_id)
             _goal(cur,actor,instance_id,goal_id,lock="SHARE")
             cur.execute(
-                """SELECT strategy_id,goal_id,title,approach,suitability_note,status
-                   FROM goal_strategies WHERE goal_id=%s AND user_id=%s AND instance_id=%s
-                   ORDER BY created_at,strategy_id LIMIT %s""",
+                """WITH candidates AS MATERIALIZED (
+                       SELECT * FROM goal_strategies
+                       WHERE goal_id=%s AND user_id=%s AND instance_id=%s
+                       ORDER BY created_at,strategy_id LIMIT %s
+                   ), checked AS MATERIALIZED (
+                       SELECT c.*,strategy_research_usable(c.user_id,c.instance_id,c.strategy_id)
+                           AS usable FROM candidates c
+                   )
+                   SELECT strategy_id,goal_id,
+                       CASE WHEN usable THEN title
+                           ELSE '[Research strategy requires reassessment]' END AS title,
+                       CASE WHEN usable THEN approach ELSE '' END AS approach,
+                       CASE WHEN usable THEN suitability_note ELSE '' END AS suitability_note,
+                       status FROM checked ORDER BY created_at,strategy_id""",
                 (goal_id,actor.user_id,instance_id,limit),
             )
             return tuple(StrategyView.model_validate(dict(r)) for r in cur.fetchall())

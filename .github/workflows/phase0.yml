@@ -33,7 +33,14 @@ jobs:
       - name: Compile Python
         run: python -m compileall -q src/persona_agent
       - name: Run real PostgreSQL tests
-        run: python -m pytest -q
+        run: python -m pytest -q -rs --durations=30 --junitxml=artifacts/postgres-contracts.xml -o junit_family=xunit1
+      - name: Upload PostgreSQL acceptance and performance report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: postgres-contracts-report
+          path: artifacts/postgres-contracts.xml
+          if-no-files-found: warn
       - name: Verify contract tests without Psycopg
         run: |
           python -m pip uninstall -y psycopg psycopg-binary
