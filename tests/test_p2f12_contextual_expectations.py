@@ -1,11 +1,12 @@
 """Actual leased Cognitive owner path, not a synthetic write helper."""
+from contextlib import contextmanager
 from datetime import datetime,timedelta,timezone
 from uuid import uuid4
 
 import pytest
 psycopg=pytest.importorskip("psycopg")
 
-from persona_agent.cognitive_contracts import CognitiveDraft
+from persona_agent.cognitive_contracts import CognitiveDraft,COGNITIVE_RESOURCE,COGNITIVE_OPERATION,COGNITIVE_CAPABILITY
 from persona_agent.cognitive_engine import (
     schedule_cognition,prepare_cognition,commit_cognition,run_cognition,
 )
@@ -18,7 +19,8 @@ from persona_agent.conversation import ingest_text,prepare_text_context
 from persona_agent.runtime import PermissionDenied
 from persona_agent.operation_contracts import StaleOperation
 from persona_agent.operation_control import reap_stale_operations
-from test_phase2_cognition import actor,platform,call,seed,claim,cancel_pending
+from persona_agent.operation_scheduler import configure_resource_pool,claim_operation
+from test_phase2_cognition import actor,platform,call,seed,cancel_pending
 from test_p2f11_predictive_admission import set_enabled,reset
 from workflow_evidence_helpers import link_memory,invalidate
 
@@ -46,9 +48,64 @@ def stage(dsn,user,instance,*texts):
             idempotency_key=uuid4().hex,text=text)))
     scheduled=call(dsn,schedule_cognition,platform(user),conv,instance,1,min_closed_turns=1,max_turns=16)
     assert scheduled is not None
-    lease=claim(dsn)
+    lease=call(dsn,claim_operation,worker_id="expectation-acceptance",
+               capabilities=(COGNITIVE_CAPABILITY,),
+               operation_types=(COGNITIVE_OPERATION,),lease_seconds=120)
+    if lease is None:
+        with psycopg.connect(dsn,autocommit=True) as conn:
+            pool=conn.execute("""SELECT capacity_units,p0_reserved_units,active_units,active_non_p0_units
+                                 FROM execution_resource_pools WHERE resource_key=%s""",
+                              (COGNITIVE_RESOURCE,)).fetchone()
+            status=conn.execute("SELECT status FROM operations WHERE operation_id=%s",
+                                (scheduled.operation_id,)).fetchone()
+        pytest.fail(f"cognitive claim unavailable: operation={status}, pool(capacity,reserved,active,non_p0)={pool}")
     assert lease.operation_id==scheduled.operation_id
     return conv,sources[:-1],lease
+
+
+@contextmanager
+def available_cognitive_slots(dsn,user,instance,slots):
+    """Provide test-local headroom without changing the existing P0 reserve.
+
+    The integration DB and execution pool are shared across test modules.
+    Total configured capacity is not the number of free P1 slots. Preserve
+    existing reservations, and restore the configuration on every exit.
+    """
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        capacity,reserved,active,non_p0=conn.execute(
+            """SELECT capacity_units,p0_reserved_units,active_units,active_non_p0_units
+               FROM execution_resource_pools WHERE resource_key=%s""",
+            (COGNITIVE_RESOURCE,)).fetchone()
+    required=max(capacity,active+slots,non_p0+reserved+slots)
+    call(dsn,configure_resource_pool,COGNITIVE_RESOURCE,
+         capacity_units=required,p0_reserved_units=reserved)
+    try:
+        yield
+    finally:
+        # Only cancel this fixture's operations. In particular, if the
+        # second claim fails, the first claim AND queued second job must
+        # not contaminate the next test. Use P0 cancellation/recovery,
+        # not direct reservation deletion or pool counter manipulation.
+        with psycopg.connect(dsn,autocommit=True) as conn:
+            pending=conn.execute(
+                """SELECT operation_id,status FROM operations
+                   WHERE user_id=%s AND instance_id=%s AND operation_type=%s
+                     AND status NOT IN ('COMPLETED','FAILED','CANCELLED','OUTCOME_UNKNOWN')""",
+                (user,instance,COGNITIVE_OPERATION)).fetchall()
+        for op_id,status in pending:
+            if status!="CANCEL_REQUESTED":
+                cancel_pending(dsn,user,op_id)
+        if any(status in ("RUNNING","CANCEL_REQUESTED","SUSPEND_REQUESTED") for _,status in pending):
+            call(dsn,reap_stale_operations,limit=1000)
+        with psycopg.connect(dsn,autocommit=True) as conn:
+            remaining=conn.execute(
+                """SELECT count(*) FROM operation_resource_reservations r
+                   JOIN operations o ON o.operation_id=r.operation_id
+                   WHERE o.user_id=%s AND o.instance_id=%s AND o.operation_type=%s""",
+                (user,instance,COGNITIVE_OPERATION)).fetchone()[0]
+        assert remaining==0,"expectation fixture leaked resource reservations"
+        call(dsn,configure_resource_pool,COGNITIVE_RESOURCE,
+             capacity_units=capacity,p0_reserved_units=reserved)
 
 
 def reflect(dsn,user,instance,*texts):
@@ -215,40 +272,41 @@ def test_expectation_owner_withdrawal_while_disabled_is_idempotent(dsn):
 def test_competing_range_revisions_retry_instead_of_dropping_counterevidence(dsn):
     user,instance,_=seed(dsn)
     set_enabled(dsn,user,instance,0,True)
-    reflect(dsn,user,instance,report(4))
-    _,_,first=stage(dsn,user,instance,report(3))
-    # Seed capacity is 3 with one reserved P0 unit, permitting two P1 claims.
-    _,_,second=stage(dsn,user,instance,report(2,False))
-    one=call(dsn,prepare_cognition,first)
-    two=call(dsn,prepare_cognition,second)
-    assert one.expectation_plans[0].expected_version==two.expectation_plans[0].expected_version==1
-    call(dsn,commit_cognition,first,one,CognitiveDraft(),"fixture")
-    call(dsn,run_cognition,first,EmptyModel())
-    with pytest.raises(ExpectationVersionConflict):
-        call(dsn,commit_cognition,second,two,CognitiveDraft(),"fixture")
-    with psycopg.connect(dsn,autocommit=True) as conn:
-        assert conn.execute("SELECT cognitive_watermark FROM conversations WHERE conversation_id=%s",
-                            (two.conversation_id,)).fetchone()==(0,)
-    fresh=call(dsn,prepare_cognition,second)
-    assert fresh.expectation_plans[0].expected_version==2
-    call(dsn,commit_cognition,second,fresh,CognitiveDraft(),"fixture")
-    call(dsn,run_cognition,second,EmptyModel())
-    current=get(dsn,user,instance)
-    assert current.version==3 and current.non_completion_occasions==1
-    assert current.completion_occasions==2
+    with available_cognitive_slots(dsn,user,instance,2):
+        reflect(dsn,user,instance,report(4))
+        _,_,first=stage(dsn,user,instance,report(3))
+        _,_,second=stage(dsn,user,instance,report(2,False))
+        one=call(dsn,prepare_cognition,first)
+        two=call(dsn,prepare_cognition,second)
+        assert one.expectation_plans[0].expected_version==two.expectation_plans[0].expected_version==1
+        call(dsn,commit_cognition,first,one,CognitiveDraft(),"fixture")
+        call(dsn,run_cognition,first,EmptyModel())
+        with pytest.raises(ExpectationVersionConflict):
+            call(dsn,commit_cognition,second,two,CognitiveDraft(),"fixture")
+        with psycopg.connect(dsn,autocommit=True) as conn:
+            assert conn.execute("SELECT cognitive_watermark FROM conversations WHERE conversation_id=%s",
+                                (two.conversation_id,)).fetchone()==(0,)
+        fresh=call(dsn,prepare_cognition,second)
+        assert fresh.expectation_plans[0].expected_version==2
+        call(dsn,commit_cognition,second,fresh,CognitiveDraft(),"fixture")
+        call(dsn,run_cognition,second,EmptyModel())
+        current=get(dsn,user,instance)
+        assert current.version==3 and current.non_completion_occasions==1
+        assert current.completion_occasions==2
 
 
 def test_expired_worker_cannot_commit_expectation(dsn):
     user,instance,_=seed(dsn)
     set_enabled(dsn,user,instance,0,True)
-    _,_,lease=stage(dsn,user,instance,report(3),report(2))
-    work=call(dsn,prepare_cognition,lease)
-    assert work.expectation_plans
-    with psycopg.connect(dsn,autocommit=True) as conn:
-        conn.execute("UPDATE operations SET lease_until=clock_timestamp()-interval '1 second' WHERE operation_id=%s",
-                     (lease.operation_id,))
-    with pytest.raises(StaleOperation):
-        call(dsn,commit_cognition,lease,work,CognitiveDraft(),"fixture")
-    assert get(dsn,user,instance) is None
-    call(dsn,reap_stale_operations,limit=100)
-    cancel_pending(dsn,user,lease.operation_id)
+    with available_cognitive_slots(dsn,user,instance,1):
+        _,_,lease=stage(dsn,user,instance,report(3),report(2))
+        work=call(dsn,prepare_cognition,lease)
+        assert work.expectation_plans
+        with psycopg.connect(dsn,autocommit=True) as conn:
+            conn.execute("UPDATE operations SET lease_until=clock_timestamp()-interval '1 second' WHERE operation_id=%s",
+                         (lease.operation_id,))
+        with pytest.raises(StaleOperation):
+            call(dsn,commit_cognition,lease,work,CognitiveDraft(),"fixture")
+        assert get(dsn,user,instance) is None
+        call(dsn,reap_stale_operations,limit=100)
+        cancel_pending(dsn,user,lease.operation_id)
