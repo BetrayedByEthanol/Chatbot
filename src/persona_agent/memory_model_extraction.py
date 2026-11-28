@@ -36,6 +36,9 @@ from .memory_extraction import (
 from .model_gateway import OllamaChatGateway
 from .operation_contracts import require_idle
 from .runtime import PermissionDenied, VersionConflict
+from .extraction_lineage import verify_admission_snapshot
+from .memory_read_policy import capture_historical_read_fence
+from .workflow_evidence import source_current,lock_scope
 
 
 MODEL_MEMORY_CONSUMER = "memory.reviewed_model_extraction.v1"
@@ -133,7 +136,8 @@ def _read_source(connection:Connection,lease) -> tuple[dict,dict]:
             cur.execute(
                 """SELECT t.turn_id,t.input_text,t.status,t.selection_generation,
                           p.instance_id AS selected_instance,p.generation,
-                          p.mode
+                          p.mode,dialogue_turn_current(t.user_id,t.instance_id,
+                              t.conversation_id,t.turn_id) AS eligible
                    FROM conversation_turns t
                    JOIN persona_selection p ON p.user_id=t.user_id
                    WHERE t.turn_id=%s AND t.conversation_id=%s
@@ -215,6 +219,10 @@ def _persist_proposal(cur,event,source,proposed:PreferenceProposal,model_id:str)
         actual["input_text"],
     ) is None:
         raise ValueError("model memory proposal lost its evidence")
+    # Recheck under the source fence after inference, before persisting.
+    lock_scope(cur,event.user_id,event.instance_id)
+    if not source_current(cur,event.user_id,event.instance_id,conversation_id,turn_id):
+        return False
     # Deterministic P2-04 source already has an authoritative route.
     if parse_explicit_claim(actual["input_text"]) is not None:
         return False
@@ -299,7 +307,7 @@ def run_model_memory_tick(
             event,source=_read_source(connection,lease)
             draft=None
             model_id=""
-            if (source["status"]=="RESPONDED"
+            if (source["status"]=="RESPONDED" and source["eligible"]
                     and _input_eligible(source["input_text"])
                     and parse_explicit_claim(source["input_text"]) is None):
                 reply=model.generate(_prompt(source["input_text"]))
@@ -368,9 +376,11 @@ def list_model_memory_candidates(
                 """SELECT candidate_id,memory_kind,subject_key,predicate_key,
                           value_text,source_quote,source_turn_id,
                           conversation_id,confidence,model_id
-                   FROM memory_model_candidates
+                   FROM memory_model_candidates c
                    WHERE user_id=%s AND instance_id=%s
                      AND status='PENDING_REVIEW'
+                     AND dialogue_turn_current(c.user_id,c.instance_id,
+                                               c.conversation_id,c.source_turn_id)
                    ORDER BY created_at,candidate_id LIMIT %s""",
                 (actor.user_id,instance_id,limit),
             )
@@ -407,6 +417,10 @@ def approve_model_memory_candidate(
                         c["memory_kind"],c["predicate_key"],c["value_text"],
                     )):
                 raise PermissionDenied("model proposal failed memory admission gate")
+            fence=capture_historical_read_fence(cur,c["user_id"],c["instance_id"])
+            if c["status"]=="PENDING_REVIEW" and not source_current(
+                cur,c["user_id"],c["instance_id"],c["conversation_id"],c["source_turn_id"]):
+                raise PermissionDenied("model candidate source no longer eligible")
             cmd=AdmitMemoryCommand(
                 instance_id=c["instance_id"],expected_generation=expected_generation,
                 conversation_id=c["conversation_id"],evidence_turn_id=c["source_turn_id"],
@@ -432,6 +446,7 @@ def approve_model_memory_candidate(
             )
             if cur.fetchone() is None:
                 raise VersionConflict("model memory candidate changed during review")
+            verify_admission_snapshot(cur,c["user_id"],c["instance_id"],fence)
             return result
 
 

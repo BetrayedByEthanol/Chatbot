@@ -33,6 +33,9 @@ from .memory import _amend_memory_in_transaction, _event, _evidence, _revision
 from .memory_contracts import AdmitMemoryCommand, AmendMemoryCommand, MemoryWriteResult
 from .operation_contracts import require_idle
 from .runtime import PermissionDenied, VersionConflict
+from .extraction_lineage import admission_source_current,verify_admission_snapshot
+from .memory_read_policy import capture_historical_read_fence
+from .conversation_contracts import StaleHistoricalContext
 
 
 EXTRACTION_CONSUMER = "memory.explicit_extraction.v1"
@@ -234,8 +237,12 @@ def _handle_input(cur,event,decisions: list[str]):
     claim=parse_explicit_claim(source["input_text"])
     if claim is None:
         return
+    fence=capture_historical_read_fence(cur,event.user_id,event.instance_id)
+    if not admission_source_current(cur,event.user_id,event.instance_id,conversation_id,turn_id):
+        return
     status=_persist_claim(cur,event,conversation_id,turn_id,source,claim)
     if status is not None:
+        verify_admission_snapshot(cur,event.user_id,event.instance_id,fence)
         decisions.append(status)
 
 
@@ -297,7 +304,7 @@ def run_extraction_tick(
                 pass
         except StaleDelivery:
             continue
-        except (ValueError,PermissionDenied) as exc:
+        except (ValueError,PermissionDenied,StaleHistoricalContext) as exc:
             try:
                 retry_delivery(connection,lease,error=str(exc),delay_seconds=5)
                 retry_pending+=1
@@ -318,6 +325,9 @@ def _reassess_conflict(cur, candidate: dict) -> dict:
     """
     if candidate["status"]!="CONFLICT":
         return candidate
+    if not admission_source_current(cur,candidate["user_id"],candidate["instance_id"],
+                                    candidate["conversation_id"],candidate["source_turn_id"]):
+        return {**candidate,"status":"STALE"}
     cur.execute(
         """SELECT m.version,m.value_text,m.record_status,m.source_turn_at,
                   t.created_at AS candidate_turn_at
@@ -383,19 +393,30 @@ def _refresh_review_queue(
     """
     with connection.transaction():
         with connection.cursor(row_factory=dict_row) as cur:
+            cur.execute("SELECT 1 FROM persona_instances WHERE user_id=%s AND id=%s",
+                        (actor.user_id,instance_id))
+            if cur.fetchone() is None:
+                raise PermissionDenied("memory conflict review outside user scope")
+            fence=capture_historical_read_fence(cur,actor.user_id,instance_id)
             cur.execute(
                 """SELECT c.* FROM memory_extraction_candidates c
                    JOIN memory_records m ON m.memory_id=c.target_memory_id
                      AND m.user_id=c.user_id AND m.instance_id=c.instance_id
                    WHERE c.user_id=%s AND c.instance_id=%s
                      AND c.status='CONFLICT' AND c.target_version<>m.version
+                     AND extraction_source_current(c.user_id,c.instance_id,
+                                                   c.conversation_id,c.source_turn_id)
                    ORDER BY c.created_at,c.candidate_id
                    LIMIT %s FOR UPDATE OF c SKIP LOCKED""",
                 (actor.user_id,instance_id,limit),
             )
             candidates=cur.fetchall()
+            changed=False
             for candidate in candidates:
-                _reassess_conflict(cur,candidate)
+                result=_reassess_conflict(cur,candidate)
+                changed=changed or result["target_version"]!=candidate["target_version"]
+            if changed:
+                verify_admission_snapshot(cur,actor.user_id,instance_id,fence)
 
 
 def list_extraction_conflicts(
@@ -433,6 +454,8 @@ def list_extraction_conflicts(
                  AND t.user_id=c.user_id AND t.instance_id=c.instance_id
                WHERE c.user_id=%s AND c.instance_id=%s AND c.status='CONFLICT'
                  AND c.target_version=m.version
+                 AND extraction_source_current(c.user_id,c.instance_id,
+                                               c.conversation_id,c.source_turn_id)
                  AND t.created_at>m.source_turn_at
                  AND (m.record_status<>'ACTIVE' OR c.value_text<>m.value_text)
                ORDER BY c.created_at DESC,c.candidate_id LIMIT %s""",
@@ -464,6 +487,11 @@ def approve_extraction_conflict(
             candidate=cur.fetchone()
             if candidate is None:
                 raise PermissionDenied("candidate outside authenticated user scope")
+            fence=capture_historical_read_fence(cur,candidate["user_id"],candidate["instance_id"])
+            if (candidate["status"]=="CONFLICT" and not admission_source_current(
+                cur,candidate["user_id"],candidate["instance_id"],
+                candidate["conversation_id"],candidate["source_turn_id"])):
+                raise PermissionDenied("candidate source no longer eligible")
             candidate=_reassess_conflict(cur,candidate)
             if candidate["status"] not in ("CONFLICT","APPROVED"):
                 raise ValueError("candidate is not a reviewable conflicting claim")
@@ -502,6 +530,7 @@ def approve_extraction_conflict(
             )
             if cur.fetchone() is None:
                 raise VersionConflict("candidate changed during correction")
+            verify_admission_snapshot(cur,candidate["user_id"],candidate["instance_id"],fence)
             return result
 
 

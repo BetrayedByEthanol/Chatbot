@@ -219,6 +219,10 @@ def _selected_strategy(cur, actor: TrustedActor, instance_id: UUID,
     row=cur.fetchone()
     if row is None or row["strategy_id"]!=strategy_id:
         raise VersionConflict("procedure approach must match current selected strategy")
+    cur.execute("SELECT strategy_research_usable(%s,%s,%s) AS eligible",
+                (actor.user_id,instance_id,strategy_id))
+    if not cur.fetchone()["eligible"]:
+        raise VersionConflict("selected research strategy requires reassessment")
 
 
 def publish_shared_procedure(connection: Connection, actor: TrustedActor,

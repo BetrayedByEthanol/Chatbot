@@ -646,6 +646,10 @@ def record_goal_evidence(
                WHERE goal_id=%s AND user_id=%s AND instance_id=%s""",
             (version,cmd.goal_id,who.user_id,cmd.instance_id),
         )
+        from .workflow_evidence import lock_scope,require_source_current
+        lock_scope(cur,who.user_id,cmd.instance_id)
+        require_source_current(cur,who.user_id,cmd.instance_id,
+                               cmd.conversation_id,cmd.evidence_turn_id)
         return GoalCommandResult(
             goal_id=cmd.goal_id,goal_version=version,event_id=evt,
             action="EVIDENCE_RECORDED",entity_id=cmd.evidence_id,
@@ -779,7 +783,10 @@ def list_goals(
                            ORDER BY s.goal_version DESC LIMIT 1)
                              AS selected_strategy_id,
                           (SELECT count(*) FROM goal_evidence e
-                           WHERE e.goal_id=g.goal_id) AS evidence_count
+                           WHERE e.goal_id=g.goal_id AND e.user_id=g.user_id
+                             AND e.instance_id=g.instance_id
+                             AND dialogue_turn_current(e.user_id,e.instance_id,
+                                                       e.source_conversation_id,e.source_turn_id)) AS evidence_count
                    FROM goal_records g WHERE g.user_id=%s AND g.instance_id=%s
                    ORDER BY g.depth,g.created_at,g.goal_id LIMIT %s""",
                 (actor.user_id,instance_id,limit),
@@ -824,7 +831,9 @@ def list_goal_evidence(
                 """SELECT evidence_id,goal_id,evidence_kind AS kind,
                           epistemic_status,classification_status,
                           source_turn_id,source_quote
-                   FROM goal_evidence WHERE goal_id=%s AND user_id=%s AND instance_id=%s
+                   FROM goal_evidence e WHERE goal_id=%s AND user_id=%s AND instance_id=%s
+                     AND dialogue_turn_current(e.user_id,e.instance_id,
+                                               e.source_conversation_id,e.source_turn_id)
                    ORDER BY recorded_at DESC,evidence_id DESC LIMIT %s""",
                 (goal_id,actor.user_id,instance_id,limit),
             )

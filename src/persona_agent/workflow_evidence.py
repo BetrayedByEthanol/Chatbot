@@ -54,3 +54,16 @@ def require_command_source(cur,actor,command):
     )
     if not cur.fetchone()["eligible"]:
         raise VersionConflict("workflow command source evidence requires reassessment")
+
+
+def source_current(cur,user_id,instance_id,conversation_id,turn_id,approval_turn_id=None):
+    """Exact source eligibility; no inferred authority or history mutation."""
+    cur.execute("SELECT workflow_source_current(%s,%s,%s,%s,%s) AS eligible",
+                (user_id,instance_id,conversation_id,turn_id,approval_turn_id))
+    return bool(cur.fetchone()["eligible"])
+
+
+def require_source_current(cur,user_id,instance_id,conversation_id,turn_id,
+                           approval_turn_id=None):
+    if not source_current(cur,user_id,instance_id,conversation_id,turn_id,approval_turn_id):
+        raise VersionConflict("source evidence requires reassessment")

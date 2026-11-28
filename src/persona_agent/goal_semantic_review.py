@@ -73,7 +73,9 @@ def _preview(connection:Connection,actor:TrustedPlatformActor,
                           g.source_quote AS parent_source_quote,
                           g.created_event_id AS current_parent_event,
                           g.version AS current_parent_version,
-                          g.status AS current_parent_status
+                          g.status AS current_parent_status,
+                          goal_proposal_evidence_current(p.user_id,p.instance_id,p.proposal_id)
+                              AS input_evidence_current
                    FROM goal_subgoal_proposals p
                    JOIN goal_records g ON g.goal_id=p.parent_goal_id
                       AND g.user_id=p.user_id AND g.instance_id=p.instance_id
@@ -282,6 +284,13 @@ def _retire_stale_before_inference(
                 else None
             )
             if reason is None:
+                from .workflow_evidence import lock_scope
+                lock_scope(cur,actor.user_id,command.instance_id)
+                cur.execute("SELECT goal_proposal_evidence_current(%s,%s,%s) AS eligible",
+                            (actor.user_id,command.instance_id,command.proposal_id))
+                if not cur.fetchone()["eligible"]:
+                    reason="INPUT_EVIDENCE_INVALIDATED"
+            if reason is None:
                 # Preview changed between read and locked recheck: abort,
                 # rolling back the newly claimed receipt rather than leaving
                 # an incomplete idempotency record.
@@ -341,7 +350,8 @@ def review_pending_subgoal(
         raise VersionConflict("subgoal proposal is already reviewed")
     if (proposal["current_parent_status"]!="ACTIVE"
         or proposal["expected_parent_version"]!=proposal["current_parent_version"]
-        or proposal["source_parent_event_id"]!=proposal["current_parent_event"]):
+        or proposal["source_parent_event_id"]!=proposal["current_parent_event"]
+        or not proposal["input_evidence_current"]):
         # Stale proposals must not occupy the review queue or its finite
         # candidate budget indefinitely. This path records SUPERSEDED with
         # its own source-linked event and receipt, without model inference.
@@ -395,8 +405,14 @@ def review_pending_subgoal(
             current=cur.fetchone()
             if current is None or current["status"]!="PENDING_REVIEW":
                 raise VersionConflict("proposal already reviewed")
-            # Parent may be amended during inference: never adopt stale work.
+            # Parent and input evidence may change during inference.
+            from .workflow_evidence import lock_scope
+            lock_scope(cur,actor.user_id,command.instance_id)
+            cur.execute("SELECT goal_proposal_evidence_current(%s,%s,%s) AS eligible",
+                        (actor.user_id,command.instance_id,command.proposal_id))
+            inputs_current=cur.fetchone()["eligible"]
             stale=(
+                not inputs_current or
                 parent["version"]!=current["expected_parent_version"]
                 or parent["created_event_id"]!=current["source_parent_event_id"]
                 or any(current[k]!=proposal[k] for k in (

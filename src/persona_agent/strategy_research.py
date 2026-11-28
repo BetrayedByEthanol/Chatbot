@@ -16,6 +16,7 @@ from .knowledge_contracts import KnowledgePassage
 from .knowledge_memory import select_knowledge
 from .operation_contracts import require_idle
 from .runtime import PermissionDenied,VersionConflict
+from .workflow_evidence import require_source_current,lock_scope
 
 MAX_SOURCES=4
 MAX_STRATEGIES=12
@@ -44,6 +45,8 @@ def _current_approval(cur,actor,command,source=None):
     )
     if cur.fetchone()["n"]!=2:
         raise PermissionDenied("research approval belongs to another selection generation")
+    require_source_current(cur,actor.user_id,command.instance_id,command.conversation_id,
+                           command.evidence_turn_id,command.approval_turn_id)
 
 
 def _search(cur,actor,command):
@@ -84,6 +87,8 @@ def research_goal_strategies(connection,actor,command:ResearchGoalStrategiesComm
             )
             if any(row["status"]!="ACTIVE" for row in cur.fetchall()):
                 raise VersionConflict("research goal ancestor inactive")
+            lock_scope(cur,actor.user_id,command.instance_id)
+            _current_approval(cur,actor,command)
             hits=_search(cur,actor,command)
             return StrategyResearchResult(goal["goal_id"],goal["version"],
                 "SOURCES_AVAILABLE" if hits else "NO_ELIGIBLE_SOURCE",hits)
@@ -161,6 +166,12 @@ def save_research_links(cur,actor,command,event):
           p.document_id,p.version,p.position,p.content_sha256)
          for i,p in enumerate(command.sources,1)],
     )
+    lock_scope(cur,actor.user_id,command.instance_id)
+    _current_approval(cur,actor,command)
+    _current_approval(cur,actor,command.research)
+    if _resolve_pins(cur,actor,command.instance_id,command.research.query,
+                     command.sources) is None:
+        raise VersionConflict("research source expired during proposal admission")
 
 
 def research_record(cur,actor,instance_id,goal_id,strategy_id):
@@ -183,6 +194,12 @@ def _pins(cur,record):
     return tuple(StrategySourcePin.model_validate(row) for row in cur.fetchall())
 
 
+def research_provenance_current(cur,record):
+    cur.execute("SELECT strategy_research_sources_current(%s,%s,%s) AS eligible",
+                (record["user_id"],record["instance_id"],record["strategy_id"]))
+    return bool(cur.fetchone()["eligible"])
+
+
 def validate_research_selection(cur,actor,command,record):
     # A user can choose an alternative, but a withdrawn citation cannot
     # silently authorize the research-backed selection. Prior selections
@@ -190,6 +207,13 @@ def validate_research_selection(cur,actor,command,record):
     _current_approval(cur,actor,command)
     if _resolve_pins(cur,actor,command.instance_id,record["query"],
                      _pins(cur,record),lock=True) is None:
+        raise VersionConflict("research source unavailable; review strategy before selection")
+    lock_scope(cur,actor.user_id,command.instance_id)
+    _current_approval(cur,actor,command)
+    if not research_provenance_current(cur,record):
+        raise VersionConflict("research approval evidence invalidated")
+    if _resolve_pins(cur,actor,command.instance_id,record["query"],
+                     _pins(cur,record)) is None:
         raise VersionConflict("research source unavailable; review strategy before selection")
 
 
@@ -294,11 +318,16 @@ def compare_goal_strategies(connection,actor,instance_id,goal_id):
             for row in rows[:MAX_STRATEGIES]:
                 record=research_record(cur,actor,instance_id,goal_id,row["strategy_id"])
                 sources=(_resolve_pins(cur,actor,instance_id,record["query"],_pins(cur,record))
-                         if record else None)
+                         if record and research_provenance_current(cur,record) else None)
                 observations,truncated=_observations(cur,actor,instance_id,goal_id,row["strategy_id"])
+                if record and not sources:
+                    # Preserve the selected identifier, not the unusable
+                    # derived method or withdrawn citation's paraphrase.
+                    row=dict(row,title="[Research strategy requires reassessment]",
+                             approach="",suitability_note="")
                 items.append(StrategyComparisonItem(**row,
                     selected=row["strategy_id"]==selected,
-                    limitations=record["limitations"] if record else None,
+                    limitations=record["limitations"] if record and sources else None,
                     source_status=("CURRENT_SUPPLIED_SOURCE" if sources else
                                    "SOURCE_UNAVAILABLE" if record else "UNSOURCED"),
                     sources=sources or (),observations=observations,
