@@ -145,3 +145,20 @@ release or physical erasure inferred.
 
 Candidate head / CI result / benchmark values / independent reviewer:
 NOT RUN, to be recorded from actual subsequent evidence.
+
+
+### First closure-candidate CI run (41ea5c0)
+
+[Phase 0 run 46087006482](https://github.com/BetrayedByEthanol/Chatbot/actions/runs/46087006482):
+2386 passed, 1 failed, 3 skipped in 772.71 s. [Live integration](https://github.com/BetrayedByEthanol/Chatbot/actions/runs/46087006468) passed. The focused scaling and both read-path regressions passed. The affect benchmark failed during fixture setup (32 of 129 applied/recorded inputs), before latency measurement. The test incorrectly equated a 64-delivery claim bound with the number of inputs dispatched by a tick: dispatch advances one event per stream per invocation, and the fixture produces supersession events between inputs. Four ticks at 16 dispatch passes explain the observed underfilled queue.
+
+The corrected fixture drains the real outbox in bounded passes before
+claiming, verifies 129 pending input deliveries for each isolated consumer,
+then requires exactly 129 persisted applied appraisals and observations.
+No worker bounds, production behavior, or replay-limit assertions are
+changed. The 3 skipped tests require optional NumPy (two ONNX and one
+streaming ASR test). Slowest test was the existing phase4 preparation
+Memory conflict test (72.07 s); investigate separately if reproducible.
+The [JUnit artifact](https://github.com/BetrayedByEthanol/Chatbot/actions/runs/46087006482/artifacts/15240465041)
+was uploaded even on failure. New execution and actual benchmark values
+remain pending; no full acceptance.

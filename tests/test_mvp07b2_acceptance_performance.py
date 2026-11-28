@@ -208,6 +208,7 @@ def test_long_lived_affect_reappraisal_budget_report(dsn,record_property,monkeyp
     from persona_agent.affect_lineage import FOREGROUND_APPRAISAL_LIMIT
     import persona_agent.emotion_state as emotion
     from persona_agent.relationship_state import read_relationship_state
+    from persona_agent.event_delivery import dispatch_outbox
     from test_phase2_affect import register,seed as affect_seed,turn,tick
     from workflow_evidence_helpers import link_memory,invalidate
 
@@ -220,6 +221,31 @@ def test_long_lived_affect_reappraisal_budget_report(dsn,record_property,monkeyp
     for index in range(1,count):
         turn(dsn,user,instance,conv,
              "I'm happy." if index%2==0 else "Thank you.")
+    # Outbox dispatch advances at most one undispatched event per stream
+    # per invocation. Superseding a pending input also emits a journal event.
+    # A worker's default 16 dispatch batches therefore do not imply that
+    # 64 same-stream user inputs are ready to claim. Drain fixture events
+    # separately, preserving production ordering and bounded worker claims.
+    dispatch_passes=0
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        for _ in range(4*count+16):
+            if dispatch_outbox(conn,limit=1000)==0:
+                break
+            dispatch_passes+=1
+        else:
+            pytest.fail("fixture outbox did not drain within bounded dispatch passes")
+        queued=dict(conn.execute(
+            """SELECT d.consumer_id,count(*)
+               FROM event_deliveries d JOIN events e ON e.event_id=d.event_id
+               WHERE d.consumer_id=ANY(%s::text[]) AND e.user_id=%s
+                 AND e.instance_id=%s
+                 AND e.event_type='conversation.user_text.received.v1'
+                 AND d.status='PENDING'
+               GROUP BY d.consumer_id""",
+            (list(consumers),user,instance),
+        ).fetchall())
+        assert queued=={consumer:count for consumer in consumers},queued
+
     applied=recorded=0
     for _ in range(math.ceil(count/64)+1):
         outcome=tick(dsn,consumers)
@@ -228,7 +254,18 @@ def test_long_lived_affect_reappraisal_budget_report(dsn,record_property,monkeyp
         recorded+=outcome.relationship_recorded
         if applied==count and recorded==count:
             break
-    assert applied==recorded==count
+    assert (applied,recorded)==(count,count)
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute(
+            """SELECT count(*) FROM emotion_appraisals
+               WHERE user_id=%s AND instance_id=%s AND applied""",
+            (user,instance),
+        ).fetchone()==(count,)
+        assert conn.execute(
+            """SELECT count(*) FROM relationship_observations
+               WHERE user_id=%s AND instance_id=%s""",
+            (user,instance),
+        ).fetchone()==(count,)
 
     def unexpected_replay(*args,**kwargs):
         raise AssertionError("bounded foreground path entered full appraisal replay")
@@ -257,6 +294,7 @@ def test_long_lived_affect_reappraisal_budget_report(dsn,record_property,monkeyp
         assert relationship.interaction_count==count
         report={
             "appraisals":count,"foreground_replay_limit":FOREGROUND_APPRAISAL_LIMIT,
+            "fixture_dispatch_passes":dispatch_passes,
             "current_projection":warm_latency,"stale_overflow":stale_latency,
             "emotion_owner_snapshot":mood_latency,
             "relationship_owner_snapshot":relationship_latency,
