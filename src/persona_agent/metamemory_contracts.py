@@ -87,4 +87,4 @@ class RecallObservation(BaseModel):
     source_current: bool = True
     request_current: bool = True
     gap_state: Literal["OPEN","AWAITING_CLARIFICATION","REVIEW_REQUIRED","RESOLVED",
-                       "UNAVAILABLE","BUDGET_OMITTED"]="OPEN"
+                       "UNAVAILABLE","BUDGET_OMITTED","SUPERSEDED"]="OPEN"

@@ -109,6 +109,14 @@ def prepare_pattern_candidates(cur,user_id,instance_id,turns):
                     @@ websearch_to_tsquery('simple',%s)
             ORDER BY ts_rank_cd(to_tsvector('simple',memory_episodes.topic || ' ' ||
                          memory_episodes.description),websearch_to_tsquery('simple',%s)) DESC,
+                     EXISTS (
+                         SELECT 1 FROM memory_experience_markers marker
+                         WHERE marker.source_turn_id=memory_episodes.source_turn_id
+                           AND marker.user_id=memory_episodes.user_id
+                           AND marker.instance_id=memory_episodes.instance_id
+                           AND marker.conversation_id=memory_episodes.conversation_id
+                           AND marker.attention_until>statement_timestamp()
+                     ) DESC,
                      memory_episodes.source_turn_at DESC,memory_episodes.episode_id
             LIMIT 24""",
         (user_id,instance_id,turns[-1]["created_at"],query,query),
