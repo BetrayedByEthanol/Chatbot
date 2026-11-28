@@ -41,6 +41,7 @@ from .meta_episodic import (
 )
 from .memory_read_policy import eligible_summary_turn_sql
 from .cognitive_lineage import reflection_lineage_current_sql
+from .expectation_contracts import ExpectationVersionConflict
 
 
 def _range(cur,job:dict,*,project:bool=True) -> tuple[dict,...]:
@@ -258,6 +259,8 @@ def prepare_cognition(connection:Connection,lease:OperationLease) -> CognitiveWo
             candidates,pattern_fence=prepare_pattern_candidates(
                 cur,lease.user_id,lease.instance_id,rows,
             )
+            from .contextual_expectations import prepare_expectations
+            expectation_plans=prepare_expectations(cur,lease.user_id,lease.instance_id,rows)
             return CognitiveWork(
                 operation_id=lease.operation_id,user_id=lease.user_id,
                 instance_id=lease.instance_id,conversation_id=job["conversation_id"],
@@ -265,6 +268,7 @@ def prepare_cognition(connection:Connection,lease:OperationLease) -> CognitiveWo
                 start_sequence=job["start_sequence"],end_sequence=job["end_sequence"],
                 source_digest=_digest(rows),turns=rows,
                 pattern_candidates=candidates,pattern_fence=pattern_fence,
+                expectation_plans=expectation_plans,
             )
 
 
@@ -466,7 +470,23 @@ def commit_cognition(
                     "pattern_proposals":len(draft.patterns),
                 },
             )
-            patterns=admit_pattern_proposals(connection,cur,work,draft.patterns,model_id)
+            if work.expectation_plans:
+                from .contextual_expectations import stage_expectations,require_expectation_plans
+                from .conversation_contracts import StaleHistoricalContext
+                try:
+                    # Stage both owners' writes before late fences. Pattern
+                    # admission may take Memory UPDATE; do not upgrade a
+                    # predictive SHARE lock to UPDATE. If the optional
+                    # expectation fails, rollback both and retry only the
+                    # independent bounded pattern admission.
+                    with connection.transaction():
+                        stage_expectations(cur,work)
+                        patterns=admit_pattern_proposals(connection,cur,work,draft.patterns,model_id)
+                        require_expectation_plans(cur,work)
+                except StaleHistoricalContext:
+                    patterns=admit_pattern_proposals(connection,cur,work,draft.patterns,model_id)
+            else:
+                patterns=admit_pattern_proposals(connection,cur,work,draft.patterns,model_id)
             # Finish normal owner/event writes before the shared scope
             # revision lock. Pattern admission may already hold this lock
             # exclusively; never acquire it before owner writes or upgrade
@@ -514,7 +534,7 @@ def run_cognition(
             result=commit_cognition(
                 connection,lease,work,draft,generated.model_id,
             )
-        except (InvalidCognitiveProposal,ModelUnavailable) as exc:
+        except (InvalidCognitiveProposal,ModelUnavailable,ExpectationVersionConflict) as exc:
             # P0 owns retry/backoff and max attempts, not this model worker.
             # Failed inference does not change the cognitive watermark.
             fail_operation(connection,lease,reason=str(exc),delay_seconds=5)

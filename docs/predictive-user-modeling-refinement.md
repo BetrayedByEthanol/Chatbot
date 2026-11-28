@@ -184,6 +184,8 @@ Implementation details still open: physical table/schema, exact cutoff encoding 
 
 Implementation candidate: [P2-F1.1 Governance control and admission](p2-f11-predictive-learning-admission.md). The initial raw-text generation stamp and response fence are implemented for synthetic verification; actual learned-content paths and policy/consent activation remain gated. See the candidate's source exclusions, lock ordering and NOT RUN results.
 
+P2-F1.2 [contextual expectation candidate](p2-f12-contextual-expectations.md) adds the narrow raw-report Cognitive owner path; provisional pilot policies and remaining Memory-pattern/activation requirements are explicitly distinguished from approved PRED criteria. Tests NOT RUN.
+
 ### 6.2 Relevance gate and measured acceptance (P2-F3)
 
 Conversation's existing sparse interpretation uses active topic/referents, pending commitments/forecasts, outcome/achievement reports (including indirect reports), explicit corrections and meaningful behavioral-change cues. Cognitive validates retrieved expectation applicability: scope, horizon, maturity, source eligibility and whether incoming evidence matches its target. A cheap deterministic or existing lightweight/model inference signal suffices when supported; no mandatory classifier or model pass. Mandatory corrections, authorization, direct requests and required state transitions cannot be skipped by this optional relevance decision.

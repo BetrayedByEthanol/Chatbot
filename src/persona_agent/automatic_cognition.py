@@ -20,6 +20,7 @@ from .cognitive_contracts import (
     StaleCognition,
 )
 from .cognitive_engine import run_one_cognitive_operation,schedule_cognition
+from .expectation_contracts import ExpectationVersionConflict
 from .event_delivery import (
     StaleDelivery,claim_delivery,defer_delivery,dispatch_outbox,
     process_delivery,reap_expired_claims,resume_deferred,retry_delivery,subscribe,
@@ -355,10 +356,11 @@ def run_cognitive_worker(
                 completed=run_one_cognitive_operation(
                     connection,gateway,worker_id=worker_id,
                 )
-            except (InvalidCognitiveProposal,ModelUnavailable,
+            except (InvalidCognitiveProposal,ModelUnavailable,ExpectationVersionConflict,
                     StaleOperation,StaleCognition,CognitiveNotReady):
                 # P0 retry/fencing already owns the failed or revoked claim.
-                # One bad model pass must not stop scheduling for all users.
+                # A normal expectation revision race or bad model pass must
+                # not stop scheduling for all users.
                 completed=None
         if (completed is None and scheduled.dispatched==0
             and scheduled.processed==0 and scheduled.admitted==0):
