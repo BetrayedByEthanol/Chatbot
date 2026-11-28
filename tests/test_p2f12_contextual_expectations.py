@@ -310,3 +310,83 @@ def test_expired_worker_cannot_commit_expectation(dsn):
         assert get(dsn,user,instance) is None
         call(dsn,reap_stale_operations,limit=100)
         cancel_pending(dsn,user,lease.operation_id)
+
+
+def test_cognitive_worker_survives_expectation_conflict_and_retries(dsn,monkeypatch):
+    from threading import Event
+    import persona_agent.automatic_cognition as auto
+    import persona_agent.cognitive_engine as engine
+
+    user,instance,_=seed(dsn)
+    set_enabled(dsn,user,instance,0,True)
+    with available_cognitive_slots(dsn,user,instance,2):
+        reflect(dsn,user,instance,report(4))
+        _,_,winner=stage(dsn,user,instance,report(3))
+        _,_,loser=stage(dsn,user,instance,report(2,False))
+        winning_work=call(dsn,prepare_cognition,winner)
+        losing_work=call(dsn,prepare_cognition,loser)
+        assert winning_work.expectation_plans[0].expected_version==1
+        assert losing_work.expectation_plans[0].expected_version==1
+        call(dsn,commit_cognition,winner,winning_work,CognitiveDraft(),"fixture")
+        call(dsn,run_cognition,winner,EmptyModel())
+
+        stopping=Event()
+        ticks=[]
+        attempts=[]
+        original_prepare=engine.prepare_cognition
+        real_runner=auto.run_one_cognitive_operation
+
+        def prepare(connection,lease):
+            if lease==loser:
+                # The losing worker actually prepared this snapshot before
+                # the winner committed. No fake conflict or failure state.
+                return losing_work
+            return original_prepare(connection,lease)
+
+        def schedule(connection,*,worker_id):
+            ticks.append(worker_id)
+            # Do not admit unrelated conversations from the shared test DB.
+            return auto.CognitiveTick(0,0,0,0,0,0)
+
+        def run_attempt(connection,gateway,*,worker_id):
+            attempts.append(worker_id)
+            if len(attempts)==1:
+                return engine.run_cognition(connection,loser,gateway)
+            assert len(attempts)==2
+            with connection.cursor() as cur:
+                cur.execute("""SELECT status,attempt_count,claim_generation
+                               FROM operations WHERE operation_id=%s""",
+                            (loser.operation_id,))
+                assert cur.fetchone()==("RETRY_WAIT",1,loser.claim_generation)
+                cur.execute("""SELECT cognitive_watermark FROM conversations
+                               WHERE conversation_id=%s""",(losing_work.conversation_id,))
+                assert cur.fetchone()==(0,)
+                cur.execute("""SELECT count(*) FROM operation_resource_reservations
+                               WHERE operation_id=%s""",(loser.operation_id,))
+                assert cur.fetchone()==(0,)
+                # Advance only the fixture's retry clock, as in the
+                # existing Cognitive recovery tests; preserve P0 policy.
+                cur.execute("""UPDATE operations SET eligible_at=clock_timestamp()-interval '1 second'
+                               WHERE operation_id=%s""",(loser.operation_id,))
+            result=real_runner(connection,gateway,worker_id=worker_id)
+            assert result is not None and result.operation_id==loser.operation_id
+            stopping.set()
+            return result
+
+        gateway=EmptyModel()
+        monkeypatch.setattr(engine,"prepare_cognition",prepare)
+        monkeypatch.setattr(auto,"OllamaChatGateway",lambda **kwargs:gateway)
+        monkeypatch.setattr(auto,"run_cognitive_scheduling_tick",schedule)
+        monkeypatch.setattr(auto,"run_one_cognitive_operation",run_attempt)
+        auto.run_cognitive_worker(dsn,model="fixture",worker_id="expectation-conflict",
+                                  stop=stopping,poll_seconds=0.1)
+        assert ticks==attempts==["expectation-conflict","expectation-conflict"]
+        assert gateway.calls==2
+        with psycopg.connect(dsn,autocommit=True) as conn:
+            assert conn.execute("""SELECT status,attempt_count,claim_generation
+                                   FROM operations WHERE operation_id=%s""",
+                                (loser.operation_id,)).fetchone()==(
+                                    "COMPLETED",2,loser.claim_generation+1)
+        current=get(dsn,user,instance)
+        assert current.version==3
+        assert current.completion_occasions==2 and current.non_completion_occasions==1
