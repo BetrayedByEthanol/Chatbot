@@ -67,3 +67,7 @@ class WithdrawalResult(BaseModel):
     version:int
     event_id:UUID
     replayed:bool=False
+
+
+class ExpectationVersionConflict(Exception):
+    """Retry the existing bounded cognitive range, not a new job."""

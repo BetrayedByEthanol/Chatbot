@@ -41,6 +41,7 @@ from .meta_episodic import (
 )
 from .memory_read_policy import eligible_summary_turn_sql
 from .cognitive_lineage import reflection_lineage_current_sql
+from .expectation_contracts import ExpectationVersionConflict
 
 
 def _range(cur,job:dict,*,project:bool=True) -> tuple[dict,...]:
@@ -533,7 +534,7 @@ def run_cognition(
             result=commit_cognition(
                 connection,lease,work,draft,generated.model_id,
             )
-        except (InvalidCognitiveProposal,ModelUnavailable) as exc:
+        except (InvalidCognitiveProposal,ModelUnavailable,ExpectationVersionConflict) as exc:
             # P0 owns retry/backoff and max attempts, not this model worker.
             # Failed inference does not change the cognitive watermark.
             fail_operation(connection,lease,reason=str(exc),delay_seconds=5)

@@ -16,6 +16,7 @@ from .contracts import TrustedActor
 from .conversation_contracts import StaleHistoricalContext
 from .expectation_contracts import (
     ActivityReport,ExpectationPlan,ExpectationView,WithdrawExpectation,WithdrawalResult,
+    ExpectationVersionConflict,
 )
 from .operation_contracts import require_idle
 from .predictive_admission import capture_predictive_fence,require_predictive_fence
@@ -177,7 +178,7 @@ def stage_expectations(cur,work):
                   "occasion":report.occasion.isoformat(),"completed":report.completed}
                  for report in plan.reports]),plan.expires_at))
         if cur.fetchone() is None:
-            raise StaleHistoricalContext("expectation version already advanced")
+            raise ExpectationVersionConflict("expectation version already advanced")
         admitted.append({"revision_id":str(revision),"version":plan.expected_version+1})
     _event(cur,user_id=work.user_id,instance_id=work.instance_id,
            conversation_id=work.conversation_id,event_type="cognition.expectations.revised.v1",
@@ -209,6 +210,8 @@ def read_expectation(connection,actor,instance_id,context_key):
     latest records. Even a tentative record is not a forecast or verified fact.
     """
     require_idle(connection)
+    if not isinstance(context_key,str) or not 1<=len(context_key)<=64:
+        raise ValueError("invalid exact expectation context")
     with connection.transaction(),connection.cursor(row_factory=dict_row) as cur:
         _authorize(cur,actor,instance_id)
         cur.execute("""SELECT reset_generation FROM predictive_learning_controls
@@ -244,9 +247,30 @@ def inspect_expectation_history(connection,actor,instance_id,*,limit=20):
         raise ValueError("invalid inspection limit")
     with connection.transaction(),connection.cursor(row_factory=dict_row) as cur:
         _authorize(cur,actor,instance_id)
-        cur.execute("""SELECT revision_id,reset_generation,version,disposition,created_at,expires_at
-                       FROM cognitive_expectation_revisions WHERE user_id=%s AND instance_id=%s
-                       ORDER BY created_at DESC,revision_id LIMIT %s""",(actor.user_id,instance_id,limit))
+        cur.execute("""WITH candidates AS MATERIALIZED (
+                         SELECT * FROM cognitive_expectation_revisions
+                         WHERE user_id=%s AND instance_id=%s
+                         ORDER BY created_at DESC,revision_id LIMIT %s
+                       )
+                       SELECT r.revision_id,r.reset_generation,r.version,r.disposition,r.created_at,r.expires_at,
+                           CASE
+                             WHEN r.disposition='WITHDRAWN' THEN 'WITHDRAWN'
+                             WHEN EXISTS (SELECT 1 FROM cognitive_expectation_revisions newer
+                                  WHERE newer.user_id=r.user_id AND newer.instance_id=r.instance_id
+                                    AND newer.reset_generation=r.reset_generation
+                                    AND newer.context_key=r.context_key AND newer.version>r.version)
+                                  THEN 'SUPERSEDED'
+                             WHEN c.reset_generation IS DISTINCT FROM r.reset_generation THEN 'RESET'
+                             WHEN NOT COALESCE(c.learning_enabled,false) THEN 'DISABLED'
+                             WHEN r.expires_at<=clock_timestamp() THEN 'EXPIRED'
+                             WHEN r.disposition='REVIEW_REQUIRED' THEN 'REVIEW_REQUIRED'
+                             WHEN NOT predictive_sources_current(r.user_id,r.instance_id,
+                                      r.reset_generation,r.source_turn_ids) THEN 'SOURCE_UNAVAILABLE'
+                             ELSE 'CURRENT'
+                           END AS effective_status
+                       FROM candidates r LEFT JOIN predictive_learning_controls c
+                         ON c.user_id=r.user_id AND c.instance_id=r.instance_id
+                       ORDER BY r.created_at DESC,r.revision_id""",(actor.user_id,instance_id,limit))
         return tuple(dict(r) for r in cur.fetchall())
 
 
