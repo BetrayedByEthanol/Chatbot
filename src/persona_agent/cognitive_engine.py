@@ -258,6 +258,8 @@ def prepare_cognition(connection:Connection,lease:OperationLease) -> CognitiveWo
             candidates,pattern_fence=prepare_pattern_candidates(
                 cur,lease.user_id,lease.instance_id,rows,
             )
+            from .contextual_expectations import prepare_expectations
+            expectation_plans=prepare_expectations(cur,lease.user_id,lease.instance_id,rows)
             return CognitiveWork(
                 operation_id=lease.operation_id,user_id=lease.user_id,
                 instance_id=lease.instance_id,conversation_id=job["conversation_id"],
@@ -265,6 +267,7 @@ def prepare_cognition(connection:Connection,lease:OperationLease) -> CognitiveWo
                 start_sequence=job["start_sequence"],end_sequence=job["end_sequence"],
                 source_digest=_digest(rows),turns=rows,
                 pattern_candidates=candidates,pattern_fence=pattern_fence,
+                expectation_plans=expectation_plans,
             )
 
 
@@ -466,6 +469,10 @@ def commit_cognition(
                     "pattern_proposals":len(draft.patterns),
                 },
             )
+            from .contextual_expectations import admit_expectations
+            # Admit optional owner revisions before Memory pattern admission
+            # takes its exclusive revision lock. No inference occurs here.
+            admit_expectations(connection,cur,work)
             patterns=admit_pattern_proposals(connection,cur,work,draft.patterns,model_id)
             # Finish normal owner/event writes before the shared scope
             # revision lock. Pattern admission may already hold this lock

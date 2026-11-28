@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator, field_valida
 
 from .conversation_contracts import HistoricalReadFence
 from .meta_episodic_contracts import PatternEpisode,PatternProposal
+from .expectation_contracts import ExpectationPlan
 
 COGNITIVE_OPERATION = "cognition.reflect_range.v1"
 COGNITIVE_CAPABILITY = "cognition.reflection"
@@ -95,6 +96,7 @@ class CognitiveWork:
     completed: bool=False
     pattern_candidates: tuple[PatternEpisode,...]=()
     pattern_fence: HistoricalReadFence | None=None
+    expectation_plans: tuple[ExpectationPlan,...]=()
 
 
 @dataclass(frozen=True)
