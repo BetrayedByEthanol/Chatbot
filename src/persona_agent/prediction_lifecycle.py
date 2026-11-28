@@ -159,13 +159,14 @@ def _admission(cur,user_id,instance_id,report,at):
     return cur.fetchone()
 
 
-def _report_exists(cur,user_id,instance_id,generation,key,occasion,*,unbound_to=None):
+def _report_exists(cur,user_id,instance_id,generation,key,occasion,*,unbound_to=None,before_at=None):
     cur.execute("""SELECT 1 FROM predictive_input_admissions
                    WHERE user_id=%s AND instance_id=%s AND reset_generation=%s
                      AND reported_context=%s AND reported_occasion=%s
                      AND (%s::uuid IS NULL OR prediction_id IS DISTINCT FROM %s::uuid)
+                     AND (%s::timestamptz IS NULL OR reported_at<%s::timestamptz)
                    LIMIT 1""",
-                (user_id,instance_id,generation,key,occasion,unbound_to,unbound_to))
+                (user_id,instance_id,generation,key,occasion,unbound_to,unbound_to,before_at,before_at))
     return cur.fetchone() is not None
 
 
@@ -423,7 +424,7 @@ def stage_prediction_batch(cur,work):
     """Stage rows and event before late dependency/owner locks."""
     batch=work.prediction_batch
     admitted={"predictions":[],"comparisons":[],"resolutions":[]}
-    for p in batch.forecasts:
+    for p in sorted(batch.forecasts,key=lambda item:(item.context_key,item.occasion)):
         pid=uuid4()
         cur.execute("""INSERT INTO cognitive_predictions(
               prediction_id,user_id,instance_id,reset_generation,control_version,
@@ -438,7 +439,7 @@ def stage_prediction_batch(cur,work):
              p.expires_at,p.expires_at))
         if cur.fetchone() is not None:
             admitted["predictions"].append(str(pid))
-    for p in batch.comparisons:
+    for p in sorted(batch.comparisons,key=lambda item:(item.read.expectation_revision_id,item.occasion,item.completed)):
         r=p.read
         cid=uuid4()
         cur.execute("""INSERT INTO cognitive_expectation_comparisons(
@@ -452,7 +453,7 @@ def stage_prediction_batch(cur,work):
              p.completed,r.classification,list(r.fence.source_turn_ids)))
         if cur.fetchone() is not None:
             admitted["comparisons"].append(str(cid))
-    for p in batch.resolutions:
+    for p in sorted(batch.resolutions,key=lambda item:item.prediction_id):
         cur.execute("""INSERT INTO cognitive_prediction_resolutions(
               prediction_id,user_id,instance_id,operation_id,control_version,
               outcome_turn_ids,resolution,comparison)
@@ -574,7 +575,7 @@ def read_prediction(connection,actor,instance_id,prediction_id):
         if _resolution(cur,actor.user_id,instance_id,prediction_id)!=r:
             return None  # concurrent commit; next inspection may read it
         if _report_exists(cur,actor.user_id,instance_id,p["reset_generation"],p["context_key"],
-                          p["target_occasion"],unbound_to=prediction_id):
+                          p["target_occasion"],unbound_to=prediction_id,before_at=p["expires_at"]):
             return None
         state="PENDING"
         resolution=comparison=None
@@ -588,7 +589,16 @@ def read_prediction(connection,actor,instance_id,prediction_id):
                 return None
             if r["resolution"] in ("HIT","MISS"):
                 observed=p["expected_completion"] if r["resolution"]=="HIT" else not p["expected_completion"]
-                if any(b["reported_completion"]!=observed for b in bound):
+                # Even a late report outside the original horizon can
+                # contradict the recorded outcome; duplicate polarity
+                # outside the horizon does not create another resolution.
+                cur.execute("""SELECT 1 FROM predictive_input_admissions
+                               WHERE user_id=%s AND instance_id=%s AND reset_generation=%s
+                                 AND reported_context=%s AND reported_occasion=%s
+                                 AND reported_completion<>%s LIMIT 1""",
+                            (actor.user_id,instance_id,p["reset_generation"],p["context_key"],
+                             p["target_occasion"],observed))
+                if cur.fetchone() is not None:
                     return None  # later conflicting report invalidates certainty
             # Superseded forecast is historical only. Never reuse as a
             # current forecast; source withdrawal still suppresses labels.
