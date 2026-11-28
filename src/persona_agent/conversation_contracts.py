@@ -6,6 +6,7 @@ from typing import Literal, Protocol, Sequence
 from uuid import UUID
 from .learning_control_contracts import PredictiveFence
 from .prediction_contracts import ComparisonRead
+from .subjective_contracts import SubjectiveProjection
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -133,6 +134,7 @@ class ResponseContext:
     predictive_fence: PredictiveFence | None = None
     # Diagnostic host signal only: not part of model messages or delivery.
     prediction_comparison: ComparisonRead | None = None
+    subjective_projection: SubjectiveProjection | None = None
 
 
 class TextModelGateway(Protocol):

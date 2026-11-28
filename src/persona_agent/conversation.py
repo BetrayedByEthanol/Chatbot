@@ -278,9 +278,10 @@ def ingest_text(connection: Connection, actor: TrustedActor,
                 "WHERE turn_id=%s AND user_id=%s",
                 (event_id,temporal.model_dump_json(),turn_id,actor.user_id),
             )
+            predictive_report_admitted=False
             if provenance is None:
                 from .learning_control import stamp_learning_input
-                stamp_learning_input(cursor,user_id=actor.user_id,instance_id=command.instance_id,
+                predictive_report_admitted=stamp_learning_input(cursor,user_id=actor.user_id,instance_id=command.instance_id,
                                      turn_id=turn_id,event_id=event_id,text=command.text,
                                      received_at=receipt_at)
             from .explicit_memory_reports import record_explicit_memory_report
@@ -323,6 +324,9 @@ def ingest_text(connection: Connection, actor: TrustedActor,
                 conversation_id=command.conversation_id,turn_id=turn_id,
                 turn_sequence=seq,text=command.text,
             )
+            if predictive_report_admitted:
+                from .learning_control import serialize_admitted_report
+                serialize_admitted_report(cursor,actor.user_id,command.instance_id)
             return result
 
 
@@ -1170,12 +1174,24 @@ def prepare_text_context(
                 from .affect_lineage import merge_read_fences
                 historical_fence=merge_read_fences(
                     dialogue_dependencies.historical_fence,historical_fence)
-            system=ModelMessage("system",prompt)
-            # P2-F1.3 only computes a host diagnostic; no learned text or
-            # appraisal is supplied to the model. P2-F1.4 must fence its use.
             from .prediction_lifecycle import compare_incoming_report
             comparison=compare_incoming_report(cursor,actor.user_id,item["instance_id"],
                                                turn_id,item["input_text"],item["turn_at"])
+            # Optional low-confidence subjective projection, after all
+            # higher-priority context and without displacing retained text.
+            from .entity_reference import entity_report
+            projection=None
+            if (comparison.fence is not None and reusable
+                    and entity_report(item["input_text"]) is None
+                    and len(kept[-1].content)==len(item["input_text"])):
+                from .subjective_context import prepare_subjective_projection
+                remaining=max_context_chars-len(prompt)-sum(len(m.content) for m in kept)
+                projection=prepare_subjective_projection(
+                    cursor,actor.user_id,item["instance_id"],comparison,
+                    max_chars=min(420,remaining-1))
+                if projection is not None:
+                    prompt+="\n"+projection.text
+            system=ModelMessage("system",prompt)
             return ResponseContext(
                 conversation_id=item["conversation_id"],turn_id=turn_id,
                 instance_id=item["instance_id"],
@@ -1185,6 +1201,8 @@ def prepare_text_context(
                 procedure_fence=procedure_fence,temporal_context=temporal,
                 historical_fence=historical_fence,presentation_fence=presentation_fence,
                 prediction_comparison=comparison if comparison.route!="SKIP" else None,
+                subjective_projection=projection,
+                predictive_fence=projection.fence if projection is not None else None,
                 raw_context_fence=RawContextFence(
                     tuple(sorted(raw_dependencies | grounding_dependencies |
                                  dialogue_dependencies.source_ids)),reusable,
@@ -1603,12 +1621,18 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
                  context.selection_generation,context.conversation_revision,
                  generated.model_id,text,knowledge_answered),
             )
+            if context.subjective_projection is not None and (
+                context.predictive_fence!=context.subjective_projection.fence
+                or context.turn_id!=context.subjective_projection.outcome_turn_id
+            ):
+                raise StaleHistoricalContext("subjective projection fence mismatch")
             if context.predictive_fence is not None:
                 historical=merge_read_fences(historical,HistoricalReadFence(
                     context.predictive_fence.historical_revision,context.predictive_fence.next_expiry))
             persist_response_lineage(cursor,response_id=response_id,user_id=actor.user_id,
                 instance_id=context.instance_id,historical=historical,
                 preference=context.preference_fence,predictive=context.predictive_fence,
+                subjective=context.subjective_projection,
                 presentation_only=(
                     context.predictive_fence is None
                     and context.presentation_fence is not None
@@ -1822,6 +1846,7 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
             # user-grounded conversational cue. Valid model OBJECTIVEs
             # retain their original proposal/provenance path.
             if (generated.intent_candidate is not None
+                    and context.subjective_projection is None
                     and entity_answer is None
                     and history_reference is None
                     and not knowledge_answered
@@ -1864,7 +1889,11 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
                                           context.conversation_id,context.raw_context_fence)
             if writes_guidance and historical is not None:
                 require_historical_read_fence(cursor,actor.user_id,context.instance_id,historical)
-            if context.predictive_fence is not None:
+            if context.subjective_projection is not None:
+                from .subjective_context import require_subjective_projection
+                require_subjective_projection(cursor,actor.user_id,context.instance_id,
+                                              context.subjective_projection)
+            elif context.predictive_fence is not None:
                 from .predictive_admission import require_predictive_fence
                 require_predictive_fence(cursor,actor.user_id,context.instance_id,context.predictive_fence)
             return TextResponseResult(

@@ -462,6 +462,8 @@ def stage_prediction_batch(cur,work):
              p.completed,r.classification,list(r.fence.source_turn_ids)))
         if cur.fetchone() is not None:
             admitted["comparisons"].append(str(cid))
+            from .subjective_context import stage_support_intention
+            stage_support_intention(cur,work,cid,p)
     for p in sorted(batch.resolutions,key=lambda item:item.prediction_id):
         cur.execute("""INSERT INTO cognitive_prediction_resolutions(
               prediction_id,user_id,instance_id,operation_id,control_version,
