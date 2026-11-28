@@ -13,7 +13,7 @@ from psycopg.rows import dict_row
 
 from .contracts import TrustedActor
 from .conversation_contracts import (
-    ModelMessage, ModelReply, ModelUnavailable, RawContextFence, ResponseContext,
+    HistoricalReadFence, ModelMessage, ModelReply, ModelUnavailable, RawContextFence, ResponseContext,
     StaleConversation, StaleHistoricalContext, TextInputCommand, TextInputResult, TextModelGateway,
     TextResponseResult,
 )
@@ -1236,6 +1236,12 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
             if procedure_guidance_direct and guidance_action is None:
                 raise ValueError("procedure guidance requires a prepared authenticated input")
             writes_guidance=guidance_action is not None and (procedure_guidance_direct or model_generated)
+            # P2-F1.1 does not authorize predictive content to drive any
+            # owner mutation. Future producers must omit it on these paths.
+            if context.predictive_fence is not None and (
+                writes_entity or writes_goal or writes_guidance
+            ):
+                raise StaleHistoricalContext("predictive context is not admitted for owner-changing replies")
             if writes_entity:
                 # Entity absence/collision and writes share one owner guard.
                 # Acquire BEFORE locking conversation/turn rows: a concurrent
@@ -1598,8 +1604,7 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
                 preference=context.preference_fence,predictive=context.predictive_fence,
                 presentation_only=(
                     context.predictive_fence is None
-                    and
-                    context.presentation_fence is not None
+                    and context.presentation_fence is not None
                     and context.historical_fence is None
                     and context.preference_fence is None
                     and not reads_fact_owner and not knowledge_answered

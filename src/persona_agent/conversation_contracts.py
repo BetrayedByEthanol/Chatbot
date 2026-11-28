@@ -129,7 +129,7 @@ class ResponseContext:
     raw_context_fence: RawContextFence | None = None
     presentation_fence: HistoricalReadFence | None = None
     # Host-only optional contribution. No predictive producer in P2-F1.1.
-    predictive_fence: "PredictiveFence | None" = None
+    predictive_fence: PredictiveFence | None = None
 
 
 class TextModelGateway(Protocol):
