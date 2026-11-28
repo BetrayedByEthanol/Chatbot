@@ -182,6 +182,8 @@ P2-F1.1 implements the minimal control/commands and synthetic race tests; each l
 
 Implementation details still open: physical table/schema, exact cutoff encoding and lock ordering, inspection UI, actual retention/erasure policy and measured drift thresholds. The initial default-off and no automatic disabled-period catch-up are conservative implementation decisions for this control; review against deployment policy during P2-F1.1. This is not a global memory opt-out or authorization to change other learning features.
 
+Implementation candidate: [P2-F1.1 Governance control and admission](p2-f11-predictive-learning-admission.md). The initial raw-text generation stamp and response fence are implemented for synthetic verification; actual learned-content paths and policy/consent activation remain gated. See the candidate's source exclusions, lock ordering and NOT RUN results.
+
 ### 6.2 Relevance gate and measured acceptance (P2-F3)
 
 Conversation's existing sparse interpretation uses active topic/referents, pending commitments/forecasts, outcome/achievement reports (including indirect reports), explicit corrections and meaningful behavioral-change cues. Cognitive validates retrieved expectation applicability: scope, horizon, maturity, source eligibility and whether incoming evidence matches its target. A cheap deterministic or existing lightweight/model inference signal suffices when supported; no mandatory classifier or model pass. Mandatory corrections, authorization, direct requests and required state transitions cannot be skipped by this optional relevance decision.

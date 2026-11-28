@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal, Protocol, Sequence
 from uuid import UUID
+from .learning_control_contracts import PredictiveFence
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -127,6 +128,8 @@ class ResponseContext:
     procedure_guidance_action: bool = False
     raw_context_fence: RawContextFence | None = None
     presentation_fence: HistoricalReadFence | None = None
+    # Host-only optional contribution. No predictive producer in P2-F1.1.
+    predictive_fence: PredictiveFence | None = None
 
 
 class TextModelGateway(Protocol):

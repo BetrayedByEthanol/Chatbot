@@ -13,7 +13,7 @@ from psycopg.rows import dict_row
 
 from .contracts import TrustedActor
 from .conversation_contracts import (
-    ModelMessage, ModelReply, ModelUnavailable, RawContextFence, ResponseContext,
+    HistoricalReadFence, ModelMessage, ModelReply, ModelUnavailable, RawContextFence, ResponseContext,
     StaleConversation, StaleHistoricalContext, TextInputCommand, TextInputResult, TextModelGateway,
     TextResponseResult,
 )
@@ -278,6 +278,10 @@ def ingest_text(connection: Connection, actor: TrustedActor,
                 "WHERE turn_id=%s AND user_id=%s",
                 (event_id,temporal.model_dump_json(),turn_id,actor.user_id),
             )
+            if provenance is None:
+                from .learning_control import stamp_learning_input
+                stamp_learning_input(cursor,user_id=actor.user_id,instance_id=command.instance_id,
+                                     turn_id=turn_id,event_id=event_id)
             from .explicit_memory_reports import record_explicit_memory_report
             record_explicit_memory_report(
                 cursor,user_id=actor.user_id,instance_id=command.instance_id,
@@ -1232,6 +1236,12 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
             if procedure_guidance_direct and guidance_action is None:
                 raise ValueError("procedure guidance requires a prepared authenticated input")
             writes_guidance=guidance_action is not None and (procedure_guidance_direct or model_generated)
+            # P2-F1.1 does not authorize predictive content to drive any
+            # owner mutation. Future producers must omit it on these paths.
+            if context.predictive_fence is not None and (
+                writes_entity or writes_goal or writes_guidance
+            ):
+                raise StaleHistoricalContext("predictive context is not admitted for owner-changing replies")
             if writes_entity:
                 # Entity absence/collision and writes share one owner guard.
                 # Acquire BEFORE locking conversation/turn rows: a concurrent
@@ -1586,11 +1596,15 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
                  context.selection_generation,context.conversation_revision,
                  generated.model_id,text,knowledge_answered),
             )
+            if context.predictive_fence is not None:
+                historical=merge_read_fences(historical,HistoricalReadFence(
+                    context.predictive_fence.historical_revision,context.predictive_fence.next_expiry))
             persist_response_lineage(cursor,response_id=response_id,user_id=actor.user_id,
                 instance_id=context.instance_id,historical=historical,
-                preference=context.preference_fence,
+                preference=context.preference_fence,predictive=context.predictive_fence,
                 presentation_only=(
-                    context.presentation_fence is not None
+                    context.predictive_fence is None
+                    and context.presentation_fence is not None
                     and context.historical_fence is None
                     and context.preference_fence is None
                     and not reads_fact_owner and not knowledge_answered
@@ -1843,6 +1857,9 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
                                           context.conversation_id,context.raw_context_fence)
             if writes_guidance and historical is not None:
                 require_historical_read_fence(cursor,actor.user_id,context.instance_id,historical)
+            if context.predictive_fence is not None:
+                from .predictive_admission import require_predictive_fence
+                require_predictive_fence(cursor,actor.user_id,context.instance_id,context.predictive_fence)
             return TextResponseResult(
                 response_id=response_id,turn_id=context.turn_id,
                 text=text,model_id=generated.model_id,delivery_status="GENERATED",
