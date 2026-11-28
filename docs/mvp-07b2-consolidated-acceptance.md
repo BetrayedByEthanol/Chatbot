@@ -45,7 +45,7 @@ regressions are NOT RUN until the new head's actual execution evidence exists.
 | F09 Research | test_mvp06d_strategy_research | Candidate fixes ordinary strategy list leaking unavailable research text. Complete selection-approval chains and already authorized effects remain bounded. |
 | F10 Background | test_mvp03a4_goal_autonomy; existing P0/ALIGN-01/AGENT contracts | Late Goal results and final readiness checks. Already READY epochs and historical critical-owner decisions are not universally reappraised. |
 | F11 Notifications | test_phase4_notifications | Linked due/inbox/snooze withdrawal; no provider erasure or recall of delivered copies. |
-| F12 Performance | historical CI and #141 scoped candidate guard | New scoped benchmark/report NOT RUN. Long-lived same-conversation, owner replay and concurrency/target-host budgets remain open. |
+| F12 Performance | historical CI and #141 scoped candidate guard | New scoped and affect benchmark/report NOT RUN. Longer owner histories and concurrency/target-host budgets remain open. |
 
 Other 07B2.1–6 evidence remains in checklist section 2K; do not discard
 response, summary, cognition, raw history, workflow and derived projection
@@ -74,19 +74,26 @@ three warmups and twenty measured calls per stage. It records p50/p95/max
 client round-trip time (not model latency), JSON EXPLAIN ANALYZE BUFFERS
 plans/settings, buffer hits/reads, PostgreSQL version, planner settings and
 signal counts. The same target is probed before and after adding unrelated
-user conversations and same-persona other conversations. The existing
-shared suite database may already contain other records. The deterministic
+user conversations and same-persona other conversations, then same-conversation growth with an
+identical new pending request and explicit refocus of the original thread.
+The existing shared suite database may already contain other records. The deterministic
 acceptance assertion counts actual eligibility calls using a rolled-back
 transaction-local instrumented predicate: no unrelated turn can be checked
 and the count must not increase. Timings are intentionally diagnostic, not a
 machine-dependent hard assertion.
 
-Default: 32 new conversations per growth stage through production ingress
-and delivery. For a larger standalone run set `PERSONA_07B2_SCALE=256`
-(max 1024 per stage). This is a bounded integration workload, not a
-production-scale benchmark. No full model call, network or concurrent
-worker load is timed. Same-conversation growth, long-lived affect/rapport
-replay and controlled concurrent worker pressure still need measurements.
+Default: 32 new conversations per separate-conversation growth stage and
+32 additional objectives in the target conversation through production
+ingress/delivery. For a larger standalone run set `PERSONA_07B2_SCALE=256`
+(max 1024 per stage). The additional fixture work contributes to total suite
+duration but is not included in query timing. A second probe creates
+129 real applied Emotion cues and Relationship observations, measures
+current presentation, stale over-limit presentation and explicit owner
+snapshots; a guard ensures the two foreground paths never enter the
+full appraisal replay. Both probes record three warmups/twenty samples.
+These are bounded integration workloads, not production-scale benchmarks.
+No full model call, network or concurrent worker load is timed. Longer
+owner histories and controlled concurrent worker pressure remain to measure.
 
 Run on a **fresh disposable database** with installed test extras and
 `TEST_DATABASE_URL` set (never point at application or production data):

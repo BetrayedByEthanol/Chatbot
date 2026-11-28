@@ -20,7 +20,9 @@ from psycopg.rows import dict_row
 
 from persona_agent.conversation import prepare_text_context
 from persona_agent.dialogue_integration import _focused_auto_thread
-from test_phase1_dialogue import actor,incoming,response,seed
+from persona_agent.dialogue_contracts import FocusThreadCommand
+from persona_agent.dialogue_state import focus_thread
+from test_phase1_dialogue import actor,base,call,incoming,response,revision,seed
 
 
 class RecordingCursor:
@@ -81,7 +83,7 @@ def _measure(conn,scope,request,expected_focus):
 
 
 def _candidate_count(conn,scope,expected_focus,expected_source):
-    """Count actual eligibility invocations, including NULL-root handling."""
+    """Count actual non-null source eligibility invocations."""
     with conn.transaction(force_rollback=True):
         with conn.cursor(row_factory=dict_row) as cur:
             for name,value in (("uid",scope["user_id"]),("iid",scope["instance_id"]),
@@ -145,26 +147,119 @@ def test_scoped_foreground_scaling_report(dsn,record_property):
             ("baseline",None),
             ("other_user",(foreign_user,foreign_instance)),
             ("same_persona_other_conversations",(user,instance)),
+            ("same_conversation",None),
         ):
             if owner is not None:
                 _seed_other_conversations(dsn,*owner,scale)
+            if stage=="same_conversation":
+                for index in range(scale):
+                    entered=incoming(dsn,user,instance,conv,
+                                     f"I want to learn Python lesson {index+1}.")
+                    response(dsn,user,entered,"We can discuss that lesson.")
+                # Other turns supersede the old pending anchor. Re-focus
+                # the same exact thread using a new identical request.
+                request=incoming(dsn,user,instance,conv,"Explain soil drainage.")
+                call(dsn,focus_thread,actor(user),FocusThreadCommand(
+                    **base(user,instance,conv,request,revision(dsn,user,conv)),
+                    thread_id=focus,
+                ))
             result=_measure(conn,scope,request,focus)
             result["stage"]=stage
             result["eligibility_calls"]=_candidate_count(conn,scope,focus,source.turn_id)
             with conn.cursor() as cur:
                 cur.execute("""SELECT count(*) AS signals,
-                    count(*) FILTER(WHERE user_id=%s AND instance_id=%s) AS scoped_signals
-                    FROM conversation_intent_signals""",(user,instance))
+                    count(*) FILTER(WHERE user_id=%s AND instance_id=%s) AS scoped_signals,
+                    count(*) FILTER(WHERE user_id=%s AND instance_id=%s
+                        AND conversation_id=%s) AS conversation_signals
+                    FROM conversation_intent_signals""",(user,instance,user,instance,conv))
                 result.update(cur.fetchone())
             report["stages"].append(result)
     # The hard invariant is independent of CPU speed and table cardinality.
-    baseline,foreign,local=report["stages"]
+    record_property("07b2_foreground_scaling",json.dumps(report,default=str))
+    baseline,foreign,local,conversation=report["stages"]
     assert foreign["signals"]>=baseline["signals"]+scale
     assert local["scoped_signals"]>=foreign["scoped_signals"]+scale
+    assert conversation["conversation_signals"]>=local["conversation_signals"]+scale
     assert baseline["eligibility_calls"]>0
-    assert foreign["eligibility_calls"]==local["eligibility_calls"]==baseline["eligibility_calls"]
-    record_property("07b2_foreground_scaling",json.dumps(report,default=str))
+    assert all(stage["eligibility_calls"]==baseline["eligibility_calls"]
+               for stage in report["stages"])
     # With -s, emit a concise human-readable report without the full plan.
     print(json.dumps({**report,"stages":[
         {k:v for k,v in stage.items() if k!="explain"} for stage in report["stages"]
     ]},default=str,indent=2))
+
+
+
+def _timed(action):
+    samples=[]
+    last=None
+    for iteration in range(23):
+        start=perf_counter_ns()
+        last=action()
+        elapsed=(perf_counter_ns()-start)/1_000_000
+        if iteration>=3:
+            samples.append(elapsed)
+    return last,latency(samples)
+
+
+def test_long_lived_affect_reappraisal_budget_report(dsn,record_property,monkeypatch):
+    """Measure the real foreground cap and explicit owner replay separately."""
+    from persona_agent.affect_context import prepare_affect_context
+    from persona_agent.affect_lineage import FOREGROUND_APPRAISAL_LIMIT
+    import persona_agent.emotion_state as emotion
+    from persona_agent.relationship_state import read_relationship_state
+    from test_phase2_affect import register,seed as affect_seed,turn,tick
+    from workflow_evidence_helpers import link_memory,invalidate
+
+    consumers=register(dsn)
+    user,instance,_=affect_seed(dsn)
+    conv=uuid4()
+    count=FOREGROUND_APPRAISAL_LIMIT+1
+    first=turn(dsn,user,instance,conv,"I'm happy.")
+    saved=link_memory(dsn,user,instance,conv,first.turn_id)
+    for index in range(1,count):
+        turn(dsn,user,instance,conv,
+             "I'm happy." if index%2==0 else "Thank you.")
+    applied=recorded=0
+    for _ in range(math.ceil(count/64)+1):
+        outcome=tick(dsn,consumers)
+        assert outcome.retry_pending==0
+        applied+=outcome.emotion_applied
+        recorded+=outcome.relationship_recorded
+        if applied==count and recorded==count:
+            break
+    assert applied==recorded==count
+
+    def unexpected_replay(*args,**kwargs):
+        raise AssertionError("bounded foreground path entered full appraisal replay")
+
+    with psycopg.connect(dsn,autocommit=True,row_factory=dict_row) as conn:
+        def presentation():
+            with conn.transaction(),conn.cursor() as cur:
+                return prepare_affect_context(cur,user,instance,650)[0]
+
+        with monkeypatch.context() as patch:
+            patch.setattr(emotion,"current_sources",unexpected_replay)
+            warm,warm_latency=_timed(presentation)
+            assert "Simulated persona expressive affect" in warm
+            assert "Tentative user-affect signal" in warm
+            invalidate(dsn,user,instance,saved,"EXPIRE")
+            stale,stale_latency=_timed(presentation)
+            assert "Simulated persona expressive affect" not in stale
+            assert "Tentative user-affect signal" in stale
+        # These are explicit owner snapshots, not the foreground path.
+        # They may replay the scoped history, so report rather than hide cost.
+        mood,mood_latency=_timed(lambda:emotion.read_emotion_state(
+            conn,actor(user),instance))
+        relationship,relationship_latency=_timed(lambda:read_relationship_state(
+            conn,actor(user),instance))
+        assert mood.version==count
+        assert relationship.interaction_count==count
+        report={
+            "appraisals":count,"foreground_replay_limit":FOREGROUND_APPRAISAL_LIMIT,
+            "current_projection":warm_latency,"stale_overflow":stale_latency,
+            "emotion_owner_snapshot":mood_latency,
+            "relationship_owner_snapshot":relationship_latency,
+        }
+        record_property("07b2_affect_scaling",json.dumps(report))
+        print(json.dumps(report,indent=2))
