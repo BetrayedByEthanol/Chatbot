@@ -47,7 +47,7 @@ def require_preference_fence(cur,user_id,instance_id,fence):
 
 
 def persist_response_lineage(cur,*,response_id,user_id,instance_id,historical,preference,
-                             presentation_only=False,predictive=None):
+                             presentation_only=False,predictive=None,subjective=None):
     keys=preference.keys if preference is not None else ()
     revisions=preference.revisions if preference is not None else ()
     if predictive is not None and (historical is None or presentation_only):
@@ -58,16 +58,26 @@ def persist_response_lineage(cur,*,response_id,user_id,instance_id,historical,pr
         """INSERT INTO conversation_response_lineage(
                response_id,user_id,instance_id,historical_revision,next_expiry,
                preference_keys,preference_revisions,presentation_only,
-               predictive_control_version,predictive_reset_generation,predictive_source_ids
-           ) VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s)""",
+               predictive_control_version,predictive_reset_generation,predictive_source_ids,
+               subjective_expectation_id,subjective_outcome_turn_id,subjective_intention_id,
+               subjective_kind,subjective_expires_at
+           ) VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+           ON CONFLICT DO NOTHING RETURNING response_id""",
         (response_id,user_id,instance_id,
          historical.revision if historical is not None else None,
          historical.next_expiry if historical is not None else None,
          list(keys),json.dumps(revisions),presentation_only,
          predictive.control_version if predictive is not None else None,
          predictive.reset_generation if predictive is not None else None,
-         list(predictive.source_turn_ids) if predictive is not None else None),
+         list(predictive.source_turn_ids) if predictive is not None else None,
+         subjective.expectation_revision_id if subjective is not None else None,
+         subjective.outcome_turn_id if subjective is not None else None,
+         subjective.intention_id if subjective is not None else None,
+         subjective.kind if subjective is not None else None,
+         subjective.expires_at if subjective is not None else None),
     )
+    if cur.fetchone() is None:
+        raise StaleHistoricalContext("subjective projection already reserved or response lineage exists")
 
 
 def require_response_lineage(cur,user_id,instance_id,response_id):
@@ -79,7 +89,9 @@ def require_response_lineage(cur,user_id,instance_id,response_id):
     cur.execute(
         """SELECT historical_revision,next_expiry,preference_keys,
                   preference_revisions,legacy_unbound,predictive_control_version,
-                  predictive_reset_generation,predictive_source_ids
+                  predictive_reset_generation,predictive_source_ids,
+                  subjective_expectation_id,subjective_outcome_turn_id,subjective_intention_id,
+                  subjective_kind,subjective_expires_at
            FROM conversation_response_lineage
            WHERE response_id=%s AND user_id=%s AND instance_id=%s""",
         (response_id,user_id,instance_id),
@@ -114,9 +126,17 @@ def require_response_lineage(cur,user_id,instance_id,response_id):
         if row is not None and row["predictive_control_version"] is not None:
             from .learning_control_contracts import PredictiveFence
             from .predictive_admission import require_predictive_fence
-            require_predictive_fence(cur,user_id,instance_id,PredictiveFence(
-                row["predictive_control_version"],row["predictive_reset_generation"],
-                tuple(row["predictive_source_ids"]),row["historical_revision"],row["next_expiry"]))
+            fence=PredictiveFence(row["predictive_control_version"],row["predictive_reset_generation"],
+                tuple(row["predictive_source_ids"]),row["historical_revision"],row["next_expiry"])
+            if row["subjective_expectation_id"] is not None:
+                from .subjective_contracts import SubjectiveProjection
+                from .subjective_context import require_subjective_projection
+                require_subjective_projection(cur,user_id,instance_id,SubjectiveProjection(
+                    row["subjective_expectation_id"],row["subjective_outcome_turn_id"],
+                    row["subjective_intention_id"],row["subjective_kind"],
+                    row["subjective_expires_at"],fence,""))
+            else:
+                require_predictive_fence(cur,user_id,instance_id,fence)
         cur.execute("SELECT entity_response_has_evidence(%s,%s,%s) AS tracked",
                     (response_id,user_id,instance_id))
         if cur.fetchone()["tracked"]:

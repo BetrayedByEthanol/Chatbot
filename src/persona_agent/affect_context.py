@@ -152,3 +152,21 @@ def prepare_affect_context(cur,user_id,instance_id,max_chars:int,fence=None):
 def persona_affect_context_block(cur,user_id,instance_id,max_chars:int)->str:
     """Compatibility read-only text projection; generation uses the fenced form."""
     return prepare_affect_context(cur,user_id,instance_id,max_chars)[0]
+
+
+def tentative_reaction_hint(*,completed:bool,mismatch:bool,offer_support:bool)->str:
+    """Emotion-owned, low-confidence expression only; no appraisal write.
+
+    Tentative pattern formation does not license strong expectation-based
+    surprise or negative judgments. The current report remains a report.
+    """
+    if not mismatch and not offer_support:
+        return ""
+    text="Optional subjective presentation (tentative; user report, not verified): "
+    if mismatch:
+        text+=("Acknowledge this reported success warmly, without implying prior doubt. "
+               if completed else
+               "Acknowledge the reported setback without blame or disappointment. ")
+    if offer_support:
+        text+="If useful, offer one small practical adjustment, without pressure. "
+    return text+"Current request and explicit preferences win. Do not mention learned history.\n"
