@@ -49,6 +49,8 @@ def _range(cur,job:dict,*,project:bool=True) -> tuple[dict,...]:
     cur.execute(
         f"""SELECT t.turn_id,t.sequence,t.status,t.created_at,
                   eligible.source_eligible,
+                  (eligible.source_eligible AND marker.source_turn_id IS NOT NULL
+                     AND marker.attention_until>statement_timestamp()) AS experience_attention,
                   CASE WHEN eligible.source_eligible THEN t.input_text ELSE '' END AS input_text,
                   CASE WHEN eligible.source_eligible THEN
                     response_lineage_range_text(r.response_id,r.user_id,r.instance_id,
@@ -60,6 +62,9 @@ def _range(cur,job:dict,*,project:bool=True) -> tuple[dict,...]:
                   r.selection_generation AS response_generation
            FROM conversation_turns t
            LEFT JOIN conversation_responses r ON r.turn_id=t.turn_id
+           LEFT JOIN memory_experience_markers marker ON marker.source_turn_id=t.turn_id
+             AND marker.user_id=t.user_id AND marker.instance_id=t.instance_id
+             AND marker.conversation_id=t.conversation_id
            CROSS JOIN LATERAL (
                 SELECT {eligible_summary_turn_sql() if project else "TRUE"} AS source_eligible
            ) eligible
@@ -91,6 +96,7 @@ def _digest(rows:tuple[dict,...]) -> str:
         "id":str(r["turn_id"]),"sequence":r["sequence"],
         "user":r["input_text"],"status":r["status"],
         "source_eligible":r["source_eligible"],
+        **({"experience_attention":True} if r.get("experience_attention") else {}),
         "assistant":r["response_text"] if r["delivery_status"]=="DELIVERED"
                      else None,
     } for r in rows]
@@ -280,6 +286,7 @@ def _messages(work:CognitiveWork) -> tuple[ModelMessage,...]:
         "turn_id":str(r["turn_id"]),"sequence":r["sequence"],
         "user":r["input_text"],
         **({"source_omitted":True} if not r["source_eligible"] else {}),
+        **({"experience_attention":"USER_MARKED_IMPORTANT"} if r.get("experience_attention") else {}),
         "assistant":r["response_text"] if r["delivery_status"]=="DELIVERED"
                     else None,
     } for r in work.turns]
@@ -296,6 +303,8 @@ def _messages(work:CognitiveWork) -> tuple[ModelMessage,...]:
         "For intentions set trigger_text and expiry_days (1-30); otherwise null. "
         "Quote must be an exact substring of the referenced USER text. "
         "A source_omitted entry has no eligible evidence: do not infer or cite it. "
+        "A host experience_attention marker means the user explicitly marked this experience important; "
+        "consider it for reflection, not as verified fact, authority or a reason to invent a question. "
         "Prefer [] over unsupported inference. Maximum five items. "
         "All content remains lower-trust model interpretation, never a memory fact."
     )

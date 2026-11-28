@@ -284,6 +284,10 @@ def ingest_text(connection: Connection, actor: TrustedActor,
                 predictive_report_admitted=stamp_learning_input(cursor,user_id=actor.user_id,instance_id=command.instance_id,
                                      turn_id=turn_id,event_id=event_id,text=command.text,
                                      received_at=receipt_at)
+                from .experience_significance import record_experience_marker
+                record_experience_marker(cursor,user_id=actor.user_id,instance_id=command.instance_id,
+                                         conversation_id=command.conversation_id,turn_id=turn_id,
+                                         event_id=event_id,text=command.text)
             from .explicit_memory_reports import record_explicit_memory_report
             record_explicit_memory_report(
                 cursor,user_id=actor.user_id,instance_id=command.instance_id,

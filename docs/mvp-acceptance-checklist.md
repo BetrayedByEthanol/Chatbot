@@ -200,6 +200,8 @@ P2-F1.2 merged #146: [Phase 0](https://github.com/BetrayedByEthanol/Chatbot/acti
 
 P2-F1.3 merged #147: [contracts](https://github.com/BetrayedByEthanol/Chatbot/actions/runs/46154528792) 2,449 passed, 3 skipped; [live](https://github.com/BetrayedByEthanol/Chatbot/actions/runs/46154528818) PASS. P2-F1.4 [subjective projection](p2-f14-subjective-projection.md): actual model-context and controlled output owner path candidate; tests NOT RUN, no full predictive/behavioral or story promotion.
 
+P2-F1.4 merged #148: [contracts](https://github.com/BetrayedByEthanol/Chatbot/actions/runs/46161535352) 2,467 passed, 3 skipped; [live](https://github.com/BetrayedByEthanol/Chatbot/actions/runs/46161535350) PASS. P2-F1.5 [MetaMemory and significance](p2-f15-metamemory-significance.md) targeted owner path candidate; tests NOT RUN, no full GAP-04/09/12 or story promotion.
+
 ## 3. Confirmed Phase 0–1 acceptance items
 
 Each of the 28 stories below retains its canonical ID, authority, priority, owner and baseline implementation status. Confirmed criteria are reproduced from the master backlog; mixed criteria are scoped to their confirmed core with proposed details identified explicitly. Evidence links come from the matrix and are starting points, not proof of full coverage. Review applicable legacy verification candidates before acceptance; unapproved numerical parameters are not binding.

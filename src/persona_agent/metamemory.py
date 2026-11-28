@@ -37,26 +37,9 @@ def prior_clarification(cur,*,user_id,instance_id,query_key,candidates,before_at
     """Suppress only an unchanged previously delivered named choice for 24h."""
     if query_key is None or len(candidates)!=2:
         return False
-    cur.execute(
-        """SELECT o.outcome,o.clarification_key,r.delivered_at,
-                  response_lineage_current(r.response_id,r.user_id,r.instance_id) AS source_current
-           FROM memory_recall_observations o
-           JOIN conversation_responses r ON r.response_id=o.response_id
-             AND r.user_id=o.user_id AND r.instance_id=o.instance_id
-           WHERE o.user_id=%s AND o.instance_id=%s AND o.route='ENTITY'
-             AND o.query_key=%s AND r.delivery_status='DELIVERED'
-             AND NOT o.clarification_suppressed
-             AND r.delivered_at<=%s
-           ORDER BY r.delivered_at DESC,o.response_id LIMIT 1""",
-        (user_id,instance_id,query_key,before_at),
-    )
-    row=cur.fetchone()
-    if row is None:
-        return False
-    from datetime import timedelta
-    return (row["source_current"] and row["outcome"]=="AMBIGUOUS"
-            and row["clarification_key"]==candidate_key(candidates)
-            and row["delivered_at"]>before_at-timedelta(hours=24))
+    cur.execute("""SELECT memory_recall_choice_awaiting(%s,%s,%s,%s,%s) AS awaiting""",
+                (user_id,instance_id,query_key,candidate_key(candidates),before_at))
+    return cur.fetchone()["awaiting"]
 
 
 def adjacent_clarification_key(cur,*,user_id,instance_id,conversation_id,sequence,before_at):
@@ -70,7 +53,8 @@ def adjacent_clarification_key(cur,*,user_id,instance_id,conversation_id,sequenc
            WHERE o.user_id=%s AND o.instance_id=%s AND o.conversation_id=%s
              AND t.sequence=%s AND o.route='ENTITY' AND o.outcome='AMBIGUOUS'
              AND o.clarification_key IS NOT NULL AND r.delivery_status='DELIVERED'
-             AND response_lineage_current(r.response_id,r.user_id,r.instance_id)
+             AND memory_recall_response_current(o.response_id,o.user_id,o.instance_id,
+                                                o.conversation_id,o.turn_id)
              AND r.delivered_at<=%s""",
         (user_id,instance_id,conversation_id,sequence-1,before_at),
     )
@@ -107,16 +91,19 @@ def _scope(cur,actor,instance_id):
 
 
 def list_recall_observations(connection: Connection,actor: TrustedActor,instance_id: UUID,
-                             *,route=None,topic=None,open_only=False,limit=30):
+                             *,route=None,topic=None,open_only=False,attention_only=False,limit=30):
     """History, or current eligibility of the latest observed topic gap.
 
     History retains original outcomes/feedback. An invalidated AVAILABLE
     observation reopens a gap without waiting for another user query.
-    A scope fence is conservative, not proof that the original claim is false.
+    A withdrawn request is unavailable, not an active gap. Do not recover
+    an older observation for that key. Attention is a bounded read of open
+    or review-required gaps, excluding already-awaiting clarification.
+    It does not create an intention, schedule work or ask a question.
     """
     require_idle(connection)
     _require_actor(actor)
-    if (not 1<=limit<=100 or (topic is not None and (route is None or not isinstance(topic,str)
+    if (not 1<=limit<=100 or (attention_only and not open_only) or (topic is not None and (route is None or not isinstance(topic,str)
             or not 1<=len(topic)<=180)) or (route is not None and route not in (
                 "FACT","MEANING","ENTITY","ENTITY_HISTORY","PATTERN","KNOWLEDGE"))):
         raise ValueError("invalid MetaMemory query")
@@ -127,33 +114,63 @@ def list_recall_observations(connection: Connection,actor: TrustedActor,instance
             if topic is not None and key is None:
                 return ()
             cur.execute(
-                """WITH observed AS (
-                       SELECT o.response_id,o.conversation_id,o.turn_id,o.route,o.query_key,o.outcome,
-                              o.evidence_refs,o.clarification_suppressed,o.observed_at,r.delivered_at,
-                              (response_lineage_current(r.response_id,r.user_id,r.instance_id)
-                               AND workflow_source_current(o.user_id,o.instance_id,o.conversation_id,o.turn_id,NULL)
-                               AND NOT EXISTS (
-                                   SELECT 1 FROM conversation_response_raw_lineage raw
-                                   WHERE raw.response_id=r.response_id AND raw.user_id=r.user_id
-                                     AND raw.instance_id=r.instance_id AND NOT raw.reusable
-                               )) AS source_current,
-                              COALESCE((SELECT jsonb_agg(f.outcome ORDER BY f.recorded_at,f.feedback_id)
-                                  FROM memory_retrieval_feedback f
-                                  WHERE f.response_id=o.response_id AND f.user_id=o.user_id
-                                    AND f.instance_id=o.instance_id
-                                    AND (NOT %s OR workflow_source_current(
-                                        f.user_id,f.instance_id,f.conversation_id,f.feedback_turn_id,NULL))
-                                  ),'[]'::jsonb) AS feedback,
-                              row_number() OVER(PARTITION BY o.route,o.query_key
-                                  ORDER BY o.observed_at DESC,o.response_id DESC) AS rn
+                """WITH ranked AS (
+                       SELECT o.*,
+                              count(*) FILTER (WHERE o.outcome<>'BUDGET') OVER(
+                                  PARTITION BY o.route,o.query_key
+                                  ORDER BY o.observed_at DESC,o.response_id DESC
+                                  ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+                              ) AS nonbudget_rank
                        FROM memory_recall_observations o
-                       JOIN conversation_responses r ON r.response_id=o.response_id
-                         AND r.user_id=o.user_id AND r.instance_id=o.instance_id
                        WHERE o.user_id=%s AND o.instance_id=%s
                          AND (%s::text IS NULL OR o.route=%s)
                          AND (%s::text IS NULL OR o.query_key=%s)
-                         -- A budget omission is not a resolved knowledge gap.
                          AND (NOT %s OR o.outcome<>'BUDGET')
+                   ), candidates AS MATERIALIZED (
+                       SELECT * FROM ranked
+                       WHERE NOT %s OR nonbudget_rank=1
+                       ORDER BY observed_at DESC,response_id DESC
+                       LIMIT CASE WHEN %s THEN NULL ELSE %s END
+                   ), observed AS MATERIALIZED (
+                       SELECT o.response_id,o.conversation_id,o.turn_id,o.route,o.query_key,o.outcome,
+                              o.evidence_refs,o.clarification_key,o.clarification_suppressed,
+                              o.observed_at,r.delivered_at,o.nonbudget_rank,
+                              workflow_source_current(o.user_id,o.instance_id,o.conversation_id,
+                                                      o.turn_id,NULL) AS request_current,
+                              memory_recall_response_current(o.response_id,o.user_id,o.instance_id,
+                                  o.conversation_id,o.turn_id) AS source_current,
+                              feedback.history AS all_feedback,feedback.current AS current_feedback
+                       FROM candidates o
+                       JOIN conversation_responses r ON r.response_id=o.response_id
+                         AND r.user_id=o.user_id AND r.instance_id=o.instance_id
+                       CROSS JOIN LATERAL (
+                           SELECT COALESCE(jsonb_agg(f.outcome ORDER BY f.recorded_at,f.feedback_id),
+                                           '[]'::jsonb) AS history,
+                                  COALESCE(jsonb_agg(f.outcome ORDER BY f.recorded_at,f.feedback_id)
+                                      FILTER (WHERE workflow_source_current(f.user_id,f.instance_id,
+                                                          f.conversation_id,f.feedback_turn_id,NULL)),
+                                      '[]'::jsonb) AS current
+                           FROM memory_retrieval_feedback f
+                           WHERE f.response_id=o.response_id AND f.user_id=o.user_id
+                             AND f.instance_id=o.instance_id
+                       ) feedback
+                   ), effective AS (
+                       SELECT *,
+                          CASE
+                            WHEN NOT request_current THEN 'UNAVAILABLE'
+                            WHEN outcome='BUDGET' THEN 'BUDGET_OMITTED'
+                            WHEN nonbudget_rank>1 THEN 'SUPERSEDED'
+                            WHEN current_feedback ? 'INCORRECT' OR current_feedback ? 'MISSED'
+                                THEN 'REVIEW_REQUIRED'
+                            WHEN NOT source_current THEN 'OPEN'
+                            WHEN outcome='AVAILABLE' THEN 'RESOLVED'
+                            WHEN outcome='AMBIGUOUS' AND clarification_key IS NOT NULL
+                              AND memory_recall_choice_awaiting(%s,%s,query_key,clarification_key,
+                                                                statement_timestamp())
+                              THEN 'AWAITING_CLARIFICATION'
+                            ELSE 'OPEN'
+                          END AS gap_state
+                       FROM observed
                    )
                    SELECT response_id,conversation_id,turn_id,route,query_key,
                           CASE WHEN %s AND outcome='AVAILABLE' AND NOT source_current
@@ -162,14 +179,17 @@ def list_recall_observations(connection: Connection,actor: TrustedActor,instance
                                ELSE evidence_refs END AS evidence_refs,
                           CASE WHEN %s AND NOT source_current THEN false
                                ELSE clarification_suppressed END AS clarification_suppressed,
-                          observed_at,delivered_at,feedback,source_current
-                   FROM observed WHERE NOT %s OR (rn=1 AND (
-                       outcome<>'AVAILABLE' OR NOT source_current
-                       OR feedback ? 'INCORRECT' OR feedback ? 'MISSED'
-                   ))
-                   ORDER BY observed_at DESC,response_id DESC LIMIT %s""",
-                (open_only,actor.user_id,instance_id,route,route,key,key,open_only,
-                 open_only,open_only,open_only,open_only,limit),
+                          observed_at,delivered_at,
+                          CASE WHEN %s THEN current_feedback ELSE all_feedback END AS feedback,
+                          source_current,request_current,gap_state
+                   FROM effective WHERE (NOT %s OR gap_state IN (
+                       'OPEN','AWAITING_CLARIFICATION','REVIEW_REQUIRED'
+                   )) AND (NOT %s OR gap_state IN ('OPEN','REVIEW_REQUIRED'))
+                   ORDER BY CASE WHEN %s AND gap_state='REVIEW_REQUIRED' THEN 0 ELSE 1 END,
+                            observed_at DESC,response_id DESC LIMIT %s""",
+                (actor.user_id,instance_id,route,route,key,key,open_only,open_only,open_only,limit,
+                 actor.user_id,instance_id,open_only,open_only,open_only,open_only,
+                 open_only,attention_only,attention_only,limit),
             )
             return tuple(RecallObservation.model_validate(row) for row in cur.fetchall())
 

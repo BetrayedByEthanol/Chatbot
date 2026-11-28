@@ -190,6 +190,8 @@ P2-F1.3 [prediction lifecycle candidate](p2-f13-prediction-lifecycle.md) impleme
 
 P2-F1.4 [subjective projection candidate](p2-f14-subjective-projection.md) composes a narrow tentative expression hint and conditional Cognitive intention through existing context/response ownership. Exact current revision, source/control, expiry and cancellation fences are implemented; candidate tests NOT RUN. No P2-F2 mood or approach learning, DEC-04 callback or general maturity policy adopted.
 
+P2-F1.5 [MetaMemory and experience significance candidate](p2-f15-metamemory-significance.md) reuses the 05D.5 observation and feedback store, adds current gap/attention states and a narrow explicit user-marked experience signal independent of summary selection. No implicit learning or retention policy; new tests NOT RUN.
+
 ### 6.2 Relevance gate and measured acceptance (P2-F3)
 
 Conversation's existing sparse interpretation uses active topic/referents, pending commitments/forecasts, outcome/achievement reports (including indirect reports), explicit corrections and meaningful behavioral-change cues. Cognitive validates retrieved expectation applicability: scope, horizon, maturity, source eligibility and whether incoming evidence matches its target. A cheap deterministic or existing lightweight/model inference signal suffices when supported; no mandatory classifier or model pass. Mandatory corrections, authorization, direct requests and required state transitions cannot be skipped by this optional relevance decision.
