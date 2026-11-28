@@ -47,20 +47,26 @@ def require_preference_fence(cur,user_id,instance_id,fence):
 
 
 def persist_response_lineage(cur,*,response_id,user_id,instance_id,historical,preference,
-                             presentation_only=False):
+                             presentation_only=False,predictive=None):
     keys=preference.keys if preference is not None else ()
     revisions=preference.revisions if preference is not None else ()
+    if predictive is not None and (historical is None or presentation_only):
+        raise ValueError("predictive lineage requires a historical fence and non-presentation reuse")
     if historical is None and not keys:
         return
     cur.execute(
         """INSERT INTO conversation_response_lineage(
                response_id,user_id,instance_id,historical_revision,next_expiry,
-               preference_keys,preference_revisions,presentation_only
-           ) VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb,%s)""",
+               preference_keys,preference_revisions,presentation_only,
+               predictive_control_version,predictive_reset_generation,predictive_source_ids
+           ) VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s)""",
         (response_id,user_id,instance_id,
          historical.revision if historical is not None else None,
          historical.next_expiry if historical is not None else None,
-         list(keys),json.dumps(revisions),presentation_only),
+         list(keys),json.dumps(revisions),presentation_only,
+         predictive.control_version if predictive is not None else None,
+         predictive.reset_generation if predictive is not None else None,
+         list(predictive.source_turn_ids) if predictive is not None else None),
     )
 
 
@@ -72,7 +78,8 @@ def require_response_lineage(cur,user_id,instance_id,response_id):
     """
     cur.execute(
         """SELECT historical_revision,next_expiry,preference_keys,
-                  preference_revisions,legacy_unbound
+                  preference_revisions,legacy_unbound,predictive_control_version,
+                  predictive_reset_generation,predictive_source_ids
            FROM conversation_response_lineage
            WHERE response_id=%s AND user_id=%s AND instance_id=%s""",
         (response_id,user_id,instance_id),
@@ -104,6 +111,12 @@ def require_response_lineage(cur,user_id,instance_id,response_id):
             from .raw_context import require_raw_context_fence
             require_raw_context_fence(cur,user_id,instance_id,raw["conversation_id"],
                 RawContextFence(tuple(raw["source_turn_ids"]),raw["reusable"]))
+        if row is not None and row["predictive_control_version"] is not None:
+            from .learning_control_contracts import PredictiveFence
+            from .predictive_admission import require_predictive_fence
+            require_predictive_fence(cur,user_id,instance_id,PredictiveFence(
+                row["predictive_control_version"],row["predictive_reset_generation"],
+                tuple(row["predictive_source_ids"]),row["historical_revision"],row["next_expiry"]))
         cur.execute("SELECT entity_response_has_evidence(%s,%s,%s) AS tracked",
                     (response_id,user_id,instance_id))
         if cur.fetchone()["tracked"]:

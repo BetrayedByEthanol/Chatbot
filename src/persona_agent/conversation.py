@@ -278,6 +278,10 @@ def ingest_text(connection: Connection, actor: TrustedActor,
                 "WHERE turn_id=%s AND user_id=%s",
                 (event_id,temporal.model_dump_json(),turn_id,actor.user_id),
             )
+            if provenance is None:
+                from .learning_control import stamp_learning_input
+                stamp_learning_input(cursor,user_id=actor.user_id,instance_id=command.instance_id,
+                                     turn_id=turn_id,event_id=event_id)
             from .explicit_memory_reports import record_explicit_memory_report
             record_explicit_memory_report(
                 cursor,user_id=actor.user_id,instance_id=command.instance_id,
@@ -1586,10 +1590,15 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
                  context.selection_generation,context.conversation_revision,
                  generated.model_id,text,knowledge_answered),
             )
+            if context.predictive_fence is not None:
+                historical=merge_read_fences(historical,HistoricalReadFence(
+                    context.predictive_fence.historical_revision,context.predictive_fence.next_expiry))
             persist_response_lineage(cursor,response_id=response_id,user_id=actor.user_id,
                 instance_id=context.instance_id,historical=historical,
-                preference=context.preference_fence,
+                preference=context.preference_fence,predictive=context.predictive_fence,
                 presentation_only=(
+                    context.predictive_fence is None
+                    and
                     context.presentation_fence is not None
                     and context.historical_fence is None
                     and context.preference_fence is None
@@ -1843,6 +1852,9 @@ def commit_text_response(connection: Connection, actor: TrustedActor,
                                           context.conversation_id,context.raw_context_fence)
             if writes_guidance and historical is not None:
                 require_historical_read_fence(cursor,actor.user_id,context.instance_id,historical)
+            if context.predictive_fence is not None:
+                from .predictive_admission import require_predictive_fence
+                require_predictive_fence(cursor,actor.user_id,context.instance_id,context.predictive_fence)
             return TextResponseResult(
                 response_id=response_id,turn_id=context.turn_id,
                 text=text,model_id=generated.model_id,delivery_status="GENERATED",
