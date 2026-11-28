@@ -85,3 +85,6 @@ class RecallObservation(BaseModel):
     feedback: tuple[FeedbackOutcome,...]=()
     # Original outcome is audit history; this flag is current eligibility.
     source_current: bool = True
+    request_current: bool = True
+    gap_state: Literal["OPEN","AWAITING_CLARIFICATION","REVIEW_REQUIRED","RESOLVED",
+                       "UNAVAILABLE","BUDGET_OMITTED"]="OPEN"

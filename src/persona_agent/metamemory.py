@@ -37,26 +37,9 @@ def prior_clarification(cur,*,user_id,instance_id,query_key,candidates,before_at
     """Suppress only an unchanged previously delivered named choice for 24h."""
     if query_key is None or len(candidates)!=2:
         return False
-    cur.execute(
-        """SELECT o.outcome,o.clarification_key,r.delivered_at,
-                  response_lineage_current(r.response_id,r.user_id,r.instance_id) AS source_current
-           FROM memory_recall_observations o
-           JOIN conversation_responses r ON r.response_id=o.response_id
-             AND r.user_id=o.user_id AND r.instance_id=o.instance_id
-           WHERE o.user_id=%s AND o.instance_id=%s AND o.route='ENTITY'
-             AND o.query_key=%s AND r.delivery_status='DELIVERED'
-             AND NOT o.clarification_suppressed
-             AND r.delivered_at<=%s
-           ORDER BY r.delivered_at DESC,o.response_id LIMIT 1""",
-        (user_id,instance_id,query_key,before_at),
-    )
-    row=cur.fetchone()
-    if row is None:
-        return False
-    from datetime import timedelta
-    return (row["source_current"] and row["outcome"]=="AMBIGUOUS"
-            and row["clarification_key"]==candidate_key(candidates)
-            and row["delivered_at"]>before_at-timedelta(hours=24))
+    cur.execute("""SELECT memory_recall_choice_awaiting(%s,%s,%s,%s,%s) AS awaiting""",
+                (user_id,instance_id,query_key,candidate_key(candidates),before_at))
+    return cur.fetchone()["awaiting"]
 
 
 def adjacent_clarification_key(cur,*,user_id,instance_id,conversation_id,sequence,before_at):
@@ -70,7 +53,8 @@ def adjacent_clarification_key(cur,*,user_id,instance_id,conversation_id,sequenc
            WHERE o.user_id=%s AND o.instance_id=%s AND o.conversation_id=%s
              AND t.sequence=%s AND o.route='ENTITY' AND o.outcome='AMBIGUOUS'
              AND o.clarification_key IS NOT NULL AND r.delivery_status='DELIVERED'
-             AND response_lineage_current(r.response_id,r.user_id,r.instance_id)
+             AND memory_recall_response_current(o.response_id,o.user_id,o.instance_id,
+                                                o.conversation_id,o.turn_id)
              AND r.delivered_at<=%s""",
         (user_id,instance_id,conversation_id,sequence-1,before_at),
     )
@@ -129,14 +113,12 @@ def list_recall_observations(connection: Connection,actor: TrustedActor,instance
             cur.execute(
                 """WITH observed AS (
                        SELECT o.response_id,o.conversation_id,o.turn_id,o.route,o.query_key,o.outcome,
-                              o.evidence_refs,o.clarification_suppressed,o.observed_at,r.delivered_at,
-                              (response_lineage_current(r.response_id,r.user_id,r.instance_id)
-                               AND workflow_source_current(o.user_id,o.instance_id,o.conversation_id,o.turn_id,NULL)
-                               AND NOT EXISTS (
-                                   SELECT 1 FROM conversation_response_raw_lineage raw
-                                   WHERE raw.response_id=r.response_id AND raw.user_id=r.user_id
-                                     AND raw.instance_id=r.instance_id AND NOT raw.reusable
-                               )) AS source_current,
+                              o.evidence_refs,o.clarification_key,o.clarification_suppressed,
+                              o.observed_at,r.delivered_at,
+                              workflow_source_current(o.user_id,o.instance_id,o.conversation_id,
+                                                      o.turn_id,NULL) AS request_current,
+                              memory_recall_response_current(o.response_id,o.user_id,o.instance_id,
+                                  o.conversation_id,o.turn_id) AS source_current,
                               COALESCE((SELECT jsonb_agg(f.outcome ORDER BY f.recorded_at,f.feedback_id)
                                   FROM memory_retrieval_feedback f
                                   WHERE f.response_id=o.response_id AND f.user_id=o.user_id
@@ -162,14 +144,27 @@ def list_recall_observations(connection: Connection,actor: TrustedActor,instance
                                ELSE evidence_refs END AS evidence_refs,
                           CASE WHEN %s AND NOT source_current THEN false
                                ELSE clarification_suppressed END AS clarification_suppressed,
-                          observed_at,delivered_at,feedback,source_current
-                   FROM observed WHERE NOT %s OR (rn=1 AND (
+                          observed_at,delivered_at,feedback,source_current,request_current,
+                          CASE
+                            WHEN NOT request_current THEN 'UNAVAILABLE'
+                            WHEN outcome='BUDGET' THEN 'BUDGET_OMITTED'
+                            WHEN feedback ? 'INCORRECT' OR feedback ? 'MISSED' THEN 'REVIEW_REQUIRED'
+                            WHEN NOT source_current THEN 'OPEN'
+                            WHEN outcome='AVAILABLE' THEN 'RESOLVED'
+                            WHEN outcome='AMBIGUOUS' AND delivered_at IS NOT NULL
+                              AND clarification_key IS NOT NULL
+                              AND memory_recall_choice_awaiting(%s,%s,query_key,clarification_key,
+                                                                statement_timestamp())
+                              THEN 'AWAITING_CLARIFICATION'
+                            ELSE 'OPEN'
+                          END AS gap_state
+                   FROM observed WHERE NOT %s OR (rn=1 AND request_current AND (
                        outcome<>'AVAILABLE' OR NOT source_current
                        OR feedback ? 'INCORRECT' OR feedback ? 'MISSED'
                    ))
                    ORDER BY observed_at DESC,response_id DESC LIMIT %s""",
                 (open_only,actor.user_id,instance_id,route,route,key,key,open_only,
-                 open_only,open_only,open_only,open_only,limit),
+                 open_only,open_only,open_only,actor.user_id,instance_id,open_only,limit),
             )
             return tuple(RecallObservation.model_validate(row) for row in cur.fetchall())
 
