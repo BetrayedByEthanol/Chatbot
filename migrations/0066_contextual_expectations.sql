@@ -16,6 +16,9 @@ CREATE TABLE cognitive_expectation_revisions (
     non_completion_occasions integer NOT NULL CHECK(non_completion_occasions>=0),
     conflicting_occasions integer NOT NULL CHECK(conflicting_occasions>=0),
     source_turn_ids uuid[] NOT NULL,
+    occasion_evidence jsonb NOT NULL DEFAULT '[]'::jsonb,
+    assessment_method text NOT NULL DEFAULT 'dated_activity_reports.v1'
+        CHECK(assessment_method='dated_activity_reports.v1'),
     expires_at timestamptz,
     created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
     source_event_id uuid,
@@ -25,6 +28,8 @@ CREATE TABLE cognitive_expectation_revisions (
     FOREIGN KEY(operation_id,user_id,instance_id) REFERENCES cognitive_jobs(operation_id,user_id,instance_id),
     FOREIGN KEY(source_event_id,user_id,instance_id) REFERENCES events(event_id,user_id,instance_id),
     CHECK(array_position(source_turn_ids,NULL) IS NULL),
+    CHECK(jsonb_typeof(occasion_evidence)='array'
+        AND jsonb_array_length(occasion_evidence)=cardinality(source_turn_ids)),
     CHECK((disposition='WITHDRAWN' AND operation_id IS NULL AND source_event_id IS NOT NULL
            AND cardinality(source_turn_ids)=0 AND expires_at IS NULL
            AND maturity='UNAVAILABLE' AND direction='UNKNOWN'

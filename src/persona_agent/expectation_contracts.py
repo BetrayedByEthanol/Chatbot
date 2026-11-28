@@ -29,6 +29,7 @@ class ExpectationPlan:
     non_completion_occasions:int
     conflicting_occasions:int
     expires_at:datetime
+    reports:tuple[ActivityReport,...]
 
 
 class ExpectationView(BaseModel):
@@ -45,7 +46,9 @@ class ExpectationView(BaseModel):
     conflicting_occasions:int
     source_turn_ids:tuple[UUID,...]
     expires_at:datetime|None
-    epistemic_status:Literal["MODEL_INTERPRETED"]="MODEL_INTERPRETED"
+    occasion_evidence:tuple[ActivityReport,...]
+    assessment_method:Literal["dated_activity_reports.v1"]="dated_activity_reports.v1"
+    epistemic_status:Literal["HYPOTHESIS"]="HYPOTHESIS"
     evidence_class:Literal["USER_REPORTED"]="USER_REPORTED"
 
 

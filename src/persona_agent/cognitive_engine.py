@@ -469,11 +469,23 @@ def commit_cognition(
                     "pattern_proposals":len(draft.patterns),
                 },
             )
-            from .contextual_expectations import admit_expectations
-            # Admit optional owner revisions before Memory pattern admission
-            # takes its exclusive revision lock. No inference occurs here.
-            admit_expectations(connection,cur,work)
-            patterns=admit_pattern_proposals(connection,cur,work,draft.patterns,model_id)
+            if work.expectation_plans:
+                from .contextual_expectations import stage_expectations,require_expectation_plans
+                from .conversation_contracts import StaleHistoricalContext
+                try:
+                    # Stage both owners' writes before late fences. Pattern
+                    # admission may take Memory UPDATE; do not upgrade a
+                    # predictive SHARE lock to UPDATE. If the optional
+                    # expectation fails, rollback both and retry only the
+                    # independent bounded pattern admission.
+                    with connection.transaction():
+                        stage_expectations(cur,work)
+                        patterns=admit_pattern_proposals(connection,cur,work,draft.patterns,model_id)
+                        require_expectation_plans(cur,work)
+                except StaleHistoricalContext:
+                    patterns=admit_pattern_proposals(connection,cur,work,draft.patterns,model_id)
+            else:
+                patterns=admit_pattern_proposals(connection,cur,work,draft.patterns,model_id)
             # Finish normal owner/event writes before the shared scope
             # revision lock. Pattern admission may already hold this lock
             # exclusively; never acquire it before owner writes or upgrade

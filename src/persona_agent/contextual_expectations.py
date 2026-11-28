@@ -120,8 +120,11 @@ def prepare_expectations(cur,user_id,instance_id,rows):
         for report in new:
             if (report.occasion,report.completed) in known:
                 continue
-            # A disabled/pre-reset/unsupported input cannot participate.
-            if capture_predictive_fence(cur,user_id,instance_id,(report.turn_id,)) is None:
+            # The final union is fenced once; this exact check keeps
+            # disabled/pre-reset raw reports out of the selected input set.
+            cur.execute("SELECT predictive_sources_current(%s,%s,%s,%s::uuid[]) AS eligible",
+                        (user_id,instance_id,gen,[report.turn_id]))
+            if not cur.fetchone()["eligible"]:
                 continue
             reports.append(report)
             known.add((report.occasion,report.completed))
@@ -142,52 +145,53 @@ def prepare_expectations(cur,user_id,instance_id,rows):
         if expiry<=now:
             continue
         plans.append(ExpectationPlan(key,version,fence,disposition,maturity,direction,
-                                     yes,no,conflicts,expiry))
+                                     yes,no,conflicts,expiry,tuple(reports)))
     return tuple(plans)
 
 
-def admit_expectations(connection,cur,work):
-    """Optional owner write under the existing cognition claim/watermark.
+def stage_expectations(cur,work):
+    """Stage Cognitive rows and event before either owner's Memory fence.
 
-    Unique next revision serializes competing cross-session workers. All
-    insert/event locks precede the late Memory and control fences. A stale
-    optional plan rolls back as a savepoint, not unrelated cognition.
+    Caller owns the optional savepoint and validates after pattern writes.
+    Unique next version prevents two workers from both advancing a context.
     """
     if not work.expectation_plans:
-        return 0
+        return
     from .conversation import _event
-    try:
-        with connection.transaction():
-            admitted=[]
-            for plan in work.expectation_plans:
-                revision=uuid4()
-                f=plan.fence
-                cur.execute("""INSERT INTO cognitive_expectation_revisions(
-                    revision_id,user_id,instance_id,reset_generation,context_key,version,
-                    operation_id,control_version,disposition,maturity,direction,
-                    completion_occasions,non_completion_occasions,conflicting_occasions,
-                    source_turn_ids,expires_at)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                    ON CONFLICT DO NOTHING RETURNING revision_id""",
-                    (revision,work.user_id,work.instance_id,f.reset_generation,plan.context_key,
-                     plan.expected_version+1,work.operation_id,f.control_version,plan.disposition,
-                     plan.maturity,plan.direction,plan.completion_occasions,plan.non_completion_occasions,
-                     plan.conflicting_occasions,list(f.source_turn_ids),plan.expires_at))
-                if cur.fetchone() is None:
-                    raise StaleHistoricalContext("expectation version already advanced")
-                admitted.append({"revision_id":str(revision),"version":plan.expected_version+1})
-            _event(cur,user_id=work.user_id,instance_id=work.instance_id,
-                   conversation_id=work.conversation_id,event_type="cognition.expectations.revised.v1",
-                   source_id="cognition.reflection",trust_level="TRUSTED_PLATFORM",
-                   detail={"operation_id":str(work.operation_id),"revisions":admitted})
-            for plan in work.expectation_plans:
-                require_predictive_fence(cur,work.user_id,work.instance_id,plan.fence)
-                cur.execute("SELECT clock_timestamp()<%s AS current",(plan.expires_at,))
-                if not cur.fetchone()["current"]:
-                    raise StaleHistoricalContext("expectation expired during preparation")
-            return len(admitted)
-    except StaleHistoricalContext:
-        return 0
+    admitted=[]
+    for plan in work.expectation_plans:
+        revision=uuid4()
+        f=plan.fence
+        cur.execute("""INSERT INTO cognitive_expectation_revisions(
+            revision_id,user_id,instance_id,reset_generation,context_key,version,
+            operation_id,control_version,disposition,maturity,direction,
+            completion_occasions,non_completion_occasions,conflicting_occasions,
+            source_turn_ids,occasion_evidence,expires_at)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s)
+            ON CONFLICT DO NOTHING RETURNING revision_id""",
+            (revision,work.user_id,work.instance_id,f.reset_generation,plan.context_key,
+             plan.expected_version+1,work.operation_id,f.control_version,plan.disposition,
+             plan.maturity,plan.direction,plan.completion_occasions,plan.non_completion_occasions,
+             plan.conflicting_occasions,list(f.source_turn_ids),json.dumps([
+                 {"turn_id":str(report.turn_id),"context_key":report.context_key,
+                  "occasion":report.occasion.isoformat(),"completed":report.completed}
+                 for report in plan.reports]),plan.expires_at))
+        if cur.fetchone() is None:
+            raise StaleHistoricalContext("expectation version already advanced")
+        admitted.append({"revision_id":str(revision),"version":plan.expected_version+1})
+    _event(cur,user_id=work.user_id,instance_id=work.instance_id,
+           conversation_id=work.conversation_id,event_type="cognition.expectations.revised.v1",
+           source_id="cognition.reflection",trust_level="TRUSTED_PLATFORM",
+           detail={"operation_id":str(work.operation_id),"revisions":admitted})
+
+
+def require_expectation_plans(cur,work):
+    """Late recheck, after optional Memory pattern writes and lock acquisition."""
+    for plan in work.expectation_plans:
+        require_predictive_fence(cur,work.user_id,work.instance_id,plan.fence)
+        cur.execute("SELECT clock_timestamp()<%s AS current",(plan.expires_at,))
+        if not cur.fetchone()["current"]:
+            raise StaleHistoricalContext("expectation expired during preparation")
 
 
 def _authorize(cur,actor,instance_id):
