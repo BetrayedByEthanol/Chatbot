@@ -434,12 +434,13 @@ def stage_prediction_batch(cur,work):
     admitted={"predictions":[],"comparisons":[],"resolutions":[]}
     for p in sorted(batch.forecasts,key=lambda item:(item.context_key,item.occasion)):
         pid=uuid4()
-        cur.execute("""INSERT INTO cognitive_predictions(
+        cur.execute("""WITH stamp AS MATERIALIZED (SELECT clock_timestamp() AS now)
+              INSERT INTO cognitive_predictions(
               prediction_id,user_id,instance_id,reset_generation,control_version,
               expectation_revision_id,expectation_version,operation_id,commitment_turn_id,
-              context_key,target_occasion,expected_completion,source_turn_ids,expires_at)
-              SELECT %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s
-              WHERE clock_timestamp()<%s
+              context_key,target_occasion,expected_completion,source_turn_ids,expires_at,created_at)
+              SELECT %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,stamp.now
+              FROM stamp WHERE stamp.now<%s
               ON CONFLICT DO NOTHING RETURNING prediction_id""",
             (pid,work.user_id,work.instance_id,p.fence.reset_generation,p.fence.control_version,
              p.expectation_revision_id,p.expectation_version,work.operation_id,p.commitment_turn_id,
