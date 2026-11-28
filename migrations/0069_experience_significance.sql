@@ -48,7 +48,8 @@ RETURNS boolean LANGUAGE sql AS $$
           ON r.response_id=o.response_id AND r.user_id=o.user_id AND r.instance_id=o.instance_id
         WHERE o.user_id=uid AND o.instance_id=iid AND o.route='ENTITY'
           AND o.query_key=qkey AND r.delivery_status='DELIVERED'
-          AND NOT o.clarification_suppressed AND r.delivered_at<=cutoff
+          AND NOT o.clarification_suppressed AND o.outcome<>'BUDGET'
+          AND r.delivered_at<=cutoff
         ORDER BY r.delivered_at DESC,o.response_id LIMIT 1
     ),false)
 $$;

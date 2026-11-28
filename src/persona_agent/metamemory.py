@@ -164,8 +164,7 @@ def list_recall_observations(connection: Connection,actor: TrustedActor,instance
                                 THEN 'REVIEW_REQUIRED'
                             WHEN NOT source_current THEN 'OPEN'
                             WHEN outcome='AVAILABLE' THEN 'RESOLVED'
-                            WHEN outcome='AMBIGUOUS' AND delivered_at IS NOT NULL
-                              AND clarification_key IS NOT NULL
+                            WHEN outcome='AMBIGUOUS' AND clarification_key IS NOT NULL
                               AND memory_recall_choice_awaiting(%s,%s,query_key,clarification_key,
                                                                 statement_timestamp())
                               THEN 'AWAITING_CLARIFICATION'
