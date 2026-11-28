@@ -159,6 +159,18 @@ def test_prepared_cognitive_marker_cannot_survive_source_revocation(dsn):
         with psycopg.connect(dsn,autocommit=True) as conn:
             assert conn.execute("SELECT cognitive_watermark FROM conversations WHERE conversation_id=%s",(conv,)).fetchone()==(0,)
         assert markers(dsn,user,instance)==()
+        # This test calls commit_cognition directly, so it still owns a
+        # live lease after the expected rejection. Complete cooperative
+        # cancellation rather than leaving the fixture to reap a live claim.
+        from persona_agent.operation_control import acknowledge_cancel
+        from test_phase2_cognition import cancel_pending
+        cancel_pending(dsn,user,lease.operation_id)
+        call(dsn,acknowledge_cancel,lease)
+        with psycopg.connect(dsn,autocommit=True) as conn:
+            assert conn.execute("SELECT status FROM operations WHERE operation_id=%s",
+                                (lease.operation_id,)).fetchone()==("CANCELLED",)
+            assert conn.execute("SELECT count(*) FROM operation_resource_reservations WHERE operation_id=%s",
+                                (lease.operation_id,)).fetchone()==(0,)
 
 
 def test_significant_episode_only_breaks_relevant_eligible_candidate_ties(dsn):
