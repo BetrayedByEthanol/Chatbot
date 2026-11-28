@@ -173,10 +173,19 @@ def review_session_range(connection,actor,instance_id,conversation_id,*,
             cur.execute("""SELECT signal.turn_id AS source_turn_id,signal.signal_id AS reference_id,
                                   'CORRECTION_PROPOSED' AS state
                            FROM conversation_intent_signals signal
+                           CROSS JOIN LATERAL (
+                               SELECT 1 FROM current_dialogue_intents eligible
+                               WHERE eligible.signal_id=signal.signal_id
+                                 AND eligible.user_id=signal.user_id AND eligible.instance_id=signal.instance_id
+                                 AND eligible.conversation_id=signal.conversation_id
+                                 AND eligible.turn_id=signal.turn_id
+                               OFFSET 0
+                           ) current
                            WHERE signal.user_id=%s AND signal.instance_id=%s
                              AND signal.conversation_id=%s AND signal.turn_id=ANY(%s::uuid[])
                              AND signal.intent_kind='CORRECTION'
-                             AND signal.epistemic_status='RULE_INFERRED'""",(*scope,ids))
+                             AND signal.epistemic_status='RULE_INFERRED'
+                             AND signal.source_response_id IS NULL""",(*scope,ids))
             findings.extend(ReviewFinding(kind="CORRECTION_SIGNAL",**row) for row in cur.fetchall())
             cur.execute(f"""SELECT r.evidence_turn_id AS source_turn_id,r.reflection_id AS reference_id,
                                    r.kind AS state

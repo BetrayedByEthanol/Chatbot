@@ -298,3 +298,44 @@ def test_session_review_does_not_reopen_resolved_cross_session_gap(dsn):
     _,known=_ask(dsn,user,instance,"What car do I drive?")
     assert "Toyota Camry" in known.text
     assert not findings(review(dsn,user,instance,req.conversation_id,1),"RECALL_GAP")
+
+
+
+def test_session_review_positive_feedback_requires_exact_delivered_report_in_range(dsn):
+    from persona_agent.memory import admit_memory
+    from persona_agent.metamemory import record_retrieval_feedback
+    from test_phase2_memory import candidate
+    user,instance,_=seed(dsn)
+    source=incoming(dsn,user,instance,"I drive a Toyota Camry.")
+    call(dsn,admit_memory,actor(user),candidate(instance,source.conversation_id,source,
+        kind="FACT",predicate="car",value="Toyota Camry",quote="I drive a Toyota Camry."))
+    req,answer=_ask(dsn,user,instance,"What car do I drive?")
+    cmd=_feedback(dsn,user,instance,req,answer,outcome="RELEVANT")
+    result=call(dsn,record_retrieval_feedback,actor(user),cmd)
+    incoming(dsn,user,instance,"Thanks.",req.conversation_id)
+    assert review(dsn,user,instance,req.conversation_id,1).feedback=="NO_FEEDBACK"
+    view=review(dsn,user,instance,req.conversation_id,2)
+    assert view.feedback=="RELEVANCE_REPORTED"
+    feedback,=findings(view,"RETRIEVAL_FEEDBACK")
+    assert feedback.reference_id==result.feedback_id and feedback.related_id==answer.response_id
+    assert feedback.source_turn_id==cmd.feedback_turn_id
+
+
+def test_session_review_correction_and_significance_are_independent_bounded_findings(dsn):
+    user,instance,_=seed(dsn)
+    conv=uuid4()
+    source=incoming(dsn,user,instance,IMPORTANT,conv)
+    correction=incoming(dsn,user,instance,"Actually, the garden is shaded.",conv)
+    incoming(dsn,user,instance,"Continue.",conv)
+    view=review(dsn,user,instance,conv,2)
+    assert findings(view,"EXPERIENCE")[0].source_turn_id==source.turn_id
+    signal,=findings(view,"CORRECTION_SIGNAL")
+    assert signal.source_turn_id==correction.turn_id and signal.state=="CORRECTION_PROPOSED"
+    assert view.feedback=="NO_FEEDBACK"
+    first=review(dsn,user,instance,conv,2,limit=1)
+    assert first.truncated and len(first.findings)==1 and first.findings[0]==view.findings[0]
+    saved=link_memory(dsn,user,instance,conv,correction.turn_id)
+    invalidate(dsn,user,instance,saved,"RETRACT")
+    refreshed=review(dsn,user,instance,conv,2)
+    assert not findings(refreshed,"CORRECTION_SIGNAL")
+    assert findings(refreshed,"EXPERIENCE")[0].source_turn_id==source.turn_id

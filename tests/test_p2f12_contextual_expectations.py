@@ -96,6 +96,16 @@ def available_cognitive_slots(dsn,user,instance,slots):
             if status!="CANCEL_REQUESTED":
                 cancel_pending(dsn,user,op_id)
         if any(status in ("RUNNING","CANCEL_REQUESTED","SUSPEND_REQUESTED") for _,status in pending):
+            # The fixture has abandoned its workers; P0 correctly keeps a
+            # live cancellation reservation until acknowledgement or expiry.
+            # Advance ONLY this fixture's cancelled lease clock in the test
+            # database, then use normal recovery. Never change pool counters,
+            # reservation rows, claim generation or production policy.
+            with psycopg.connect(dsn,autocommit=True) as conn:
+                conn.execute("""UPDATE operations SET lease_until=clock_timestamp()-interval '1 second'
+                               WHERE user_id=%s AND instance_id=%s AND operation_type=%s
+                                 AND status='CANCEL_REQUESTED'""",
+                             (user,instance,COGNITIVE_OPERATION))
             call(dsn,reap_stale_operations,limit=1000)
         with psycopg.connect(dsn,autocommit=True) as conn:
             remaining=conn.execute(
