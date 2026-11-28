@@ -292,7 +292,9 @@ def test_research_approval_withdrawal_masks_candidate_and_denies_selection(dsn):
     import psycopg
     from test_mvp05d4_document_knowledge import _save_command
     from persona_agent.knowledge_memory import save_knowledge
-    from persona_agent.goal_state import propose_goal_strategy,select_goal_strategy,list_goals
+    from persona_agent.goal_state import (
+        propose_goal_strategy,select_goal_strategy,list_goals,list_goal_strategies,
+    )
     from persona_agent.strategy_research import research_goal_strategies,source_pin,compare_goal_strategies
     from persona_agent.runtime import VersionConflict
     from workflow_evidence_helpers import link_memory,invalidate
@@ -313,6 +315,10 @@ def test_research_approval_withdrawal_masks_candidate_and_denies_selection(dsn):
     item,=call(dsn,compare_goal_strategies,actor(user),instance,gid).strategies
     assert item.source_status=="SOURCE_UNAVAILABLE" and not item.sources
     assert item.approach=="" and item.limitations is None
+    listed,=call(dsn,list_goal_strategies,actor(user),instance,gid)
+    assert listed.strategy_id==cmd.strategy_id
+    assert listed.title=="[Research strategy requires reassessment]"
+    assert listed.approach==listed.suitability_note==""
     assert call(dsn,list_goals,actor(user),instance)[0].selected_strategy_id is None
     with psycopg.connect(dsn,autocommit=True) as conn:
         assert conn.execute("SELECT strategy_research_usable(%s,%s,%s)",

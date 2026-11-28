@@ -405,3 +405,37 @@ def test_resolved_objective_correction_is_atomic_at_source_limit(dsn,spare_sourc
                 assert block==""
                 assert dependencies.source_ids==set()
                 assert not dependencies.uses_broad
+
+
+def test_invalidated_thread_title_keeps_independent_act_and_referent_in_prompt(dsn):
+    user,instance=seed(dsn)
+    conv=uuid4()
+    # This response predates the thread's founding source, so it cannot
+    # inherit the later title dependency through prompt assembly.
+    independent=incoming(dsn,user,instance,conv,"Blue and green are available.")
+    reply=response(dsn,user,independent,"Which color should we use?")
+    origin=incoming(dsn,user,instance,conv,"Private original subject.")
+    thread,_=open_for(dsn,user,instance,conv,origin,"Private orchid project")
+    add_referent(dsn,user,instance,conv,independent,thread,"Blue and green")
+    act=uuid4()
+    call(dsn,offer_dialogue_act,actor(user),OfferDialogueActCommand(
+        **base(user,instance,conv,independent,revision(dsn,user,conv)),
+        thread_id=thread,act_id=act,kind=DialogueActKind.QUESTION,
+        label="Which color should we use?",source_response_id=reply.response_id,
+    ))
+    saved=link_memory(dsn,user,instance,conv,origin.turn_id)
+    request=incoming(dsn,user,instance,conv,"Explain soil drainage.")
+    before=call(dsn,prepare_text_context,actor(user),request.turn_id,max_turns=1)
+    assert "Private orchid project" in before.messages[0].content
+    assert "Which color should we use?" in before.messages[0].content
+    invalidate(dsn,user,instance,saved,"EXPIRE")
+    view=call(dsn,load_active_dialogue,actor(user),conv)
+    assert view.focus_thread_id==thread
+    assert [a.act_id for a in view.pending_acts]==[act]
+    assert [r.label for r in view.referents]==["Blue and green"]
+    after=call(dsn,prepare_text_context,actor(user),request.turn_id,max_turns=1)
+    prompt=after.messages[0].content
+    assert "Private orchid project" not in prompt
+    assert "Earlier topic omitted" in prompt
+    assert "Which color should we use?" in prompt and "Blue and green" in prompt
+    assert set(after.raw_context_fence.source_turn_ids)=={independent.turn_id,request.turn_id}
