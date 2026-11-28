@@ -579,7 +579,14 @@ def list_cognitive_proposals(
         cur.execute(
             f"""SELECT r.reflection_id,r.conversation_id,r.evidence_turn_id,
                       r.evidence_quote,r.kind,r.subject,r.content,r.confidence,
-                      r.related_reflection_id,r.temporal_scope,r.privacy_class,
+                      CASE WHEN EXISTS (
+                          SELECT 1 FROM cognitive_reflections prior
+                          WHERE prior.reflection_id=r.related_reflection_id
+                            AND prior.user_id=r.user_id AND prior.instance_id=r.instance_id
+                            AND prior.review_status='PROPOSED'
+                            AND {reflection_lineage_current_sql("prior")}
+                      ) THEN r.related_reflection_id END AS related_reflection_id,
+                      r.temporal_scope,r.privacy_class,
                       r.epistemic_status,r.review_status,
                       r.processed_through_sequence,
                       r.created_at
