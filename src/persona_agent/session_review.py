@@ -30,6 +30,8 @@ class ReviewFinding(BaseModel):
     state:str
     related_id:UUID|None=None
     version:int|None=None
+    owner_version:int|None=None
+    report_kind:Literal["UNCLASSIFIED","PROGRESS","OBSTACLE","SUCCESS_REPORTED"]|None=None
 
 
 class SessionReview(BaseModel):
@@ -189,13 +191,15 @@ def review_session_range(connection,actor,instance_id,conversation_id,*,
             # only exact directly approved active roots qualify. Delegated
             # ancestry/other authority requires the existing ALIGN review.
             cur.execute("""SELECT e.source_turn_id,e.evidence_id AS reference_id,e.goal_id AS related_id,
-                                  e.goal_version AS version,
+                                  e.goal_version AS version,g.version AS owner_version,
+                                  e.evidence_kind AS report_kind,
                                   CASE WHEN g.status='ACTIVE' AND g.parent_goal_id IS NULL
                                     AND g.creation_authority='USER_APPROVED'
                                     AND approval.trust_level='AUTHENTICATED_USER'
                                     AND approval.event_type='goal.created.v1'
                                     AND approval.payload->>'user_approved'='true'
                                     AND approval.payload->>'source_turn_id'=g.source_turn_id::text
+                                    AND approval.payload->>'goal_id'=g.goal_id::text
                                     AND EXISTS (
                                         SELECT 1 FROM conversation_turns a
                                         WHERE a.user_id=g.user_id AND a.instance_id=g.instance_id
@@ -215,7 +219,11 @@ def review_session_range(connection,actor,instance_id,conversation_id,*,
                              AND e.source_turn_id=ANY(%s::uuid[])
                              AND goal_evidence_current(e.user_id,e.instance_id,e.goal_id,ARRAY[e.evidence_id])
                              AND report.trust_level='AUTHENTICATED_USER'
-                             AND report.payload->>'source_turn_id'=e.source_turn_id::text""",(*scope,ids))
+                             AND report.event_type='goal.evidence.recorded.v1'
+                             AND report.payload->>'source_turn_id'=e.source_turn_id::text
+                             AND report.payload->>'goal_id'=g.goal_id::text
+                           ORDER BY array_position(%s::uuid[],e.source_turn_id),e.evidence_id
+                           LIMIT %s""",(*scope,ids,ids,limit+1))
             findings.extend(ReviewFinding(kind="GOAL_REPORT",**row) for row in cur.fetchall())
         # Deterministic bounded result, no quality/ranking inference from
         # count or confidence. Owner feedback state includes all eligible
