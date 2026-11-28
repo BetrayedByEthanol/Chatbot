@@ -1184,7 +1184,7 @@ def prepare_text_context(
                 messages=(system,*kept),
                 procedure_fence=procedure_fence,temporal_context=temporal,
                 historical_fence=historical_fence,presentation_fence=presentation_fence,
-                prediction_comparison=comparison,
+                prediction_comparison=comparison if comparison.route!="SKIP" else None,
                 raw_context_fence=RawContextFence(
                     tuple(sorted(raw_dependencies | grounding_dependencies |
                                  dialogue_dependencies.source_ids)),reusable,

@@ -4,9 +4,10 @@ Ingress pins a visible forecast and prior expectation, not a result. Only the
 leased Cognitive owner can persist predictions, comparisons and resolution.
 No model-visible context, appraisal, instructions or tool authority.
 """
+import json
 import re
 from datetime import date,datetime,time,timedelta,timezone
-from uuid import uuid4
+from uuid import NAMESPACE_URL,uuid4,uuid5
 
 from psycopg.rows import dict_row
 
@@ -15,9 +16,10 @@ from .conversation_contracts import StaleHistoricalContext
 from .operation_contracts import require_idle
 from .prediction_contracts import (
     ComparisonRead,ForecastPlan,ComparisonPlan,ResolutionPlan,PredictionBatch,PredictionView,
+    WithdrawPrediction,PredictionWithdrawalResult,RecordedComparison,
 )
 from .predictive_admission import capture_predictive_fence,require_predictive_fence
-from .runtime import PermissionDenied
+from .runtime import PermissionDenied,VersionConflict,IdempotencyConflict,_fingerprint
 
 MAX_HORIZON_DAYS=7
 MAX_OUTCOME_REPORTS=16
@@ -197,7 +199,7 @@ def _unknown(reason):
     return ComparisonRead("COMPARE_NOW","UNKNOWN",reason)
 
 
-def _compare(cur,user_id,instance_id,report,at,admission,control,now):
+def _compare(cur,user_id,instance_id,report,at,admission,control,now,*,ignore_operation=None):
     if (admission is None or control is None
             or admission["admitted_control_version"]!=control["version"]
             or admission["reset_generation"]!=control["reset_generation"]):
@@ -207,7 +209,7 @@ def _compare(cur,user_id,instance_id,report,at,admission,control,now):
         return _unknown("NO_PREEXISTING_EXPECTATION")
     e=_expectation(cur,user_id,instance_id,ref)
     if (not _usable(e,control,now) or e["context_key"]!=report.context_key
-            or e["created_at"]>=at or _latest_id(cur,e)!=ref):
+            or e["created_at"]>=at or _latest_id(cur,e,ignore_operation=ignore_operation)!=ref):
         return _unknown("EXPECTATION_UNAVAILABLE")
     # Deduplicate the same reported occasion, including repeats across
     # sessions before the ordinary expectation revision has been written.
@@ -269,6 +271,13 @@ def _resolution(cur,user_id,instance_id,prediction_id):
                    WHERE prediction_id=%s AND user_id=%s AND instance_id=%s""",
                 (prediction_id,user_id,instance_id))
     return cur.fetchone()
+
+
+def _withdrawn(cur,user_id,instance_id,prediction_id):
+    cur.execute("""SELECT 1 FROM cognitive_prediction_withdrawals
+                   WHERE prediction_id=%s AND user_id=%s AND instance_id=%s""",
+                (prediction_id,user_id,instance_id))
+    return cur.fetchone() is not None
 
 
 def _bound_reports(cur,p):
@@ -336,7 +345,8 @@ def _prepare_resolution(cur,user_id,instance_id,pid,control,now):
     if (p is None or p["control_version"]!=control["version"]
             or p["reset_generation"]!=control["reset_generation"] or p["expires_at"]<=now):
         return None
-    if _resolution(cur,user_id,instance_id,pid) is not None:
+    if (_resolution(cur,user_id,instance_id,pid) is not None
+            or _withdrawn(cur,user_id,instance_id,pid)):
         return None
     e=_expectation(cur,user_id,instance_id,p["expectation_revision_id"])
     if (not _usable(e,control,now) or not _prediction_matches_expectation(p,e)
@@ -500,10 +510,27 @@ def require_prediction_batch(cur,work):
     for p in work.prediction_batch.comparisons:
         r=p.read
         _require_prior(cur,work,r.expectation_revision_id,r.fence,r.expires_at)
+        # Another session may have admitted an earlier duplicate or
+        # counterexample while this range was prepared.
+        row=next((x for x in work.turns if x["turn_id"]==r.outcome_turn_id),None)
+        if row is None:
+            raise StaleHistoricalContext("comparison source not in cognitive range")
+        report=parse_activity_report(row["turn_id"],row["input_text"],row["created_at"])
+        if report is None:
+            raise StaleHistoricalContext("comparison source no longer supported")
+        admission=_admission(cur,work.user_id,work.instance_id,report,row["created_at"])
+        control={"version":r.fence.control_version,"reset_generation":r.fence.reset_generation}
+        current=_compare(cur,work.user_id,work.instance_id,report,row["created_at"],
+                         admission,control,_now(cur),ignore_operation=work.operation_id)
+        if (current.classification!=r.classification or current.fence is None
+                or current.expectation_revision_id!=r.expectation_revision_id
+                or current.fence.source_turn_ids!=r.fence.source_turn_ids):
+            raise StaleHistoricalContext("comparison evidence changed")
     for p in work.prediction_batch.resolutions:
         e=_require_prior(cur,work,p.expectation_revision_id,p.fence,p.expires_at)
         prediction=_prediction(cur,work.user_id,work.instance_id,p.prediction_id)
         if (prediction is None or not _prediction_matches_expectation(prediction,e)
+                or _withdrawn(cur,work.user_id,work.instance_id,p.prediction_id)
                 or _report_exists(cur,work.user_id,work.instance_id,p.fence.reset_generation,
                     prediction["context_key"],prediction["target_occasion"],unbound_to=p.prediction_id)
                 or tuple(r["turn_id"] for r in _bound_reports(cur,prediction))!=p.outcome_turn_ids):
@@ -523,7 +550,7 @@ def read_prediction(connection,actor,instance_id,prediction_id):
     with connection.transaction(),connection.cursor(row_factory=dict_row) as cur:
         _authorize(cur,actor,instance_id)
         p=_prediction(cur,actor.user_id,instance_id,prediction_id)
-        if p is None:
+        if p is None or _withdrawn(cur,actor.user_id,instance_id,prediction_id):
             return None
         control=_control(cur,actor.user_id,instance_id)
         e=_expectation(cur,actor.user_id,instance_id,p["expectation_revision_id"])
@@ -541,7 +568,8 @@ def read_prediction(connection,actor,instance_id,prediction_id):
             return None
         latest=_latest(cur,actor.user_id,instance_id,p["reset_generation"],p["context_key"])
         now=_now(cur)
-        if not _usable(e,control,now) or not _usable(latest,control,now):
+        if (not _usable(e,control,now) or not _usable(latest,control,now)
+                or _withdrawn(cur,actor.user_id,instance_id,prediction_id)):
             return None
         if _resolution(cur,actor.user_id,instance_id,prediction_id)!=r:
             return None  # concurrent commit; next inspection may read it
@@ -588,10 +616,130 @@ def inspect_prediction_history(connection,actor,instance_id,*,limit=20):
                          SELECT * FROM cognitive_predictions WHERE user_id=%s AND instance_id=%s
                          ORDER BY created_at DESC,prediction_id LIMIT %s)
                        SELECT p.prediction_id,p.expectation_revision_id,p.created_at,p.expires_at,
-                         CASE WHEN r.prediction_id IS NOT NULL THEN 'RESOLUTION_RECORDED'
+                         CASE WHEN w.prediction_id IS NOT NULL THEN 'WITHDRAWN'
+                              WHEN r.prediction_id IS NOT NULL THEN 'RESOLUTION_RECORDED'
                               WHEN p.expires_at<=clock_timestamp() THEN 'EXPIRED'
-                              ELSE 'OPEN_RECORDED' END AS historical_status
+                              ELSE 'OPEN_RECORDED' END AS historical_status,
+                         CASE WHEN w.prediction_id IS NOT NULL THEN 'WITHDRAWN'
+                              WHEN c.reset_generation IS DISTINCT FROM p.reset_generation THEN 'RESET'
+                              WHEN NOT COALESCE(c.learning_enabled,false) THEN 'DISABLED'
+                              WHEN c.version<>p.control_version THEN 'CONTROL_CHANGED'
+                              ELSE 'REQUIRES_ELIGIBILITY_CHECK' END AS governance_status
                        FROM candidates p LEFT JOIN cognitive_prediction_resolutions r
                          ON r.prediction_id=p.prediction_id AND r.user_id=p.user_id AND r.instance_id=p.instance_id
+                       LEFT JOIN cognitive_prediction_withdrawals w
+                         ON w.prediction_id=p.prediction_id AND w.user_id=p.user_id AND w.instance_id=p.instance_id
+                       LEFT JOIN predictive_learning_controls c
+                         ON c.user_id=p.user_id AND c.instance_id=p.instance_id
                        ORDER BY p.created_at DESC,p.prediction_id""",(actor.user_id,instance_id,limit))
         return tuple(dict(r) for r in cur.fetchall())
+
+
+
+def withdraw_prediction(connection,actor,command:WithdrawPrediction):
+    """Exact immutable target; receipt replay does not withdraw twice.
+
+    May suppress a historical prediction while learning is disabled.
+    No change to the expectation or to independent user reports.
+    """
+    require_idle(connection)
+    if type(command) is not WithdrawPrediction:
+        raise TypeError("expected WithdrawPrediction")
+    from .conversation import _selection
+    kind="cognition.prediction.withdraw.v1"
+    fingerprint=_fingerprint(command)
+    with connection.transaction(),connection.cursor(row_factory=dict_row) as cur:
+        _authorize(cur,actor,command.instance_id)
+        _selection(cur,actor,command.instance_id,command.expected_generation)
+        receipt=uuid4()
+        cur.execute("""INSERT INTO command_receipts(receipt_id,user_id,instance_id,command_type,
+                       idempotency_key,request_fingerprint) VALUES (%s,%s,%s,%s,%s,%s)
+                       ON CONFLICT DO NOTHING RETURNING receipt_id""",
+                    (receipt,actor.user_id,command.instance_id,kind,command.idempotency_key,fingerprint))
+        if cur.fetchone() is None:
+            cur.execute("""SELECT result_json,request_fingerprint FROM command_receipts
+                           WHERE user_id=%s AND instance_id=%s AND command_type=%s AND idempotency_key=%s""",
+                        (actor.user_id,command.instance_id,kind,command.idempotency_key))
+            saved=cur.fetchone()
+            if saved is None or saved["request_fingerprint"]!=fingerprint:
+                raise IdempotencyConflict("prediction withdrawal key reused")
+            return PredictionWithdrawalResult.model_validate(saved["result_json"]).model_copy(
+                update={"replayed":True})
+        if _prediction(cur,actor.user_id,command.instance_id,command.prediction_id) is None:
+            raise PermissionDenied("prediction outside authenticated scope")
+        stream=uuid5(NAMESPACE_URL,f"persona-agent/{command.instance_id}/cognition.prediction")
+        cur.execute("""INSERT INTO event_streams(stream_id,user_id,instance_id,domain)
+                       VALUES (%s,%s,%s,'cognition.prediction') ON CONFLICT DO NOTHING""",
+                    (stream,actor.user_id,command.instance_id))
+        cur.execute("""UPDATE event_streams SET last_sequence=last_sequence+1
+                       WHERE stream_id=%s AND user_id=%s AND instance_id=%s RETURNING last_sequence""",
+                    (stream,actor.user_id,command.instance_id))
+        seq=cur.fetchone()["last_sequence"]
+        event_id=uuid4()
+        cur.execute("""INSERT INTO events(event_id,event_type,schema_version,user_id,instance_id,
+                       stream_id,stream_sequence,source_id,trust_level,correlation_id,payload)
+                       VALUES (%s,%s,1,%s,%s,%s,%s,%s,'AUTHENTICATED_USER',%s,%s::jsonb)""",
+                    (event_id,kind,actor.user_id,command.instance_id,stream,seq,actor.source_id,receipt,
+                     json.dumps({"prediction_id":str(command.prediction_id)})))
+        cur.execute("""INSERT INTO cognitive_prediction_withdrawals(
+                       prediction_id,user_id,instance_id,source_event_id) VALUES (%s,%s,%s,%s)
+                       ON CONFLICT DO NOTHING RETURNING prediction_id""",
+                    (command.prediction_id,actor.user_id,command.instance_id,event_id))
+        if cur.fetchone() is None:
+            raise VersionConflict("prediction already withdrawn")
+        cur.execute("INSERT INTO outbox(outbox_id,event_id) VALUES (%s,%s)",(uuid4(),event_id))
+        cur.execute("""SELECT version FROM predictive_learning_controls
+                       WHERE user_id=%s AND instance_id=%s FOR NO KEY UPDATE""",
+                    (actor.user_id,command.instance_id))
+        if cur.fetchone() is None:
+            raise VersionConflict("learning control unavailable")
+        result=PredictionWithdrawalResult(prediction_id=command.prediction_id,event_id=event_id)
+        cur.execute("UPDATE command_receipts SET result_json=%s::jsonb,event_id=%s WHERE receipt_id=%s",
+                    (result.model_dump_json(),event_id,receipt))
+        return result
+
+
+def read_recorded_comparison(connection,actor,instance_id,comparison_id):
+    """Scoped historical diagnostic; not an appraisal execution grant.
+
+    A normal later expectation revision makes this historical, never a
+    current forecast. New contrary evidence or withdrawn dependencies
+    suppress old certainty. No suppressed content returned.
+    """
+    require_idle(connection)
+    with connection.transaction(),connection.cursor(row_factory=dict_row) as cur:
+        _authorize(cur,actor,instance_id)
+        cur.execute("""SELECT * FROM cognitive_expectation_comparisons
+                       WHERE comparison_id=%s AND user_id=%s AND instance_id=%s""",
+                    (comparison_id,actor.user_id,instance_id))
+        r=cur.fetchone()
+        if r is None:
+            return None
+        c=_control(cur,actor.user_id,instance_id)
+        e=_expectation(cur,actor.user_id,instance_id,r["expectation_revision_id"])
+        if (not _usable(e,c,_now(cur)) or r["control_version"]!=c["version"]
+                or r["reset_generation"]!=c["reset_generation"]):
+            return None
+        f=_fence(cur,actor.user_id,instance_id,c,r["source_turn_ids"])
+        if f is None:
+            return None
+        try:
+            require_predictive_fence(cur,actor.user_id,instance_id,f)
+        except StaleHistoricalContext:
+            return None
+        latest=_latest(cur,actor.user_id,instance_id,e["reset_generation"],e["context_key"])
+        now=_now(cur)
+        if not _usable(e,c,now) or not _usable(latest,c,now):
+            return None
+        if r["classification"]!="CONTRADICTORY":
+            cur.execute("""SELECT 1 FROM predictive_input_admissions
+                           WHERE user_id=%s AND instance_id=%s AND reset_generation=%s
+                             AND reported_context=%s AND reported_occasion=%s
+                             AND reported_completion<>%s LIMIT 1""",
+                        (actor.user_id,instance_id,e["reset_generation"],e["context_key"],
+                         r["occasion"],r["completed"]))
+            if cur.fetchone() is not None:
+                return None
+        return RecordedComparison(comparison_id=comparison_id,expectation_revision_id=e["revision_id"],
+            outcome_turn_id=r["outcome_turn_id"],classification=r["classification"],
+            historical=latest["revision_id"]!=e["revision_id"],source_turn_ids=tuple(r["source_turn_ids"]))

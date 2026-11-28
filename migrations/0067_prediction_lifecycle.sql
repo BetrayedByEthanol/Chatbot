@@ -112,3 +112,21 @@ CREATE INDEX cognitive_comparison_scope_idx ON cognitive_expectation_comparisons
 CREATE TRIGGER immutable_expectation_comparison
     BEFORE UPDATE OR DELETE ON cognitive_expectation_comparisons
     FOR EACH ROW EXECUTE FUNCTION reject_procedure_history_mutation();
+
+
+-- User withdrawal is an independent immutable tombstone, not a second
+-- resolution and not a deletion of ordinary Memory or expectation evidence.
+CREATE TABLE cognitive_prediction_withdrawals (
+    prediction_id uuid PRIMARY KEY,
+    user_id uuid NOT NULL,
+    instance_id uuid NOT NULL,
+    source_event_id uuid NOT NULL UNIQUE,
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    FOREIGN KEY(prediction_id,user_id,instance_id)
+        REFERENCES cognitive_predictions(prediction_id,user_id,instance_id),
+    FOREIGN KEY(source_event_id,user_id,instance_id)
+        REFERENCES events(event_id,user_id,instance_id)
+);
+CREATE TRIGGER immutable_prediction_withdrawal
+    BEFORE UPDATE OR DELETE ON cognitive_prediction_withdrawals
+    FOR EACH ROW EXECUTE FUNCTION reject_procedure_history_mutation();

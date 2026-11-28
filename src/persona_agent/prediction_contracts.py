@@ -4,7 +4,7 @@ from datetime import date,datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel,ConfigDict
+from pydantic import BaseModel,ConfigDict,Field
 
 from .learning_control_contracts import PredictiveFence
 
@@ -80,3 +80,30 @@ class PredictionView(BaseModel):
     evidence_class:Literal["USER_REPORTED"]="USER_REPORTED"
     # Diagnostic only. Later personalized projection requires new fences.
     epistemic_status:Literal["HYPOTHESIS"]="HYPOTHESIS"
+
+
+
+class WithdrawPrediction(BaseModel):
+    model_config=ConfigDict(frozen=True,extra="forbid")
+    instance_id:UUID
+    prediction_id:UUID
+    expected_generation:int=Field(ge=1)
+    idempotency_key:str=Field(min_length=1,max_length=128)
+
+
+class PredictionWithdrawalResult(BaseModel):
+    model_config=ConfigDict(frozen=True,extra="forbid")
+    prediction_id:UUID
+    event_id:UUID
+    replayed:bool=False
+
+
+class RecordedComparison(BaseModel):
+    model_config=ConfigDict(frozen=True,extra="forbid")
+    comparison_id:UUID
+    expectation_revision_id:UUID
+    outcome_turn_id:UUID
+    classification:Comparison
+    historical:bool
+    source_turn_ids:tuple[UUID,...]
+    evidence_class:Literal["USER_REPORTED"]="USER_REPORTED"
