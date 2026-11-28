@@ -218,9 +218,29 @@ def test_budget_boundary_cold_start_and_irrelevant_input_do_not_project(dsn,monk
     user,instance,_=seed(dsn)
     with available_cognitive_slots(dsn,user,instance,1):
         initialize(dsn,user,instance,False)
-        source=incoming(dsn,user,instance,report(0))
-        assert prepare(dsn,user,source).subjective_projection is not None
+        # 512 characters alone is not a reason to suppress projection.
+        # Supply real higher-priority history so the remaining room, rather
+        # than the total budget, is insufficient for the optional hint.
+        conversation=uuid4()
+        notes=(
+            "Garden notes: the soil in the shaded bed stays damp after rain. "
+            "The sunny bed drains more quickly. Both beds have different soil textures.",
+            "The garden has two raised beds with different soil textures. "
+            "One is clay-rich and the other is sandy. The observations concern drainage.",
+        )
+        for note in notes:
+            incoming(dsn,user,instance,note,conversation)
+        source=incoming(dsn,user,instance,report(0),conversation)
+        roomy=prepare(dsn,user,source)
+        assert roomy.subjective_projection is not None
+        assert all(any(m.role=="user" and m.content==note for m in roomy.messages) for note in notes)
+        assert roomy.messages[-1].content==report(0)
         small=prepare(dsn,user,source,max_context_chars=512)
+        assert small.prediction_comparison.classification=="UNEXPECTED"
+        assert small.prediction_comparison.fence is not None
+        assert small.messages[-1].content==report(0)
+        used=sum(len(m.content) for m in small.messages)
+        assert 0<=512-used<240, "fixture must actually constrain the remaining projection budget"
         assert small.subjective_projection is None and small.predictive_fence is None
         boundary=incoming(dsn,user,instance,"Please do not send proactive messages.")
         preference(dsn,user,instance,boundary,"Please do not send proactive messages",
