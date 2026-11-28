@@ -75,7 +75,7 @@ before it may use this extension.
 | --- | --- | --- |
 | A-PRED-1 | Exact scoped raw text admission, unsupported/foreign and mixed source exclusion | NOT RUN; later source classes and owner content deferred |
 | A-PRED-2 | Current source policy, correction/retraction/expiry while paused, no old-generation revival | NOT RUN |
-| A-PRED-3 | CAS, receipt replay, version fences at real response commit/offer/ACK/replay | NOT RUN; actual future owner operation/lease integration required |
+| A-PRED-3 | CAS, receipt replay, concurrent live ingress/reset lock wait, version fences at real response commit/offer/ACK/replay | NOT RUN; actual future owner operation/lease integration required |
 | A-PRED-4 | Default off, authenticated commands, durable reset, no disabled-period catch-up | NOT RUN; learned-state inspection/correction requires owner content |
 | A-PRED-5 | Ordinary facts and explicit preference continue under independent contracts | NOT RUN; no prediction producer enabled |
 
@@ -87,3 +87,8 @@ question/competing hypothesis continuity remains to be reviewed within
 P2-F1.1/1.6. No maturity thresholds, prediction lifecycle, approach
 learning, retention/physical erasure, or external provider policy selected.
 US-117/118 remain partial, US-085 remains missing. No acceptance promotion.
+
+The concurrency fixture pauses live ingress at its stamp and observes the reset
+connection waiting in PostgreSQL before releasing it. It then verifies the
+committed old stamp is ineligible and the next input has the new generation.
+A separate fixture verifies same-user cross-persona isolation. Both NOT RUN.

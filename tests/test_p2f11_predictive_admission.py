@@ -268,3 +268,88 @@ def test_cold_start_preserves_explicit_preference_and_ordinary_memory(dsn):
         assert "favorite_drink: tea" in context.messages[0].content
         assert "response length short" in context.messages[0].content
         assert call(dsn,search_memories,actor(user),instance,"favorite drink")[0].value_text=="tea"
+
+
+def test_reset_serializes_with_live_input_stamp_across_connections(dsn,monkeypatch):
+    """The actual ingress holds selection SHARE until its stamp commits."""
+    import psycopg
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    from time import monotonic,sleep
+    from persona_agent import learning_control
+    actor,call,incoming,seed=helpers()
+    user,instance=seed(dsn)
+    set_enabled(dsn,user,instance,0,True)
+    at_stamp=Event()
+    release=Event()
+    reset_started=Event()
+    backend={}
+    original=learning_control.stamp_learning_input
+
+    def pause(cur,**kwargs):
+        if kwargs["user_id"]==user:
+            at_stamp.set()
+            assert release.wait(15),"test did not release ingress"
+        return original(cur,**kwargs)
+
+    monkeypatch.setattr(learning_control,"stamp_learning_input",pause)
+
+    def resetting():
+        with psycopg.connect(dsn,autocommit=True) as conn:
+            backend["pid"]=conn.info.backend_pid
+            reset_started.set()
+            return learning_control.reset_learned_state(conn,actor(user),ResetLearnedState(
+                instance_id=instance,expected_generation=1,expected_version=1,
+                idempotency_key="concurrent-reset"))
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        ingress=pool.submit(incoming,dsn,user,instance,uuid4(),"I walked this morning.")
+        try:
+            assert at_stamp.wait(10)
+            transition=pool.submit(resetting)
+            assert reset_started.wait(10)
+            # Observe the actual PostgreSQL lock wait, not a guessed sleep.
+            deadline=monotonic()+10
+            blocked=False
+            with psycopg.connect(dsn,autocommit=True) as monitor:
+                while monotonic()<deadline:
+                    blocked=bool(monitor.execute("SELECT pg_blocking_pids(%s)",
+                                                  (backend["pid"],)).fetchone()[0])
+                    if blocked or transition.done():
+                        break
+                    sleep(.02)
+            assert blocked,"reset did not wait for live input authority"
+        finally:
+            release.set()
+        prior=ingress.result(timeout=10)
+        boundary=transition.result(timeout=10)
+    assert boundary.control.reset_generation==1
+    assert capture(dsn,user,instance,prior) is None
+    with psycopg.connect(dsn,autocommit=True) as conn:
+        assert conn.execute("""SELECT reset_generation FROM predictive_input_admissions
+                               WHERE turn_id=%s""",(prior.turn_id,)).fetchone()==(0,)
+    fresh=incoming(dsn,user,instance,uuid4(),"I walked again.")
+    assert capture(dsn,user,instance,fresh).reset_generation==1
+
+
+def test_same_user_other_persona_sources_do_not_cross_admission(dsn):
+    actor,call,incoming,seed=helpers()
+    from persona_agent.conversation import ingest_text
+    from persona_agent.conversation_contracts import TextInputCommand
+    from persona_agent.lifecycle import SwitchPersonaCommand,switch_persona
+    user,instance,other=seed(dsn,two=True)
+    set_enabled(dsn,user,instance,0,True)
+    source=incoming(dsn,user,instance,uuid4(),"I walked today.")
+    call(dsn,switch_persona,actor(user),SwitchPersonaCommand(
+        expected_instance_id=instance,target_instance_id=other,
+        expected_generation=1,idempotency_key="switch-other"))
+    set_enabled(dsn,user,other,0,True,generation=2)
+    fresh=call(dsn,ingest_text,actor(user),TextInputCommand(
+        instance_id=other,conversation_id=uuid4(),expected_generation=2,
+        idempotency_key="other-input",text="I walked yesterday."))
+    assert capture(dsn,user,other,fresh) is not None
+    assert capture(dsn,user,other,source) is None
+    assert capture(dsn,user,other,source,fresh) is None
+    reset(dsn,user,other,1,generation=2)
+    assert capture(dsn,user,instance,source) is not None
+    assert capture(dsn,user,other,fresh) is None
