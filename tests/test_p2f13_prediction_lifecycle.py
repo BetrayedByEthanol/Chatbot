@@ -125,7 +125,14 @@ def test_real_forecast_later_report_resolves_once_against_prior_revision(dsn,exp
         assert comparison.classification==label
         assert comparison.expectation_revision_id==e.revision_id
         assert set(comparison.fence.source_turn_ids)==set(e.source_turn_ids)|{outcome.turn_id}
-        assert context.predictive_fence is None
+        # P2-F1.4 now admits a real, bounded presentation hint for a
+        # supported tentative mismatch, not for an ordinary match.
+        if expected==observed:
+            assert context.predictive_fence is None and context.subjective_projection is None
+        else:
+            assert context.subjective_projection.kind=="MISMATCH"
+            assert context.predictive_fence==context.subjective_projection.fence
+            assert context.subjective_projection.expectation_revision_id==e.revision_id
         assert all("COMPARABLE_USER_REPORT" not in m.content for m in context.messages)
         with psycopg.connect(dsn,autocommit=True) as conn:
             assert conn.execute("""SELECT prediction_id,comparison_expectation_id

@@ -82,6 +82,7 @@ CREATE FUNCTION subjective_projection_current(
           AND e.direction IN ('COMPLETION','NON_COMPLETION')
           AND e.expires_at>=expiry AND e.expires_at>clock_timestamp()
           AND e.created_at<a.reported_at AND a.comparison_expectation_id=eid
+          AND expiry<=a.reported_at+interval '1 hour'
           AND a.admitted_control_version=ver AND a.reset_generation=gen
           AND a.reported_context=e.context_key AND a.reported_completion IS NOT NULL
           AND e.source_turn_ids <@ ids AND tid=ANY(ids)

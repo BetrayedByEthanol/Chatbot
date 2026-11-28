@@ -160,10 +160,30 @@ def stamp_learning_input(cur,*,user_id,instance_id,turn_id,event_id,text="",rece
         if report is not None:
             from .prediction_lifecycle import stamp_report
             stamp_report(cur,user_id,instance_id,event_id,report,received_at)
-            return
+            return cur.rowcount==1
     cur.execute("""INSERT INTO predictive_input_admissions(
                      turn_id,user_id,instance_id,source_event_id,admitted_control_version,reset_generation)
                    SELECT %s,c.user_id,c.instance_id,%s,c.version,c.reset_generation
                    FROM predictive_learning_controls c
                    WHERE c.user_id=%s AND c.instance_id=%s AND c.learning_enabled""",
                 (turn_id,event_id,user_id,instance_id))
+    return False
+
+
+def serialize_admitted_report(cur,user_id,instance_id):
+    """Late ingress gate for supported, enabled report admissions only.
+
+    The report binding is chosen by its original INSERT, not refreshed.
+    Serialize its visibility with predictive owner/output checks. Take
+    Memory UPDATE before Governance NO KEY UPDATE, after all other ingress
+    writes, so a deferred Memory trigger cannot upgrade a held SHARE lock.
+    This is not a new inference or a global journal lock.
+    """
+    cur.execute("""SELECT revision FROM historical_recall_revisions
+                   WHERE user_id=%s AND instance_id=%s FOR UPDATE""",(user_id,instance_id))
+    if cur.fetchone() is None:
+        raise VersionConflict("report source scope unavailable")
+    cur.execute("""SELECT version FROM predictive_learning_controls
+                   WHERE user_id=%s AND instance_id=%s FOR NO KEY UPDATE""",(user_id,instance_id))
+    if cur.fetchone() is None:
+        raise VersionConflict("report learning control unavailable")

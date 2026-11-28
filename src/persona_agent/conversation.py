@@ -278,9 +278,10 @@ def ingest_text(connection: Connection, actor: TrustedActor,
                 "WHERE turn_id=%s AND user_id=%s",
                 (event_id,temporal.model_dump_json(),turn_id,actor.user_id),
             )
+            predictive_report_admitted=False
             if provenance is None:
                 from .learning_control import stamp_learning_input
-                stamp_learning_input(cursor,user_id=actor.user_id,instance_id=command.instance_id,
+                predictive_report_admitted=stamp_learning_input(cursor,user_id=actor.user_id,instance_id=command.instance_id,
                                      turn_id=turn_id,event_id=event_id,text=command.text,
                                      received_at=receipt_at)
             from .explicit_memory_reports import record_explicit_memory_report
@@ -323,6 +324,9 @@ def ingest_text(connection: Connection, actor: TrustedActor,
                 conversation_id=command.conversation_id,turn_id=turn_id,
                 turn_sequence=seq,text=command.text,
             )
+            if predictive_report_admitted:
+                from .learning_control import serialize_admitted_report
+                serialize_admitted_report(cursor,actor.user_id,command.instance_id)
             return result
 
 
@@ -1184,7 +1188,7 @@ def prepare_text_context(
                 remaining=max_context_chars-len(prompt)-sum(len(m.content) for m in kept)
                 projection=prepare_subjective_projection(
                     cursor,actor.user_id,item["instance_id"],comparison,
-                    max_chars=min(420,remaining))
+                    max_chars=min(420,remaining-1))
                 if projection is not None:
                     prompt+="\n"+projection.text
             system=ModelMessage("system",prompt)
