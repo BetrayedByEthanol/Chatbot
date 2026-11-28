@@ -2,6 +2,8 @@
 -- No speculative inference, external effect or generic evidence graph.
 ALTER TABLE cognitive_expectation_revisions
     ADD UNIQUE(revision_id,user_id,instance_id);
+ALTER TABLE predictive_input_admissions
+    ADD UNIQUE(turn_id,user_id,instance_id);
 
 CREATE TABLE cognitive_predictions (
     prediction_id uuid PRIMARY KEY,
@@ -28,7 +30,8 @@ CREATE TABLE cognitive_predictions (
         REFERENCES cognitive_expectation_revisions(revision_id,user_id,instance_id),
     FOREIGN KEY(operation_id,user_id,instance_id)
         REFERENCES cognitive_jobs(operation_id,user_id,instance_id),
-    FOREIGN KEY(commitment_turn_id) REFERENCES predictive_input_admissions(turn_id)
+    FOREIGN KEY(commitment_turn_id,user_id,instance_id)
+        REFERENCES predictive_input_admissions(turn_id,user_id,instance_id)
 );
 CREATE TRIGGER immutable_cognitive_prediction
     BEFORE UPDATE OR DELETE ON cognitive_predictions
@@ -94,7 +97,7 @@ CREATE TABLE cognitive_expectation_comparisons (
     operation_id uuid NOT NULL,
     control_version bigint NOT NULL CHECK(control_version>=1),
     reset_generation bigint NOT NULL CHECK(reset_generation>=0),
-    outcome_turn_id uuid NOT NULL UNIQUE REFERENCES predictive_input_admissions(turn_id),
+    outcome_turn_id uuid NOT NULL UNIQUE,
     occasion date NOT NULL,
     completed boolean NOT NULL,
     classification text NOT NULL CHECK(classification IN ('EXPECTED','UNEXPECTED','CONTRADICTORY')),
@@ -102,6 +105,8 @@ CREATE TABLE cognitive_expectation_comparisons (
         AND array_position(source_turn_ids,NULL) IS NULL),
     created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
     UNIQUE(expectation_revision_id,occasion,completed),
+    FOREIGN KEY(outcome_turn_id,user_id,instance_id)
+        REFERENCES predictive_input_admissions(turn_id,user_id,instance_id),
     FOREIGN KEY(expectation_revision_id,user_id,instance_id)
         REFERENCES cognitive_expectation_revisions(revision_id,user_id,instance_id),
     FOREIGN KEY(operation_id,user_id,instance_id)

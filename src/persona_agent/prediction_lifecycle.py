@@ -139,6 +139,14 @@ def _usable(e,control,now):
             and e["expires_at"] is not None and e["expires_at"]>now)
 
 
+def _eligible_latest(cur,latest,control,now):
+    if not _usable(latest,control,now):
+        return False
+    cur.execute("SELECT predictive_sources_current(%s,%s,%s,%s::uuid[]) AS eligible",
+                (latest["user_id"],latest["instance_id"],latest["reset_generation"],latest["source_turn_ids"]))
+    return cur.fetchone()["eligible"]
+
+
 def _fence(cur,user_id,instance_id,control,ids):
     ids=tuple(dict.fromkeys(ids))
     if not 1<=len(ids)<=128:
@@ -559,6 +567,8 @@ def read_prediction(connection,actor,instance_id,prediction_id):
         if not _usable(e,control,now) or not _prediction_matches_expectation(p,e):
             return None
         r=_resolution(cur,actor.user_id,instance_id,prediction_id)
+        if r and r["control_version"]!=p["control_version"]:
+            return None
         ids=[*p["source_turn_ids"],*(r["outcome_turn_ids"] if r else ())]
         f=_fence(cur,actor.user_id,instance_id,control,ids)
         if f is None:
@@ -569,7 +579,7 @@ def read_prediction(connection,actor,instance_id,prediction_id):
             return None
         latest=_latest(cur,actor.user_id,instance_id,p["reset_generation"],p["context_key"])
         now=_now(cur)
-        if (not _usable(e,control,now) or not _usable(latest,control,now)
+        if (not _usable(e,control,now) or not _eligible_latest(cur,latest,control,now)
                 or _withdrawn(cur,actor.user_id,instance_id,prediction_id)):
             return None
         if _resolution(cur,actor.user_id,instance_id,prediction_id)!=r:
@@ -739,7 +749,7 @@ def read_recorded_comparison(connection,actor,instance_id,comparison_id):
             return None
         latest=_latest(cur,actor.user_id,instance_id,e["reset_generation"],e["context_key"])
         now=_now(cur)
-        if not _usable(e,c,now) or not _usable(latest,c,now):
+        if not _usable(e,c,now) or not _eligible_latest(cur,latest,c,now):
             return None
         if r["classification"]!="CONTRADICTORY":
             cur.execute("""SELECT 1 FROM predictive_input_admissions

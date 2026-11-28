@@ -186,6 +186,8 @@ Implementation candidate: [P2-F1.1 Governance control and admission](p2-f11-pred
 
 P2-F1.2 [contextual expectation candidate](p2-f12-contextual-expectations.md) adds the narrow raw-report Cognitive owner path; provisional pilot policies and remaining Memory-pattern/activation requirements are explicitly distinguished from approved PRED criteria. Tests NOT RUN.
 
+P2-F1.3 [prediction lifecycle candidate](p2-f13-prediction-lifecycle.md) implements the bounded dated-activity forecast, ingress-time causal bindings, owner resolution/withdrawal and selective diagnostic comparison. Pilot horizon, logical expiry and strict pause policy are provisional; tests NOT RUN and no actual personalized projection.
+
 ### 6.2 Relevance gate and measured acceptance (P2-F3)
 
 Conversation's existing sparse interpretation uses active topic/referents, pending commitments/forecasts, outcome/achievement reports (including indirect reports), explicit corrections and meaningful behavioral-change cues. Cognitive validates retrieved expectation applicability: scope, horizon, maturity, source eligibility and whether incoming evidence matches its target. A cheap deterministic or existing lightweight/model inference signal suffices when supported; no mandatory classifier or model pass. Mandatory corrections, authorization, direct requests and required state transitions cannot be skipped by this optional relevance decision.

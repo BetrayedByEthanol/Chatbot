@@ -315,3 +315,68 @@ def test_time_only_expiry_without_outcome_is_inconclusive(dsn):
         # target; expired target never acquires an outcome retrospectively.
         call(dsn,run_cognition,lease,EmptyModel())
         assert call(dsn,read_prediction,actor(user),instance,pid)==expired
+
+
+
+@pytest.mark.parametrize("history",["EARLY","MIXED","UNRELATED"])
+def test_forecast_requires_sufficient_comparable_prior_history(dsn,history):
+    user,instance,_=seed(dsn)
+    with available_cognitive_slots(dsn,user,instance,1):
+        set_enabled(dsn,user,instance,0,True)
+        if history=="EARLY":
+            reflect(dsn,user,instance,report(4))
+        elif history=="MIXED":
+            reflect(dsn,user,instance,report(4),report(3,False))
+        else:
+            reflect(dsn,user,instance,report(4,activity="reading practice"),
+                    report(3,activity="reading practice"))
+        reflect(dsn,user,instance,plan())
+        assert call(dsn,inspect_prediction_history,actor(user),instance)==()
+
+
+def test_expired_claim_cannot_commit_prediction_or_comparison(dsn):
+    from persona_agent.operation_contracts import StaleOperation
+    from persona_agent.operation_control import reap_stale_operations
+    user,instance,_=seed(dsn)
+    with available_cognitive_slots(dsn,user,instance,1):
+        initialize(dsn,user,instance)
+        _,_,lease=stage(dsn,user,instance,plan())
+        work=call(dsn,prepare_cognition,lease)
+        assert work.prediction_batch.forecasts
+        with psycopg.connect(dsn,autocommit=True) as conn:
+            conn.execute("UPDATE operations SET lease_until=clock_timestamp()-interval '1 second' WHERE operation_id=%s",
+                         (lease.operation_id,))
+        with pytest.raises(StaleOperation):
+            call(dsn,commit_cognition,lease,work,CognitiveDraft(),"fixture")
+        assert call(dsn,inspect_prediction_history,actor(user),instance)==()
+        assert comparison_ids(dsn,user,instance)==[]
+        call(dsn,reap_stale_operations,limit=1000)
+        cancel_pending(dsn,user,lease.operation_id)
+
+
+def test_competing_outcome_ranges_resolve_once_and_keep_independent_evidence(dsn):
+    from persona_agent.expectation_contracts import ExpectationVersionConflict
+    user,instance,_=seed(dsn)
+    with available_cognitive_slots(dsn,user,instance,2):
+        pid,_,_,_=forecast(dsn,user,instance)
+        _,first_sources,first=stage(dsn,user,instance,report(0))
+        _,second_sources,second=stage(dsn,user,instance,report(0,False))
+        one=call(dsn,prepare_cognition,first)
+        two=call(dsn,prepare_cognition,second)
+        assert one.prediction_batch.resolutions[0].resolution=="INCONCLUSIVE"
+        assert two.prediction_batch.resolutions[0].resolution=="INCONCLUSIVE"
+        assert one.expectation_plans[0].expected_version==two.expectation_plans[0].expected_version
+        call(dsn,commit_cognition,first,one,CognitiveDraft(),"fixture")
+        call(dsn,run_cognition,first,EmptyModel())
+        with pytest.raises(ExpectationVersionConflict):
+            call(dsn,commit_cognition,second,two,CognitiveDraft(),"fixture")
+        fresh=call(dsn,prepare_cognition,second)
+        assert not fresh.prediction_batch.resolutions
+        call(dsn,commit_cognition,second,fresh,CognitiveDraft(),"fixture")
+        call(dsn,run_cognition,second,EmptyModel())
+        r=call(dsn,read_prediction,actor(user),instance,pid)
+        assert r.resolution=="INCONCLUSIVE"
+        assert set(r.outcome_turn_ids)=={first_sources[0].turn_id,second_sources[0].turn_id}
+        assert resolution_count(dsn,pid)==1
+        e=call(dsn,read_expectation,actor(user),instance,"daily walk")
+        assert e.maturity=="CONFLICTED" and e.conflicting_occasions==1
