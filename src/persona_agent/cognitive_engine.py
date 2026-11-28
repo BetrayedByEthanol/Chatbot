@@ -261,6 +261,9 @@ def prepare_cognition(connection:Connection,lease:OperationLease) -> CognitiveWo
             )
             from .contextual_expectations import prepare_expectations
             expectation_plans=prepare_expectations(cur,lease.user_id,lease.instance_id,rows)
+            from .prediction_lifecycle import prepare_prediction_batch
+            prediction_batch=prepare_prediction_batch(cur,lease.user_id,lease.instance_id,
+                                                      rows,expectation_plans)
             return CognitiveWork(
                 operation_id=lease.operation_id,user_id=lease.user_id,
                 instance_id=lease.instance_id,conversation_id=job["conversation_id"],
@@ -268,7 +271,7 @@ def prepare_cognition(connection:Connection,lease:OperationLease) -> CognitiveWo
                 start_sequence=job["start_sequence"],end_sequence=job["end_sequence"],
                 source_digest=_digest(rows),turns=rows,
                 pattern_candidates=candidates,pattern_fence=pattern_fence,
-                expectation_plans=expectation_plans,
+                expectation_plans=expectation_plans,prediction_batch=prediction_batch,
             )
 
 
@@ -470,23 +473,33 @@ def commit_cognition(
                     "pattern_proposals":len(draft.patterns),
                 },
             )
-            if work.expectation_plans:
-                from .contextual_expectations import stage_expectations,require_expectation_plans
-                from .conversation_contracts import StaleHistoricalContext
+            from .contextual_expectations import stage_expectations,require_expectation_plans
+            from .prediction_lifecycle import stage_prediction_batch,require_prediction_batch,lock_learning_owner
+            from .conversation_contracts import StaleHistoricalContext
+            # Try optional predictions together with owner revisions and
+            # Memory patterns. A stale prediction rolls the savepoint back;
+            # retry only independent expectation/pattern writes. No shared
+            # Memory lock is upgraded to exclusive across owner writes.
+            optional_attempts=(True,False) if work.prediction_batch else (False,)
+            for include_predictions in optional_attempts:
+                if not include_predictions and not work.expectation_plans:
+                    patterns=admit_pattern_proposals(connection,cur,work,draft.patterns,model_id)
+                    break
                 try:
-                    # Stage both owners' writes before late fences. Pattern
-                    # admission may take Memory UPDATE; do not upgrade a
-                    # predictive SHARE lock to UPDATE. If the optional
-                    # expectation fails, rollback both and retry only the
-                    # independent bounded pattern admission.
                     with connection.transaction():
                         stage_expectations(cur,work)
+                        if include_predictions:
+                            stage_prediction_batch(cur,work)
                         patterns=admit_pattern_proposals(connection,cur,work,draft.patterns,model_id)
+                        lock_learning_owner(cur,work.user_id,work.instance_id)
                         require_expectation_plans(cur,work)
+                        if include_predictions:
+                            require_prediction_batch(cur,work)
+                    break
                 except StaleHistoricalContext:
-                    patterns=admit_pattern_proposals(connection,cur,work,draft.patterns,model_id)
-            else:
-                patterns=admit_pattern_proposals(connection,cur,work,draft.patterns,model_id)
+                    if not include_predictions:
+                        patterns=admit_pattern_proposals(connection,cur,work,draft.patterns,model_id)
+                        break
             # Finish normal owner/event writes before the shared scope
             # revision lock. Pattern admission may already hold this lock
             # exclusively; never acquire it before owner writes or upgrade

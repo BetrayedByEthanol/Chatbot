@@ -146,12 +146,21 @@ def reset_learned_state(connection,actor,command:ResetLearnedState):
     return _change(connection,actor,command,reset=True)
 
 
-def stamp_learning_input(cur,*,user_id,instance_id,turn_id,event_id):
+def stamp_learning_input(cur,*,user_id,instance_id,turn_id,event_id,text="",received_at=None):
     """Called only by live authenticated text ingress under selection SHARE.
 
     Missing or disabled control creates no stamp. Never call this on replay,
     historical data, assistant text or derived sources.
     """
+    # Only exact dated reports need a scoped predictive lookup. Ordinary
+    # ingress keeps the original insert, including when learning is off.
+    if received_at is not None and len(text)<=120 and text.lower().startswith("on "):
+        from .contextual_expectations import parse_activity_report
+        report=parse_activity_report(turn_id,text,received_at)
+        if report is not None:
+            from .prediction_lifecycle import stamp_report
+            stamp_report(cur,user_id,instance_id,event_id,report,received_at)
+            return
     cur.execute("""INSERT INTO predictive_input_admissions(
                      turn_id,user_id,instance_id,source_event_id,admitted_control_version,reset_generation)
                    SELECT %s,c.user_id,c.instance_id,%s,c.version,c.reset_generation

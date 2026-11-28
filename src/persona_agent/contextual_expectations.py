@@ -338,6 +338,13 @@ def withdraw_expectation(connection,actor,command:WithdrawExpectation):
         if cur.fetchone() is None:
             raise VersionConflict("expectation concurrently revised")
         cur.execute("INSERT INTO outbox(outbox_id,event_id) VALUES (%s,%s)",(uuid4(),event_id))
+        # Serialize the final owner mutation with forecast/expectation
+        # validation. All event and row writes precede this control lock.
+        cur.execute("""SELECT version FROM predictive_learning_controls
+                       WHERE user_id=%s AND instance_id=%s FOR NO KEY UPDATE""",
+                    (actor.user_id,command.instance_id))
+        if cur.fetchone() is None:
+            raise VersionConflict("learning control unavailable")
         result=WithdrawalResult(revision_id=revision,version=row["version"]+1,event_id=event_id)
         cur.execute("UPDATE command_receipts SET result_json=%s::jsonb,event_id=%s WHERE receipt_id=%s",
                     (result.model_dump_json(),event_id,receipt))
